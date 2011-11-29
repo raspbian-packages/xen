@@ -21,9 +21,11 @@ CFLAGS_include = -I$(XEN_INCLUDE)
 
 CFLAGS_libxenctrl = -I$(XEN_LIBXC) $(CFLAGS_include)
 LDLIBS_libxenctrl = -L$(XEN_LIBXC) -lxenctrl $(DLOPEN_LIBS)
+LDLIBS_libxenctrl_SYSTEM = -lxenctrl-$(XEN_VERSION)
 
 CFLAGS_libxenguest = -I$(XEN_LIBXC) $(CFLAGS_include)
 LDLIBS_libxenguest = -L$(XEN_LIBXC) -lxenguest
+LDLIBS_libxenguest_SYSTEM = -lxenguest-$(XEN_VERSION)
 
 CFLAGS_libxenstore = -I$(XEN_XENSTORE) $(CFLAGS_include)
 LDLIBS_libxenstore = -L$(XEN_XENSTORE) -lxenstore
