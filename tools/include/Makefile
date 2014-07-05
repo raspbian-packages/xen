@@ -64,7 +64,6 @@ install: all
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)/xen/io
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)/xen/sys
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)/xen/xsm
-	$(INSTALL_DATA) xen/COPYING $(DESTDIR)$(includedir)/xen
 	$(INSTALL_DATA) xen/*.h $(DESTDIR)$(includedir)/xen
 	$(INSTALL_DATA) xen/arch-x86/*.h $(DESTDIR)$(includedir)/xen/arch-x86
 	$(INSTALL_DATA) xen/arch-x86/hvm/*.h $(DESTDIR)$(includedir)/xen/arch-x86/hvm
