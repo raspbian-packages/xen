@@ -25,6 +25,8 @@ import subprocess
 import curses, _curses, curses.textpad, curses.ascii
 import getopt
 
+sys.path.insert(1, sys.path[0] + '/../lib/python')
+
 import xenfsimage
 import grub.GrubConf
 import grub.LiloConf
