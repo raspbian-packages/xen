@@ -1000,14 +1000,11 @@ void __init console_init_preirq(void)
     pv_console_set_rx_handler(serial_rx);
 
     /* HELLO WORLD --- start-of-day banner text. */
-    spin_lock(&console_lock);
-    __putstr(xen_banner());
-    spin_unlock(&console_lock);
-    printk("Xen version %d.%d%s (%s@%s) (%s) %s %s\n",
+    printk("Xen version %d.%d%s (%s %s) (%s@%s) (%s) %s %s\n",
            xen_major_version(), xen_minor_version(), xen_extra_version(),
-           xen_compile_by(), xen_compile_domain(), xen_compiler(),
-           xen_build_info(), xen_compile_date());
-    printk("Latest ChangeSet: %s\n", xen_changeset());
+           xen_compile_system_distribution(), xen_compile_system_version(),
+           xen_compile_system_maintainer_local(), xen_compile_system_maintainer_domain(),
+           xen_compiler(), xen_build_info(), xen_compile_date());
 
     /* Locate and print the buildid, if applicable. */
     xen_build_init();

@@ -414,9 +414,9 @@ static int __init buildinfo_init(void)
 
     hypfs_add_dir(&buildinfo, &compileinfo, true);
     hypfs_string_set_reference(&compiler, xen_compiler());
-    hypfs_string_set_reference(&compile_by, xen_compile_by());
+    hypfs_string_set_reference(&compile_by, xen_compile_system_maintainer_local());
     hypfs_string_set_reference(&compile_date, xen_compile_date());
-    hypfs_string_set_reference(&compile_domain, xen_compile_domain());
+    hypfs_string_set_reference(&compile_domain, xen_compile_system_maintainer_domain());
     hypfs_add_leaf(&compileinfo, &compiler, true);
     hypfs_add_leaf(&compileinfo, &compile_by, true);
     hypfs_add_leaf(&compileinfo, &compile_date, true);
@@ -497,8 +497,8 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 
         memset(&info, 0, sizeof(info));
         safe_strcpy(info.compiler,       deny ? xen_deny() : xen_compiler());
-        safe_strcpy(info.compile_by,     deny ? xen_deny() : xen_compile_by());
-        safe_strcpy(info.compile_domain, deny ? xen_deny() : xen_compile_domain());
+        safe_strcpy(info.compile_by,     deny ? xen_deny() : xen_compile_system_maintainer_local());
+        safe_strcpy(info.compile_domain, deny ? xen_deny() : xen_compile_system_maintainer_domain());
         safe_strcpy(info.compile_date,   deny ? xen_deny() : xen_compile_date());
         if ( copy_to_guest(arg, &info, 1) )
             return -EFAULT;
