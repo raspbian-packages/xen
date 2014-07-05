@@ -17,7 +17,6 @@ targets += .banner
 quiet_cmd_compile.h = UPD     $@
 define cmd_compile.h
     if [ ! -r $@ -o -O $@ ]; then \
-	cat .banner; \
 	sed -e 's/@@date@@/$(XEN_BUILD_DATE)/g' \
 	    -e 's/@@time@@/$(XEN_BUILD_TIME)/g' \
 	    -e 's/@@whoami@@/$(XEN_WHOAMI)/g' \
@@ -28,13 +27,16 @@ define cmd_compile.h
 	    -e 's/@@subversion@@/$(XEN_SUBVERSION)/g' \
 	    -e 's/@@extraversion@@/$(XEN_EXTRAVERSION)/g' \
 	    -e 's!@@changeset@@!$(shell $(srctree)/tools/scmversion $(XEN_ROOT) || echo "unavailable")!g' \
+	    -e 's/@@system_distribution@@/$(shell lsb_release -is)/g' \
+	    -e 's/@@system_maintainer_domain@@/$(shell grep Maintainer ${SOURCE_BASE_DIR}/debian/control | sed -ne 's,^Maintainer: .[^<]*<[^@>]*@\([^>]*\)>,\1,p')/g' \
+	    -e 's/@@system_maintainer_local@@/$(shell grep Maintainer ${SOURCE_BASE_DIR}/debian/control | sed -ne 's,^Maintainer: .[^<]*<\([^@>]*\)@.*>,\1,p')/g' \
+	    -e 's/@@system_version@@/$(shell cd ${SOURCE_BASE_DIR}; dpkg-parsechangelog | awk '/^Version:/ {print $$2}')/g' \
 	    < $< > $(dot-target).tmp; \
-	sed -rf $(srctree)/tools/process-banner.sed < .banner >> $(dot-target).tmp; \
 	mv -f $(dot-target).tmp $@; \
     fi
 endef
 
-include/xen/compile.h: include/xen/compile.h.in .banner FORCE
+include/xen/compile.h: include/xen/compile.h.in FORCE
 	$(if $(filter-out FORCE,$?),$(Q)rm -fv $@)
 	$(call if_changed,compile.h)
 
