@@ -21,7 +21,6 @@ xen-foreign:
 xen-dir:
 	mkdir -p xen/libelf acpi
 	find xen/ acpi/ -type l -exec rm '{}' +
-	ln -s $(XEN_ROOT)/xen/include/public/COPYING xen/
 	ln -s $(XEN_ROOT)/xen/include/public/*.h xen/
 	ln -s $(XEN_ROOT)/xen/include/public/*/ xen/
 	ln -s ../xen-sys/$(XEN_OS) xen/sys
@@ -59,7 +58,6 @@ install: all
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)/xen/io
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)/xen/sys
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)/xen/xsm
-	$(INSTALL_DATA) xen/COPYING $(DESTDIR)$(includedir)/xen
 	$(INSTALL_DATA) xen/*.h $(DESTDIR)$(includedir)/xen
 	$(INSTALL_DATA) xen/arch-x86/*.h $(DESTDIR)$(includedir)/xen/arch-x86
 	$(INSTALL_DATA) xen/arch-x86/hvm/*.h $(DESTDIR)$(includedir)/xen/arch-x86/hvm
