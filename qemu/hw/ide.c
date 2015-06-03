@@ -3002,6 +3002,10 @@ static void ide_data_writew(void *opaque, uint32_t addr, uint32_t val)
     buffered_pio_write(s, addr, 2);
 
     p = s->data_ptr;
+    if (p + 2 > s->data_end) {
+        return;
+    }
+
     *(uint16_t *)p = le16_to_cpu(val);
     p += 2;
     s->data_ptr = p;
@@ -3021,6 +3025,10 @@ static uint32_t ide_data_readw(void *opaque, uint32_t addr)
     buffered_pio_read(s, addr, 2);
 
     p = s->data_ptr;
+    if (p + 2 > s->data_end) {
+        return 0;
+    }
+
     ret = cpu_to_le16(*(uint16_t *)p);
     p += 2;
     s->data_ptr = p;
@@ -3040,6 +3048,10 @@ static void ide_data_writel(void *opaque, uint32_t addr, uint32_t val)
     buffered_pio_write(s, addr, 4);
 
     p = s->data_ptr;
+    if (p + 4 > s->data_end) {
+        return;
+    }
+
     *(uint32_t *)p = le32_to_cpu(val);
     p += 4;
     s->data_ptr = p;
@@ -3059,6 +3071,10 @@ static uint32_t ide_data_readl(void *opaque, uint32_t addr)
     buffered_pio_read(s, addr, 4);
 
     p = s->data_ptr;
+    if (p + 4 > s->data_end) {
+        return 0;
+    }
+
     ret = cpu_to_le32(*(uint32_t *)p);
     p += 4;
     s->data_ptr = p;
