@@ -99,16 +99,22 @@ int libxl__build_post(libxl_ctx *ctx, uint32_t domid,
     xs_transaction_t t;
     char **ents;
     int i;
+    int64_t mem_target_fudge;
 
     libxl_cpuid_apply_policy(ctx, domid);
     if (info->cpuid != NULL)
         libxl_cpuid_set(ctx, domid, info->cpuid);
 
+    mem_target_fudge =
+        (info->hvm && info->max_memkb > info->target_memkb)
+        ? LIBXL_MAXMEM_CONSTANT : 0;
+
     ents = libxl__calloc(&gc, 12 + (info->max_vcpus * 2) + 2, sizeof(char *));
     ents[0] = "memory/static-max";
     ents[1] = libxl__sprintf(&gc, "%d", info->max_memkb);
     ents[2] = "memory/target";
-    ents[3] = libxl__sprintf(&gc, "%d", info->target_memkb - info->video_memkb);
+    ents[3] = libxl__sprintf(&gc, "%"PRId64, info->target_memkb
+                             - info->video_memkb - mem_target_fudge);
     ents[4] = "memory/videoram";
     ents[5] = libxl__sprintf(&gc, "%d", info->video_memkb);
     ents[6] = "domid";
