@@ -724,6 +724,7 @@ static void vbe_ioport_write_data(void *opaque, uint32_t addr, uint32_t val)
                 else
                     s->vbe_start_addr += x * ((s->vbe_regs[VBE_DISPI_INDEX_BPP] + 7) >> 3);
                 s->vbe_start_addr >>= 2;
+                vbe_update_vgaregs(s);
             }
             break;
         default:
