@@ -34,6 +34,8 @@
 
 #include "qemu-timer.h"
 
+#include <assert.h>
+
 //#define DEBUG_VGA
 //#define DEBUG_VGA_MEM
 //#define DEBUG_VGA_REG
@@ -606,11 +608,7 @@ static void vbe_ioport_write_data(void *opaque, uint32_t addr, uint32_t val)
             }
             break;
         case VBE_DISPI_INDEX_BANK:
-            if (s->vbe_regs[VBE_DISPI_INDEX_BPP] == 4) {
-              val &= (s->vbe_bank_mask >> 2);
-            } else {
-              val &= s->vbe_bank_mask;
-            }
+            val &= s->vbe_bank_mask;
             s->vbe_regs[s->vbe_index] = val;
             s->bank_offset = (val << 16);
             break;
@@ -751,13 +749,21 @@ uint32_t vga_mem_readb(void *opaque, target_phys_addr_t addr)
 
     if (s->sr[4] & 0x08) {
         /* chain 4 mode : simplest access */
+        assert(addr < s->vram_size);
         ret = s->vram_ptr[addr];
     } else if (s->gr[5] & 0x10) {
         /* odd/even mode (aka text mode mapping) */
         plane = (s->gr[4] & 2) | (addr & 1);
-        ret = s->vram_ptr[((addr & ~1) << 1) | plane];
+        addr = ((addr & ~1) << 1) | plane;
+        if (addr >= s->vram_size) {
+            return 0xff;
+        }
+        ret = s->vram_ptr[addr];
     } else {
         /* standard VGA latched access */
+        if (addr * sizeof(uint32_t) >= s->vram_size) {
+            return 0xff;
+        }
         s->latch = ((uint32_t *)s->vram_ptr)[addr];
 
         if (!(s->gr[5] & 0x08)) {
@@ -844,6 +850,7 @@ void vga_mem_writeb(void *opaque, target_phys_addr_t addr, uint32_t val)
         plane = addr & 3;
         mask = (1 << plane);
         if (s->sr[2] & mask) {
+            assert(addr < s->vram_size);
             s->vram_ptr[addr] = val;
 #ifdef DEBUG_VGA_MEM
             printf("vga: chain4: [0x%x]\n", addr);
@@ -857,6 +864,9 @@ void vga_mem_writeb(void *opaque, target_phys_addr_t addr, uint32_t val)
         mask = (1 << plane);
         if (s->sr[2] & mask) {
             addr = ((addr & ~1) << 1) | plane;
+            if (addr >= s->vram_size) {
+                return;
+            }
             s->vram_ptr[addr] = val;
 #ifdef DEBUG_VGA_MEM
             printf("vga: odd/even: [0x%x]\n", addr);
@@ -929,6 +939,9 @@ void vga_mem_writeb(void *opaque, target_phys_addr_t addr, uint32_t val)
         mask = s->sr[2];
         s->plane_updated |= mask; /* only used to detect font change */
         write_mask = mask16[mask];
+        if (addr * sizeof(uint32_t) >= s->vram_size) {
+            return;
+        }
         ((uint32_t *)s->vram_ptr)[addr] =
             (((uint32_t *)s->vram_ptr)[addr] & ~write_mask) |
             (val & write_mask);
