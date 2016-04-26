@@ -160,6 +160,8 @@ static uint32_t expand4[256];
 static uint16_t expand2[256];
 static uint8_t expand4to8[16];
 
+static void vbe_update_vgaregs(VGAState *s);
+
 static inline bool vbe_enabled(VGAState *s)
 {
     return s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED;
@@ -449,6 +451,7 @@ static void vga_ioport_write(void *opaque, uint32_t addr, uint32_t val)
         printf("vga: write SR%x = 0x%02x\n", s->sr_index, val);
 #endif
         s->sr[s->sr_index] = val & sr_mask[s->sr_index];
+        vbe_update_vgaregs(s);
         if (s->sr_index == 1) s->update_retrace_info(s);
         break;
     case 0x3c7:
@@ -477,6 +480,7 @@ static void vga_ioport_write(void *opaque, uint32_t addr, uint32_t val)
         printf("vga: write GR%x = 0x%02x\n", s->gr_index, val);
 #endif
         s->gr[s->gr_index] = val & gr_mask[s->gr_index];
+        vbe_update_vgaregs(s);
         break;
     case 0x3b4:
     case 0x3d4:
@@ -490,8 +494,10 @@ static void vga_ioport_write(void *opaque, uint32_t addr, uint32_t val)
         /* handle CR0-7 protection */
         if ((s->cr[0x11] & 0x80) && s->cr_index <= 7) {
             /* can always write bit 4 of CR7 */
-            if (s->cr_index == 7)
+            if (s->cr_index == 7) {
                 s->cr[7] = (s->cr[7] & ~0x10) | (val & 0x10);
+                vbe_update_vgaregs(s);
+            }
             return;
         }
         switch(s->cr_index) {
@@ -507,6 +513,7 @@ static void vga_ioport_write(void *opaque, uint32_t addr, uint32_t val)
             s->cr[s->cr_index] = val;
             break;
         }
+        vbe_update_vgaregs(s);
 
         switch(s->cr_index) {
         case 0x00:
