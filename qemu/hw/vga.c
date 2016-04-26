@@ -160,6 +160,11 @@ static uint32_t expand4[256];
 static uint16_t expand2[256];
 static uint8_t expand4to8[16];
 
+static inline bool vbe_enabled(VGAState *s)
+{
+    return s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED;
+}
+
 static void vga_bios_init(VGAState *s);
 static void vga_screen_dump(void *opaque, const char *filename);
 
@@ -1129,7 +1134,7 @@ static void vga_get_offsets(VGAState *s,
 {
     uint32_t start_addr, line_offset, line_compare;
 #ifdef CONFIG_BOCHS_VBE
-    if (s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED) {
+    if (vbe_enabled(s)) {
         line_offset = s->vbe_line_offset;
         start_addr = s->vbe_start_addr;
         line_compare = 65535;
@@ -1515,7 +1520,7 @@ static int vga_get_bpp(VGAState *s)
 {
     int ret;
 #ifdef CONFIG_BOCHS_VBE
-    if (s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED) {
+    if (vbe_enabled(s)) {
         ret = s->vbe_regs[VBE_DISPI_INDEX_BPP];
     } else
 #endif
@@ -1530,7 +1535,7 @@ static void vga_get_resolution(VGAState *s, int *pwidth, int *pheight)
     int width, height;
 
 #ifdef CONFIG_BOCHS_VBE
-    if (s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED) {
+    if (vbe_enabled(s)) {
         width = s->vbe_regs[VBE_DISPI_INDEX_XRES];
         height = s->vbe_regs[VBE_DISPI_INDEX_YRES];
     } else
