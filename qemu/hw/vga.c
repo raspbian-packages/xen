@@ -527,6 +527,46 @@ static void vga_ioport_write(void *opaque, uint32_t addr, uint32_t val)
     }
 }
 
+/* we initialize the VGA graphic mode */
+static void vbe_update_vgaregs(VGAState *s)
+{
+    int h, shift_control;
+
+    if (!vbe_enabled(s)) {
+        /* vbe is turned off -- nothing to do */
+        return;
+    }
+
+    /* graphic mode + memory map 1 */
+    s->gr[0x06] = (s->gr[0x06] & ~0x0c) | 0x05;
+    s->cr[0x17] |= 3; /* no CGA modes */
+    s->cr[0x13] = s->vbe_line_offset >> 3;
+    /* width */
+    s->cr[0x01] = (s->vbe_regs[VBE_DISPI_INDEX_XRES] >> 3) - 1;
+    /* height (only meaningful if < 1024) */
+    h = s->vbe_regs[VBE_DISPI_INDEX_YRES] - 1;
+    s->cr[0x12] = h;
+    s->cr[0x07] = (s->cr[0x07] & ~0x42) |
+        ((h >> 7) & 0x02) | ((h >> 3) & 0x40);
+    /* line compare to 1023 */
+    s->cr[0x18] = 0xff;
+    s->cr[0x07] |= 0x10;
+    s->cr[0x09] |= 0x40;
+
+    if (s->vbe_regs[VBE_DISPI_INDEX_BPP] == 4) {
+        shift_control = 0;
+        s->sr[0x01] &= ~8; /* no double line */
+    } else {
+        shift_control = 2;
+        /* set chain 4 mode */
+        s->sr[4] |= 0x08;
+        /* activate all planes */
+        s->sr[2] |= 0x0f;
+    }
+    s->gr[0x05] = (s->gr[0x05] & ~0x60) | (shift_control << 5);
+    s->cr[0x09] &= ~0x9f; /* no double scan */
+}
+
 #ifdef CONFIG_BOCHS_VBE
 static uint32_t vbe_ioport_read_index(void *opaque, uint32_t addr)
 {
@@ -620,7 +660,6 @@ static void vbe_ioport_write_data(void *opaque, uint32_t addr, uint32_t val)
         case VBE_DISPI_INDEX_ENABLE:
             if ((val & VBE_DISPI_ENABLED) &&
                 !(s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED)) {
-                int h, shift_control;
                 
                 if (s->vram_gmfn != s->lfb_addr) {
                      set_vram_mapping(s, s->lfb_addr, s->lfb_end);
@@ -639,40 +678,13 @@ static void vbe_ioport_write_data(void *opaque, uint32_t addr, uint32_t val)
                     s->vbe_line_offset = s->vbe_regs[VBE_DISPI_INDEX_XRES] *
                         ((s->vbe_regs[VBE_DISPI_INDEX_BPP] + 7) >> 3);
                 s->vbe_start_addr = 0;
+                vbe_update_vgaregs(s);
 
                 /* clear the screen (should be done in BIOS) */
                 if (!(val & VBE_DISPI_NOCLEARMEM)) {
                     memset(s->vram_ptr, 0,
                            s->vbe_regs[VBE_DISPI_INDEX_YRES] * s->vbe_line_offset);
                 }
-
-                /* we initialize the VGA graphic mode (should be done
-                   in BIOS) */
-                s->gr[0x06] = (s->gr[0x06] & ~0x0c) | 0x05; /* graphic mode + memory map 1 */
-                s->cr[0x17] |= 3; /* no CGA modes */
-                s->cr[0x13] = s->vbe_line_offset >> 3;
-                /* width */
-                s->cr[0x01] = (s->vbe_regs[VBE_DISPI_INDEX_XRES] >> 3) - 1;
-                /* height (only meaningful if < 1024) */
-                h = s->vbe_regs[VBE_DISPI_INDEX_YRES] - 1;
-                s->cr[0x12] = h;
-                s->cr[0x07] = (s->cr[0x07] & ~0x42) |
-                    ((h >> 7) & 0x02) | ((h >> 3) & 0x40);
-                /* line compare to 1023 */
-                s->cr[0x18] = 0xff;
-                s->cr[0x07] |= 0x10;
-                s->cr[0x09] |= 0x40;
-
-                if (s->vbe_regs[VBE_DISPI_INDEX_BPP] == 4) {
-                    shift_control = 0;
-                    s->sr[0x01] &= ~8; /* no double line */
-                } else {
-                    shift_control = 2;
-                    s->sr[4] |= 0x08; /* set chain 4 mode */
-                    s->sr[2] |= 0x0f; /* activate all planes */
-                }
-                s->gr[0x05] = (s->gr[0x05] & ~0x60) | (shift_control << 5);
-                s->cr[0x09] &= ~0x9f; /* no double scan */
             } else {
                 /* XXX: the bios should do that */
                 s->bank_offset = 0;
