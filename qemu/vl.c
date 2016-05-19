@@ -3743,6 +3743,50 @@ static void host_main_loop_wait(int *timeout)
 }
 #endif
 
+static void check_cve_2014_3672_xen(void)
+{
+    static unsigned long limit = ~0UL;
+    const int fd = 2;
+    struct stat stab;
+
+    if (limit == ~0UL) {
+        const char *s = getenv("XEN_QEMU_CONSOLE_LIMIT");
+        /* XEN_QEMU_CONSOLE_LIMIT=0 means no limit */
+        limit = s ? strtoul(s,0,0) : 1*1024*1024;
+    }
+    if (limit == 0)
+        return;
+
+    int r = fstat(fd, &stab);
+    if (r) {
+        perror("fstat stderr (for CVE-2014-3672 check)");
+        exit(-1);
+    }
+    if (!S_ISREG(stab.st_mode))
+        return;
+    if (stab.st_size <= limit)
+        return;
+
+    /* oh dear */
+    fprintf(stderr,"\r\n"
+            "Closing stderr due to CVE-2014-3672 limit. "
+            " Set XEN_QEMU_CONSOLE_LIMIT to number of bytes to override,"
+            " or 0 for no limit.\n");
+    fflush(stderr);
+
+    int nfd = open("/dev/null", O_WRONLY);
+    if (nfd < 0) {
+        perror("open /dev/null (for CVE-2014-3672 check)");
+        exit(-1);
+    }
+    r = dup2(nfd, fd);
+    if (r != fd) {
+        perror("dup2 /dev/null (for CVE-2014-3672 check)");
+        exit(-1);
+    }
+    close(nfd);
+}
+
 void main_loop_wait(int timeout)
 {
     IOHandlerRecord *ioh;
@@ -3753,6 +3797,8 @@ void main_loop_wait(int timeout)
     qemu_bh_update_timeout(&timeout);
 
     host_main_loop_wait(&timeout);
+
+    check_cve_2014_3672_xen();
 
     /* poll any events */
     /* XXX: separate device handlers from system ones */
