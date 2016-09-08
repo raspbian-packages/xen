@@ -9,9 +9,12 @@ CFLAGS += -Werror -Wno-format-zero-length -Wmissing-declarations
 CFLAGS += -I. -fPIC
 CFLAGS += $(CFLAGS_libxenctrl) $(CFLAGS_libxenguest) $(CFLAGS_libxenstore) $(CFLAGS_libblktapctl)
 
-LIBS = $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest) $(LDLIBS_libxenstore) $(LDLIBS_libblktapctl) $(UTIL_LIBS)
+LDLIBS_XL =  $(LDLIBS_libxenctrl)
+LDLIBS_XL += -Wl,-rpath-link,$(XEN_LIBXC),-rpath-link,$(XEN_XENSTORE) $(LDRPATH_libblktapctl)
+LDLIBS_LIBXL = $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest) $(LDLIBS_libxenstore) $(LDLIBS_libblktapctl)
 ifeq ($(CONFIG_Linux),y)
-LIBS += -luuid
+LDLIBS_XL += -luuid
+LDLIBS_LIBXL += -lutil
 endif
 
 LIBXL_OBJS-y = osdeps.o libxl_paths.o libxl_bootloader.o flexarray.o
@@ -32,12 +35,10 @@ AUTOINCS= libxlu_cfg_y.h libxlu_cfg_l.h
 AUTOSRCS= libxlu_cfg_y.c libxlu_cfg_l.c
 LIBXLU_OBJS = libxlu_cfg_y.o libxlu_cfg_l.o libxlu_cfg.o
 
-CLIENTS = xl
-
 XL_OBJS = xl.o xl_cmdimpl.o xl_cmdtable.o
 
 .PHONY: all
-all: $(CLIENTS) libxenlight.so libxenlight.a libxlutil.so libxlutil.a \
+all: xl libxenlight.so libxenlight.a libxlutil.so libxlutil.a \
 	$(AUTOSRCS) $(AUTOINCS)
 
 $(LIBXLU_OBJS): $(AUTOINCS)
@@ -69,7 +70,7 @@ _libxl_%.h _libxl_%.c: libxl.idl gen%.py libxl%.py
 	mv __libxl_$*.c _libxl_$*.c
 
 libxenlight.so: $(LIBXL_OBJS)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(SHLIB_LDFLAGS) -o $@ $^
+	$(CC) $(CFLAGS) $(LDFLAGS) $(LDLIBS_LIBXL) $(SHLIB_LDFLAGS) -o $@ $^
 
 libxenlight.a: $(LIBXL_OBJS)
 	$(AR) rcs libxenlight.a $^
@@ -80,8 +81,8 @@ libxlutil.so: $(LIBXLU_OBJS)
 libxlutil.a: $(LIBXLU_OBJS)
 	$(AR) rcs libxlutil.a $^
 
-$(CLIENTS): $(XL_OBJS) libxlutil.so libxenlight.so
-	$(CC) $(LDFLAGS) -o $@ $^ $(LIBS)
+xl: $(XL_OBJS) libxlutil.so libxenlight.so
+	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS_XL)
 
 .PHONY: install
 install: all
@@ -99,7 +100,7 @@ install: all
 
 .PHONY: clean
 clean:
-	$(RM) -f _*.h *.o *.so* *.a $(CLIENTS) $(DEPS)
+	$(RM) -f _*.h *.o *.so* *.a xl $(DEPS)
 	$(RM) -f _*.c *.pyc _libxl_paths.*.tmp
 #	$(RM) -f $(AUTOSRCS) $(AUTOINCS)
 
