@@ -131,26 +131,8 @@ static int load_plugins(void)
 	int err;
 	int ret = -1;
 
-#if defined(FSIMAGE_FSDIR)
 	if (fsdir == NULL)
-		fsdir = FSIMAGE_FSDIR;
-#elif defined(__sun__)
-	if (fsdir == NULL)
-		fsdir = "/usr/lib/fs";
-
-	if (sizeof(void *) == 8)
-		isadir = "64/";
-#elif defined(__ia64__)
-	if (fsdir == NULL)
-		fsdir = "/usr/lib/fs";
-#else
-	if (fsdir == NULL) {
-		if (sizeof(void *) == 8)
-			fsdir = "/usr/lib64/fs";
-		else
-			fsdir = "/usr/lib/fs";
-	}
-#endif
+		fsdir = FSDIR;
 
 	if ((name_max = pathconf(fsdir, _PC_NAME_MAX)) == -1)
 		goto fail;
