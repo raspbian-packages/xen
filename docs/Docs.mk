@@ -1,7 +1,5 @@
-PS2PDF		:= ps2pdf
-DVIPS		:= dvips
-LATEX		:= latex
-FIG2DEV		:= fig2dev
+PDFLATEX	:= pdflatex
+EPSTOPDF	:= epstopdf
 LATEX2HTML	:= latex2html
 DOXYGEN		:= doxygen
 POD2MAN		:= pod2man
