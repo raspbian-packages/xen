@@ -14,6 +14,9 @@
  * GNU Lesser General Public License for more details.
  *)
 
+let error fmt = Logging.error "process" fmt
+let info fmt = Logging.info "process" fmt
+
 open Printf
 open Stdext
 
@@ -79,7 +82,7 @@ let create_implicit_path t perm path =
 
 (* packets *)
 let do_debug con t domains cons data =
-	if not !allow_debug
+	if not (Connection.is_dom0 con) && not !allow_debug
 	then None
 	else try match split None '\000' data with
 	| "print" :: msg :: _ ->
@@ -89,6 +92,9 @@ let do_debug con t domains cons data =
 		let domid = int_of_string domid in
 		let quota = (Store.get_quota t.Transaction.store) in
 		Some (Quota.to_string quota domid ^ "\000")
+	| "watches" :: _ ->
+		let watches = Connections.debug cons in
+		Some (watches ^ "\000")
 	| "mfn" :: domid :: _ ->
 		let domid = int_of_string domid in
 		let con = Connections.find_domain cons domid in
@@ -357,8 +363,7 @@ let process_packet ~store ~cons ~doms ~con ~tid ~rid ~ty ~data =
 			in
 		input_handle_error ~cons ~doms ~fct ~ty ~con ~t ~rid ~data;
 	with exn ->
-		Logs.error "general" "process packet: %s"
-		          (Printexc.to_string exn);
+		error "process packet: %s" (Printexc.to_string exn);
 		Connection.send_error con tid rid "EIO"
 
 let write_access_log ~ty ~tid ~con ~data =
@@ -372,8 +377,8 @@ let do_input store cons doms con =
 		try
 			Connection.do_input con
 		with Failure exp ->
-			Logs.error "general" "caught exception %s" exp;
-			Logs.error "general" "got a bad client %s" (sprintf "%-8s" (Connection.get_domstr con));
+			error "caught exception %s" exp;
+			error "got a bad client %s" (sprintf "%-8s" (Connection.get_domstr con));
 			Connection.mark_as_bad con;
 			false
 	in
@@ -382,7 +387,7 @@ let do_input store cons doms con =
 		let packet = Connection.pop_in con in
 		let tid, rid, ty, data = Xenbus.Xb.Packet.unpack packet in
 		(* As we don't log IO, do not call an unnecessary sanitize_data 
-		   Logs.info "io" "[%s] -> [%d] %s \"%s\""
+		   info "[%s] -> [%d] %s \"%s\""
 		         (Connection.get_domstr con) tid
 		         (Xenbus.Xb.Op.to_string ty) (sanitize_data data); *)
 		process_packet ~store ~cons ~doms ~con ~tid ~rid ~ty ~data;
@@ -396,7 +401,7 @@ let do_output store cons doms con =
 			let packet = Connection.peek_output con in
 			let tid, rid, ty, data = Xenbus.Xb.Packet.unpack packet in
 			(* As we don't log IO, do not call an unnecessary sanitize_data 
-			   Logs.info "io" "[%s] <- %s \"%s\""
+			   info "[%s] <- %s \"%s\""
 			         (Connection.get_domstr con)
 			         (Xenbus.Xb.Op.to_string ty) (sanitize_data data);*)
 			write_answer_log ~ty ~tid ~con ~data;
