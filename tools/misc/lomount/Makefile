@@ -16,7 +16,7 @@ build: $(BIN)
 
 .PHONY: install
 install install-recurse: build
-	$(INSTALL_PROG) $(BIN) $(SCRIPTS) $(DESTDIR)$(BINDIR)
+	$(INSTALL_PROG) $(BIN) $(SCRIPTS) $(DESTDIR)$(PRIVATE_BINDIR)
 
 .PHONY: clean
 clean:
