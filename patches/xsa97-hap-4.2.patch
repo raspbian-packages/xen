@@ -1,0 +1,686 @@
+From c8ed54edda001163a5ff7610424dd2ef4244e8d6 Mon Sep 17 00:00:00 2001
+From: Jan Beulich <jbeulich@suse.com>
+Date: Fri, 17 Oct 2014 15:57:42 +0200
+Subject: [PATCH] x86/paging: make log-dirty operations preemptible
+
+Both the freeing and the inspection of the bitmap get done in (nested)
+loops which - besides having a rather high iteration count in general,
+albeit that would be covered by XSA-77 - have the number of non-trivial
+iterations they need to perform (indirectly) controllable by both the
+guest they are for and any domain controlling the guest (including the
+one running qemu for it).
+
+Note that the tying of the continuations to the invoking domain (which
+previously [wrongly] used the invoking vCPU instead) implies that the
+tools requesting such operations have to make sure they don't issue
+multiple similar operations in parallel.
+
+Note further that this breaks supervisor-mode kernel assumptions in
+hypercall_create_continuation() (where regs->eip gets rewound to the
+current hypercall stub beginning), but otoh
+hypercall_cancel_continuation() doesn't work in that mode either.
+Perhaps time to rip out all the remains of that feature?
+
+This is part of CVE-2014-5146 / XSA-97.
+
+Signed-off-by: Jan Beulich <jbeulich@suse.com>
+Reviewed-by: Tim Deegan <tim@xen.org>
+Tested-by: Andrew Cooper <andrew.cooper3@citrix.com>
+master commit: 070493dfd2788e061b53f074b7ba97507fbcbf65
+master date: 2014-10-06 11:22:04 +0200
+
+[backport: use log_dirty lock instead of paging lock]
+[backport: add xsm_domctl to xen/include/xsm/xsm.h]
+Signed-off-by: Stefan Bader <stefan.bader@canonical.com>
+---
+ xen/arch/x86/domain.c              |   4 +-
+ xen/arch/x86/domctl.c              |   8 +-
+ xen/arch/x86/hvm/hvm.c             |   9 +-
+ xen/arch/x86/mm/paging.c           | 261 ++++++++++++++++++++++++++++++-------
+ xen/arch/x86/x86_64/compat/entry.S |   2 +
+ xen/arch/x86/x86_64/entry.S        |   2 +
+ xen/common/domain.c                |   1 -
+ xen/include/asm-x86/domain.h       |  14 ++
+ xen/include/asm-x86/paging.h       |  13 +-
+ 9 files changed, 252 insertions(+), 62 deletions(-)
+
+--- a/xen/arch/x86/domain.c
++++ b/xen/arch/x86/domain.c
+@@ -1974,7 +1974,9 @@ int domain_relinquish_resources(struct d
+         pci_release_devices(d);
+ 
+         /* Tear down paging-assistance stuff. */
+-        paging_teardown(d);
++        ret = paging_teardown(d);
++        if ( ret )
++            return ret;
+ 
+         for_each_vcpu ( d, v )
+         {
+--- a/xen/arch/x86/domctl.c
++++ b/xen/arch/x86/domctl.c
+@@ -72,8 +72,11 @@ long arch_do_domctl(
+         {
+             ret = paging_domctl(d,
+                                 &domctl->u.shadow_op,
+-                                guest_handle_cast(u_domctl, void));
++                                guest_handle_cast(u_domctl, void), 0);
+             rcu_unlock_domain(d);
++            if ( ret == -EAGAIN )
++                return hypercall_create_continuation(__HYPERVISOR_arch_1,
++                                                     "h", u_domctl);
+             copy_to_guest(u_domctl, domctl, 1);
+         } 
+     }
+--- a/xen/arch/x86/hvm/hvm.c
++++ b/xen/arch/x86/hvm/hvm.c
+@@ -2722,7 +2722,8 @@ static hvm_hypercall_t *hvm_hypercall32_
+     HYPERCALL(set_timer_op),
+     HYPERCALL(hvm_op),
+     HYPERCALL(sysctl),
+-    HYPERCALL(tmem_op)
++    HYPERCALL(tmem_op),
++    [ __HYPERVISOR_arch_1 ] = (hvm_hypercall_t *)paging_domctl_continuation
+ };
+ 
+ #else /* defined(__x86_64__) */
+@@ -2797,7 +2798,8 @@ static hvm_hypercall_t *hvm_hypercall64_
+     HYPERCALL(set_timer_op),
+     HYPERCALL(hvm_op),
+     HYPERCALL(sysctl),
+-    HYPERCALL(tmem_op)
++    HYPERCALL(tmem_op),
++    [ __HYPERVISOR_arch_1 ] = (hvm_hypercall_t *)paging_domctl_continuation
+ };
+ 
+ #define COMPAT_CALL(x)                                        \
+@@ -2814,7 +2816,8 @@ static hvm_hypercall_t *hvm_hypercall32_
+     COMPAT_CALL(set_timer_op),
+     HYPERCALL(hvm_op),
+     HYPERCALL(sysctl),
+-    HYPERCALL(tmem_op)
++    HYPERCALL(tmem_op),
++    [ __HYPERVISOR_arch_1 ] = (hvm_hypercall_t *)paging_domctl_continuation
+ };
+ 
+ #endif /* defined(__x86_64__) */
+--- a/xen/arch/x86/mm/paging.c
++++ b/xen/arch/x86/mm/paging.c
+@@ -21,10 +21,12 @@
+  */
+ 
+ #include <xen/init.h>
++#include <xen/guest_access.h>
+ #include <asm/paging.h>
+ #include <asm/shadow.h>
+ #include <asm/p2m.h>
+ #include <asm/hap.h>
++#include <asm/event.h>
+ #include <asm/guest_access.h>
+ #include <xen/numa.h>
+ #include <xsm/xsm.h>
+@@ -113,24 +115,46 @@ static void paging_free_log_dirty_page(s
+     d->arch.paging.free_page(d, mfn_to_page(mfn));
+ }
+ 
+-void paging_free_log_dirty_bitmap(struct domain *d)
++static int paging_free_log_dirty_bitmap(struct domain *d, int rc)
+ {
+     mfn_t *l4, *l3, *l2;
+     int i4, i3, i2;
+ 
++    paging_lock(d);
++
+     if ( !mfn_valid(d->arch.paging.log_dirty.top) )
+-        return;
++    {
++        paging_unlock(d);
++        return 0;
++    }
++
++    if ( !d->arch.paging.preempt.dom )
++    {
++        memset(&d->arch.paging.preempt.log_dirty, 0,
++               sizeof(d->arch.paging.preempt.log_dirty));
++        ASSERT(rc <= 0);
++        d->arch.paging.preempt.log_dirty.done = -rc;
++    }
++    else if ( d->arch.paging.preempt.dom != current->domain ||
++              d->arch.paging.preempt.op != XEN_DOMCTL_SHADOW_OP_OFF )
++    {
++        paging_unlock(d);
++        return -EBUSY;
++    }
+ 
+     l4 = map_domain_page(mfn_x(d->arch.paging.log_dirty.top));
++    i4 = d->arch.paging.preempt.log_dirty.i4;
++    i3 = d->arch.paging.preempt.log_dirty.i3;
++    rc = 0;
+ 
+-    for ( i4 = 0; i4 < LOGDIRTY_NODE_ENTRIES; i4++ )
++    for ( ; i4 < LOGDIRTY_NODE_ENTRIES; i4++, i3 = 0 )
+     {
+         if ( !mfn_valid(l4[i4]) )
+             continue;
+ 
+         l3 = map_domain_page(mfn_x(l4[i4]));
+ 
+-        for ( i3 = 0; i3 < LOGDIRTY_NODE_ENTRIES; i3++ )
++        for ( ; i3 < LOGDIRTY_NODE_ENTRIES; i3++ )
+         {
+             if ( !mfn_valid(l3[i3]) )
+                 continue;
+@@ -143,18 +167,54 @@ void paging_free_log_dirty_bitmap(struct
+ 
+             unmap_domain_page(l2);
+             paging_free_log_dirty_page(d, l3[i3]);
++            l3[i3] = _mfn(INVALID_MFN);
++
++            if ( i3 < LOGDIRTY_NODE_ENTRIES - 1 && hypercall_preempt_check() )
++            {
++                d->arch.paging.preempt.log_dirty.i3 = i3 + 1;
++                d->arch.paging.preempt.log_dirty.i4 = i4;
++                rc = -EAGAIN;
++                break;
++            }
+         }
+ 
+         unmap_domain_page(l3);
++        if ( rc )
++            break;
+         paging_free_log_dirty_page(d, l4[i4]);
++        l4[i4] = _mfn(INVALID_MFN);
++
++        if ( i4 < LOGDIRTY_NODE_ENTRIES - 1 && hypercall_preempt_check() )
++        {
++            d->arch.paging.preempt.log_dirty.i3 = 0;
++            d->arch.paging.preempt.log_dirty.i4 = i4 + 1;
++            rc = -EAGAIN;
++            break;
++        }
+     }
+ 
+     unmap_domain_page(l4);
+-    paging_free_log_dirty_page(d, d->arch.paging.log_dirty.top);
+ 
+-    d->arch.paging.log_dirty.top = _mfn(INVALID_MFN);
+-    ASSERT(d->arch.paging.log_dirty.allocs == 0);
+-    d->arch.paging.log_dirty.failed_allocs = 0;
++    if ( !rc )
++    {
++        paging_free_log_dirty_page(d, d->arch.paging.log_dirty.top);
++        d->arch.paging.log_dirty.top = _mfn(INVALID_MFN);
++
++        ASSERT(d->arch.paging.log_dirty.allocs == 0);
++        d->arch.paging.log_dirty.failed_allocs = 0;
++
++        rc = -d->arch.paging.preempt.log_dirty.done;
++        d->arch.paging.preempt.dom = NULL;
++    }
++    else
++    {
++        d->arch.paging.preempt.dom = current->domain;
++        d->arch.paging.preempt.op = XEN_DOMCTL_SHADOW_OP_OFF;
++    }
++
++    paging_unlock(d);
++
++    return rc;
+ }
+ 
+ int paging_log_dirty_enable(struct domain *d)
+@@ -171,17 +231,25 @@ int paging_log_dirty_enable(struct domai
+     return ret;
+ }
+ 
+-int paging_log_dirty_disable(struct domain *d)
++static int paging_log_dirty_disable(struct domain *d, bool_t resuming)
+ {
+-    int ret;
++    int ret = 1;
++
++    if ( !resuming )
++    {
++        domain_pause(d);
++        /* Safe because the domain is paused. */
++        if ( paging_mode_log_dirty(d) )
++        {
++            ret = d->arch.paging.log_dirty.disable_log_dirty(d);
++            ASSERT(ret <= 0);
++        }
++    }
++
++    ret = paging_free_log_dirty_bitmap(d, ret);
++    if ( ret == -EAGAIN )
++        return ret;
+ 
+-    domain_pause(d);
+-    /* Safe because the domain is paused. */
+-    ret = d->arch.paging.log_dirty.disable_log_dirty(d);
+-    paging_lock(d);
+-    if ( !paging_mode_log_dirty(d) )
+-        paging_free_log_dirty_bitmap(d);
+-    paging_unlock(d);
+     domain_unpause(d);
+ 
+     return ret;
+@@ -355,7 +423,9 @@ out:
+ 
+ /* Read a domain's log-dirty bitmap and stats.  If the operation is a CLEAN,
+  * clear the bitmap and stats as well. */
+-int paging_log_dirty_op(struct domain *d, struct xen_domctl_shadow_op *sc)
++static int paging_log_dirty_op(struct domain *d,
++                               struct xen_domctl_shadow_op *sc,
++                               bool_t resuming)
+ {
+     int rv = 0, clean = 0, peek = 1;
+     unsigned long pages = 0;
+@@ -363,9 +433,22 @@ int paging_log_dirty_op(struct domain *d
+     unsigned long *l1;
+     int i4, i3, i2;
+ 
+-    domain_pause(d);
++    if ( !resuming )
++        domain_pause(d);
+     paging_lock(d);
+ 
++    if ( !d->arch.paging.preempt.dom )
++        memset(&d->arch.paging.preempt.log_dirty, 0,
++               sizeof(d->arch.paging.preempt.log_dirty));
++    else if ( d->arch.paging.preempt.dom != current->domain ||
++              d->arch.paging.preempt.op != sc->op )
++    {
++        paging_unlock(d);
++        ASSERT(!resuming);
++        domain_unpause(d);
++        return -EBUSY;
++    }
++
+     clean = (sc->op == XEN_DOMCTL_SHADOW_OP_CLEAN);
+ 
+     PAGING_DEBUG(LOGDIRTY, "log-dirty %s: dom %u faults=%u dirty=%u\n",
+@@ -377,12 +460,6 @@ int paging_log_dirty_op(struct domain *d
+     sc->stats.fault_count = d->arch.paging.log_dirty.fault_count;
+     sc->stats.dirty_count = d->arch.paging.log_dirty.dirty_count;
+ 
+-    if ( clean )
+-    {
+-        d->arch.paging.log_dirty.fault_count = 0;
+-        d->arch.paging.log_dirty.dirty_count = 0;
+-    }
+-
+     if ( guest_handle_is_null(sc->dirty_bitmap) )
+         /* caller may have wanted just to clean the state or access stats. */
+         peek = 0;
+@@ -394,17 +471,15 @@ int paging_log_dirty_op(struct domain *d
+         goto out;
+     }
+ 
+-    pages = 0;
+     l4 = paging_map_log_dirty_bitmap(d);
++    i4 = d->arch.paging.preempt.log_dirty.i4;
++    i3 = d->arch.paging.preempt.log_dirty.i3;
++    pages = d->arch.paging.preempt.log_dirty.done;
+ 
+-    for ( i4 = 0;
+-          (pages < sc->pages) && (i4 < LOGDIRTY_NODE_ENTRIES);
+-          i4++ )
++    for ( ; (pages < sc->pages) && (i4 < LOGDIRTY_NODE_ENTRIES); i4++, i3 = 0 )
+     {
+         l3 = (l4 && mfn_valid(l4[i4])) ? map_domain_page(mfn_x(l4[i4])) : NULL;
+-        for ( i3 = 0;
+-              (pages < sc->pages) && (i3 < LOGDIRTY_NODE_ENTRIES);
+-              i3++ )
++        for ( ; (pages < sc->pages) && (i3 < LOGDIRTY_NODE_ENTRIES); i3++ )
+         {
+             l2 = ((l3 && mfn_valid(l3[i3])) ?
+                   map_domain_page(mfn_x(l3[i3])) : NULL);
+@@ -435,18 +510,57 @@ int paging_log_dirty_op(struct domain *d
+             }
+             if ( l2 )
+                 unmap_domain_page(l2);
++
++            if ( i3 < LOGDIRTY_NODE_ENTRIES - 1 && hypercall_preempt_check() )
++            {
++                d->arch.paging.preempt.log_dirty.i4 = i4;
++                d->arch.paging.preempt.log_dirty.i3 = i3 + 1;
++                rv = -EAGAIN;
++                break;
++            }
+         }
+         if ( l3 )
+             unmap_domain_page(l3);
++
++        if ( !rv && i4 < LOGDIRTY_NODE_ENTRIES - 1 &&
++             hypercall_preempt_check() )
++        {
++            d->arch.paging.preempt.log_dirty.i4 = i4 + 1;
++            d->arch.paging.preempt.log_dirty.i3 = 0;
++            rv = -EAGAIN;
++        }
++        if ( rv )
++            break;
+     }
+     if ( l4 )
+         unmap_domain_page(l4);
+ 
+-    if ( pages < sc->pages )
+-        sc->pages = pages;
+-
++    if ( !rv )
++    {
++        d->arch.paging.preempt.dom = NULL;
++        if ( clean )
++        {
++            d->arch.paging.log_dirty.fault_count = 0;
++            d->arch.paging.log_dirty.dirty_count = 0;
++        }
++    }
++    else
++    {
++        d->arch.paging.preempt.dom = current->domain;
++        d->arch.paging.preempt.op = sc->op;
++        d->arch.paging.preempt.log_dirty.done = pages;
++    }
+     paging_unlock(d);
+ 
++    if ( rv )
++    {
++        /* Never leave the domain paused on real errors. */
++        ASSERT(rv == -EAGAIN);
++        return rv;
++    }
++
++    if ( pages < sc->pages )
++        sc->pages = pages;
+     if ( clean )
+     {
+         /* We need to further call clean_dirty_bitmap() functions of specific
+@@ -457,6 +571,7 @@ int paging_log_dirty_op(struct domain *d
+     return rv;
+ 
+  out:
++    d->arch.paging.preempt.dom = NULL;
+     paging_unlock(d);
+     domain_unpause(d);
+     return rv;
+@@ -516,13 +631,6 @@ void paging_log_dirty_init(struct domain
+     d->arch.paging.log_dirty.clean_dirty_bitmap = clean_dirty_bitmap;
+ }
+ 
+-/* This function fress log dirty bitmap resources. */
+-static void paging_log_dirty_teardown(struct domain*d)
+-{
+-    paging_lock(d);
+-    paging_free_log_dirty_bitmap(d);
+-    paging_unlock(d);
+-}
+ /************************************************/
+ /*           CODE FOR PAGING SUPPORT            */
+ /************************************************/
+@@ -564,7 +672,7 @@ void paging_vcpu_init(struct vcpu *v)
+ 
+ 
+ int paging_domctl(struct domain *d, xen_domctl_shadow_op_t *sc,
+-                  XEN_GUEST_HANDLE(void) u_domctl)
++                  XEN_GUEST_HANDLE(void) u_domctl, bool_t resuming)
+ {
+     int rc;
+ 
+@@ -588,6 +696,21 @@ int paging_domctl(struct domain *d, xen_
+         return -EINVAL;
+     }
+ 
++    if ( resuming
++         ? (d->arch.paging.preempt.dom != current->domain ||
++            d->arch.paging.preempt.op != sc->op)
++         : (d->arch.paging.preempt.dom &&
++            sc->op != XEN_DOMCTL_SHADOW_OP_GET_ALLOCATION) )
++    {
++        printk(XENLOG_G_DEBUG
++               "d%d:v%d: Paging op %#x on Dom%u with unfinished prior op %#x by Dom%u\n",
++               current->domain->domain_id, current->vcpu_id,
++               sc->op, d->domain_id, d->arch.paging.preempt.op,
++               d->arch.paging.preempt.dom
++               ? d->arch.paging.preempt.dom->domain_id : DOMID_INVALID);
++        return -EBUSY;
++    }
++
+     rc = xsm_shadow_control(d, sc->op);
+     if ( rc )
+         return rc;
+@@ -612,14 +735,13 @@ int paging_domctl(struct domain *d, xen_
+         return paging_log_dirty_enable(d);
+ 
+     case XEN_DOMCTL_SHADOW_OP_OFF:
+-        if ( paging_mode_log_dirty(d) )
+-            if ( (rc = paging_log_dirty_disable(d)) != 0 )
+-                return rc;
++        if ( (rc = paging_log_dirty_disable(d, resuming)) != 0 )
++            return rc;
+         break;
+ 
+     case XEN_DOMCTL_SHADOW_OP_CLEAN:
+     case XEN_DOMCTL_SHADOW_OP_PEEK:
+-        return paging_log_dirty_op(d, sc);
++        return paging_log_dirty_op(d, sc, resuming);
+     }
+ 
+     /* Here, dispatch domctl to the appropriate paging code */
+@@ -629,19 +751,67 @@ int paging_domctl(struct domain *d, xen_
+         return shadow_domctl(d, sc, u_domctl);
+ }
+ 
++long paging_domctl_continuation(XEN_GUEST_HANDLE(xen_domctl_t) u_domctl)
++{
++    struct xen_domctl op;
++    struct domain *d;
++    int ret;
++
++    if ( copy_from_guest(&op, u_domctl, 1) )
++        return -EFAULT;
++
++    if ( op.interface_version != XEN_DOMCTL_INTERFACE_VERSION ||
++         op.cmd != XEN_DOMCTL_shadow_op )
++        return -EBADRQC;
++
++    d = rcu_lock_domain_by_id(op.domain);
++    if ( d == NULL )
++        return -ESRCH;
++
++    ret = xsm_domctl(d, op.cmd);
++    if ( !ret )
++    {
++        if ( domctl_lock_acquire() )
++        {
++            ret = paging_domctl(d, &op.u.shadow_op,
++                                guest_handle_cast(u_domctl, void), 1);
++
++            domctl_lock_release();
++        }
++        else
++            ret = -EAGAIN;
++    }
++
++    rcu_unlock_domain(d);
++
++    if ( ret == -EAGAIN )
++        ret = hypercall_create_continuation(__HYPERVISOR_arch_1,
++                                            "h", u_domctl);
++    else if ( __copy_field_to_guest(u_domctl, &op, u.shadow_op) )
++        ret = -EFAULT;
++
++    return ret;
++}
++
+ /* Call when destroying a domain */
+-void paging_teardown(struct domain *d)
++int paging_teardown(struct domain *d)
+ {
++    int rc;
++
+     if ( hap_enabled(d) )
+         hap_teardown(d);
+     else
+         shadow_teardown(d);
+ 
+     /* clean up log dirty resources. */
+-    paging_log_dirty_teardown(d);
++    rc = paging_free_log_dirty_bitmap(d, 0);
++    if ( rc == -EAGAIN )
++        return rc;
+ 
+     /* Move populate-on-demand cache back to domain_list for destruction */
+     p2m_pod_empty_cache(d);
++
++    return rc;
+ }
+ 
+ /* Call once all of the references to the domain have gone away */
+--- a/xen/arch/x86/x86_64/compat/entry.S
++++ b/xen/arch/x86/x86_64/compat/entry.S
+@@ -417,6 +417,7 @@ ENTRY(compat_hypercall_table)
+         .quad compat_ni_hypercall
+         .endr
+         .quad do_mca                    /* 48 */
++        .quad paging_domctl_continuation
+         .rept NR_hypercalls-((.-compat_hypercall_table)/8)
+         .quad compat_ni_hypercall
+         .endr
+@@ -465,6 +466,7 @@ ENTRY(compat_hypercall_args_table)
+         .byte 0 /* compat_ni_hypercall      */
+         .endr
+         .byte 1 /* do_mca                   */
++        .byte 1 /* paging_domctl_continuation      */
+         .rept NR_hypercalls-(.-compat_hypercall_args_table)
+         .byte 0 /* compat_ni_hypercall      */
+         .endr
+--- a/xen/arch/x86/x86_64/entry.S
++++ b/xen/arch/x86/x86_64/entry.S
+@@ -756,6 +756,7 @@ ENTRY(hypercall_table)
+         .quad do_ni_hypercall
+         .endr
+         .quad do_mca                /* 48 */
++        .quad paging_domctl_continuation
+         .rept NR_hypercalls-((.-hypercall_table)/8)
+         .quad do_ni_hypercall
+         .endr
+@@ -804,6 +805,7 @@ ENTRY(hypercall_args_table)
+         .byte 0 /* do_ni_hypercall      */
+         .endr
+         .byte 1 /* do_mca               */  /* 48 */
++        .byte 1 /* paging_domctl_continuation */
+         .rept NR_hypercalls-(.-hypercall_args_table)
+         .byte 0 /* do_ni_hypercall      */
+         .endr
+--- a/xen/common/domain.c
++++ b/xen/common/domain.c
+@@ -477,7 +477,6 @@ int domain_kill(struct domain *d)
+         rc = domain_relinquish_resources(d);
+         if ( rc != 0 )
+         {
+-            BUG_ON(rc != -EAGAIN);
+             break;
+         }
+         d->is_dying = DOMDYING_dead;
+--- a/xen/include/asm-x86/domain.h
++++ b/xen/include/asm-x86/domain.h
+@@ -192,6 +192,20 @@ struct paging_domain {
+     struct hap_domain       hap;
+     /* log dirty support */
+     struct log_dirty_domain log_dirty;
++
++    /* preemption handling */
++    struct {
++        const struct domain *dom;
++        unsigned int op;
++        union {
++            struct {
++                unsigned long done:PADDR_BITS - PAGE_SHIFT;
++                unsigned long i4:PAGETABLE_ORDER;
++                unsigned long i3:PAGETABLE_ORDER;
++            } log_dirty;
++        };
++    } preempt;
++
+     /* alloc/free pages from the pool for paging-assistance structures
+      * (used by p2m and log-dirty code for their tries) */
+     struct page_info * (*alloc_page)(struct domain *d);
+--- a/xen/include/asm-x86/paging.h
++++ b/xen/include/asm-x86/paging.h
+@@ -134,9 +134,6 @@ struct paging_mode {
+ /*****************************************************************************
+  * Log dirty code */
+ 
+-/* free log dirty bitmap resource */
+-void paging_free_log_dirty_bitmap(struct domain *d);
+-
+ /* get the dirty bitmap for a specific range of pfns */
+ void paging_log_dirty_range(struct domain *d,
+                             unsigned long begin_pfn,
+@@ -146,9 +143,6 @@ void paging_log_dirty_range(struct domai
+ /* enable log dirty */
+ int paging_log_dirty_enable(struct domain *d);
+ 
+-/* disable log dirty */
+-int paging_log_dirty_disable(struct domain *d);
+-
+ /* log dirty initialization */
+ void paging_log_dirty_init(struct domain *d,
+                            int  (*enable_log_dirty)(struct domain *d),
+@@ -207,10 +201,13 @@ int paging_domain_init(struct domain *d,
+  * and disable ephemeral shadow modes (test mode and log-dirty mode) and
+  * manipulate the log-dirty bitmap. */
+ int paging_domctl(struct domain *d, xen_domctl_shadow_op_t *sc,
+-                  XEN_GUEST_HANDLE(void) u_domctl);
++                  XEN_GUEST_HANDLE(void) u_domctl, bool_t resuming);
++
++/* Helper hypercall for dealing with continuations. */
++long paging_domctl_continuation(XEN_GUEST_HANDLE(xen_domctl_t));
+ 
+ /* Call when destroying a domain */
+-void paging_teardown(struct domain *d);
++int paging_teardown(struct domain *d);
+ 
+ /* Call once all of the references to the domain have gone away */
+ void paging_final_teardown(struct domain *d);
+--- a/xen/arch/x86/x86_32/entry.S
++++ b/xen/arch/x86/x86_32/entry.S
+@@ -731,6 +731,7 @@ ENTRY(hypercall_table)
+         .long do_ni_hypercall
+         .endr
+         .long do_mca                /* 48 */
++        .long paging_domctl_continuation
+         .rept NR_hypercalls-((.-hypercall_table)/4)
+         .long do_ni_hypercall
+         .endr
+@@ -779,6 +780,7 @@ ENTRY(hypercall_args_table)
+         .byte 0 /* do_ni_hypercall      */
+         .endr
+         .byte 1 /* do_mca               */  /* 48 */
++        .byte 1 /* paging_domctl_continuation */
+         .rept NR_hypercalls-(.-hypercall_args_table)
+         .byte 0 /* do_ni_hypercall      */
+         .endr
+--- a/xen/include/xsm/xsm.h
++++ b/xen/include/xsm/xsm.h
+@@ -63,6 +63,7 @@ struct xsm_operations {
+     int (*getvcpuinfo) (struct domain *d);
+     int (*domain_settime) (struct domain *d);
+     int (*set_target) (struct domain *d, struct domain *e);
++    int (*domctl) (struct domain *d, int cmd);
+     int (*tbufcontrol) (void);
+     int (*readconsole) (uint32_t clear);
+     int (*sched_id) (void);
+@@ -233,6 +234,11 @@ static inline int xsm_set_target (struct
+     return xsm_call(set_target(d, e));
+ }
+ 
++static inline int xsm_domctl (struct domain *d, int cmd)
++{
++    return xsm_call(domctl(d, cmd));
++}
++
+ static inline int xsm_tbufcontrol (void)
+ {
+     return xsm_call(tbufcontrol());
