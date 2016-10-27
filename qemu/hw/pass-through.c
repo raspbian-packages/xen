@@ -642,7 +642,6 @@ static struct pt_reg_info_tbl pt_emu_reg_msi_tbl[] = {
         .init_val   = 0x00000000,
         .ro_mask    = 0x00000003,
         .emu_mask   = 0xFFFFFFFF,
-        .no_wb      = 1,
         .init       = pt_common_reg_init,
         .u.dw.read  = pt_long_reg_read,
         .u.dw.write = pt_msgaddr32_reg_write,
@@ -655,7 +654,6 @@ static struct pt_reg_info_tbl pt_emu_reg_msi_tbl[] = {
         .init_val   = 0x00000000,
         .ro_mask    = 0x00000000,
         .emu_mask   = 0xFFFFFFFF,
-        .no_wb      = 1,
         .init       = pt_msgaddr64_reg_init,
         .u.dw.read  = pt_long_reg_read,
         .u.dw.write = pt_msgaddr64_reg_write,
@@ -668,7 +666,6 @@ static struct pt_reg_info_tbl pt_emu_reg_msi_tbl[] = {
         .init_val   = 0x0000,
         .ro_mask    = 0x0000,
         .emu_mask   = 0xFFFF,
-        .no_wb      = 1,
         .init       = pt_msgdata_reg_init,
         .u.w.read   = pt_word_reg_read,
         .u.w.write  = pt_msgdata_reg_write,
@@ -681,7 +678,6 @@ static struct pt_reg_info_tbl pt_emu_reg_msi_tbl[] = {
         .init_val   = 0x0000,
         .ro_mask    = 0x0000,
         .emu_mask   = 0xFFFF,
-        .no_wb      = 1,
         .init       = pt_msgdata_reg_init,
         .u.w.read   = pt_word_reg_read,
         .u.w.write  = pt_msgdata_reg_write,
@@ -1513,7 +1509,7 @@ static void pt_pci_write_config(PCIDevice *d, uint32_t address, uint32_t val,
     uint32_t find_addr = address;
     uint32_t real_offset = 0;
     uint32_t valid_mask = 0xFFFFFFFF;
-    uint32_t read_val = 0;
+    uint32_t read_val = 0, wb_mask;
     uint8_t *ptr_val = NULL;
     int emul_len = 0;
     int index = 0;
@@ -1597,7 +1593,10 @@ static void pt_pci_write_config(PCIDevice *d, uint32_t address, uint32_t val,
     {
         PT_LOG("Error: pci_read_block failed. return value[%d].\n", ret);
         memset((uint8_t *)&read_val, 0xff, len);
+        wb_mask = 0;
     }
+    else
+        wb_mask = 0xFFFFFFFF >> ((4 - len) << 3);
 
     /* pass directly to libpci for passthrough type register group */
     if (reg_grp_entry == NULL)
@@ -1620,6 +1619,11 @@ static void pt_pci_write_config(PCIDevice *d, uint32_t address, uint32_t val,
             valid_mask = (0xFFFFFFFF >> ((4 - emul_len) << 3));
             valid_mask <<= ((find_addr - real_offset) << 3);
             ptr_val = ((uint8_t *)&val + (real_offset & 3));
+            if (reg->emu_mask == (0xFFFFFFFF >> ((4 - reg->size) << 3))) {
+                wb_mask &= ~((reg->emu_mask
+                              >> ((find_addr - real_offset) << 3))
+                             << ((len - emul_len) << 3));
+            }
 
             /* do emulation depend on register size */
             switch (reg->size) {
@@ -1677,8 +1681,19 @@ static void pt_pci_write_config(PCIDevice *d, uint32_t address, uint32_t val,
     val >>= ((address & 3) << 3);
 
 out:
-    if (!(reg && reg->no_wb)) {  /* unknown regs are passed through */
-        ret = pci_write_block(pci_dev, address, (uint8_t *)&val, len);
+    for (index = 0; wb_mask; index += len) {
+        /* unknown regs are passed through */
+        while (!(wb_mask & 0xff)) {
+            index++;
+            wb_mask >>= 8;
+        }
+        len = 0;
+        do {
+            len++;
+            wb_mask >>= 8;
+        } while (wb_mask & 0xff);
+        ret = pci_write_block(pci_dev, address + index,
+                              (uint8_t *)&val + index, len);
 
         if (!ret)
             PT_LOG("Error: pci_write_block failed. return value[%d].\n", ret);
