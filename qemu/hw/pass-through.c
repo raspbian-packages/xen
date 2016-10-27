@@ -3744,7 +3744,8 @@ static int pt_pmcsr_reg_write(struct pt_dev *ptdev,
 
     /* create value for writing to I/O device register */
     throughable_mask = ~reg->emu_mask & valid_mask;
-    *value = PT_MERGE_VALUE(*value, dev_value, throughable_mask);
+    *value = PT_MERGE_VALUE(*value, dev_value & ~PCI_PM_CTRL_PME_STATUS,
+                            throughable_mask);
 
     if (!ptdev->power_mgmt)
         return 0;
