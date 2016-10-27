@@ -241,6 +241,8 @@ struct pt_dev {
     unsigned power_mgmt:1;
     struct pt_pm_info *pm_state;                /* PM virtualization */
     unsigned is_virtfn:1;
+    unsigned permissive:1;
+    unsigned permissive_warned:1;
 
     /* io port multiplexing */
 #define PCI_IOMUL_INVALID_FD    (-1)
