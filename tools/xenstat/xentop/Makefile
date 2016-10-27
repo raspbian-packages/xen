@@ -19,8 +19,9 @@ all install xentop:
 else
 
 CFLAGS += -DGCC_PRINTF -Wall -Werror -I$(XEN_LIBXENSTAT)
-LDFLAGS += -L$(XEN_LIBXENSTAT)
-LDLIBS += -lxenstat $(CURSES_LIBS) $(SOCKET_LIBS)
+LDFLAGS += $(call LDFLAGS_RPATH,../lib)
+LDLIBS += ../libxenstat/src/libxenstat.a $(CURSES_LIBS) $(SOCKET_LIBS)
+LDLIBS += $(LDLIBS_libxenctrl) $(LDLIBS_libxenstore)
 CFLAGS += -DHOST_$(XEN_OS)
 
 .PHONY: all
