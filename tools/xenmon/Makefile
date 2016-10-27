@@ -17,6 +17,7 @@ CFLAGS  += -Werror
 CFLAGS  += -I $(XEN_XC)
 CFLAGS  += $(CFLAGS_libxenctrl)
 LDLIBS  += $(LDLIBS_libxenctrl)
+LDFLAGS += $(call LDFLAGS_RPATH,../lib)
 
 BIN = xentrace_setmask xenbaked
 SCRIPTS = xenmon.py
