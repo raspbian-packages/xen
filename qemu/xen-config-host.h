@@ -18,9 +18,6 @@ extern int domid, domid_backend;
 
 #include "xenctrl.h"
 #include "xs.h"
-#ifndef CONFIG_STUBDOM
-#include "blktaplib.h"
-#endif
 
 #define BIOS_SIZE ((256 + 64) * 1024)
 
