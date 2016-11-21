@@ -538,6 +538,16 @@ static struct pt_reg_info_tbl pt_emu_reg_vendor_tbl[] = {
         .u.b.restore  = NULL,
     },
     {
+        .offset     = PCI_VPD_ADDR,
+        .size       = 2,
+        .ro_mask    = 0x0003,
+        .emu_mask   = 0x0003,
+        .init       = pt_common_reg_init,
+        .u.w.read   = pt_word_reg_read,
+        .u.w.write  = pt_word_reg_write,
+        .u.w.restore = pt_word_reg_restore,
+    },
+    {
         .size = 0,
     },
 };
@@ -580,6 +590,17 @@ static struct pt_reg_info_tbl pt_emu_reg_pcie_tbl[] = {
         .u.w.write  = pt_word_reg_write,
         .u.w.restore  = pt_word_reg_restore,
     },
+    /* Device Status reg */
+    {
+        .offset     = PCI_EXP_DEVSTA,
+        .size       = 2,
+        .res_mask   = 0xFFC0,
+        .ro_mask    = 0x0030,
+        .init       = pt_common_reg_init,
+        .u.w.read   = pt_word_reg_read,
+        .u.w.write  = pt_word_reg_write,
+        .u.w.restore  = pt_word_reg_restore,
+    },
     /* Link Control reg */
     {
         .offset     = PCI_EXP_LNKCTL,
@@ -591,6 +612,16 @@ static struct pt_reg_info_tbl pt_emu_reg_pcie_tbl[] = {
         .u.w.read   = pt_word_reg_read,
         .u.w.write  = pt_word_reg_write,
         .u.w.restore  = pt_word_reg_restore,
+    },
+    /* Link Status reg */
+    {
+        .offset     = PCI_EXP_LNKSTA,
+        .size       = 2,
+        .ro_mask    = 0x3FFF,
+        .init       = pt_common_reg_init,
+        .u.w.read   = pt_word_reg_read,
+        .u.w.write  = pt_word_reg_write,
+        .u.w.restore = pt_word_reg_restore,
     },
     /* Device Control 2 reg */
     {
