@@ -86,17 +86,16 @@ delete-unfresh-files:
 include/xen/compile.h: include/xen/compile.h.in .banner
 	@sed -e 's/@@date@@/$(shell LC_ALL=C date)/g' \
 	    -e 's/@@time@@/$(shell LC_ALL=C date +%T)/g' \
-	    -e 's/@@whoami@@/$(XEN_WHOAMI)/g' \
-	    -e 's/@@domain@@/$(XEN_DOMAIN)/g' \
-	    -e 's/@@hostname@@/$(shell hostname)/g' \
 	    -e 's!@@compiler@@!$(shell $(CC) $(CFLAGS) -v 2>&1 | tail -1)!g' \
 	    -e 's/@@version@@/$(XEN_VERSION)/g' \
 	    -e 's/@@subversion@@/$(XEN_SUBVERSION)/g' \
 	    -e 's/@@extraversion@@/$(XEN_EXTRAVERSION)/g' \
 	    -e 's!@@changeset@@!$(shell ((hg parents --template "{date|date} {rev}:{node|short}" >/dev/null && hg parents --template "{date|date} {rev}:{node|short}") || echo "unavailable") 2>/dev/null)!g' \
+	    -e 's/@@system_distribution@@/$(shell lsb_release -is)/g' \
+	    -e 's/@@system_maintainer_domain@@/$(shell cd ../../../..; dpkg-parsechangelog | sed -ne 's,^Maintainer: .[^<]*<[^@>]*@\([^>]*\)>,\1,p')/g' \
+	    -e 's/@@system_maintainer_local@@/$(shell cd ../../../..; dpkg-parsechangelog | sed -ne 's,^Maintainer: .[^<]*<\([^@>]*\)@.*>,\1,p')/g' \
+	    -e 's/@@system_version@@/$(shell cd ../../../..; dpkg-parsechangelog | awk '/^Version:/ {print $$2}')/g' \
 	    < include/xen/compile.h.in > $@.new
-	@grep \" .banner >> $@.new
-	@grep -v \" .banner
 	@mv -f $@.new $@
 
 include/asm-$(TARGET_ARCH)/asm-offsets.h: arch/$(TARGET_ARCH)/asm-offsets.s
