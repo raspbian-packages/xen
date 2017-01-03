@@ -29,7 +29,7 @@ type watch = {
 }
 
 and t = {
-	xb: Xb.t;
+	xb: Xenbus.Xb.t;
 	dom: Domain.t option;
 	transactions: (int, Transaction.t) Hashtbl.t;
 	mutable next_tid: int;
@@ -100,10 +100,10 @@ let create xbcon dom =
 	Logging.new_connection ~tid:Transaction.none ~con:(get_domstr con);
 	con
 
-let get_fd con = Xb.get_fd con.xb
+let get_fd con = Xenbus.Xb.get_fd con.xb
 let close con =
 	Logging.end_connection ~tid:Transaction.none ~con:(get_domstr con);
-	Xb.close con.xb
+	Xenbus.Xb.close con.xb
 
 let get_perm con =
 	con.perm
@@ -120,11 +120,11 @@ let is_backend_mmap con = match con.xb.Xenbus.Xb.backend with
 
 let send_reply con tid rid ty data =
 	if (String.length data) > xenstore_payload_max && (is_backend_mmap con) then
-		Xb.queue con.xb (Xb.Packet.create tid rid Xb.Op.Error "E2BIG\000")
+		Xenbus.Xb.queue con.xb (Xenbus.Xb.Packet.create tid rid Xenbus.Xb.Op.Error "E2BIG\000")
 	else
-		Xb.queue con.xb (Xb.Packet.create tid rid ty data)
+		Xenbus.Xb.queue con.xb (Xenbus.Xb.Packet.create tid rid ty data)
 
-let send_error con tid rid err = send_reply con tid rid Xb.Op.Error (err ^ "\000")
+let send_error con tid rid err = send_reply con tid rid Xenbus.Xb.Op.Error (err ^ "\000")
 let send_ack con tid rid ty = send_reply con tid rid ty "OK\000"
 
 let get_watch_path con path =
@@ -180,7 +180,7 @@ let list_watches con =
 
 let fire_single_watch watch =
 	let data = Utils.join_by_null [watch.path; watch.token; ""] in
-	send_reply watch.con Transaction.none 0 Xb.Op.Watchevent data
+	send_reply watch.con Transaction.none 0 Xenbus.Xb.Op.Watchevent data
 
 let fire_watch watch path =
 	let new_path =
@@ -193,7 +193,7 @@ let fire_watch watch path =
 			path
 	in
 	let data = Utils.join_by_null [ new_path; watch.token; "" ] in
-	send_reply watch.con Transaction.none 0 Xb.Op.Watchevent data
+	send_reply watch.con Transaction.none 0 Xenbus.Xb.Op.Watchevent data
 
 let find_next_tid con =
 	let ret = con.next_tid in con.next_tid <- con.next_tid + 1; ret
@@ -217,15 +217,15 @@ let end_transaction con tid commit =
 let get_transaction con tid =
 	Hashtbl.find con.transactions tid
 
-let do_input con = Xb.input con.xb
-let has_input con = Xb.has_in_packet con.xb
-let pop_in con = Xb.get_in_packet con.xb
-let has_more_input con = Xb.has_more_input con.xb
+let do_input con = Xenbus.Xb.input con.xb
+let has_input con = Xenbus.Xb.has_in_packet con.xb
+let pop_in con = Xenbus.Xb.get_in_packet con.xb
+let has_more_input con = Xenbus.Xb.has_more_input con.xb
 
-let has_output con = Xb.has_output con.xb
-let has_new_output con = Xb.has_new_output con.xb
-let peek_output con = Xb.peek_output con.xb
-let do_output con = Xb.output con.xb
+let has_output con = Xenbus.Xb.has_output con.xb
+let has_new_output con = Xenbus.Xb.has_new_output con.xb
+let peek_output con = Xenbus.Xb.peek_output con.xb
+let do_output con = Xenbus.Xb.output con.xb
 
 let incr_ops con = con.stat_nb_ops <- con.stat_nb_ops + 1
 
