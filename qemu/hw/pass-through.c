@@ -1554,10 +1554,10 @@ static void pt_pci_write_config(PCIDevice *d, uint32_t address, uint32_t val,
     uint32_t find_addr = address;
     uint32_t real_offset = 0;
     uint32_t valid_mask = 0xFFFFFFFF;
-    uint32_t read_val = 0, wb_mask;
+    uint32_t read_val = 0, wb_mask, wp_mask;
     uint8_t *ptr_val = NULL;
     int emul_len = 0;
-    int index = 0;
+    int index = 0, wp_flag = 0;
     int ret = 0;
 
 #ifdef PT_DEBUG_PCI_CONFIG_ACCESS
@@ -1645,7 +1645,14 @@ static void pt_pci_write_config(PCIDevice *d, uint32_t address, uint32_t val,
 
     /* pass directly to libpci for passthrough type register group */
     if (reg_grp_entry == NULL)
+    {
+        if (!assigned_device->permissive)
+        {
+            wb_mask = 0;
+            wp_flag = 1;
+        }
         goto out;
+    }
 
     /* adjust the read and write value to appropriate CFC-CFF window */
     read_val <<= ((address & 3) << 3);
@@ -1664,11 +1671,12 @@ static void pt_pci_write_config(PCIDevice *d, uint32_t address, uint32_t val,
             valid_mask = (0xFFFFFFFF >> ((4 - emul_len) << 3));
             valid_mask <<= ((find_addr - real_offset) << 3);
             ptr_val = ((uint8_t *)&val + (real_offset & 3));
-            if (reg->emu_mask == (0xFFFFFFFF >> ((4 - reg->size) << 3))) {
-                wb_mask &= ~((reg->emu_mask
-                              >> ((find_addr - real_offset) << 3))
+            wp_mask = reg->emu_mask | reg->ro_mask;
+            if (!assigned_device->permissive)
+                wp_mask |= reg->res_mask;
+            if (wp_mask == (0xFFFFFFFF >> ((4 - reg->size) << 3)))
+                wb_mask &= ~((wp_mask >> ((find_addr - real_offset) << 3))
                              << ((len - emul_len) << 3));
-            }
 
             /* do emulation depend on register size */
             switch (reg->size) {
@@ -1717,6 +1725,16 @@ static void pt_pci_write_config(PCIDevice *d, uint32_t address, uint32_t val,
             /* nothing to do with passthrough type register,
              * continue to find next byte
              */
+            if (!assigned_device->permissive)
+            {
+                wb_mask &= ~(0xff << ((len - emul_len) << 3));
+                /* Unused BARs will make it here, but we don't want to issue
+                 * warnings for writes to them (bogus writes get dealt with
+                 * above).
+                 */
+                if (index < 0)
+                    wp_flag = 1;
+            }
             emul_len--;
             find_addr++;
         }
@@ -1726,6 +1744,15 @@ static void pt_pci_write_config(PCIDevice *d, uint32_t address, uint32_t val,
     val >>= ((address & 3) << 3);
 
 out:
+    if (wp_flag && !assigned_device->permissive_warned)
+    {
+        assigned_device->permissive_warned = 1;
+        PT_LOG("Write-back to unknown field 0x%02x (partially) inhibited (0x%0*x)\n",
+               addr, len * 2, wb_mask);
+        PT_LOG("If device %02x:%02x.%o doesn't work, try enabling permissive\n",
+               pci_bus_num(d->bus), PCI_SLOT(d->devfn), PCI_FUNC(d->devfn));
+        PT_LOG("mode (unsafe) and if it helps report the problem to xen-devel\n");
+    }
     for (index = 0; wb_mask; index += len) {
         /* unknown regs are passed through */
         while (!(wb_mask & 0xff)) {
@@ -3440,6 +3467,9 @@ static uint32_t get_throughable_mask(const struct pt_dev *ptdev,
 {
     uint32_t throughable_mask = ~(reg->emu_mask | reg->ro_mask);
 
+    if (!ptdev->permissive)
+        throughable_mask &= ~reg->res_mask;
+
     return throughable_mask & valid_mask;
 }
 
@@ -4261,7 +4291,7 @@ static struct pt_dev * register_real_device(PCIBus *e_bus,
     uint8_t e_device, e_intx;
     uint16_t cmd = 0;
     char *key, *val;
-    int msi_translate, power_mgmt;
+    int msi_translate, power_mgmt, permissive = 0;
 
     PT_LOG("Assigning real physical device %02x:%02x.%x ...\n",
         r_bus, r_dev, r_func);
@@ -4305,6 +4335,8 @@ static struct pt_dev * register_real_device(PCIBus *e_bus,
             else
                 PT_LOG("Error: unrecognized value for msitranslate=\n");
         }
+        else if (strcmp(key, "permissive") == 0)
+            permissive = 1;
         else if (strcmp(key, "power_mgmt") == 0)
         {
             if (strcmp(val, "0") == 0)
@@ -4342,6 +4374,7 @@ static struct pt_dev * register_real_device(PCIBus *e_bus,
     assigned_device->msi_trans_cap = msi_translate;
     assigned_device->power_mgmt = power_mgmt;
     assigned_device->is_virtfn = pt_dev_is_virtfn(pci_dev);
+    assigned_device->permissive = permissive;
     pt_iomul_init(assigned_device, r_bus, r_dev, r_func);
 
     /* Initialize virtualized PCI configuration (Extended 256 Bytes) */
