@@ -46,9 +46,6 @@ CONFIG_SDL=
 CONFIG_AUDIO=
 OBJS += xenfbfront.o
 else
-CPPFLAGS+= -I$(XEN_ROOT)/tools/blktap/lib
-LIBS += -L$(XEN_ROOT)/tools/blktap/lib -lblktap
-OBJS += xen_blktap.o
 OBJS += tpm_tis.o
 endif
 
