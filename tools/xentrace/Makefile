@@ -5,6 +5,7 @@ CFLAGS  += -Werror
 
 CFLAGS  += $(CFLAGS_libxenctrl)
 LDLIBS += $(LDLIBS_libxenctrl)
+LDFLAGS += $(call LDFLAGS_RPATH,../lib)
 
 HDRS     = $(wildcard *.h)
 OBJS     = $(patsubst %.c,%.o,$(wildcard *.c))
