@@ -4,7 +4,10 @@ xen (4.8.0-1+rpi1) stretch-staging; urgency=medium
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
   
   [changes introduced in 4.6.0-1+rpi1 by Peter Michael Green]
-  * Use kernel 3.18 for now as I haven't dealt with 4.2 yet.
+  * Use kernel 3.18 for now as I haven't dealt with 4.x yet.
+
+  [changes introduced in 4.8.0-1+rpi1 by Peter Micheal Green]
+  * Add build-depends on ghostscript.
 
  -- Peter Michael Green <plugwash@raspbian.org>  Tue, 17 Jan 2017 05:25:26 +0000
 
