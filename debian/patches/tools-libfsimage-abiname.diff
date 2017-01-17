@@ -1,17 +1,14 @@
-From 9cd5bad1a3bb72b5448c5767070160249c45c34e Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:47 +0200
+X-Dgit-Generated: 4.8.0-1 56f0d2bc148d4994820d353c8a790d4c2824c557
 Subject: tools-libfsimage-abiname.diff
 
 Patch-Name: tools-libfsimage-abiname.diff
----
- tools/libfsimage/common/Makefile | 18 ++++--------------
- 1 file changed, 4 insertions(+), 14 deletions(-)
 
-diff --git a/tools/libfsimage/common/Makefile b/tools/libfsimage/common/Makefile
-index 4840bc2..8357b0a 100644
---- a/tools/libfsimage/common/Makefile
-+++ b/tools/libfsimage/common/Makefile
+---
+
+--- xen-4.8.0.orig/tools/libfsimage/common/Makefile
++++ xen-4.8.0/tools/libfsimage/common/Makefile
 @@ -1,9 +1,6 @@
  XEN_ROOT = $(CURDIR)/../../..
  include $(XEN_ROOT)/tools/libfsimage/Rules.mk
@@ -22,7 +19,7 @@ index 4840bc2..8357b0a 100644
  LDFLAGS-$(CONFIG_SunOS) = -Wl,-M -Wl,mapfile-SunOS
  LDFLAGS-$(CONFIG_Linux) = -Wl,mapfile-GNU
  LDFLAGS = $(LDFLAGS-y)
-@@ -15,7 +12,7 @@ LIB_SRCS-y = fsimage.c fsimage_plugin.c fsimage_grub.c
+@@ -15,7 +12,7 @@ LIB_SRCS-y = fsimage.c fsimage_plugin.c
  
  PIC_OBJS := $(patsubst %.c,%.opic,$(LIB_SRCS-y))
  

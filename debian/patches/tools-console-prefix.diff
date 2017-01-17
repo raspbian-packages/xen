@@ -1,17 +1,14 @@
-From e588b204f15e7a88b0cfdd4f34ebfa79aabfff76 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:54 +0200
+X-Dgit-Generated: 4.8.0-1 1a0999bcbb1353ef27c9492386478fbbf57f4d15
 Subject: tools-console-prefix.diff
 
 Patch-Name: tools-console-prefix.diff
----
- tools/console/Makefile | 5 ++---
- 1 file changed, 2 insertions(+), 3 deletions(-)
 
-diff --git a/tools/console/Makefile b/tools/console/Makefile
-index 77e8f29..8ce2987 100644
---- a/tools/console/Makefile
-+++ b/tools/console/Makefile
+---
+
+--- xen-4.8.0.orig/tools/console/Makefile
++++ xen-4.8.0/tools/console/Makefile
 @@ -8,6 +8,7 @@ CFLAGS  += $(CFLAGS_libxenstore)
  LDLIBS += $(LDLIBS_libxenctrl)
  LDLIBS += $(LDLIBS_libxenstore)
@@ -20,7 +17,7 @@ index 77e8f29..8ce2987 100644
  
  LDLIBS_xenconsoled += $(UTIL_LIBS)
  LDLIBS_xenconsoled += -lrt
-@@ -37,9 +38,7 @@ $(eval $(genpath-target))
+@@ -44,9 +45,7 @@ $(eval $(genpath-target))
  
  .PHONY: install
  install: $(BIN)

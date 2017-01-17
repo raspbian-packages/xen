@@ -54,9 +54,11 @@ struct xc_sr_save_ops
                           void **page);
 
     /**
-     * Set up local environment to restore a domain.  This is called before
-     * any records are written to the stream.  (Typically querying running
-     * domain state, setting up mappings etc.)
+     * Set up local environment to save a domain. (Typically querying
+     * running domain state, setting up mappings etc.)
+     *
+     * This is called once before any common setup has occurred, allowing for
+     * guest-specific adjustments to be made to common state.
      */
     int (*setup)(struct xc_sr_context *ctx);
 
@@ -79,6 +81,15 @@ struct xc_sr_save_ops
      * after the memory data.
      */
     int (*end_of_checkpoint)(struct xc_sr_context *ctx);
+
+    /**
+     * Check state of guest to decide whether it makes sense to continue
+     * migration.  This is called in each iteration or checkpoint to check
+     * whether all criteria for the migration are still met.  If that's not
+     * the case either migration is cancelled via a bad rc or the situation
+     * is handled, e.g. by sending appropriate records.
+     */
+    int (*check_vm_state)(struct xc_sr_context *ctx);
 
     /**
      * Clean up the local environment.  Will be called exactly once, either
@@ -121,8 +132,10 @@ struct xc_sr_restore_ops
     int (*localise_page)(struct xc_sr_context *ctx, uint32_t type, void *page);
 
     /**
-     * Set up local environment to restore a domain.  This is called before
-     * any records are read from the stream.
+     * Set up local environment to restore a domain.
+     *
+     * This is called once before any common setup has occurred, allowing for
+     * guest-specific adjustments to be made to common state.
      */
     int (*setup)(struct xc_sr_context *ctx);
 
@@ -171,6 +184,8 @@ struct xc_sr_context
     {
         struct /* Save data. */
         {
+            int recv_fd;
+
             struct xc_sr_save_ops ops;
             struct save_callbacks *callbacks;
 
@@ -178,7 +193,7 @@ struct xc_sr_context
             bool live;
 
             /* Plain VM, or checkpoints over time. */
-            bool checkpointed;
+            int checkpointed;
 
             /* Further debugging information in the stream. */
             bool debug;
@@ -201,6 +216,10 @@ struct xc_sr_context
             struct xc_sr_restore_ops ops;
             struct restore_callbacks *callbacks;
 
+            int send_back_fd;
+            unsigned long p2m_size;
+            xc_hypercall_buffer_t dirty_bitmap_hbuf;
+
             /* From Image Header. */
             uint32_t format_version;
 
@@ -209,13 +228,13 @@ struct xc_sr_context
             uint32_t guest_page_size;
 
             /* Plain VM, or checkpoints over time. */
-            bool checkpointed;
+            int checkpointed;
 
             /* Currently buffering records between a checkpoint */
             bool buffer_all_records;
 
 /*
- * With Remus, we buffer the records sent by the primary at checkpoint,
+ * With Remus/COLO, we buffer the records sent by the primary at checkpoint,
  * in case the primary will fail, we can recover from the last
  * checkpoint state.
  * This should be enough for most of the cases because primary only send
@@ -275,6 +294,9 @@ struct xc_sr_context
 
             /* Read-only mapping of guests shared info page */
             shared_info_any_t *shinfo;
+
+            /* p2m generation count for verifying validity of local p2m. */
+            uint64_t p2m_generation;
 
             union
             {
@@ -354,6 +376,20 @@ static inline int write_record(struct xc_sr_context *ctx,
 {
     return write_split_record(ctx, rec, NULL, 0);
 }
+
+/*
+ * Reads a record from the stream, and fills in the record structure.
+ *
+ * Returns 0 on success and non-0 on failure.
+ *
+ * On success, the records type and size shall be valid.
+ * - If size is 0, data shall be NULL.
+ * - If size is non-0, data shall be a buffer allocated by malloc() which must
+ *   be passed to free() by the caller.
+ *
+ * On failure, the contents of the record structure are undefined.
+ */
+int read_record(struct xc_sr_context *ctx, int fd, struct xc_sr_record *rec);
 
 /*
  * This would ideally be private in restore.c, but is needed by

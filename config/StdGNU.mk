@@ -31,18 +31,9 @@ DEBUG_DIR ?= /usr/lib/debug
 
 SOCKET_LIBS =
 UTIL_LIBS = -lutil
-DLOPEN_LIBS = -ldl
 
 SONAME_LDFLAG = -soname
 SHLIB_LDFLAGS = -shared
-
-ifneq ($(debug),y)
-CFLAGS += -O2 -fomit-frame-pointer
-else
-# Less than -O1 produces bad code and large stack frames
-CFLAGS += -O1 -fno-omit-frame-pointer
-CFLAGS-$(gcc) += -fno-optimize-sibling-calls
-endif
 
 ifeq ($(lto),y)
 CFLAGS += -flto

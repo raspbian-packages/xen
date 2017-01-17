@@ -30,6 +30,13 @@ struct cmd_spec {
     char *cmd_option;
 };
 
+/*
+ * The xl process should always return either EXIT_SUCCESS or
+ * EXIT_FAILURE. main_* functions, implementing the various xl
+ * commands, can be treated as main() as if they are returning
+ * a process exit status and not a function return value.
+ */
+
 int main_vcpulist(int argc, char **argv);
 int main_info(int argc, char **argv);
 int main_sharing(int argc, char **argv);
@@ -85,6 +92,11 @@ int main_blockdetach(int argc, char **argv);
 int main_vtpmattach(int argc, char **argv);
 int main_vtpmlist(int argc, char **argv);
 int main_vtpmdetach(int argc, char **argv);
+int main_usbctrl_attach(int argc, char **argv);
+int main_usbctrl_detach(int argc, char **argv);
+int main_usbdev_attach(int argc, char **argv);
+int main_usbdev_detach(int argc, char **argv);
+int main_usblist(int argc, char **argv);
 int main_uptime(int argc, char **argv);
 int main_claims(int argc, char **argv);
 int main_tmem_list(int argc, char **argv);
@@ -121,6 +133,7 @@ int main_psr_cmt_show(int argc, char **argv);
 int main_psr_cat_cbm_set(int argc, char **argv);
 int main_psr_cat_show(int argc, char **argv);
 #endif
+int main_qemu_monitor_command(int argc, char **argv);
 
 void help(const char *command);
 
@@ -182,6 +195,7 @@ extern char *default_bridge;
 extern char *default_gatewaydev;
 extern char *default_vifbackend;
 extern char *default_remus_netbufscript;
+extern char *default_colo_proxy_script;
 extern char *blkdev_start;
 
 enum output_format {
@@ -189,6 +203,13 @@ enum output_format {
     OUTPUT_FORMAT_SXP,
 };
 extern enum output_format default_output_format;
+
+typedef enum {
+    DOMAIN_RESTART_NONE = 0,     /* No domain restart */
+    DOMAIN_RESTART_NORMAL,       /* Domain should be restarted */
+    DOMAIN_RESTART_RENAME,       /* Domain should be renamed and restarted */
+    DOMAIN_RESTART_SOFT_RESET,   /* Soft reset should be performed */
+} domain_restart_type;
 
 extern void printf_info_sexp(int domid, libxl_domain_config *d_config, FILE *fh);
 

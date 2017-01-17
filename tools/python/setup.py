@@ -8,17 +8,23 @@ extra_compile_args  = [ "-fno-strict-aliasing", "-Werror" ]
 extra_link_args = [ "-Wl,-rpath,${ORIGIN}/../../.." ]
 
 PATH_XEN      = XEN_ROOT + "/tools/include"
+PATH_LIBXENTOOLLOG = XEN_ROOT + "/tools/libs/toollog"
+PATH_LIBXENEVTCHN = XEN_ROOT + "/tools/libs/evtchn"
 PATH_LIBXC    = XEN_ROOT + "/tools/libxc"
 PATH_LIBXL    = XEN_ROOT + "/tools/libxl"
 PATH_XENSTORE = XEN_ROOT + "/tools/xenstore"
 
 xc = Extension("xc",
                extra_compile_args = extra_compile_args,
-               extra_link_args    = extra_link_args,
-               include_dirs       = [ PATH_XEN, PATH_LIBXC + "/include", "xen/lowlevel/xc" ],
+               include_dirs       = [ PATH_XEN,
+                                      PATH_LIBXENTOOLLOG + "/include",
+                                      PATH_LIBXENEVTCHN + "/include",
+                                      PATH_LIBXC + "/include",
+                                      "xen/lowlevel/xc" ],
                library_dirs       = [ PATH_LIBXC ],
                libraries          = [ "xenctrl", "xenguest" ],
                depends            = [ PATH_LIBXC + "/libxenctrl.so", PATH_LIBXC + "/libxenguest.so" ],
+               extra_link_args    = extra_link_args + [ "-Wl,-rpath-link="+PATH_LIBXENTOOLLOG ],
                sources            = [ "xen/lowlevel/xc/xc.c" ])
 
 xs = Extension("xs",
@@ -30,18 +36,8 @@ xs = Extension("xs",
                depends            = [ PATH_XENSTORE + "/libxenstore.so" ],
                sources            = [ "xen/lowlevel/xs/xs.c" ])
 
-xl = Extension("xl",
-               extra_compile_args = extra_compile_args,
-               extra_link_args    = extra_link_args,
-               include_dirs       = [ PATH_XEN, PATH_LIBXL, PATH_LIBXC + "/include", "xen/lowlevel/xl" ],
-               library_dirs       = [ PATH_LIBXL ],
-               libraries          = [ "xenlight" ],
-               depends            = [ PATH_LIBXL + "/libxenlight.so" ],
-               sources            = [ "xen/lowlevel/xl/xl.c", "xen/lowlevel/xl/_pyxl_types.c" ])
-
 plat = os.uname()[0]
 modules = [ xc, xs ]
-#modules.extend([ xl ])
 
 setup(name            = 'xen',
       version         = '3.0',

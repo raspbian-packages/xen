@@ -1,44 +1,53 @@
-subdir-$(arm32) += arm32
-subdir-$(arm64) += arm64
+subdir-$(CONFIG_ARM_32) += arm32
+subdir-$(CONFIG_ARM_64) += arm64
 subdir-y += platforms
-subdir-$(arm64) += efi
+subdir-$(CONFIG_ARM_64) += efi
+subdir-$(CONFIG_ACPI) += acpi
 
-obj-$(EARLY_PRINTK) += early_printk.o
+obj-$(CONFIG_HAS_ALTERNATIVE) += alternative.o
+obj-y += bootfdt.o
 obj-y += cpu.o
+obj-y += cpuerrata.o
+obj-y += cpufeature.o
+obj-y += decode.o
+obj-y += device.o
 obj-y += domain.o
-obj-y += psci.o
-obj-y += vpsci.o
-obj-y += domctl.o
-obj-y += sysctl.o
 obj-y += domain_build.o
-obj-y += gic.o gic-v2.o
-obj-$(CONFIG_ARM_32) += gic-hip04.o
-obj-$(HAS_GICV3) += gic-v3.o
+obj-y += domctl.o
+obj-$(EARLY_PRINTK) += early_printk.o
+obj-y += gic.o
+obj-y += gic-v2.o
+obj-$(CONFIG_HAS_GICV3) += gic-v3.o
+obj-y += guestcopy.o
+obj-y += hvm.o
 obj-y += io.o
 obj-y += irq.o
 obj-y += kernel.o
+obj-$(CONFIG_LIVEPATCH) += livepatch.o
 obj-y += mm.o
+obj-y += monitor.o
 obj-y += p2m.o
 obj-y += percpu.o
-obj-y += guestcopy.o
-obj-y += physdev.o
 obj-y += platform.o
-obj-y += setup.o
-obj-y += bootfdt.o
-obj-y += time.o
-obj-y += smpboot.o
-obj-y += smp.o
-obj-y += shutdown.o
-obj-y += traps.o
-obj-y += vgic.o vgic-v2.o
-obj-$(CONFIG_ARM_64) += vgic-v3.o
-obj-y += vtimer.o
-obj-y += vuart.o
-obj-y += hvm.o
-obj-y += device.o
-obj-y += decode.o
+obj-y += platform_hypercall.o
+obj-y += physdev.o
 obj-y += processor.o
+obj-y += psci.o
+obj-y += setup.o
+obj-y += shutdown.o
 obj-y += smc.o
+obj-y += smp.o
+obj-y += smpboot.o
+obj-y += sysctl.o
+obj-y += time.o
+obj-y += traps.o
+obj-y += vgic.o
+obj-y += vgic-v2.o
+obj-$(CONFIG_ARM_64) += vgic-v3.o
+obj-y += vm_event.o
+obj-y += vtimer.o
+obj-y += vpsci.o
+obj-y += vuart.o
 
 #obj-bin-y += ....o
 
@@ -49,9 +58,20 @@ endif
 
 ALL_OBJS := $(TARGET_SUBARCH)/head.o $(ALL_OBJS)
 
+DEPS += $(TARGET_SUBARCH)/.head.o.d
+
+ifdef CONFIG_LIVEPATCH
+all_symbols = --all-symbols
+ifdef CONFIG_FAST_SYMBOL_LOOKUP
+all_symbols = --all-symbols --sort-by-name
+endif
+else
+all_symbols =
+endif
+
 $(TARGET): $(TARGET)-syms $(TARGET).axf
 	$(OBJCOPY) -O binary -S $< $@
-ifeq (arm64,$(XEN_TARGET_ARCH))
+ifeq ($(CONFIG_ARM_64),y)
 	ln -sf $(notdir $@)  ../../$(notdir $@).efi
 endif
 
@@ -80,14 +100,19 @@ $(BASEDIR)/common/symbols-dummy.o:
 $(TARGET)-syms: prelink.o xen.lds $(BASEDIR)/common/symbols-dummy.o
 	$(LD) $(LDFLAGS) -T xen.lds -N prelink.o \
 	    $(BASEDIR)/common/symbols-dummy.o -o $(@D)/.$(@F).0
-	$(NM) -n $(@D)/.$(@F).0 | $(BASEDIR)/tools/symbols >$(@D)/.$(@F).0.S
+	$(NM) -pa --format=sysv $(@D)/.$(@F).0 \
+		| $(BASEDIR)/tools/symbols $(all_symbols) --sysv --sort >$(@D)/.$(@F).0.S
 	$(MAKE) -f $(BASEDIR)/Rules.mk $(@D)/.$(@F).0.o
 	$(LD) $(LDFLAGS) -T xen.lds -N prelink.o \
 	    $(@D)/.$(@F).0.o -o $(@D)/.$(@F).1
-	$(NM) -n $(@D)/.$(@F).1 | $(BASEDIR)/tools/symbols >$(@D)/.$(@F).1.S
+	$(NM) -pa --format=sysv $(@D)/.$(@F).1 \
+		| $(BASEDIR)/tools/symbols $(all_symbols) --sysv --sort >$(@D)/.$(@F).1.S
 	$(MAKE) -f $(BASEDIR)/Rules.mk $(@D)/.$(@F).1.o
-	$(LD) $(LDFLAGS) -T xen.lds -N prelink.o \
+	$(LD) $(LDFLAGS) -T xen.lds -N prelink.o $(build_id_linker) \
 	    $(@D)/.$(@F).1.o -o $@
+	$(NM) -pa --format=sysv $(@D)/$(@F) \
+		| $(BASEDIR)/tools/symbols --xensyms --sysv --sort \
+		>$(@D)/$(@F).map
 	rm -f $(@D)/.$(@F).[0-9]*
 
 asm-offsets.s: $(TARGET_SUBARCH)/asm-offsets.c

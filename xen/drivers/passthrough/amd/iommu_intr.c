@@ -18,7 +18,6 @@
 
 #include <xen/err.h>
 #include <xen/sched.h>
-#include <xen/hvm/iommu.h>
 #include <asm/amd-iommu.h>
 #include <asm/hvm/svm/amd-iommu-proto.h>
 #include <asm/io_apic.h>
@@ -35,12 +34,6 @@ unsigned long *shared_intremap_inuse;
 static DEFINE_SPINLOCK(shared_intremap_lock);
 
 static void dump_intremap_tables(unsigned char key);
-
-static struct keyhandler dump_intremap = {
-    .diagnostic = 0,
-    .u.fn = dump_intremap_tables,
-    .desc = "dump IOMMU intremap tables"
-};
 
 static spinlock_t* get_intremap_lock(int seg, int req_id)
 {
@@ -269,7 +262,8 @@ int __init amd_iommu_setup_ioapic_remapping(void)
         }
     }
 
-    register_keyhandler('V', &dump_intremap);
+    register_keyhandler('V', &dump_intremap_tables,
+                        "dump IOMMU intremap tables", 0);
 
     return 0;
 }

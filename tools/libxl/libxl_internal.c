@@ -116,7 +116,8 @@ void *libxl__realloc(libxl__gc *gc, void *ptr, size_t new_size)
     if (ptr == NULL) {
         libxl__ptr_add(gc, new_ptr);
     } else if (new_ptr != ptr && libxl__gc_is_real(gc)) {
-        for (i = 0; i < gc->alloc_maxsize; i++) {
+        for (i = 0; ; i++) {
+            assert(i < gc->alloc_maxsize);
             if (gc->alloc_ptrs[i] == ptr) {
                 gc->alloc_ptrs[i] = new_ptr;
                 break;
@@ -242,7 +243,7 @@ void libxl__log(libxl_ctx *ctx, xentoollog_level msglevel, int errnoval,
 char *libxl__abs_path(libxl__gc *gc, const char *s, const char *path)
 {
     if (s[0] == '/') return libxl__strdup(gc, s);
-    return libxl__sprintf(gc, "%s/%s", path, s);
+    return GCSPRINTF("%s/%s", path, s);
 }
 
 
@@ -336,27 +337,28 @@ _hidden int libxl__mac_is_default(libxl_mac *mac)
 
 _hidden int libxl__init_recursive_mutex(libxl_ctx *ctx, pthread_mutex_t *lock)
 {
+    GC_INIT(ctx);
     pthread_mutexattr_t attr;
     int rc = 0;
 
     if (pthread_mutexattr_init(&attr) != 0) {
-        LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR,
-                         "Failed to init mutex attributes");
-        return ERROR_FAIL;
+        LOGE(ERROR, "Failed to init mutex attributes");
+        rc = ERROR_FAIL;
+        goto out;
     }
     if (pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE) != 0) {
-        LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR,
-                         "Failed to set mutex attributes");
+        LOGE(ERROR, "Failed to set mutex attributes");
         rc = ERROR_FAIL;
         goto out;
     }
     if (pthread_mutex_init(lock, &attr) != 0) {
-        LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR, "Failed to init mutex");
+        LOGE(ERROR, "Failed to init mutex");
         rc = ERROR_FAIL;
         goto out;
     }
 out:
     pthread_mutexattr_destroy(&attr);
+    GC_FREE;
     return rc;
 }
 
@@ -367,16 +369,14 @@ int libxl__device_model_version_running(libxl__gc *gc, uint32_t domid)
     libxl_device_model_version value;
 
     path = libxl__xs_libxl_path(gc, domid);
-    path = libxl__sprintf(gc, "%s/dm-version", path);
+    path = GCSPRINTF("%s/dm-version", path);
     dm_version = libxl__xs_read(gc, XBT_NULL, path);
     if (!dm_version) {
         return LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL;
     }
 
     if (libxl_device_model_version_from_string(dm_version, &value) < 0) {
-        libxl_ctx *ctx = libxl__gc_owner(gc);
-        LIBXL__LOG(ctx, LIBXL__LOG_ERROR,
-                   "fatal: %s contain a wrong value (%s)", path, dm_version);
+        LOG(ERROR, "fatal: %s contain a wrong value (%s)", path, dm_version);
         return -1;
     }
     return value;
@@ -537,37 +537,28 @@ void libxl__update_domain_configuration(libxl__gc *gc,
                                         libxl_domain_config *dst,
                                         const libxl_domain_config *src)
 {
-    int i;
+    int i, idx, num;
+    const struct libxl_device_type *dt;
 
-    /* update network interface information */
-    for (i = 0; i < src->num_nics; i++)
-        libxl__update_config_nic(gc, &dst->nics[i], &src->nics[i]);
+    for (idx = 0;; idx++) {
+        dt = device_type_tbl[idx];
+        if (!dt)
+            break;
 
-    /* update vtpm information */
-    for (i = 0; i < src->num_vtpms; i++)
-        libxl__update_config_vtpm(gc, &dst->vtpms[i], &src->vtpms[i]);
+        num = *libxl__device_type_get_num(dt, src);
+        if (!dt->update_config || !num)
+            continue;
+
+        for (i = 0; i < num; i++)
+            dt->update_config(gc, libxl__device_type_get_elem(dt, dst, i),
+                                  libxl__device_type_get_elem(dt, src, i));
+    }
 
     /* update guest UUID */
     libxl_uuid_copy(CTX, &dst->c_info.uuid, &src->c_info.uuid);
 
     /* video ram */
     dst->b_info.video_memkb = src->b_info.video_memkb;
-}
-
-char *libxl__device_model_xs_path(libxl__gc *gc, uint32_t dm_domid,
-                                  uint32_t domid, const char *format,  ...)
-{
-    char *s, *fmt;
-    va_list ap;
-
-    fmt = GCSPRINTF("/local/domain/%u/device-model/%u%s", dm_domid,
-                    domid, format);
-
-    va_start(ap, format);
-    s = libxl__vsprintf(gc, fmt, ap);
-    va_end(ap);
-
-    return s;
 }
 
 /*

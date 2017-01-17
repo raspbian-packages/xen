@@ -44,7 +44,8 @@ struct mread_ctrl;
 #define QHZ_FROM_HZ(_hz) (((_hz) << 10)/ 1000000000)
 
 #define ADDR_SPACE_BITS 48
-#define DEFAULT_SAMPLE_SIZE 10240
+#define DEFAULT_SAMPLE_SIZE 1024
+#define DEFAULT_SAMPLE_MAX  1024*1024*32
 #define DEFAULT_INTERVAL_LENGTH 1000
 
 struct array_struct {
@@ -147,7 +148,6 @@ int verbosity = 5;
 struct {
     unsigned
         scatterplot_interrupt_eip:1,
-        scatterplot_cpi:1,
         scatterplot_unpin_promote:1,
         scatterplot_cr3_switch:1,
         scatterplot_wake_to_halt:1,
@@ -188,7 +188,7 @@ struct {
     unsigned long long histogram_interrupt_increment;
     int interrupt_eip_enumeration_vector;
     int default_guest_paging_levels;
-    int sample_size;
+    int sample_size, sample_max;
     enum error_level tolerance; /* Tolerate up to this level of error */
     struct {
         tsc_t cycles;
@@ -223,7 +223,6 @@ struct {
     } interval;
 } opt = {
     .scatterplot_interrupt_eip=0,
-    .scatterplot_cpi=0,
     .scatterplot_unpin_promote=0,
     .scatterplot_cr3_switch=0,
     .scatterplot_wake_to_halt=0,
@@ -259,6 +258,7 @@ struct {
     .cpu_qhz = QHZ_FROM_HZ(DEFAULT_CPU_HZ),
     .default_guest_paging_levels = 2,
     .sample_size = DEFAULT_SAMPLE_SIZE,
+    .sample_max = DEFAULT_SAMPLE_MAX,
     .tolerance = ERR_SANITY,
     .interval = { .msec = DEFAULT_INTERVAL_LENGTH },
 };
@@ -276,26 +276,10 @@ struct interval_element {
     long long instructions;
 };
 
-struct event_cycle_summary {
-    int count, cycles_count;
-    long long cycles;
-    long long *cycles_sample;
-    struct interval_element interval;
-};
-
 struct cycle_summary {
-    int count;
+    int event_count, count, sample_size;
     unsigned long long cycles;
     long long *sample;
-    struct interval_element interval;
-};
-
-struct weighted_cpi_summary {
-    int count;
-    unsigned long long instructions;
-    unsigned long long cycles;
-    float *cpi;
-    unsigned long long *cpi_weight;
     struct interval_element interval;
 };
 
@@ -363,6 +347,8 @@ void parse_symbol_file(char *fn) {
             p=&((*p)->next);
         }
     }
+
+    fclose(symbol_file);
 }
 
 /* WARNING not thread safe */
@@ -406,7 +392,7 @@ enum {
 struct eip_list_struct {
     struct eip_list_struct *next;
     unsigned long long eip;
-    struct event_cycle_summary summary;
+    struct cycle_summary summary;
     int type;
     void * extra;
 };
@@ -509,7 +495,6 @@ struct {
 #define HVM_VMX_EXIT_REASON_MAX (EXIT_REASON_XSETBV+1)
 
 char * hvm_vmx_exit_reason_name[HVM_VMX_EXIT_REASON_MAX] = {
-    [0] = "NONE",
     [EXIT_REASON_EXCEPTION_NMI]="EXCEPTION_NMI",
     [EXIT_REASON_EXTERNAL_INTERRUPT]="EXTERNAL_INTERRUPT",
     [EXIT_REASON_TRIPLE_FAULT]="TRIPLE_FAULT",
@@ -1324,21 +1309,21 @@ struct hvm_data {
 
     /* Information about particular exit reasons */
     struct {
-        struct event_cycle_summary exit_reason[HVM_EXIT_REASON_MAX];
+        struct cycle_summary exit_reason[HVM_EXIT_REASON_MAX];
         int extint[EXTERNAL_INTERRUPT_MAX+1];
         int *extint_histogram;
-        struct event_cycle_summary trap[HVM_TRAP_MAX];
-        struct event_cycle_summary pf_xen[PF_XEN_MAX];
-        struct event_cycle_summary pf_xen_emul[PF_XEN_EMUL_MAX];
-        struct event_cycle_summary pf_xen_emul_early_unshadow[5];
-        struct event_cycle_summary pf_xen_non_emul[PF_XEN_NON_EMUL_MAX];
-        struct event_cycle_summary pf_xen_fixup[PF_XEN_FIXUP_MAX];
-        struct event_cycle_summary pf_xen_fixup_unsync_resync[PF_XEN_FIXUP_UNSYNC_RESYNC_MAX+1];
-        struct event_cycle_summary cr_write[CR_MAX];
-        struct event_cycle_summary cr3_write_resyncs[RESYNCS_MAX+1];
-        struct event_cycle_summary vmcall[HYPERCALL_MAX+1];
-        struct event_cycle_summary generic[HVM_EVENT_HANDLER_MAX];
-        struct event_cycle_summary mmio[NONPF_MMIO_MAX];
+        struct cycle_summary trap[HVM_TRAP_MAX];
+        struct cycle_summary pf_xen[PF_XEN_MAX];
+        struct cycle_summary pf_xen_emul[PF_XEN_EMUL_MAX];
+        struct cycle_summary pf_xen_emul_early_unshadow[5];
+        struct cycle_summary pf_xen_non_emul[PF_XEN_NON_EMUL_MAX];
+        struct cycle_summary pf_xen_fixup[PF_XEN_FIXUP_MAX];
+        struct cycle_summary pf_xen_fixup_unsync_resync[PF_XEN_FIXUP_UNSYNC_RESYNC_MAX+1];
+        struct cycle_summary cr_write[CR_MAX];
+        struct cycle_summary cr3_write_resyncs[RESYNCS_MAX+1];
+        struct cycle_summary vmcall[HYPERCALL_MAX+1];
+        struct cycle_summary generic[HVM_EVENT_HANDLER_MAX];
+        struct cycle_summary mmio[NONPF_MMIO_MAX];
         struct hvm_gi_struct {
             int count;
             struct cycle_summary runtime[GUEST_INTERRUPT_CASE_MAX];
@@ -1347,7 +1332,7 @@ struct hvm_data {
             tsc_t start_tsc;
         } guest_interrupt[GUEST_INTERRUPT_MAX + 1];
         /* IPI Latency */
-        struct event_cycle_summary ipi_latency;
+        struct cycle_summary ipi_latency;
         int ipi_count[256];
         struct {
             struct io_address *mmio, *pio;
@@ -1519,27 +1504,6 @@ struct pv_data {
 };
 
 /* Sched data */
-
-enum {
-    SCHED_DOM_ADD=1,
-    SCHED_DOM_REM,
-    SCHED_SLEEP,
-    SCHED_WAKE,
-    SCHED_YIELD,
-    SCHED_BLOCK,
-    SCHED_SHUTDOWN,
-    SCHED_CTL,
-    SCHED_ADJDOM,
-    SCHED_SWITCH,
-    SCHED_S_TIMER_FN,
-    SCHED_T_TIMER_FN,
-    SCHED_DOM_TIMER_FN,
-    SCHED_SWITCH_INFPREV,
-    SCHED_SWITCH_INFNEXT,
-    SCHED_SHUTDOWN_CODE,
-    SCHED_MAX
-};
-
 enum {
     RUNSTATE_RUNNING=0,
     RUNSTATE_RUNNABLE,
@@ -1692,7 +1656,6 @@ struct vcpu_data {
     struct cycle_framework f;
     struct cycle_summary runstates[RUNSTATE_MAX];
     struct cycle_summary runnable_states[RUNNABLE_STATE_MAX];
-    struct weighted_cpi_summary cpi;
     struct cycle_summary cpu_affinity_all,
         cpu_affinity_pcpu[MAX_CPUS];
     enum {
@@ -2132,10 +2095,14 @@ float weighted_percentile(float * A, /* values */
         } while (I <= J); /* Keep going until our pointers meet or pass */
 
         /* Re-adjust L and R, based on which element we're looking for */
-        if(J_weight<K_weight)
-            L=I; L_weight = I_weight;
-        if(K_weight<I_weight)
-            R=J; R_weight = J_weight;
+        if(J_weight<K_weight) {
+            L=I;
+            L_weight = I_weight;
+        }
+        if(K_weight<I_weight) {
+            R=J;
+            R_weight = J_weight;
+        }
     }
 
     return A[L];
@@ -2211,10 +2178,14 @@ long long self_weighted_percentile(long long * A,
         } while (I <= J); /* Keep going until our pointers meet or pass */
 
         /* Re-adjust L and R, based on which element we're looking for */
-        if(J_weight<K_weight)
-            L=I; L_weight = I_weight;
-        if(K_weight<I_weight)
-            R=J; R_weight = J_weight;
+        if(J_weight<K_weight) {
+            L=I;
+            L_weight = I_weight;
+        }
+        if(K_weight<I_weight) {
+            R=J;
+            R_weight = J_weight;
+        }
     }
 
     return A[L];
@@ -2224,140 +2195,71 @@ static inline double __cycles_percent(long long cycles, long long total) {
     return (double)(cycles*100) / total;
 }
 
-static inline double __summary_percent(struct event_cycle_summary *s,
+static inline double __summary_percent(struct cycle_summary *s,
                                        struct cycle_framework *f) {
     return __cycles_percent(s->cycles, f->total_cycles);
 }
 
-static inline double summary_percent_global(struct event_cycle_summary *s) {
+static inline double summary_percent_global(struct cycle_summary *s) {
     return __summary_percent(s, &P.f);
 }
 
-static inline void update_summary(struct event_cycle_summary *s, long long c) {
-/* We don't know ahead of time how many samples there are, and working
- * with dynamic stuff is a pain, and unnecessary.  This algorithm will
- * generate a sample set that approximates an even sample.  We can
- * then take the percentiles on this, and get an approximate value. */
-    if(c) {
-        if(opt.sample_size) {
-            int lap = (s->cycles_count/opt.sample_size)+1,
-                index =s->cycles_count % opt.sample_size;
-            if((index - (lap/3))%lap == 0) {
-                if(!s->cycles_sample) {
-                    s->cycles_sample = malloc(sizeof(*s->cycles_sample) * opt.sample_size);
-                    if(!s->cycles_sample) {
-                        fprintf(stderr, "%s: malloc failed!\n", __func__);
-                        error(ERR_SYSTEM, NULL);
-                    }
-                }
-                s->cycles_sample[index]=c;
-            }
-        }
-        s->cycles_count++;
-        s->cycles += c;
-
-        s->interval.count++;
-        s->interval.cycles += c;
-    }
-    s->count++;
-}
-
-static inline void clear_interval_summary(struct event_cycle_summary *s) {
-    s->interval.count = 0;
-    s->interval.cycles = 0;
-}
-
 static inline void update_cycles(struct cycle_summary *s, long long c) {
-/* We don't know ahead of time how many samples there are, and working
- * with dynamic stuff is a pain, and unnecessary.  This algorithm will
- * generate a sample set that approximates an even sample.  We can
- * then take the percentiles on this, and get an approximate value. */
-    int lap, index;
+    s->event_count++;
 
-    if ( c == 0 )
-    {
-        fprintf(warn, "%s: cycles 0! Not updating...\n",
-                __func__);
+    if (!c)
         return;
-    }
+            
+    if(opt.sample_size) {
+        if (s->count >= s->sample_size
+            && (s->count == 0
+                || opt.sample_max == 0
+                || s->sample_size < opt.sample_max)) {
+            int new_size;
+            void * new_sample = NULL;
 
-    if ( opt.sample_size ) {
-        lap = (s->count/opt.sample_size)+1;
-        index =s->count % opt.sample_size;
+            new_size = s->sample_size << 1;
 
-        if((index - (lap/3))%lap == 0) {
-            if(!s->sample) {
-                s->sample = malloc(sizeof(*s->sample) * opt.sample_size);
-                if(!s->sample) {
-                    fprintf(stderr, "%s: malloc failed!\n", __func__);
-                    error(ERR_SYSTEM, NULL);
-                }
+            if (new_size == 0)
+                new_size = opt.sample_size;
+
+            if (opt.sample_max != 0 && new_size > opt.sample_max)
+                new_size = opt.sample_max;
+
+            new_sample = realloc(s->sample, sizeof(*s->sample) * new_size);
+            
+            if (new_sample) {
+                s->sample = new_sample;
+                s->sample_size = new_size;
             }
-            s->sample[index] = c;
         }
-    }
-
-    if(c > 0) {
-        s->cycles += c;
-        s->interval.cycles += c;
-    } else {
-        s->cycles += -c;
-        s->interval.cycles += -c;
+        
+        if (s->count < s->sample_size) {
+            s->sample[s->count]=c;
+        } else {
+            /* 
+             * If we run out of space for samples, start taking only a
+             * subset of samples.
+             */
+            int lap, index;
+            lap = (s->count/s->sample_size)+1;
+            index =s->count % s->sample_size;
+            if((index - (lap/3))%lap == 0) {
+                s->sample[index]=c;
+             }
+         }
     }
     s->count++;
+    s->cycles += c;
+    
     s->interval.count++;
+    s->interval.cycles += c;
 }
 
 static inline void clear_interval_cycles(struct interval_element *e) {
     e->cycles = 0;
     e->count = 0;
     e->instructions = 0;
-}
-
-static inline void update_cpi(struct weighted_cpi_summary *s,
-                              unsigned long long i,
-                              unsigned long long c) {
-/* We don't know ahead of time how many samples there are, and working
- * with dynamic stuff is a pain, and unnecessary.  This algorithm will
- * generate a sample set that approximates an even sample.  We can
- * then take the percentiles on this, and get an approximate value. */
-    int lap, index;
-
-    if ( opt.sample_size ) {
-        lap = (s->count/opt.sample_size)+1;
-        index =s->count % opt.sample_size;
-
-        if((index - (lap/3))%lap == 0) {
-            if(!s->cpi) {
-                assert(!s->cpi_weight);
-
-                s->cpi = malloc(sizeof(*s->cpi) * opt.sample_size);
-                s->cpi_weight = malloc(sizeof(*s->cpi_weight) * opt.sample_size);
-                if(!s->cpi || !s->cpi_weight) {
-                    fprintf(stderr, "%s: malloc failed!\n", __func__);
-                    error(ERR_SYSTEM, NULL);
-                }
-            }
-            assert(s->cpi_weight);
-
-            s->cpi[index] = (float) c / i;
-            s->cpi_weight[index]=c;
-        }
-    }
-
-    s->instructions += i;
-    s->cycles += c;
-    s->count++;
-
-    s->interval.instructions += i;
-    s->interval.cycles += c;
-    s->interval.count++;
-}
-
-static inline void clear_interval_cpi(struct weighted_cpi_summary *s) {
-    s->interval.cycles = 0;
-    s->interval.count = 0;
-    s->interval.instructions = 0;
 }
 
 static inline void print_cpu_affinity(struct cycle_summary *s, char *p) {
@@ -2369,8 +2271,8 @@ static inline void print_cpu_affinity(struct cycle_summary *s, char *p) {
         if ( opt.sample_size ) {
             long long  p5, p50, p95;
             int data_size = s->count;
-           if(data_size > opt.sample_size)
-                data_size = opt.sample_size;
+           if(data_size > s->sample_size)
+               data_size = s->sample_size;
 
             p50 = percentile(s->sample, data_size, 50);
             p5 = percentile(s->sample, data_size, 5);
@@ -2381,31 +2283,6 @@ static inline void print_cpu_affinity(struct cycle_summary *s, char *p) {
         } else {
             printf("%s: %7d %6lld\n",
                    p, s->count, avg);
-        }
-    }
-}
-
-static inline void print_cpi_summary(struct weighted_cpi_summary *s) {
-    if(s->count) {
-        float avg;
-
-        avg = (float)s->cycles / s->instructions;
-
-        if ( opt.sample_size ) {
-            float p5, p50, p95;
-            int data_size = s->count;
-
-            if(data_size > opt.sample_size)
-                data_size = opt.sample_size;
-
-            p50 = weighted_percentile(s->cpi, s->cpi_weight, data_size, 50);
-            p5 = weighted_percentile(s->cpi, s->cpi_weight, data_size, 5);
-            p95 = weighted_percentile(s->cpi, s->cpi_weight, data_size, 95);
-
-            printf("  CPI summary: %2.2f {%2.2f|%2.2f|%2.2f}\n",
-                   avg, p5, p50, p95);
-        } else {
-            printf("  CPI summary: %2.2f\n", avg);
         }
     }
 }
@@ -2426,8 +2303,8 @@ static inline void print_cycle_percent_summary(struct cycle_summary *s,
             long long p5, p50, p95;
             int data_size = s->count;
 
-            if(data_size > opt.sample_size)
-                data_size = opt.sample_size;
+            if(data_size > s->sample_size)
+                data_size = s->sample_size;
 
             p50 = self_weighted_percentile(s->sample, data_size, 50);
             p5 = self_weighted_percentile(s->sample, data_size, 5);
@@ -2458,8 +2335,8 @@ static inline void print_cycle_summary(struct cycle_summary *s, char *p) {
             long long p5, p50, p95;
             int data_size = s->count;
 
-            if(data_size > opt.sample_size)
-                data_size = opt.sample_size;
+            if(data_size > s->sample_size)
+                data_size = s->sample_size;
 
             p50 = self_weighted_percentile(s->sample, data_size, 50);
             p5 = self_weighted_percentile(s->sample, data_size, 5);
@@ -2477,29 +2354,29 @@ static inline void print_cycle_summary(struct cycle_summary *s, char *p) {
 
 #define PRINT_SUMMARY(_s, _p...)                                        \
     do {                                                                \
-        if((_s).count) {                                                \
+        if((_s).event_count) {                                          \
             if ( opt.sample_size ) {                                    \
                 unsigned long long p5, p50, p95;                        \
-                int data_size=(_s).cycles_count;                        \
-                if(data_size > opt.sample_size)                         \
-                    data_size=opt.sample_size;                          \
-                p50=percentile((_s).cycles_sample, data_size, 50);      \
-                p5=percentile((_s).cycles_sample, data_size, 5);        \
-                p95=percentile((_s).cycles_sample, data_size, 95);      \
+                int data_size=(_s).count;                               \
+                if(data_size > (_s).sample_size)                         \
+                    data_size=(_s).sample_size;                          \
+                p50=percentile((_s).sample, data_size, 50);      \
+                p5=percentile((_s).sample, data_size, 5);        \
+                p95=percentile((_s).sample, data_size, 95);      \
                 printf(_p);                                             \
                 printf(" %7d %5.2lfs %5.2lf%% %5lld cyc {%5lld|%5lld|%5lld}\n", \
-                       (_s).count,                                      \
+                       (_s).event_count,                                \
                        ((double)(_s).cycles)/opt.cpu_hz,                \
                        summary_percent_global(&(_s)),                   \
-                       (_s).cycles_count ? (_s).cycles / (_s).cycles_count:0, \
+                       (_s).count ? (_s).cycles / (_s).count:0,         \
                        p5, p50, p95);                                   \
             } else {                                                    \
                 printf(_p);                                             \
                 printf(" %7d %5.2lfs %5.2lf%% %5lld cyc\n",             \
-                       (_s).count,                                      \
+                       (_s).event_count,                                \
                        ((double)(_s).cycles)/opt.cpu_hz,                \
                        summary_percent_global(&(_s)),                   \
-                       (_s).cycles_count ? (_s).cycles / (_s).cycles_count:0); \
+                       (_s).count ? (_s).cycles / (_s).count:0);        \
             }                                                           \
         }                                                               \
     } while(0)
@@ -2639,29 +2516,29 @@ void interval_cr3_value_check(struct cr3_value_struct *cr3) {
     }
 }
 
+int cr3_time_compare(const void *_a, const void *_b) {
+    struct cr3_value_struct *a=*(typeof(&a))_a;
+    struct cr3_value_struct *b=*(typeof(&a))_b;
+
+    if(a->total_time.interval.cycles < b->total_time.interval.cycles)
+        return 1;
+    else if(b->total_time.interval.cycles == a->total_time.interval.cycles) {
+        if(a->total_time.interval.count < b->total_time.interval.count)
+            return 1;
+        else if(a->total_time.interval.count == b->total_time.interval.count)
+            return 0;
+        else
+            return -1;
+    } else
+        return -1;
+}
+
 void interval_cr3_schedule_ordered_output(void) {
     struct cr3_value_struct *p;
     int i;
 
     struct cr3_value_struct **qsort_array;
     int N=0;
-
-    int cr3_time_compare(const void *_a, const void *_b) {
-        struct cr3_value_struct *a=*(typeof(&a))_a;
-        struct cr3_value_struct *b=*(typeof(&a))_b;
-
-        if(a->total_time.interval.cycles < b->total_time.interval.cycles)
-            return 1;
-        else if(b->total_time.interval.cycles == a->total_time.interval.cycles) {
-            if(a->total_time.interval.count < b->total_time.interval.count)
-                return 1;
-            else if(a->total_time.interval.count == b->total_time.interval.count)
-                return 0;
-            else
-                return -1;
-        } else
-            return -1;
-    }
 
     for(p=P.cr3.head; p; p=p->gnext)
         N++;
@@ -2955,7 +2832,24 @@ void update_eip(struct eip_list_struct **head, unsigned long long eip,
         eip_list_type[type].update(p, extra);
     }
 
-    update_summary(&p->summary, cycles);
+    update_cycles(&p->summary, cycles);
+}
+
+int eip_compare(const void *_a, const void *_b) {
+    struct eip_list_struct *a=*(typeof(&a))_a;
+    struct eip_list_struct *b=*(typeof(&a))_b;
+
+    if(a->summary.cycles < b->summary.cycles)
+        return 1;
+    else if(b->summary.cycles == a->summary.cycles) {
+        if(a->summary.count < b->summary.count)
+            return 1;
+        else if(a->summary.count == b->summary.count)
+            return 0;
+        else
+            return -1;
+    } else
+        return -1;
 }
 
 void dump_eip(struct eip_list_struct *head) {
@@ -2965,23 +2859,6 @@ void dump_eip(struct eip_list_struct *head) {
 
     struct eip_list_struct **qsort_array;
     int N=0;
-
-    int eip_compare(const void *_a, const void *_b) {
-        struct eip_list_struct *a=*(typeof(&a))_a;
-        struct eip_list_struct *b=*(typeof(&a))_b;
-
-        if(a->summary.cycles < b->summary.cycles)
-            return 1;
-        else if(b->summary.cycles == a->summary.cycles) {
-            if(a->summary.count < b->summary.count)
-                return 1;
-            else if(a->summary.count == b->summary.count)
-                return 0;
-            else
-                return -1;
-        } else
-            return -1;
-    }
 
     for(p=head; p; p=p->next)
     {
@@ -3406,7 +3283,7 @@ void hvm_pf_xen_postprocess(struct hvm_data *h) {
 
     if(opt.summary_info) {
         if(e->pf_case)
-            update_summary(&h->summary.pf_xen[e->pf_case],
+            update_cycles(&h->summary.pf_xen[e->pf_case],
                            h->arc_cycles);
         else
             fprintf(warn, "Strange, pf_case 0!\n");
@@ -3420,17 +3297,17 @@ void hvm_pf_xen_postprocess(struct hvm_data *h) {
             break;
         case PF_XEN_NON_EMULATE:
             if(is_kernel(h->v->guest_paging_levels, h->rip))
-                update_summary(&h->summary.pf_xen_non_emul[PF_XEN_NON_EMUL_EIP_KERNEL],
+                update_cycles(&h->summary.pf_xen_non_emul[PF_XEN_NON_EMUL_EIP_KERNEL],
                                h->arc_cycles);
             else
-                update_summary(&h->summary.pf_xen_non_emul[PF_XEN_NON_EMUL_EIP_USER],
+                update_cycles(&h->summary.pf_xen_non_emul[PF_XEN_NON_EMUL_EIP_USER],
                                h->arc_cycles);
             if(is_kernel(h->v->guest_paging_levels, e->va))
-                update_summary(&h->summary.pf_xen_non_emul[PF_XEN_NON_EMUL_VA_KERNEL],
+                update_cycles(&h->summary.pf_xen_non_emul[PF_XEN_NON_EMUL_VA_KERNEL],
                                h->arc_cycles);
 
             else
-                update_summary(&h->summary.pf_xen_non_emul[PF_XEN_NON_EMUL_VA_USER],
+                update_cycles(&h->summary.pf_xen_non_emul[PF_XEN_NON_EMUL_VA_USER],
                                h->arc_cycles);
         }
 
@@ -3511,7 +3388,7 @@ void hvm_vlapic_vmentry_cleanup(struct vcpu_data *v, tsc_t tsc)
         /* FIXME: make general somehow */
         if(opt.summary_info)
         {
-            update_summary(&h->summary.ipi_latency, lat);
+            update_cycles(&h->summary.ipi_latency, lat);
             h->summary.ipi_count[vla->outstanding_ipis]++;
         }
 #endif
@@ -3541,12 +3418,56 @@ struct outstanding_ipi *find_vec(struct vlapic_struct *vla, int vec)
             o = vla->outstanding.list + i;
     }
 
-    if(!o->valid) {
+    if(o && !o->valid) {
         o->vec = vec;
         o->valid = 1;
     }
 
     return o;
+}
+
+void ipi_send(struct vcpu_data *ov, int vec)
+{
+    struct vlapic_struct *vla;
+    struct outstanding_ipi *o = NULL;
+
+    if(ov->runstate.state == RUNSTATE_LOST) {
+        if(opt.dump_all)
+            fprintf(warn, "%s: v%d in state RUNSTATE_LOST, not counting ipi\n",
+                    __func__, ov->vid);
+        return;
+    }
+
+    vla = &ov->vlapic;
+
+    o = find_vec(vla, vec);
+
+    if(!o)
+    {
+        fprintf(warn, "%s: Couldn't find an open slot!\n",
+                __func__);
+        return;
+    }
+
+    if(!o->first_tsc)
+        o->first_tsc = P.now;
+
+    if(opt.dump_all && o->count == 0 && o->injected)
+        printf(" [vla] Pre-injection\n");
+
+    o->count++;
+
+    if((opt.dump_all)
+#if 0
+       && (ov->runstate.state != RUNSTATE_RUNNING
+           || ov->hvm.vmexit_valid)
+#endif
+        )
+        printf(" [vla] d%dv%d vec %d state %s (outstanding ipis %d)\n",
+               ov->d->did, ov->vid,
+               o->vec,
+               runstate_name[ov->runstate.state],
+               o->count);
 }
 
 void hvm_vlapic_icr_handler(struct hvm_data *h)
@@ -3566,50 +3487,6 @@ void hvm_vlapic_icr_handler(struct hvm_data *h)
                 dest_shorthand:2;
         };
     } icr = { .val = m->data };
-
-    void ipi_send(struct vcpu_data *ov, int vec)
-    {
-        struct vlapic_struct *vla;
-        struct outstanding_ipi *o = NULL;
-
-        if(ov->runstate.state == RUNSTATE_LOST) {
-            if(opt.dump_all)
-                fprintf(warn, "%s: v%d in state RUNSTATE_LOST, not counting ipi\n",
-                        __func__, ov->vid);
-            return;
-        }
-
-        vla = &ov->vlapic;
-
-        o = find_vec(vla, vec);
-
-        if(!o)
-        {
-            fprintf(warn, "%s: Couldn't find an open slot!\n",
-                    __func__);
-            return;
-        }
-
-        if(!o->first_tsc)
-            o->first_tsc = P.now;
-
-        if(opt.dump_all && o->count == 0 && o->injected)
-            printf(" [vla] Pre-injection\n");
-
-        o->count++;
-
-        if((opt.dump_all)
-#if 0
-           && (ov->runstate.state != RUNSTATE_RUNNING
-               || ov->hvm.vmexit_valid)
-#endif
-            )
-            printf(" [vla] d%dv%d vec %d state %s (outstanding ipis %d)\n",
-                   ov->d->did, ov->vid,
-                   o->vec,
-                   runstate_name[ov->runstate.state],
-                   o->count);
-    }
 
     if(m->is_write) {
         if(opt.dump_all) {
@@ -3751,7 +3628,7 @@ void hvm_mmio_assist_postprocess(struct hvm_data *h)
 
     if(opt.summary_info)
     {
-        update_summary(&h->summary.mmio[reason],
+        update_cycles(&h->summary.mmio[reason],
                        h->arc_cycles);
     }
 
@@ -3887,7 +3764,7 @@ struct io_address {
     struct io_address *next;
     unsigned int pa;
     unsigned int va;
-    struct event_cycle_summary summary[2];
+    struct cycle_summary summary[2];
 };
 
 void update_io_address(struct io_address ** list, unsigned int pa, int dir,
@@ -3919,7 +3796,7 @@ void update_io_address(struct io_address ** list, unsigned int pa, int dir,
             *list = p;
         }
     }
-    update_summary(&p->summary[dir], arc_cycles);
+    update_cycles(&p->summary[dir], arc_cycles);
 }
 
 void hvm_io_address_summary(struct io_address *list, char * s) {
@@ -4116,39 +3993,22 @@ void cr3_prealloc_unpin(struct vcpu_data *v, unsigned long long gmfn) {
                gmfn, cr3->prealloc_unpin.count);
 }
 
+int cr3_compare_start(const void *_a, const void *_b) {
+    struct cr3_value_struct *a=*(typeof(&a))_a;
+    struct cr3_value_struct *b=*(typeof(&a))_b;
+
+    if(a->first_time > b->first_time)
+        return 1;
+    else if(b->first_time == a->first_time)
+        return 0;
+    else
+        return -1;
+}
+
 void cr3_dump_list(struct cr3_value_struct *head){
     struct cr3_value_struct *p;
     struct cr3_value_struct **qsort_array;
     int i, N=0;
-
-    int cr3_compare_total(const void *_a, const void *_b) {
-        struct cr3_value_struct *a=*(typeof(&a))_a;
-        struct cr3_value_struct *b=*(typeof(&a))_b;
-
-        if(a->total_time.cycles < b->total_time.cycles)
-            return 1;
-        else if(b->total_time.cycles == a->total_time.cycles) {
-            if(a->total_time.count < b->total_time.count)
-                return 1;
-            else if(a->total_time.count == b->total_time.count)
-                return 0;
-            else
-                return -1;
-        } else
-            return -1;
-    }
-
-    int cr3_compare_start(const void *_a, const void *_b) {
-        struct cr3_value_struct *a=*(typeof(&a))_a;
-        struct cr3_value_struct *b=*(typeof(&a))_b;
-
-        if(a->first_time > b->first_time)
-            return 1;
-        else if(b->first_time == a->first_time)
-            return 0;
-        else
-            return -1;
-    }
 
     if(!head)
         return;
@@ -4156,9 +4016,6 @@ void cr3_dump_list(struct cr3_value_struct *head){
     /* Count the number of elements */
     for(p=head; p; p=p->next)
         N++;
-
-    if(!N)
-        return;
 
     /* Alloc a struct of the right size */
     qsort_array = malloc(N * sizeof(struct eip_list_struct *));
@@ -4259,10 +4116,10 @@ void hvm_cr_write_postprocess(struct hvm_data *h)
             if(resyncs > RESYNCS_MAX)
                 resyncs = RESYNCS_MAX;
 
-            update_summary(&h->summary.cr3_write_resyncs[resyncs],
+            update_cycles(&h->summary.cr3_write_resyncs[resyncs],
                            h->arc_cycles);
 
-            update_summary(&h->summary.cr_write[3],
+            update_cycles(&h->summary.cr_write[3],
                            h->arc_cycles);
 
             hvm_update_short_summary(h, HVM_SHORT_SUMMARY_CR3);
@@ -4274,7 +4131,7 @@ void hvm_cr_write_postprocess(struct hvm_data *h)
         if(opt.summary_info)
         {
             if(h->inflight.cr_write.cr < CR_MAX)
-                update_summary(&h->summary.cr_write[h->inflight.cr_write.cr],
+                update_cycles(&h->summary.cr_write[h->inflight.cr_write.cr],
                                h->arc_cycles);
 
         }
@@ -4459,10 +4316,10 @@ void hvm_vmcall_postprocess(struct hvm_data *h)
     if(opt.summary)
     {
         if ( eax < HYPERCALL_MAX )
-            update_summary(&h->summary.vmcall[eax],
+            update_cycles(&h->summary.vmcall[eax],
                        h->arc_cycles);
         else
-            update_summary(&h->summary.vmcall[HYPERCALL_MAX],
+            update_cycles(&h->summary.vmcall[HYPERCALL_MAX],
                        h->arc_cycles);
         hvm_set_summary_handler(h, hvm_vmcall_summary, NULL);
     }
@@ -4803,7 +4660,7 @@ void hvm_generic_postprocess(struct hvm_data *h)
     }
 
     if(opt.summary_info) {
-        update_summary(&h->summary.generic[evt],
+        update_cycles(&h->summary.generic[evt],
                        h->arc_cycles);
 
         /* NB that h->exit_reason may be 0, so we offset by 1 */
@@ -5290,7 +5147,7 @@ void hvm_close_vmexit(struct hvm_data *h, tsc_t tsc) {
             h->arc_cycles = tsc - h->exit_tsc;
 
             if(opt.summary_info) {
-                update_summary(&h->summary.exit_reason[h->exit_reason],
+                update_cycles(&h->summary.exit_reason[h->exit_reason],
                                h->arc_cycles);
                 h->summary_info = 1;
             }
@@ -5565,26 +5422,26 @@ void shadow_emulate_postprocess(struct hvm_data *h)
                    h->rip,
                    h->arc_cycles,
                    0, NULL);
-        update_summary(&h->summary.pf_xen[PF_XEN_EMULATE], h->arc_cycles);
-        update_summary(&h->summary.pf_xen_emul[e->pt_level], h->arc_cycles);
+        update_cycles(&h->summary.pf_xen[PF_XEN_EMULATE], h->arc_cycles);
+        update_cycles(&h->summary.pf_xen_emul[e->pt_level], h->arc_cycles);
         if(h->prealloc_unpin)
-            update_summary(&h->summary.pf_xen_emul[PF_XEN_EMUL_PREALLOC_UNPIN], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_emul[PF_XEN_EMUL_PREALLOC_UNPIN], h->arc_cycles);
         if(e->flag_prealloc_unhook)
-            update_summary(&h->summary.pf_xen_emul[PF_XEN_EMUL_PREALLOC_UNHOOK], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_emul[PF_XEN_EMUL_PREALLOC_UNHOOK], h->arc_cycles);
         if(e->flag_early_unshadow)
-            update_summary(&h->summary.pf_xen_emul[PF_XEN_EMUL_EARLY_UNSHADOW], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_emul[PF_XEN_EMUL_EARLY_UNSHADOW], h->arc_cycles);
         if(e->flag_set_changed)
-            update_summary(&h->summary.pf_xen_emul[PF_XEN_EMUL_SET_CHANGED], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_emul[PF_XEN_EMUL_SET_CHANGED], h->arc_cycles);
         else
-            update_summary(&h->summary.pf_xen_emul[PF_XEN_EMUL_SET_UNCHANGED], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_emul[PF_XEN_EMUL_SET_UNCHANGED], h->arc_cycles);
         if(e->flag_set_flush)
-            update_summary(&h->summary.pf_xen_emul[PF_XEN_EMUL_SET_FLUSH], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_emul[PF_XEN_EMUL_SET_FLUSH], h->arc_cycles);
         if(e->flag_set_error)
-            update_summary(&h->summary.pf_xen_emul[PF_XEN_EMUL_SET_ERROR], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_emul[PF_XEN_EMUL_SET_ERROR], h->arc_cycles);
         if(e->flag_promote)
-            update_summary(&h->summary.pf_xen_emul[PF_XEN_EMUL_PROMOTE], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_emul[PF_XEN_EMUL_PROMOTE], h->arc_cycles);
         if(e->flag_demote)
-            update_summary(&h->summary.pf_xen_emul[PF_XEN_EMUL_DEMOTE], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_emul[PF_XEN_EMUL_DEMOTE], h->arc_cycles);
         /* more summary info */
 
         hvm_update_short_summary(h, HVM_SHORT_SUMMARY_EMULATE);
@@ -5797,10 +5654,10 @@ void shadow_unsync_postprocess(struct hvm_data *h)
                 h->resyncs);
 
     if(opt.summary_info) {
-        update_summary(&h->summary.pf_xen[PF_XEN_EMULATE_UNSYNC],
+        update_cycles(&h->summary.pf_xen[PF_XEN_EMULATE_UNSYNC],
                        h->arc_cycles);
         if(h->resyncs <= 1)
-            update_summary(&h->summary.pf_xen_unsync[h->resyncs],
+            update_cycles(&h->summary.pf_xen_unsync[h->resyncs],
                            h->arc_cycles);
     }
 }
@@ -5864,36 +5721,36 @@ void shadow_fixup_postprocess(struct hvm_data *h)
 
     if ( opt.summary_info )
     {
-        update_summary(&h->summary.pf_xen[PF_XEN_FIXUP], h->arc_cycles);
+        update_cycles(&h->summary.pf_xen[PF_XEN_FIXUP], h->arc_cycles);
         if(h->prealloc_unpin) {
-            update_summary(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_PREALLOC_UNPIN], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_PREALLOC_UNPIN], h->arc_cycles);
         }
         if(e->flag_unsync) {
-            update_summary(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_UNSYNC], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_UNSYNC], h->arc_cycles);
             if(h->resyncs < PF_XEN_FIXUP_UNSYNC_RESYNC_MAX)
-                update_summary(&h->summary.pf_xen_fixup_unsync_resync[h->resyncs],
+                update_cycles(&h->summary.pf_xen_fixup_unsync_resync[h->resyncs],
                                h->arc_cycles);
             else
-                update_summary(&h->summary.pf_xen_fixup_unsync_resync[PF_XEN_FIXUP_UNSYNC_RESYNC_MAX],
+                update_cycles(&h->summary.pf_xen_fixup_unsync_resync[PF_XEN_FIXUP_UNSYNC_RESYNC_MAX],
                                h->arc_cycles);
         }
         if(e->flag_oos_fixup_add)
-            update_summary(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_OOS_ADD], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_OOS_ADD], h->arc_cycles);
         if(e->flag_oos_fixup_evict)
-            update_summary(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_OOS_EVICT], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_OOS_EVICT], h->arc_cycles);
         if(e->flag_promote)
-            update_summary(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_PROMOTE], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_PROMOTE], h->arc_cycles);
         if(e->flag_wrmap) {
-            update_summary(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_WRMAP], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_WRMAP], h->arc_cycles);
             if(e->flag_wrmap_brute_force || h->wrmap_bf)
-                update_summary(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_BRUTE_FORCE], h->arc_cycles);
+                update_cycles(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_BRUTE_FORCE], h->arc_cycles);
         } else if(e->flag_wrmap_brute_force || h->wrmap_bf) {
             fprintf(warn, "Strange: wrmap_bf but not wrmap!\n");
         }
 
 
         if(!(e->flag_promote || h->prealloc_unpin || e->flag_unsync))
-            update_summary(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_UPDATE_ONLY], h->arc_cycles);
+            update_cycles(&h->summary.pf_xen_fixup[PF_XEN_FIXUP_UPDATE_ONLY], h->arc_cycles);
         /* more summary info */
 
         if(e->flag_unsync)
@@ -6014,7 +5871,7 @@ void shadow_mmio_postprocess(struct hvm_data *h)
     if ( opt.summary_info )
     {
         if(e->pf_case)
-            update_summary(&h->summary.pf_xen[e->pf_case],
+            update_cycles(&h->summary.pf_xen[e->pf_case],
                            h->arc_cycles);
         else
             fprintf(warn, "Strange, pf_case 0!\n");
@@ -6094,7 +5951,7 @@ void shadow_propagate_postprocess(struct hvm_data *h)
     if ( opt.summary_info )
     {
         if(e->pf_case)
-            update_summary(&h->summary.pf_xen[e->pf_case],
+            update_cycles(&h->summary.pf_xen[e->pf_case],
                            h->arc_cycles);
         else
             fprintf(warn, "Strange, pf_case 0!\n");
@@ -6226,7 +6083,7 @@ void shadow_fault_generic_postprocess(struct hvm_data *h)
     }
 
     if(opt.summary_info) {
-        update_summary(&h->summary.pf_xen[e->pf_case],
+        update_cycles(&h->summary.pf_xen[e->pf_case],
                            h->arc_cycles);
 
         hvm_update_short_summary(h, HVM_SHORT_SUMMARY_PROPAGATE);
@@ -7359,31 +7216,6 @@ update:
     else if ( sevt.old_runstate == RUNSTATE_RUNNING
               || v->runstate.state == RUNSTATE_RUNNING )
     {
-#if 0
-        /* A lot of traces include cpi that shouldn't... */
-        if(perfctrs && v->runstate.tsc) {
-            unsigned long long run_cycles, run_instr;
-            double cpi;
-
-            //run_cycles = r->p1 - v->runstate_p1_start;
-            run_cycles = ri->tsc - v->runstate.tsc;
-            run_instr  = r->p2 - v->runstate.p2_start;
-
-            cpi = ((double)run_cycles) / run_instr;
-
-            if(opt.dump_all) {
-                printf("   cpi: %2.2lf ( %lld / %lld )\n",
-                       cpi, run_cycles, run_instr);
-            }
-
-            if(opt.scatterplot_cpi && v->d->did == 1)
-                printf("%lld,%2.2lf\n",
-                       ri->tsc, cpi);
-
-            if(opt.summary_info)
-                update_cpi(&v->cpi, run_instr, run_cycles);
-        }
-#endif
         /*
          * Cases:
          * old running, v running:
@@ -7440,6 +7272,17 @@ no_update:
     return;
 }
 
+void dump_sched_switch(struct record_info *ri)
+{
+    struct {
+        unsigned int prev_dom, prev_vcpu, next_dom, next_vcpu;
+    } *r = (typeof(r))ri->d;
+
+    printf(" %s sched_switch prev d%uv%u next d%uv%u\n",
+           ri->dump_header, r->prev_dom, r->prev_vcpu,
+           r->next_dom, r->next_vcpu);
+}
+
 void sched_switch_process(struct pcpu_info *p)
 {
     struct vcpu_data *prev, *next;
@@ -7449,10 +7292,7 @@ void sched_switch_process(struct pcpu_info *p)
     } * r = (typeof(r))ri->d;
 
     if(opt.dump_all)
-        printf("%s sched_switch prev d%uv%u next d%uv%u\n",
-               ri->dump_header,
-               r->prev_dom, r->prev_vcpu,
-               r->next_dom, r->next_vcpu);
+        dump_sched_switch(ri);
 
     if(r->prev_vcpu > MAX_CPUS)
     {
@@ -7547,7 +7387,6 @@ void sched_summary_vcpu(struct vcpu_data *v)
             }
         }
     }
-    print_cpi_summary(&v->cpi);
     print_cpu_affinity(&v->cpu_affinity_all, " cpu affinity");
     for ( i = 0; i < MAX_CPUS ; i++)
     {
@@ -7568,6 +7407,14 @@ void sched_summary_domain(struct domain_data *d)
     }
 }
 
+void dump_sched_vcpu_action(struct record_info *ri, const char *action)
+{
+    struct {
+        unsigned int domid, vcpuid;
+    } *r = (typeof(r))ri->d;
+
+    printf(" %s %s d%uv%u\n", ri->dump_header, action, r->domid, r->vcpuid);
+}
 
 void sched_process(struct pcpu_info *p)
 {
@@ -7582,13 +7429,512 @@ void sched_process(struct pcpu_info *p)
         default:
             process_generic(&p->ri);
         }
-    } else {
-        if(ri->evt.sub == 1)
-            sched_runstate_process(p);
-        else {
-            UPDATE_VOLUME(p, sched_verbose, ri->size);
+        return;
+    }
+
+    if(ri->evt.sub == 1) {
+        /* TRC_SCHED_MIN */
+        sched_runstate_process(p);
+    } else if (ri->evt.sub == 8) {
+        /* TRC_SCHED_VERBOSE */
+        switch(ri->event)
+        {
+        case TRC_SCHED_DOM_ADD:
+            if(opt.dump_all) {
+                struct {
+                    unsigned int domid;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s sched_init_domain d%u\n", ri->dump_header, r->domid);
+            }
+            break;
+        case TRC_SCHED_DOM_REM:
+            if(opt.dump_all) {
+                struct {
+                    unsigned int domid, vcpuid;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s sched_destroy_domain d%u\n", ri->dump_header, r->domid);
+            }
+            break;
+        case TRC_SCHED_SLEEP:
+            if(opt.dump_all)
+                dump_sched_vcpu_action(ri, "vcpu_sleep");
+            break;
+        case TRC_SCHED_WAKE:
+            if(opt.dump_all)
+                dump_sched_vcpu_action(ri, "vcpu_wake");
+            break;
+        case TRC_SCHED_YIELD:
+            if(opt.dump_all)
+                dump_sched_vcpu_action(ri, "vcpu_yield");
+            break;
+        case TRC_SCHED_BLOCK:
+            if(opt.dump_all)
+                dump_sched_vcpu_action(ri, "vcpu_block");
+            break;
+        case TRC_SCHED_SHUTDOWN:
+        case TRC_SCHED_SHUTDOWN_CODE:
+            if(opt.dump_all) {
+                struct {
+                    unsigned int domid, vcpuid, reason;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s %s d%uv%u, reason = %u\n", ri->dump_header,
+                       ri->event == TRC_SCHED_SHUTDOWN ? "sched_shutdown" :
+                       "sched_shutdown_code", r->domid, r->vcpuid, r->reason);
+            }
+            break;
+        case TRC_SCHED_ADJDOM:
+            if(opt.dump_all) {
+                struct {
+                    unsigned int domid;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s sched_adjust d%u\n", ri->dump_header, r->domid);
+            }
+            break;
+        case TRC_SCHED_SWITCH:
+            if(opt.dump_all)
+                dump_sched_switch(ri);
+            break;
+        case TRC_SCHED_SWITCH_INFPREV:
+            if(opt.dump_all) {
+                struct {
+                    unsigned int domid, vcpuid, runtime;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s sched_switch prev d%uv%d, run for %u.%uus\n",
+                       ri->dump_header, r->domid, r->vcpuid,
+                       r->runtime / 1000, r->runtime % 1000);
+            }
+            break;
+        case TRC_SCHED_SWITCH_INFNEXT:
+            if(opt.dump_all)
+            {
+                struct {
+                    unsigned int domid, vcpuid, rsince;
+                    int slice;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s sched_switch next d%uv%u", ri->dump_header,
+                       r->domid, r->vcpuid);
+                if ( r->rsince != 0 )
+                    printf(", was runnable for %u.%uus", r->rsince / 1000,
+                           r->rsince % 1000);
+                if ( r->slice > 0 )
+                    printf(", next slice %u.%uus", r->slice / 1000,
+                           r->slice % 1000);
+                printf("\n");
+            }
+            break;
+        case TRC_SCHED_CTL:
+        case TRC_SCHED_S_TIMER_FN:
+        case TRC_SCHED_T_TIMER_FN:
+        case TRC_SCHED_DOM_TIMER_FN:
+            break;
+        default:
             process_generic(&p->ri);
         }
+    } else if(ri->evt.sub == 2) {
+        /* TRC_SCHED_CLASS */
+        switch(ri->event)
+        {
+        /* CREDIT (TRC_CSCHED_xxx) */
+        case TRC_SCHED_CLASS_EVT(CSCHED, 1): /* SCHED_TASKLET */
+            if(opt.dump_all)
+                printf(" %s csched:sched_tasklet\n", ri->dump_header);
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED, 2): /* ACCOUNT_START */
+        case TRC_SCHED_CLASS_EVT(CSCHED, 3): /* ACCOUNT_STOP  */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int domid, vcpuid, actv_cnt;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched:acct_%s d%uv%u, active_vcpus %u\n",
+                       ri->dump_header,
+                       ri->event == TRC_SCHED_CLASS_EVT(CSCHED, 2) ?
+                       "start" : "stop",
+                       r->domid, r->vcpuid,
+                       r->actv_cnt);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED, 4): /* STOLEN_VCPU   */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int peer_cpu, domid, vcpuid;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched:stolen_vcpu d%uv%u from cpu %u\n",
+                       ri->dump_header, r->domid, r->vcpuid, r->peer_cpu);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED, 5): /* PICKED_CPU    */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int domid, vcpuid, cpu;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched:pick_cpu %u for d%uv%u\n",
+                       ri->dump_header, r->cpu, r->domid, r->vcpuid);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED, 6): /* TICKLE        */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int cpu;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched:runq_tickle, cpu %u\n",
+                       ri->dump_header, r->cpu);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED, 7): /* BOOST_START   */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int domid, vcpuid;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched: d%uv%u boosted\n",
+                       ri->dump_header, r->domid, r->vcpuid);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED, 8): /* BOOST_END     */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int domid, vcpuid;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched: d%uv%u unboosted\n",
+                       ri->dump_header, r->domid, r->vcpuid);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED, 9): /* SCHEDULE      */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int cpu:16, tasklet:8, idle:8;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched:schedule cpu %u, %s%s\n",
+                       ri->dump_header, r->cpu,
+                       r->tasklet ? ", tasklet scheduled" : "",
+                       r->idle ? ", idle" : ", busy");
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED, 10): /* RATELIMIT     */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int vcpuid:16, domid:16;
+                    unsigned int runtime;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched:ratelimit, d%uv%u run only %u.%uus\n",
+                       ri->dump_header, r->domid, r->vcpuid,
+                       r->runtime / 1000, r->runtime % 1000);
+            }
+            break;
+        /* CREDIT 2 (TRC_CSCHED2_xxx) */
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 1): /* TICK              */
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 4): /* CREDIT_ADD        */
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 2): /* RUNQ_POS          */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int vcpuid:16, domid:16, pos;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:runq_insert d%uv%u, position %u\n",
+                       ri->dump_header, r->domid, r->vcpuid, r->pos);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 3): /* CREDIT_BURN       */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int vcpuid:16, domid:16, credit;
+                    int delta;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:burn_credits d%uv%u, credit = %u, delta = %d\n",
+                       ri->dump_header, r->domid, r->vcpuid,
+                       r->credit, r->delta);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 5): /* TICKLE_CHECK      */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int vcpuid:16, domid:16;
+                    unsigned int credit;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:tickle_check d%uv%u, credit = %u\n",
+                       ri->dump_header, r->domid, r->vcpuid, r->credit);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 6): /* TICKLE            */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int cpu:16;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:runq_tickle cpu %u\n",
+                       ri->dump_header, r->cpu);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 7):  /* CREDIT_RESET     */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int vcpuid:16, domid:16;
+                    unsigned int credit_start, credit_end;
+                    unsigned int multiplier;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:reset_credits d%uv%u, "
+                       "credit_start = %u, credit_end = %u, mult = %u\n",
+                       ri->dump_header, r->domid, r->vcpuid,
+                       r->credit_start, r->credit_end, r->multiplier);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 8):  /* SCHED_TASKLET    */
+            if(opt.dump_all)
+                printf(" %s csched2:sched_tasklet\n", ri->dump_header);
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 9):  /* UPDATE_LOAD      */
+            if(opt.dump_all)
+                printf(" %s csched2:update_load\n", ri->dump_header);
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 10): /* RUNQ_ASSIGN      */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int vcpuid:16, domid:16;
+                    unsigned int rqi:16;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:runq_assign d%uv%u on rq# %u\n",
+                       ri->dump_header, r->domid, r->vcpuid, r->rqi);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 11): /* UPDATE_VCPU_LOAD */
+            if(opt.dump_all) {
+                struct {
+                    uint64_t vcpuload;
+                    unsigned int vcpuid:16, domid:16;
+                    unsigned int shift;
+                } *r = (typeof(r))ri->d;
+                double vcpuload;
+
+                vcpuload = (r->vcpuload * 100.0) / (1ULL << r->shift);
+
+                printf(" %s csched2:update_vcpu_load d%uv%u, "
+                       "vcpu_load = %4.3f%% (%"PRIu64")\n",
+                       ri->dump_header, r->domid, r->vcpuid, vcpuload,
+                       r->vcpuload);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 12): /* UPDATE_RUNQ_LOAD */
+            if(opt.dump_all) {
+                struct {
+                    uint64_t rq_avgload, b_avgload;
+                    unsigned int rq_load:16, rq_id:8, shift:8;
+                } *r = (typeof(r))ri->d;
+                double avgload, b_avgload;
+
+                avgload = (r->rq_avgload * 100.0) / (1ULL << r->shift);
+                b_avgload = (r->b_avgload * 100.0) / (1ULL << r->shift);
+
+                printf(" %s csched2:update_rq_load rq# %u, load = %u, "
+                       "avgload = %4.3f%% (%"PRIu64"), "
+                       "b_avgload = %4.3f%% (%"PRIu64")\n",
+                       ri->dump_header, r->rq_id, r->rq_load,
+                       avgload, r->rq_avgload, b_avgload, r->b_avgload);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 13): /* TICKLE_NEW       */
+            if (opt.dump_all) {
+                struct {
+                    unsigned vcpuid:16, domid:16;
+                    unsigned processor, credit;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:runq_tickle_new d%uv%u, "
+                       "processor = %u, credit = %u\n",
+                       ri->dump_header, r->domid, r->vcpuid,
+                       r->processor, r->credit);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 14): /* RUNQ_MAX_WEIGHT  */
+            if (opt.dump_all) {
+                struct {
+                    unsigned rqi:16, max_weight:16;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:update_max_weight rq# %u, max_weight = %u\n",
+                       ri->dump_header, r->rqi, r->max_weight);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 15): /* MIGRATE          */
+            if (opt.dump_all) {
+                struct {
+                    unsigned vcpuid:16, domid:16;
+                    unsigned rqi:16, trqi:16;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:migrate d%uv%u rq# %u --> rq# %u\n",
+                       ri->dump_header, r->domid, r->vcpuid, r->rqi, r->trqi);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 16): /* LOAD_CHECK       */
+            if (opt.dump_all) {
+                struct {
+                    unsigned lrqi:16, orqi:16;
+                    unsigned load_delta;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:load_balance_check lrq# %u, orq# %u, "
+                       "delta = %u\n",
+                       ri->dump_header, r->lrqi, r->orqi, r->load_delta);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 17): /* LOAD_BALANCE     */
+            if (opt.dump_all) {
+                struct {
+                    uint64_t lb_avgload, ob_avgload;
+                    unsigned lrqi:16, orqi:16;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:load_balance_begin lrq# %u, "
+                       "avg_load = %"PRIu64" -- orq# %u, avg_load = %"PRIu64"\n",
+                       ri->dump_header, r->lrqi, r->lb_avgload,
+                       r->orqi, r->ob_avgload);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 19): /* PICKED_CPU       */
+            if (opt.dump_all) {
+                struct {
+                    uint64_t b_avgload;
+                    unsigned vcpuid:16, domid:16;
+                    unsigned rqi:16, cpu:16;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:picked_cpu d%uv%u, rq# %u, cpu %u\n",
+                       ri->dump_header, r->domid, r->vcpuid, r->rqi, r->cpu);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 20): /* RUNQ_CANDIDATE   */
+            if (opt.dump_all) {
+                struct {
+                    unsigned vcpuid:16, domid:16;
+                    unsigned tickled_cpu, skipped;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:runq_candidate d%uv%u, "
+                       "%u vcpus skipped, ",
+                       ri->dump_header, r->domid, r->vcpuid,
+                       r->skipped);
+                if (r->tickled_cpu == (unsigned)-1)
+                    printf("no cpu was tickled\n");
+                else
+                    printf("cpu %u was tickled\n", r->tickled_cpu);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 21): /* SCHEDULE         */
+            if (opt.dump_all) {
+                struct {
+                    unsigned cpu:16, rqi:16;
+                    unsigned tasklet:8, idle:8, smt_idle:8, tickled:8;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:schedule cpu %u, rq# %u%s%s%s%s\n",
+                       ri->dump_header, r->cpu, r->rqi,
+                       r->tasklet ? ", tasklet scheduled" : "",
+                       r->idle ? ", idle" : ", busy",
+                       r->idle ? (r->smt_idle ? ", SMT idle" : ", SMT busy") : "",
+                       r->tickled ? ", tickled" : ", not tickled");
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(CSCHED2, 22): /* RATELIMIT        */
+            if (opt.dump_all) {
+                struct {
+                    unsigned int vcpuid:16, domid:16;
+                    unsigned int runtime;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s csched2:ratelimit, d%uv%u run only %u.%uus\n",
+                       ri->dump_header, r->domid, r->vcpuid,
+                       r->runtime / 1000, r->runtime % 1000);
+            }
+            break;
+        /* RTDS (TRC_RTDS_xxx) */
+        case TRC_SCHED_CLASS_EVT(RTDS, 1): /* TICKLE           */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int cpu:16;
+                } *r = (typeof(r))ri->d;
+
+                printf(" %s rtds:runq_tickle cpu %u\n",
+                       ri->dump_header, r->cpu);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(RTDS, 2): /* RUNQ_PICK        */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int vcpuid:16, domid:16;
+                    uint64_t cur_dl, cur_bg;
+                } __attribute__((packed)) *r = (typeof(r))ri->d;
+
+                printf(" %s rtds:runq_pick d%uv%u, deadline = %"PRIu64", "
+                       "budget = %"PRIu64"\n", ri->dump_header,
+                       r->domid, r->vcpuid, r->cur_dl, r->cur_bg);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(RTDS, 3): /* BUDGET_BURN      */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int vcpuid:16, domid:16;
+                    uint64_t cur_bg;
+                    int delta;
+                } __attribute__((packed)) *r = (typeof(r))ri->d;
+
+                printf(" %s rtds:burn_budget d%uv%u, budget = %"PRIu64", "
+                       "delta = %d\n", ri->dump_header, r->domid,
+                       r->vcpuid, r->cur_bg, r->delta);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(RTDS, 4): /* BUDGET_REPLENISH */
+            if(opt.dump_all) {
+                struct {
+                    unsigned int vcpuid:16, domid:16;
+                    uint64_t cur_dl, cur_bg;
+                } __attribute__((packed)) *r = (typeof(r))ri->d;
+
+                printf(" %s rtds:repl_budget d%uv%u, deadline = %"PRIu64", "
+                       "budget = %"PRIu64"\n", ri->dump_header,
+                       r->domid, r->vcpuid, r->cur_dl, r->cur_bg);
+            }
+            break;
+        case TRC_SCHED_CLASS_EVT(RTDS, 5): /* SCHED_TASKLET    */
+            if(opt.dump_all)
+                printf(" %s rtds:sched_tasklet\n", ri->dump_header);
+            break;
+        case TRC_SCHED_CLASS_EVT(RTDS, 6): /* SCHEDULE         */
+            if (opt.dump_all) {
+                struct {
+                    unsigned cpu:16, tasklet:8, idle:4, tickled:4;
+                } __attribute__((packed)) *r = (typeof(r))ri->d;
+
+                printf(" %s rtds:schedule cpu %u, %s%s%s\n",
+                       ri->dump_header, r->cpu,
+                       r->tasklet ? ", tasklet scheduled" : "",
+                       r->idle ? ", idle" : ", busy",
+                       r->tickled ? ", tickled" : ", not tickled");
+            }
+            break;
+        default:
+            process_generic(ri);
+        }
+    } else {
+        UPDATE_VOLUME(p, sched_verbose, ri->size);
+        process_generic(&p->ri);
     }
 }
 
@@ -8148,6 +8494,30 @@ void hw_process(struct pcpu_info *p)
     }
 
 }
+
+#define TRC_DOM0_SUB_DOMOPS 1
+void dom0_process(struct pcpu_info *p)
+{
+    struct record_info *ri = &p->ri;
+
+    switch(ri->evt.sub)
+    {
+    case TRC_DOM0_SUB_DOMOPS:
+        if(opt.dump_all) {
+            struct {
+                unsigned int domid;
+            } *r = (typeof(r))ri->d;
+
+        printf(" %s %s domain d%u\n", ri->dump_header,
+               ri->event == TRC_DOM0_DOM_ADD ? "creating" : "destroying",
+               r->domid);
+        }
+        break;
+    default:
+        process_generic(&p->ri);
+    }
+}
+
 /* ---- Base ----- */
 void dump_generic(FILE * f, struct record_info *ri)
 {
@@ -8984,6 +9354,8 @@ void process_record(struct pcpu_info *p) {
             hw_process(p);
             break;
         case TRC_DOM0OP_MAIN:
+            dom0_process(p);
+            break;
         default:
             process_generic(ri);
         }
@@ -9042,7 +9414,7 @@ void progress_init(void) {
         opt.progress = 0;
     }
 
-    if( (G.progress.out = fdopen(G.progress.pipe[1], "w")) < 0 ) {
+    if( (G.progress.out = fdopen(G.progress.pipe[1], "w")) == NULL ) {
         fprintf(stderr, "%s: could not fdopen pipe: %s, disabling progress bar\n",
                 __func__, strerror(errno));
         opt.progress = 0;
@@ -9528,7 +9900,6 @@ enum {
     OPT_WITH_MMIO_ENUMERATION,
     OPT_WITH_INTERRUPT_EIP_ENUMERATION,
     OPT_SCATTERPLOT_INTERRUPT_EIP,
-    OPT_SCATTERPLOT_CPI,
     OPT_SCATTERPLOT_UNPIN_PROMOTE,
     OPT_SCATTERPLOT_CR3_SWITCH,
     OPT_SCATTERPLOT_WAKE_TO_HALT,
@@ -9555,6 +9926,7 @@ enum {
     OPT_SHOW_DEFAULT_DOMAIN_SUMMARY,
     OPT_MMIO_ENUMERATION_SKIP_VGA,
     OPT_SAMPLE_SIZE,
+    OPT_SAMPLE_MAX,
     OPT_REPORT_PCPU,
     /* Guest info */
     OPT_DEFAULT_GUEST_PAGING_LEVELS,
@@ -9737,6 +10109,14 @@ error_t cmd_parser(int key, char *arg, struct argp_state *state)
             argp_usage(state);
         break;
     }
+    case OPT_SAMPLE_MAX:
+    {
+        char * inval;
+        opt.sample_max = (int)strtol(arg, &inval, 0);
+        if( inval == arg )
+            argp_usage(state);
+        break;
+    }
     case OPT_MMIO_ENUMERATION_SKIP_VGA:
     {
         char * inval;
@@ -9764,10 +10144,6 @@ error_t cmd_parser(int key, char *arg, struct argp_state *state)
             argp_usage(state);
     }
     break;
-    case OPT_SCATTERPLOT_CPI:
-        G.output_defined = 1;
-        opt.scatterplot_cpi=1;
-        break;
     case OPT_SCATTERPLOT_UNPIN_PROMOTE:
         G.output_defined = 1;
         opt.scatterplot_unpin_promote=1;
@@ -10147,11 +10523,6 @@ const struct argp_option cmd_opts[] =  {
       .group = OPT_GROUP_EXTRA,
       .doc = "Output a scatterplot of vmexit cycles for external interrupts of the given vector as a funciton of time.", },
 
-    { .name = "scatterplot-cpi",
-      .key = OPT_SCATTERPLOT_CPI,
-      .group = OPT_GROUP_EXTRA,
-      .doc = "Output scatterplot of cpi.", },
-
     { .name = "scatterplot-unpin-promote",
       .key = OPT_SCATTERPLOT_UNPIN_PROMOTE,
       .group = OPT_GROUP_EXTRA,
@@ -10283,8 +10654,15 @@ const struct argp_option cmd_opts[] =  {
       .key = OPT_SAMPLE_SIZE,
       .arg = "size",
       .group = OPT_GROUP_SUMMARY,
-      .doc = "Keep [size] samples for percentile purposes.  Enter 0 to " \
-      "disable.  Default 10240.", },
+      .doc = "Start with [size] samples for percentile purposes.  Enter 0 to" \
+      "disable.  Default 1024.", },
+
+    { .name = "sample-max",
+      .key = OPT_SAMPLE_MAX,
+      .arg = "size",
+      .group = OPT_GROUP_SUMMARY,
+      .doc = "Do not allow sample to grow beyond [size] samples for percentile"\
+      " purposes.  Enter 0 for no limit.", },
 
     { .name = "summary",
       .key = OPT_SUMMARY,

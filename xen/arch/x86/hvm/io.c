@@ -35,6 +35,7 @@
 #include <asm/shadow.h>
 #include <asm/p2m.h>
 #include <asm/hvm/hvm.h>
+#include <asm/hvm/ioreq.h>
 #include <asm/hvm/support.h>
 #include <asm/hvm/vpt.h>
 #include <asm/hvm/vpic.h>
@@ -86,7 +87,7 @@ int handle_mmio(void)
 
     ASSERT(!is_pvh_vcpu(curr));
 
-    hvm_emulate_prepare(&ctxt, guest_cpu_user_regs());
+    hvm_emulate_init_once(&ctxt, guest_cpu_user_regs());
 
     rc = hvm_emulate_one(&ctxt);
 
@@ -113,7 +114,7 @@ int handle_mmio(void)
     return 1;
 }
 
-int handle_mmio_with_translation(unsigned long gva, unsigned long gpfn,
+int handle_mmio_with_translation(unsigned long gla, unsigned long gpfn,
                                  struct npfec access)
 {
     struct hvm_vcpu_io *vio = &current->arch.hvm_vcpu.hvm_io;
@@ -121,7 +122,7 @@ int handle_mmio_with_translation(unsigned long gva, unsigned long gpfn,
     vio->mmio_access = access.gla_valid &&
                        access.kind == npfec_kind_with_gla
                        ? access : (struct npfec){};
-    vio->mmio_gva = gva & PAGE_MASK;
+    vio->mmio_gla = gla & PAGE_MASK;
     vio->mmio_gpfn = gpfn;
     return handle_mmio();
 }
@@ -173,12 +174,12 @@ static bool_t dpci_portio_accept(const struct hvm_io_handler *handler,
                                  const ioreq_t *p)
 {
     struct vcpu *curr = current;
-    struct hvm_iommu *hd = domain_hvm_iommu(curr->domain);
+    const struct domain_iommu *dio = dom_iommu(curr->domain);
     struct hvm_vcpu_io *vio = &curr->arch.hvm_vcpu.hvm_io;
     struct g2m_ioport *g2m_ioport;
     unsigned int start, end;
 
-    list_for_each_entry( g2m_ioport, &hd->arch.g2m_ioport_list, list )
+    list_for_each_entry( g2m_ioport, &dio->arch.g2m_ioport_list, list )
     {
         start = g2m_ioport->gport;
         end = start + g2m_ioport->np;

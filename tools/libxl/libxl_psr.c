@@ -16,6 +16,7 @@
 #include "libxl_osdeps.h" /* must come before any other headers */
 #include "libxl_internal.h"
 
+#include <xen-tools/libs.h>
 
 #define IA32_QM_CTR_ERROR_MASK         (0x3ul << 62)
 
@@ -86,6 +87,9 @@ static void libxl__psr_cat_log_err_msg(libxl__gc *gc, int err)
         break;
     case EEXIST:
         msg = "The same CBM is already set to this domain";
+        break;
+    case ENXIO:
+        msg = "Unable to set code or data CBM when CDP is disabled";
         break;
 
     default:
@@ -290,6 +294,13 @@ out:
     return rc;
 }
 
+static inline xc_psr_cat_type libxl__psr_cbm_type_to_libxc_psr_cat_type(
+    libxl_psr_cbm_type type)
+{
+    BUILD_BUG_ON(sizeof(libxl_psr_cbm_type) != sizeof(xc_psr_cat_type));
+    return (xc_psr_cat_type)type;
+}
+
 int libxl_psr_cat_set_cbm(libxl_ctx *ctx, uint32_t domid,
                           libxl_psr_cbm_type type, libxl_bitmap *target_map,
                           uint64_t cbm)
@@ -305,9 +316,14 @@ int libxl_psr_cat_set_cbm(libxl_ctx *ctx, uint32_t domid,
     }
 
     libxl_for_each_set_bit(socketid, *target_map) {
+        xc_psr_cat_type xc_type;
+
         if (socketid >= nr_sockets)
             break;
-        if (xc_psr_cat_set_domain_data(ctx->xch, domid, type, socketid, cbm)) {
+
+        xc_type = libxl__psr_cbm_type_to_libxc_psr_cat_type(type);
+        if (xc_psr_cat_set_domain_data(ctx->xch, domid, xc_type,
+                                       socketid, cbm)) {
             libxl__psr_cat_log_err_msg(gc, errno);
             rc = ERROR_FAIL;
         }
@@ -324,8 +340,10 @@ int libxl_psr_cat_get_cbm(libxl_ctx *ctx, uint32_t domid,
 {
     GC_INIT(ctx);
     int rc = 0;
+    xc_psr_cat_type xc_type = libxl__psr_cbm_type_to_libxc_psr_cat_type(type);
 
-    if (xc_psr_cat_get_domain_data(ctx->xch, domid, type, target, cbm_r)) {
+    if (xc_psr_cat_get_domain_data(ctx->xch, domid, xc_type,
+                                   target, cbm_r)) {
         libxl__psr_cat_log_err_msg(gc, errno);
         rc = ERROR_FAIL;
     }
@@ -363,7 +381,7 @@ int libxl_psr_cat_get_l3_info(libxl_ctx *ctx, libxl_psr_cat_info **info,
     libxl_for_each_set_bit(socketid, socketmap) {
         ptr[i].id = socketid;
         if (xc_psr_cat_get_l3_info(ctx->xch, socketid, &ptr[i].cos_max,
-                                   &ptr[i].cbm_len)) {
+                                   &ptr[i].cbm_len, &ptr[i].cdp_enabled)) {
             libxl__psr_cat_log_err_msg(gc, errno);
             rc = ERROR_FAIL;
             free(ptr);

@@ -3,10 +3,12 @@
 
 #include <asm/system.h>
 #include <asm/spinlock.h>
+#include <asm/types.h>
+#include <xen/percpu.h>
 
 #ifndef NDEBUG
 struct lock_debug {
-    int irq_safe; /* +1: IRQ-safe; 0: not IRQ-safe; -1: don't know yet */
+    s16 irq_safe; /* +1: IRQ-safe; 0: not IRQ-safe; -1: don't know yet */
 };
 #define _LOCK_DEBUG { -1 }
 void spin_debug_enable(void);
@@ -18,7 +20,7 @@ struct lock_debug { };
 #define spin_debug_disable() ((void)0)
 #endif
 
-#ifdef LOCK_PROFILE
+#ifdef CONFIG_LOCK_PROFILE
 
 #include <public/sysctl.h>
 
@@ -77,10 +79,10 @@ struct lock_profile_qhead {
 
 #define _LOCK_PROFILE(name) { 0, #name, &name, 0, 0, 0, 0, 0 }
 #define _LOCK_PROFILE_PTR(name)                                               \
-    static struct lock_profile *__lock_profile_##name                         \
+    static struct lock_profile * const __lock_profile_##name                  \
     __used_section(".lockprofile.data") =                                     \
     &__lock_profile_data_##name
-#define _SPIN_LOCK_UNLOCKED(x) { { 0 }, 0xfffu, 0, _LOCK_DEBUG, x }
+#define _SPIN_LOCK_UNLOCKED(x) { { 0 }, SPINLOCK_NO_CPU, 0, _LOCK_DEBUG, x }
 #define SPIN_LOCK_UNLOCKED _SPIN_LOCK_UNLOCKED(NULL)
 #define DEFINE_SPINLOCK(l)                                                    \
     spinlock_t l = _SPIN_LOCK_UNLOCKED(NULL);                                 \
@@ -116,7 +118,7 @@ extern void spinlock_profile_reset(unsigned char key);
 
 struct lock_profile_qhead { };
 
-#define SPIN_LOCK_UNLOCKED { { 0 }, 0xfffu, 0, _LOCK_DEBUG }
+#define SPIN_LOCK_UNLOCKED { { 0 }, SPINLOCK_NO_CPU, 0, _LOCK_DEBUG }
 #define DEFINE_SPINLOCK(l) spinlock_t l = SPIN_LOCK_UNLOCKED
 
 #define spin_lock_init_prof(s, l) spin_lock_init(&((s)->l))
@@ -138,26 +140,17 @@ typedef union {
 typedef struct spinlock {
     spinlock_tickets_t tickets;
     u16 recurse_cpu:12;
+#define SPINLOCK_NO_CPU 0xfffu
     u16 recurse_cnt:4;
+#define SPINLOCK_MAX_RECURSE 0xfu
     struct lock_debug debug;
-#ifdef LOCK_PROFILE
+#ifdef CONFIG_LOCK_PROFILE
     struct lock_profile *profile;
 #endif
 } spinlock_t;
 
 
 #define spin_lock_init(l) (*(l) = (spinlock_t)SPIN_LOCK_UNLOCKED)
-
-typedef struct {
-    volatile uint32_t lock;
-    struct lock_debug debug;
-} rwlock_t;
-
-#define RW_WRITE_FLAG (1u<<31)
-
-#define RW_LOCK_UNLOCKED { 0, _LOCK_DEBUG }
-#define DEFINE_RWLOCK(l) rwlock_t l = RW_LOCK_UNLOCKED
-#define rwlock_init(l) (*(l) = (rwlock_t)RW_LOCK_UNLOCKED)
 
 void _spin_lock(spinlock_t *lock);
 void _spin_lock_irq(spinlock_t *lock);
@@ -174,27 +167,6 @@ void _spin_barrier(spinlock_t *lock);
 int _spin_trylock_recursive(spinlock_t *lock);
 void _spin_lock_recursive(spinlock_t *lock);
 void _spin_unlock_recursive(spinlock_t *lock);
-
-void _read_lock(rwlock_t *lock);
-void _read_lock_irq(rwlock_t *lock);
-unsigned long _read_lock_irqsave(rwlock_t *lock);
-
-void _read_unlock(rwlock_t *lock);
-void _read_unlock_irq(rwlock_t *lock);
-void _read_unlock_irqrestore(rwlock_t *lock, unsigned long flags);
-int _read_trylock(rwlock_t *lock);
-
-void _write_lock(rwlock_t *lock);
-void _write_lock_irq(rwlock_t *lock);
-unsigned long _write_lock_irqsave(rwlock_t *lock);
-int _write_trylock(rwlock_t *lock);
-
-void _write_unlock(rwlock_t *lock);
-void _write_unlock_irq(rwlock_t *lock);
-void _write_unlock_irqrestore(rwlock_t *lock, unsigned long flags);
-
-int _rw_is_locked(rwlock_t *lock);
-int _rw_is_write_locked(rwlock_t *lock);
 
 #define spin_lock(l)                  _spin_lock(l)
 #define spin_lock_irq(l)              _spin_lock_irq(l)
@@ -231,34 +203,5 @@ int _rw_is_write_locked(rwlock_t *lock);
 #define spin_trylock_recursive(l)     _spin_trylock_recursive(l)
 #define spin_lock_recursive(l)        _spin_lock_recursive(l)
 #define spin_unlock_recursive(l)      _spin_unlock_recursive(l)
-
-#define read_lock(l)                  _read_lock(l)
-#define read_lock_irq(l)              _read_lock_irq(l)
-#define read_lock_irqsave(l, f)                                 \
-    ({                                                          \
-        BUILD_BUG_ON(sizeof(f) != sizeof(unsigned long));       \
-        ((f) = _read_lock_irqsave(l));                          \
-    })
-
-#define read_unlock(l)                _read_unlock(l)
-#define read_unlock_irq(l)            _read_unlock_irq(l)
-#define read_unlock_irqrestore(l, f)  _read_unlock_irqrestore(l, f)
-#define read_trylock(l)               _read_trylock(l)
-
-#define write_lock(l)                 _write_lock(l)
-#define write_lock_irq(l)             _write_lock_irq(l)
-#define write_lock_irqsave(l, f)                                \
-    ({                                                          \
-        BUILD_BUG_ON(sizeof(f) != sizeof(unsigned long));       \
-        ((f) = _write_lock_irqsave(l));                         \
-    })
-#define write_trylock(l)              _write_trylock(l)
-
-#define write_unlock(l)               _write_unlock(l)
-#define write_unlock_irq(l)           _write_unlock_irq(l)
-#define write_unlock_irqrestore(l, f) _write_unlock_irqrestore(l, f)
-
-#define rw_is_locked(l)               _rw_is_locked(l)
-#define rw_is_write_locked(l)         _rw_is_write_locked(l)
 
 #endif /* __SPINLOCK_H__ */

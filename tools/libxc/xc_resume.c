@@ -108,6 +108,28 @@ static int xc_domain_resume_cooperative(xc_interface *xch, uint32_t domid)
     return do_domctl(xch, &domctl);
 }
 
+#if defined(__i386__) || defined(__x86_64__)
+static int xc_domain_resume_hvm(xc_interface *xch, uint32_t domid)
+{
+    DECLARE_DOMCTL;
+
+    /*
+     * The domctl XEN_DOMCTL_resumedomain unpause each vcpu. After
+     * the domctl, the guest will run.
+     *
+     * If it is PVHVM, the guest called the hypercall
+     *    SCHEDOP_shutdown:SHUTDOWN_suspend
+     * to suspend itself. We don't modify the return code, so the PV driver
+     * will disconnect and reconnect.
+     *
+     * If it is a HVM, the guest will continue running.
+     */
+    domctl.cmd = XEN_DOMCTL_resumedomain;
+    domctl.domain = domid;
+    return do_domctl(xch, &domctl);
+}
+#endif
+
 static int xc_domain_resume_any(xc_interface *xch, uint32_t domid)
 {
     DECLARE_DOMCTL;
@@ -137,10 +159,7 @@ static int xc_domain_resume_any(xc_interface *xch, uint32_t domid)
      */
 #if defined(__i386__) || defined(__x86_64__)
     if ( info.hvm )
-    {
-        ERROR("Cannot resume uncooperative HVM guests");
-        return rc;
-    }
+        return xc_domain_resume_hvm(xch, domid);
 
     if ( xc_domain_get_guest_width(xch, domid, &dinfo->guest_width) != 0 )
     {
@@ -248,11 +267,20 @@ out:
 /*
  * Resume execution of a domain after suspend shutdown.
  * This can happen in one of two ways:
- *  1. Resume with special return code.
- *  2. Reset guest environment so it believes it is resumed in a new
- *     domain context.
+ *  1. (fast=1) Resume the guest without resetting the domain environment.
+ *     The guests's call to SCHEDOP_shutdown(SHUTDOWN_suspend) will return 1.
+ *
+ *  2. (fast=0) Reset guest environment so it believes it is resumed in a new
+ *     domain context. The guests's call to SCHEDOP_shutdown(SHUTDOWN_suspend)
+ *     will return 0.
+ *
+ * (1) should only by used for guests which can handle the special return
+ * code. Also note that the insertion of the return code is quite interesting
+ * and that the guest MUST be paused - otherwise we would be corrupting
+ * the guest vCPU state.
+ *
  * (2) should be used only for guests which cannot handle the special
- * new return code. (1) is always safe (but slower).
+ * new return code - and it is always safe (but slower).
  */
 int xc_domain_resume(xc_interface *xch, uint32_t domid, int fast)
 {

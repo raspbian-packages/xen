@@ -26,8 +26,9 @@ headers-$(CONFIG_X86)     += compat/arch-x86/pmu.h
 headers-$(CONFIG_X86)     += compat/arch-x86/xen-mca.h
 headers-$(CONFIG_X86)     += compat/arch-x86/xen.h
 headers-$(CONFIG_X86)     += compat/arch-x86/xen-$(compat-arch-y).h
+headers-$(CONFIG_X86)     += compat/hvm/hvm_vcpu.h
 headers-y                 += compat/arch-$(compat-arch-y).h compat/pmu.h compat/xlat.h
-headers-$(FLASK_ENABLE)   += compat/xsm/flask_op.h
+headers-$(CONFIG_FLASK)   += compat/xsm/flask_op.h
 
 cppflags-y                := -include public/xen-compat.h
 cppflags-$(CONFIG_X86)    += -m32
@@ -58,7 +59,7 @@ compat/%.h: compat/%.i Makefile $(BASEDIR)/tools/compat-build-header.py
 	mv -f $@.new $@
 
 compat/%.i: compat/%.c Makefile
-	$(CPP) $(filter-out -M% .%.d -include %/include/xen/config.h,$(CFLAGS)) $(cppflags-y) -o $@ $<
+	$(CPP) $(filter-out -M% %.d -include %/include/xen/config.h,$(CFLAGS)) $(cppflags-y) -o $@ $<
 
 compat/%.c: public/%.h xlat.lst Makefile $(BASEDIR)/tools/compat-build-source.py
 	mkdir -p $(@D)
@@ -116,5 +117,15 @@ headers++.chk: $(PUBLIC_HEADERS) Makefile
 
 endif
 
+ifeq ($(XEN_TARGET_ARCH),x86_64)
+
+$(BASEDIR)/include/asm-x86/cpuid-autogen.h: $(BASEDIR)/include/public/arch-x86/cpufeatureset.h $(BASEDIR)/tools/gen-cpuid.py FORCE
+	$(PYTHON) $(BASEDIR)/tools/gen-cpuid.py -i $^ -o $@.new
+	$(call move-if-changed,$@.new,$@)
+
+all: $(BASEDIR)/include/asm-x86/cpuid-autogen.h
+endif
+
 clean::
 	rm -rf compat headers.chk headers++.chk
+	rm -f $(BASEDIR)/include/asm-x86/cpuid-autogen.h

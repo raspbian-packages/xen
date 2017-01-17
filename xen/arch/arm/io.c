@@ -20,57 +20,144 @@
 #include <xen/lib.h>
 #include <xen/spinlock.h>
 #include <xen/sched.h>
+#include <xen/sort.h>
 #include <asm/current.h>
 #include <asm/mmio.h>
 
-int handle_mmio(mmio_info_t *info)
+static int handle_read(const struct mmio_handler *handler, struct vcpu *v,
+                       mmio_info_t *info)
 {
-    struct vcpu *v = current;
-    int i;
-    const struct mmio_handler *mmio_handler;
-    const struct io_handler *io_handlers = &v->domain->arch.io_handlers;
+    const struct hsr_dabt dabt = info->dabt;
+    struct cpu_user_regs *regs = guest_cpu_user_regs();
+    /*
+     * Initialize to zero to avoid leaking data if there is an
+     * implementation error in the emulation (such as not correctly
+     * setting r).
+     */
+    register_t r = 0;
+    uint8_t size = (1 << dabt.size) * 8;
 
-    for ( i = 0; i < io_handlers->num_entries; i++ )
+    if ( !handler->ops->read(v, info, &r, handler->priv) )
+        return 0;
+
+    /*
+     * Sign extend if required.
+     * Note that we expect the read handler to have zeroed the bits
+     * outside the requested access size.
+     */
+    if ( dabt.sign && (r & (1UL << (size - 1))) )
     {
-        mmio_handler = &io_handlers->mmio_handlers[i];
-
-        if ( (info->gpa >= mmio_handler->addr) &&
-             (info->gpa < (mmio_handler->addr + mmio_handler->size)) )
-        {
-            return info->dabt.write ?
-                mmio_handler->mmio_handler_ops->write_handler(v, info) :
-                mmio_handler->mmio_handler_ops->read_handler(v, info);
-        }
+        /*
+         * We are relying on register_t using the same as
+         * an unsigned long in order to keep the 32-bit assembly
+         * code smaller.
+         */
+        BUILD_BUG_ON(sizeof(register_t) != sizeof(unsigned long));
+        r |= (~0UL) << size;
     }
+
+    set_user_reg(regs, dabt.reg, r);
+
+    return 1;
+}
+
+static int handle_write(const struct mmio_handler *handler, struct vcpu *v,
+                        mmio_info_t *info)
+{
+    const struct hsr_dabt dabt = info->dabt;
+    struct cpu_user_regs *regs = guest_cpu_user_regs();
+
+    return handler->ops->write(v, info, get_user_reg(regs, dabt.reg),
+                               handler->priv);
+}
+
+/* This function assumes that mmio regions are not overlapped */
+static int cmp_mmio_handler(const void *key, const void *elem)
+{
+    const struct mmio_handler *handler0 = key;
+    const struct mmio_handler *handler1 = elem;
+
+    if ( handler0->addr < handler1->addr )
+        return -1;
+
+    if ( handler0->addr > (handler1->addr + handler1->size) )
+        return 1;
 
     return 0;
 }
 
-void register_mmio_handler(struct domain *d,
-                           const struct mmio_handler_ops *handle,
-                           paddr_t addr, paddr_t size)
+static const struct mmio_handler *find_mmio_handler(struct domain *d,
+                                                    paddr_t gpa)
 {
-    struct io_handler *handler = &d->arch.io_handlers;
+    struct vmmio *vmmio = &d->arch.vmmio;
+    struct mmio_handler key = {.addr = gpa};
+    const struct mmio_handler *handler;
 
-    BUG_ON(handler->num_entries >= MAX_IO_HANDLER);
+    read_lock(&vmmio->lock);
+    handler = bsearch(&key, vmmio->handlers, vmmio->num_entries,
+                      sizeof(*handler), cmp_mmio_handler);
+    read_unlock(&vmmio->lock);
 
-    spin_lock(&handler->lock);
-
-    handler->mmio_handlers[handler->num_entries].mmio_handler_ops = handle;
-    handler->mmio_handlers[handler->num_entries].addr = addr;
-    handler->mmio_handlers[handler->num_entries].size = size;
-    dsb(ish);
-    handler->num_entries++;
-
-    spin_unlock(&handler->lock);
+    return handler;
 }
 
-int domain_io_init(struct domain *d)
+int handle_mmio(mmio_info_t *info)
 {
-   spin_lock_init(&d->arch.io_handlers.lock);
-   d->arch.io_handlers.num_entries = 0;
+    struct vcpu *v = current;
+    const struct mmio_handler *handler = NULL;
 
-   return 0;
+    handler = find_mmio_handler(v->domain, info->gpa);
+    if ( !handler )
+        return 0;
+
+    if ( info->dabt.write )
+        return handle_write(handler, v, info);
+    else
+        return handle_read(handler, v, info);
+}
+
+void register_mmio_handler(struct domain *d,
+                           const struct mmio_handler_ops *ops,
+                           paddr_t addr, paddr_t size, void *priv)
+{
+    struct vmmio *vmmio = &d->arch.vmmio;
+    struct mmio_handler *handler;
+
+    BUG_ON(vmmio->num_entries >= vmmio->max_num_entries);
+
+    write_lock(&vmmio->lock);
+
+    handler = &vmmio->handlers[vmmio->num_entries];
+
+    handler->ops = ops;
+    handler->addr = addr;
+    handler->size = size;
+    handler->priv = priv;
+
+    vmmio->num_entries++;
+
+    /* Sort mmio handlers in ascending order based on base address */
+    sort(vmmio->handlers, vmmio->num_entries, sizeof(struct mmio_handler),
+         cmp_mmio_handler, NULL);
+
+    write_unlock(&vmmio->lock);
+}
+
+int domain_io_init(struct domain *d, int max_count)
+{
+    rwlock_init(&d->arch.vmmio.lock);
+    d->arch.vmmio.num_entries = 0;
+    d->arch.vmmio.max_num_entries = max_count;
+    d->arch.vmmio.handlers = xzalloc_array(struct mmio_handler, max_count);
+    if ( !d->arch.vmmio.handlers )
+        return -ENOMEM;
+
+    return 0;
+}
+
+void domain_io_free(struct domain *d)
+{
+    xfree(d->arch.vmmio.handlers);
 }
 
 /*

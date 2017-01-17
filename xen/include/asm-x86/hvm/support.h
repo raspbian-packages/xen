@@ -25,7 +25,7 @@
 #include <xen/hvm/save.h>
 #include <asm/processor.h>
 
-#define HVM_DELIVER_NO_ERROR_CODE  -1
+#define HVM_DELIVER_NO_ERROR_CODE  (~0U)
 
 #ifndef NDEBUG
 #define DBG_LEVEL_0                 (1 << 0)
@@ -131,6 +131,7 @@ int hvm_msr_write_intercept(
     unsigned int msr, uint64_t msr_content, bool_t may_defer);
 int hvm_mov_to_cr(unsigned int cr, unsigned int gpr);
 int hvm_mov_from_cr(unsigned int cr, unsigned int gpr);
+void hvm_ud_intercept(struct cpu_user_regs *);
 
 #endif /* __ASM_X86_HVM_SUPPORT_H__ */
 

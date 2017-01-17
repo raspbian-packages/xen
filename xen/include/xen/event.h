@@ -126,6 +126,9 @@ void evtchn_check_pollers(struct domain *d, unsigned int port);
 
 void evtchn_2l_init(struct domain *d);
 
+/* Close all event channels and reset to 2-level ABI. */
+int evtchn_reset(struct domain *d);
+
 /*
  * Low-level event channel port ops.
  */
@@ -136,6 +139,11 @@ struct evtchn_port_ops {
     void (*unmask)(struct domain *d, struct evtchn *evtchn);
     bool_t (*is_pending)(struct domain *d, const struct evtchn *evtchn);
     bool_t (*is_masked)(struct domain *d, const struct evtchn *evtchn);
+    /*
+     * Is the port unavailable because it's still being cleaned up
+     * after being closed?
+     */
+    bool_t (*is_busy)(struct domain *d, evtchn_port_t port);
     int (*set_priority)(struct domain *d, struct evtchn *evtchn,
                         unsigned int priority);
     void (*print_state)(struct domain *d, const struct evtchn *evtchn);
@@ -176,6 +184,13 @@ static inline bool_t evtchn_port_is_masked(struct domain *d,
                                            const struct evtchn *evtchn)
 {
     return d->evtchn_port_ops->is_masked(d, evtchn);
+}
+
+static inline bool_t evtchn_port_is_busy(struct domain *d, evtchn_port_t port)
+{
+    if ( d->evtchn_port_ops->is_busy )
+        return d->evtchn_port_ops->is_busy(d, port);
+    return 0;
 }
 
 static inline int evtchn_port_set_priority(struct domain *d,

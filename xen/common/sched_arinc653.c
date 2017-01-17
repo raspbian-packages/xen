@@ -367,9 +367,10 @@ a653sched_init(struct scheduler *ops)
  * @param ops       Pointer to this instance of the scheduler structure
  */
 static void
-a653sched_deinit(const struct scheduler *ops)
+a653sched_deinit(struct scheduler *ops)
 {
     xfree(SCHED_PRIV(ops));
+    ops->sched_data = NULL;
 }
 
 /**
@@ -452,34 +453,6 @@ a653sched_free_vdata(const struct scheduler *ops, void *priv)
 
     xfree(av);
     update_schedule_vcpus(ops);
-}
-
-/**
- * This function allocates scheduler-specific data for a physical CPU
- *
- * We do not actually make use of any per-CPU data but the hypervisor expects
- * a non-NULL return value
- *
- * @param ops       Pointer to this instance of the scheduler structure
- *
- * @return          Pointer to the allocated data
- */
-static void *
-a653sched_alloc_pdata(const struct scheduler *ops, int cpu)
-{
-    /* return a non-NULL value to keep schedule.c happy */
-    return SCHED_PRIV(ops);
-}
-
-/**
- * This function frees scheduler-specific data for a physical CPU
- *
- * @param ops       Pointer to this instance of the scheduler structure
- */
-static void
-a653sched_free_pdata(const struct scheduler *ops, void *pcpu, int cpu)
-{
-    /* nop */
 }
 
 /**
@@ -667,7 +640,7 @@ a653sched_pick_cpu(const struct scheduler *ops, struct vcpu *vc)
      * If present, prefer vc's current processor, else
      * just find the first valid vcpu .
      */
-    online = cpupool_scheduler_cpumask(vc->domain->cpupool);
+    online = cpupool_domain_cpumask(vc->domain);
 
     cpu = cpumask_first(online);
 
@@ -676,6 +649,38 @@ a653sched_pick_cpu(const struct scheduler *ops, struct vcpu *vc)
         cpu = vc->processor;
 
     return cpu;
+}
+
+/**
+ * Xen scheduler callback to change the scheduler of a cpu
+ *
+ * @param new_ops   Pointer to this instance of the scheduler structure
+ * @param cpu       The cpu that is changing scheduler
+ * @param pdata     scheduler specific PCPU data (we don't have any)
+ * @param vdata     scheduler specific VCPU data of the idle vcpu
+ */
+static void
+a653_switch_sched(struct scheduler *new_ops, unsigned int cpu,
+                  void *pdata, void *vdata)
+{
+    struct schedule_data *sd = &per_cpu(schedule_data, cpu);
+    arinc653_vcpu_t *svc = vdata;
+
+    ASSERT(!pdata && svc && is_idle_vcpu(svc->vc));
+
+    idle_vcpu[cpu]->sched_priv = vdata;
+
+    per_cpu(scheduler, cpu) = new_ops;
+    per_cpu(schedule_data, cpu).sched_priv = NULL; /* no pdata */
+
+    /*
+     * (Re?)route the lock to its default location. We actually do not use
+     * it, but if we leave it pointing to where it does now (i.e., the
+     * runqueue lock for this PCPU in the default scheduler), we'd be
+     * causing unnecessary contention on that lock (in cases where it is
+     * shared among multiple PCPUs, like in Credit2 and RTDS).
+     */
+    sd->schedule_lock = &sd->_lock;
 }
 
 /**
@@ -724,7 +729,7 @@ a653sched_adjust_global(const struct scheduler *ops,
  * callback functions.
  * The symbol must be visible to the rest of Xen at link time.
  */
-const struct scheduler sched_arinc653_def = {
+static const struct scheduler sched_arinc653_def = {
     .name           = "ARINC 653 Scheduler",
     .opt_name       = "arinc653",
     .sched_id       = XEN_SCHEDULER_ARINC653,
@@ -735,9 +740,6 @@ const struct scheduler sched_arinc653_def = {
 
     .free_vdata     = a653sched_free_vdata,
     .alloc_vdata    = a653sched_alloc_vdata,
-
-    .free_pdata     = a653sched_free_pdata,
-    .alloc_pdata    = a653sched_alloc_pdata,
 
     .free_domdata   = a653sched_free_domdata,
     .alloc_domdata  = a653sched_alloc_domdata,
@@ -757,6 +759,8 @@ const struct scheduler sched_arinc653_def = {
 
     .pick_cpu       = a653sched_pick_cpu,
 
+    .switch_sched   = a653_switch_sched,
+
     .adjust         = NULL,
     .adjust_global  = a653sched_adjust_global,
 
@@ -766,6 +770,8 @@ const struct scheduler sched_arinc653_def = {
     .tick_suspend   = NULL,
     .tick_resume    = NULL,
 };
+
+REGISTER_SCHEDULER(sched_arinc653_def);
 
 /*
  * Local variables:

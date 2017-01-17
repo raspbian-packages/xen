@@ -34,21 +34,30 @@
 #include <xen/keyhandler.h>
 #include <xen/cpu.h>
 #include <xen/pfn.h>
+#include <xen/virtual_region.h>
 #include <xen/vmap.h>
 #include <xen/libfdt/libfdt.h>
+#include <xen/acpi.h>
+#include <asm/alternative.h>
 #include <asm/page.h>
 #include <asm/current.h>
 #include <asm/setup.h>
 #include <asm/gic.h>
+#include <asm/cpuerrata.h>
 #include <asm/cpufeature.h>
 #include <asm/platform.h>
 #include <asm/procinfo.h>
 #include <asm/setup.h>
 #include <xsm/xsm.h>
+#include <asm/acpi.h>
 
 struct bootinfo __initdata bootinfo;
 
 struct cpuinfo_arm __read_mostly boot_cpu_data;
+
+#ifdef CONFIG_ACPI
+bool_t __read_mostly acpi_disabled;
+#endif
 
 #ifdef CONFIG_ARM_32
 static unsigned long opt_xenheap_megabytes __initdata;
@@ -163,9 +172,11 @@ static void __init processor_id(void)
     }
 
     processor_setup();
+
+    check_local_cpu_errata();
 }
 
-static void dt_unreserved_regions(paddr_t s, paddr_t e,
+void dt_unreserved_regions(paddr_t s, paddr_t e,
                                   void (*cb)(paddr_t, paddr_t), int first)
 {
     int i, nr = fdt_num_mem_rsv(device_tree_flattened);
@@ -178,7 +189,7 @@ static void dt_unreserved_regions(paddr_t s, paddr_t e,
             /* If we can't read it, pretend it doesn't exist... */
             continue;
 
-        r_e += r_s; /* fdt_get_mem_rsc returns length */
+        r_e += r_s; /* fdt_get_mem_rsv returns length */
 
         if ( s < r_e && r_s < e )
         {
@@ -609,8 +620,6 @@ static void __init setup_mm(unsigned long dtb_paddr, size_t dtb_size)
        allocator. */
     init_xenheap_pages(pfn_to_paddr(xenheap_mfn_start),
                        pfn_to_paddr(boot_mfn_start));
-
-    end_boot_allocator();
 }
 #else /* CONFIG_ARM_64 */
 static void __init setup_mm(unsigned long dtb_paddr, size_t dtb_size)
@@ -678,8 +687,6 @@ static void __init setup_mm(unsigned long dtb_paddr, size_t dtb_size)
 
     setup_frametable_mappings(ram_start, ram_end);
     max_page = PFN_DOWN(ram_end);
-
-    end_boot_allocator();
 }
 #endif
 
@@ -719,6 +726,7 @@ void __init start_xen(unsigned long boot_phys_offset,
     set_current((struct vcpu *)0xfffff000); /* debug sanity */
     idle_vcpu[0] = current;
 
+    setup_virtual_regions(NULL, NULL);
     /* Initialize traps early allow us to get backtrace when an error occurred */
     init_traps();
 
@@ -750,6 +758,11 @@ void __init start_xen(unsigned long boot_phys_offset,
 
     setup_mm(fdt_paddr, fdt_size);
 
+    /* Parse the ACPI tables for possible boot-time configuration */
+    acpi_boot_table_init();
+
+    end_boot_allocator();
+
     vm_init();
     dt_unflatten_host_device_tree();
 
@@ -761,7 +774,7 @@ void __init start_xen(unsigned long boot_phys_offset,
 
     gic_preinit();
 
-    dt_uart_init();
+    arm_uart_init();
     console_init_preirq();
     console_init_ring();
 
@@ -826,6 +839,12 @@ void __init start_xen(unsigned long boot_phys_offset,
 
     do_initcalls();
 
+    /*
+     * It needs to be called after do_initcalls to be able to use
+     * stop_machine (tasklets initialized via an initcall).
+     */
+    apply_alternatives_all();
+
     /* Create initial domain 0. */
     /* The vGIC for DOM0 is exactly emulating the hardware GIC */
     config.gic_version = XEN_DOMCTL_CONFIG_GIC_NATIVE;
@@ -852,6 +871,9 @@ void __init start_xen(unsigned long boot_phys_offset,
     serial_endboot();
 
     system_state = SYS_STATE_active;
+
+    /* Must be done past setting system_state. */
+    unregister_init_virtual_region();
 
     domain_unpause_by_systemcontroller(dom0);
 

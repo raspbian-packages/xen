@@ -7,13 +7,14 @@
 #ifndef __XEN_CONFIG_H__
 #define __XEN_CONFIG_H__
 
+#include <generated/autoconf.h>
+
 #ifndef __ASSEMBLY__
 #include <xen/compiler.h>
 #endif
 #include <asm/config.h>
 
 #define EXPORT_SYMBOL(var)
-#define EXPORT_SYMBOL_GPL(var)
 
 /*
  * The following log levels are as follows:
@@ -72,26 +73,16 @@
 #define MB(_mb)     (_AC(_mb, ULL) << 20)
 #define GB(_gb)     (_AC(_gb, ULL) << 30)
 
+#define IS_ALIGNED(val, align) (((val) & ((align) - 1)) == 0)
+
 #define __STR(...) #__VA_ARGS__
 #define STR(...) __STR(__VA_ARGS__)
 
-#ifndef __ASSEMBLY__
-/* Turn a plain number into a C unsigned long constant. */
-#define __mk_unsigned_long(x) x ## UL
-#define mk_unsigned_long(x) __mk_unsigned_long(x)
-#else /* __ASSEMBLY__ */
-/* In assembly code we cannot use C numeric constant suffixes. */
-#define mk_unsigned_long(x) x
-#endif /* !__ASSEMBLY__ */
+/* allow existing code to work with Kconfig variable */
+#define NR_CPUS CONFIG_NR_CPUS
 
-#define fastcall
-#define __cpuinitdata
-#define __cpuinit
-
-#ifdef FLASK_ENABLE
-#define XSM_MAGIC 0xf97cff8c
-/* Maintain statistics on the access vector cache */
-#define FLASK_AVC_STATS 1
+#ifndef CONFIG_DEBUG
+#define NDEBUG
 #endif
 
 #endif /* __XEN_CONFIG_H__ */

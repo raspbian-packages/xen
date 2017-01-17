@@ -36,6 +36,8 @@ LDLIBS-$(CONFIG_SunOS) += -lkstat
 .PHONY: all
 all: $(LIB) $(SHLIB)
 
+$(OBJECTS-y): src/_paths.h
+
 $(LIB): $(OBJECTS-y)
 	$(AR) rc $@ $^
 	$(RANLIB) $@
@@ -125,9 +127,12 @@ endif
 .PHONY: clean
 clean:
 	rm -f $(LIB) $(SHLIB) $(SHLIB_LINKS) $(OBJECTS-y) \
-	      $(BINDINGS) $(BINDINGSRC) $(DEPS)
+	      $(BINDINGS) $(BINDINGSRC) $(DEPS) src/_paths.h
 
 .PHONY: distclean
 distclean: clean
 
 -include $(DEPS)
+
+genpath-target = $(call buildmakevars2header,src/_paths.h)
+$(eval $(genpath-target))

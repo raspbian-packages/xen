@@ -34,10 +34,6 @@
 #include <asm/hvm/vmx/vmx.h>
 #include <asm/hvm/vmx/vvmx.h>
 
-/* EPT always use 4-level paging structure */
-#define GUEST_PAGING_LEVELS 4
-#include <asm/guest_pt.h>
-
 /* Must reserved bits in all level entries  */
 #define EPT_MUST_RSV_BITS (((1ull << PADDR_BITS) - 1) & \
                            ~((1ull << paddr_bits) - 1))
@@ -240,7 +236,7 @@ int nept_translate_l2ga(struct vcpu *v, paddr_t l2ga,
     ept_walk_t gw;
     rwx_acc &= EPTE_RWX_MASK;
 
-    *l1gfn = INVALID_GFN;
+    *l1gfn = gfn_x(INVALID_GFN);
 
     rc = nept_walk_tables(v, l2ga, &gw);
     switch ( rc )

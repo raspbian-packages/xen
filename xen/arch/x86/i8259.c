@@ -283,7 +283,7 @@ int i8259A_suspend(void)
     return 0;
 }
 
-void __devinit init_8259A(int auto_eoi)
+void init_8259A(int auto_eoi)
 {
     unsigned long flags;
 
@@ -358,13 +358,6 @@ void __init init_IRQ(void)
     per_cpu(vector_irq, cpu)[IRQ0_VECTOR] = 0;
 
     apic_intr_init();
-
-    /* Set the clock to HZ Hz */
-#define CLOCK_TICK_RATE 1193182 /* crystal freq (Hz) */
-#define LATCH (((CLOCK_TICK_RATE)+(HZ/2))/HZ)
-    outb_p(0x34, PIT_MODE);        /* binary, mode 2, LSB/MSB, ch 0 */
-    outb_p(LATCH & 0xff, PIT_CH0); /* LSB */
-    outb(LATCH >> 8, PIT_CH0);     /* MSB */
 
     setup_irq(2, 0, &cascade);
 }

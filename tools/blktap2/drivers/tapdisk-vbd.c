@@ -49,18 +49,18 @@
 #define DBG(_level, _f, _a...) tlog_write(_level, _f, ##_a)
 #define ERR(_err, _f, _a...) tlog_error(_err, _f, ##_a)
 
-#if 1                                                                        
+#if 1
 #define ASSERT(p)							\
 	do {								\
 		if (!(p)) {						\
 			DPRINTF("Assertion '%s' failed, line %d, "	\
 				"file %s", #p, __LINE__, __FILE__);	\
-			*(int*)0 = 0;					\
+			abort();					\
 		}							\
 	} while (0)
 #else
 #define ASSERT(p) ((void)0)
-#endif 
+#endif
 
 
 #define TD_VBD_EIO_RETRIES          10
@@ -516,7 +516,7 @@ tapdisk_vbd_free_stack(td_vbd_t *vbd)
 int
 tapdisk_vbd_open_stack(td_vbd_t *vbd, uint16_t storage, td_flag_t flags)
 {
-	int i, err;
+	int i, err = 0;
 
 	vbd->flags   = flags;
 	vbd->storage = storage;
@@ -932,7 +932,7 @@ tapdisk_vbd_open_image(td_vbd_t *vbd, td_image_t *image)
 static int
 tapdisk_vbd_close_and_reopen_image(td_vbd_t *vbd, td_image_t *image)
 {
-	int i, err;
+	int i, err = 0;
 
 	td_close(image);
 
@@ -972,7 +972,7 @@ tapdisk_vbd_pause(td_vbd_t *vbd)
 int
 tapdisk_vbd_resume(td_vbd_t *vbd, const char *path, uint16_t drivertype)
 {
-	int i, err;
+	int i, err = 0;
 
 	if (!td_flag_test(vbd->state, TD_VBD_PAUSED)) {
 		EPRINTF("resume request for unpaused vbd %s\n", vbd->name);

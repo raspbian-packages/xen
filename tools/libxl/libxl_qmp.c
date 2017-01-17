@@ -67,7 +67,7 @@ struct libxl__qmp_handler {
     /* wait_for_id will be used by the synchronous send function */
     int wait_for_id;
 
-    char buffer[QMP_RECEIVE_BUFFER_SIZE];
+    char buffer[QMP_RECEIVE_BUFFER_SIZE + 1];
     libxl__yajl_ctx *yajl_ctx;
 
     libxl_ctx *ctx;
@@ -103,7 +103,7 @@ static int store_serial_port_info(libxl__qmp_handler *qmp,
     path = libxl__xs_get_dompath(gc, qmp->domid);
     path = GCSPRINTF("%s/serial/%d/tty", path, port);
 
-    ret = libxl__xs_write(gc, XBT_NULL, path, "%s", chardev + 4);
+    ret = libxl__xs_printf(gc, XBT_NULL, path, "%s", chardev + 4);
 
     GC_FREE;
     return ret;
@@ -162,7 +162,7 @@ static int qmp_write_domain_console_item(libxl__gc *gc, int domid,
     path = libxl__xs_get_dompath(gc, domid);
     path = GCSPRINTF("%s/console/%s", path, item);
 
-    return libxl__xs_write(gc, XBT_NULL, path, "%s", value);
+    return libxl__xs_printf(gc, XBT_NULL, path, "%s", value);
 }
 
 static int qmp_register_vnc_callback(libxl__qmp_handler *qmp,
@@ -457,6 +457,7 @@ static int qmp_next(libxl__gc *gc, libxl__qmp_handler *qmp)
             LOGE(ERROR, "Socket read error");
             return rd;
         }
+        qmp->buffer[rd] = '\0';
 
         DEBUG_REPORT_RECEIVED(qmp->buffer, rd);
 
@@ -826,6 +827,22 @@ static int qmp_run_command(libxl__gc *gc, int domid,
     return rc;
 }
 
+int libxl__qmp_run_command_flexarray(libxl__gc *gc, int domid,
+                                     const char *cmd, flexarray_t *array)
+{
+    libxl__json_object *args = NULL;
+    int i;
+    void *name, *value;
+
+    for (i = 0; i < array->count; i += 2) {
+        flexarray_get(array, i, &name);
+        flexarray_get(array, i + 1, &value);
+        qmp_parameters_add_string(gc, &args, (char *)name, (char *)value);
+    }
+
+    return qmp_run_command(gc, domid, cmd, args, NULL, NULL);
+}
+
 int libxl__qmp_pci_add(libxl__gc *gc, int domid, libxl_device_pci *pcidev)
 {
     libxl__qmp_handler *qmp = NULL;
@@ -905,6 +922,16 @@ int libxl__qmp_save(libxl__gc *gc, int domid, const char *filename)
                            NULL, NULL);
 }
 
+int libxl__qmp_restore(libxl__gc *gc, int domid, const char *state_file)
+{
+    libxl__json_object *args = NULL;
+
+    qmp_parameters_add_string(gc, &args, "filename", state_file);
+
+    return qmp_run_command(gc, domid, "xen-load-devices-state", args,
+                           NULL, NULL);
+}
+
 static int qmp_change(libxl__gc *gc, libxl__qmp_handler *qmp,
                       char *device, char *target, char *arg)
 {
@@ -966,6 +993,180 @@ int libxl__qmp_cpu_add(libxl__gc *gc, int domid, int idx)
     qmp_parameters_add_integer(gc, &args, "id", idx);
 
     return qmp_run_command(gc, domid, "cpu-add", args, NULL, NULL);
+}
+
+static int query_cpus_callback(libxl__qmp_handler *qmp,
+                               const libxl__json_object *response,
+                               void *opaque)
+{
+    libxl_bitmap *map = opaque;
+    unsigned int i;
+    const libxl__json_object *cpu = NULL;
+    int rc;
+    GC_INIT(qmp->ctx);
+
+    libxl_bitmap_set_none(map);
+    for (i = 0; (cpu = libxl__json_array_get(response, i)); i++) {
+        unsigned int idx;
+        const libxl__json_object *o;
+
+        o = libxl__json_map_get("CPU", cpu, JSON_INTEGER);
+        if (!o) {
+            LOG(ERROR, "Failed to retrieve CPU index.");
+            rc = ERROR_FAIL;
+            goto out;
+        }
+
+        idx = libxl__json_object_get_integer(o);
+        libxl_bitmap_set(map, idx);
+    }
+
+    rc = 0;
+out:
+    GC_FREE;
+    return rc;
+}
+
+int libxl__qmp_query_cpus(libxl__gc *gc, int domid, libxl_bitmap *map)
+{
+    return qmp_run_command(gc, domid, "query-cpus", NULL,
+                           query_cpus_callback, map);
+}
+
+int libxl__qmp_nbd_server_start(libxl__gc *gc, int domid,
+                                const char *host, const char *port)
+{
+    libxl__json_object *args = NULL;
+    libxl__json_object *addr = NULL;
+    libxl__json_object *data = NULL;
+
+    /* 'addr': {
+     *   'type': 'inet',
+     *   'data': {
+     *     'host': '$nbd_host',
+     *     'port': '$nbd_port'
+     *   }
+     * }
+     */
+    qmp_parameters_add_string(gc, &data, "host", host);
+    qmp_parameters_add_string(gc, &data, "port", port);
+
+    qmp_parameters_add_string(gc, &addr, "type", "inet");
+    qmp_parameters_common_add(gc, &addr, "data", data);
+
+    qmp_parameters_common_add(gc, &args, "addr", addr);
+
+    return qmp_run_command(gc, domid, "nbd-server-start", args, NULL, NULL);
+}
+
+int libxl__qmp_nbd_server_add(libxl__gc *gc, int domid, const char *disk)
+{
+    libxl__json_object *args = NULL;
+
+    qmp_parameters_add_string(gc, &args, "device", disk);
+    qmp_parameters_add_bool(gc, &args, "writable", true);
+
+    return qmp_run_command(gc, domid, "nbd-server-add", args, NULL, NULL);
+}
+
+int libxl__qmp_start_replication(libxl__gc *gc, int domid, bool primary)
+{
+    libxl__json_object *args = NULL;
+
+    qmp_parameters_add_bool(gc, &args, "enable", true);
+    qmp_parameters_add_bool(gc, &args, "primary", primary);
+
+    return qmp_run_command(gc, domid, "xen-set-replication", args, NULL, NULL);
+}
+
+int libxl__qmp_get_replication_error(libxl__gc *gc, int domid)
+{
+    return qmp_run_command(gc, domid, "xen-get-replication-error", NULL,
+                           NULL, NULL);
+}
+
+int libxl__qmp_do_checkpoint(libxl__gc *gc, int domid)
+{
+    return qmp_run_command(gc, domid, "xen-do-checkpoint", NULL, NULL, NULL);
+}
+
+int libxl__qmp_stop_replication(libxl__gc *gc, int domid, bool primary)
+{
+    libxl__json_object *args = NULL;
+
+    qmp_parameters_add_bool(gc, &args, "enable", false);
+    qmp_parameters_add_bool(gc, &args, "primary", primary);
+
+    return qmp_run_command(gc, domid, "xen-set-replication", args, NULL, NULL);
+}
+
+int libxl__qmp_nbd_server_stop(libxl__gc *gc, int domid)
+{
+    return qmp_run_command(gc, domid, "nbd-server-stop", NULL, NULL, NULL);
+}
+
+int libxl__qmp_x_blockdev_change(libxl__gc *gc, int domid, const char *parent,
+                                 const char *child, const char *node)
+{
+    libxl__json_object *args = NULL;
+
+    qmp_parameters_add_string(gc, &args, "parent", parent);
+    if (child)
+        qmp_parameters_add_string(gc, &args, "child", child);
+    if (node)
+        qmp_parameters_add_string(gc, &args, "node", node);
+
+    return qmp_run_command(gc, domid, "x-blockdev-change", args, NULL, NULL);
+}
+
+static int hmp_callback(libxl__qmp_handler *qmp,
+                        const libxl__json_object *response,
+                        void *opaque)
+{
+    char **output = opaque;
+    GC_INIT(qmp->ctx);
+    int rc;
+
+    rc = 0;
+    if (!output)
+        goto out;
+
+    *output = NULL;
+
+    if (libxl__json_object_is_string(response)) {
+        *output = libxl__strdup(NOGC, libxl__json_object_get_string(response));
+        goto out;
+    }
+
+    LOG(ERROR, "Response has unexpected format");
+    rc = ERROR_FAIL;
+
+out:
+    GC_FREE;
+    return rc;
+}
+
+int libxl__qmp_hmp(libxl__gc *gc, int domid, const char *command_line,
+                   char **output)
+{
+    libxl__json_object *args = NULL;
+
+    qmp_parameters_add_string(gc, &args, "command-line", command_line);
+
+    return qmp_run_command(gc, domid, "human-monitor-command", args,
+                           hmp_callback, output);
+}
+
+int libxl_qemu_monitor_command(libxl_ctx *ctx, uint32_t domid,
+                               const char *command_line, char **output)
+{
+    GC_INIT(ctx);
+    int rc;
+
+    rc = libxl__qmp_hmp(gc, domid, command_line, output);
+
+    GC_FREE;
+    return rc;
 }
 
 int libxl__qmp_initializations(libxl__gc *gc, uint32_t domid,

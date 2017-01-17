@@ -7,20 +7,17 @@
 #ifndef __ARM_CONFIG_H__
 #define __ARM_CONFIG_H__
 
-#if defined(__aarch64__)
-# define CONFIG_ARM_64 1
-#elif defined(__arm__)
-# define CONFIG_ARM_32 1
-#endif
-
 #if defined(CONFIG_ARM_64)
 # define LONG_BYTEORDER 3
+# define ELFSIZE 64
 #else
 # define LONG_BYTEORDER 2
+# define ELFSIZE 32
 #endif
 
 #define BYTES_PER_LONG (1 << LONG_BYTEORDER)
 #define BITS_PER_LONG (BYTES_PER_LONG << 3)
+#define POINTER_ALIGN BYTES_PER_LONG
 
 /* xen_ulong_t is always 64 bits */
 #define BITS_PER_XEN_ULONG 64
@@ -35,17 +32,13 @@
 
 #define CONFIG_SMP 1
 
-#define CONFIG_VIDEO 1
-
 #define CONFIG_IRQ_HAS_MULTIPLE_ACTION 1
 
-#define OPT_CONSOLE_STR "dtuart"
+#define CONFIG_PAGEALLOC_MAX_ORDER 18
+#define CONFIG_DOMU_MAX_ORDER      9
+#define CONFIG_HWDOM_MAX_ORDER     10
 
-#ifdef MAX_PHYS_CPUS
-#define NR_CPUS MAX_PHYS_CPUS
-#else
-#define NR_CPUS 128
-#endif
+#define OPT_CONSOLE_STR "dtuart"
 
 #ifdef CONFIG_ARM_64
 #define MAX_VIRT_CPUS 128
@@ -87,9 +80,10 @@
  *   4M -   6M   Fixmap: special-purpose 4K mapping slots
  *   6M -   8M   Early boot mapping of FDT
  *   8M -  10M   Early relocation address (used when relocating Xen)
+ *               and later for livepatch vmap (if compiled in)
  *
  * ARM32 layout:
- *   0  -   8M   <COMMON>
+ *   0  -  10M   <COMMON>
  *
  *  32M - 128M   Frametable: 24 bytes per page for 16GB of RAM
  * 256M -   1G   VMAP: ioremap and early_ioremap use this virtual address
@@ -100,7 +94,7 @@
  *
  * ARM64 layout:
  * 0x0000000000000000 - 0x0000007fffffffff (512GB, L0 slot [0])
- *   0  -   8M   <COMMON>
+ *   0  -  10M   <COMMON>
  *
  *   1G -   2G   VMAP: ioremap and early_ioremap
  *
@@ -120,6 +114,10 @@
 #define FIXMAP_ADDR(n)        (_AT(vaddr_t,0x00400000) + (n) * PAGE_SIZE)
 #define BOOT_FDT_VIRT_START    _AT(vaddr_t,0x00600000)
 #define BOOT_RELOC_VIRT_START  _AT(vaddr_t,0x00800000)
+#ifdef CONFIG_LIVEPATCH
+#define LIVEPATCH_VMAP_START   _AT(vaddr_t,0x00800000)
+#define LIVEPATCH_VMAP_END     (LIVEPATCH_VMAP_START + MB(2))
+#endif
 
 #define HYPERVISOR_VIRT_START  XEN_VIRT_START
 
@@ -154,7 +152,7 @@
 #define SLOT0_ENTRY_SIZE  SLOT0(1)
 
 #define VMAP_VIRT_START  GB(1)
-#define VMAP_VIRT_END    (VMAP_VIRT_START + GB(1) - 1)
+#define VMAP_VIRT_END    (VMAP_VIRT_START + GB(1))
 
 #define FRAMETABLE_VIRT_START  GB(32)
 #define FRAMETABLE_SIZE        GB(32)
@@ -179,14 +177,11 @@
 #define FIXMAP_GICC1    4  /* Interrupt controller: CPU registers (first page) */
 #define FIXMAP_GICC2    5  /* Interrupt controller: CPU registers (second page) */
 #define FIXMAP_GICH     6  /* Interrupt controller: virtual interface control registers */
+#define FIXMAP_ACPI_BEGIN  7  /* Start mappings of ACPI tables */
+#define FIXMAP_ACPI_END    (FIXMAP_ACPI_BEGIN + NUM_FIXMAP_ACPI_PAGES - 1)  /* End mappings of ACPI tables */
 
 #define PAGE_SHIFT              12
-
-#ifndef __ASSEMBLY__
-#define PAGE_SIZE           (1L << PAGE_SHIFT)
-#else
-#define PAGE_SIZE           (1 << PAGE_SHIFT)
-#endif
+#define PAGE_SIZE           (_AC(1,L) << PAGE_SHIFT)
 #define PAGE_MASK           (~(PAGE_SIZE-1))
 #define PAGE_FLAG_MASK      (~0)
 
@@ -203,6 +198,8 @@ extern unsigned long frametable_virt_end;
 
 #define watchdog_disable() ((void)0)
 #define watchdog_enable()  ((void)0)
+
+#define VM_ASSIST_VALID          (1UL << VMASST_TYPE_runstate_update_flag)
 
 #endif /* __ARM_CONFIG_H__ */
 /*

@@ -119,6 +119,7 @@ elf_errorstatus elf_xen_parse_note(struct elf_binary *elf,
         [XEN_ELFNOTE_BSD_SYMTAB] = { "BSD_SYMTAB", 1},
         [XEN_ELFNOTE_SUSPEND_CANCEL] = { "SUSPEND_CANCEL", 0 },
         [XEN_ELFNOTE_MOD_START_PFN] = { "MOD_START_PFN", 0 },
+        [XEN_ELFNOTE_PHYS32_ENTRY] = { "PHYS32_ENTRY", 0 },
     };
 /* *INDENT-ON* */
 
@@ -130,8 +131,7 @@ elf_errorstatus elf_xen_parse_note(struct elf_binary *elf,
     if ( (type >= sizeof(note_desc) / sizeof(note_desc[0])) ||
          (note_desc[type].name == NULL) )
     {
-        elf_msg(elf, "%s: unknown xen elf note (0x%x)\n",
-                __FUNCTION__, type);
+        elf_msg(elf, "ELF: note: unknown (%#x)\n", type);
         return 0;
     }
 
@@ -141,16 +141,14 @@ elf_errorstatus elf_xen_parse_note(struct elf_binary *elf,
         if (str == NULL)
             /* elf_strval will mark elf broken if it fails so no need to log */
             return 0;
-        elf_msg(elf, "%s: %s = \"%s\"\n", __FUNCTION__,
-                note_desc[type].name, str);
+        elf_msg(elf, "ELF: note: %s = \"%s\"\n", note_desc[type].name, str);
         parms->elf_notes[type].type = XEN_ENT_STR;
         parms->elf_notes[type].data.str = str;
     }
     else
     {
         val = elf_note_numeric(elf, note);
-        elf_msg(elf, "%s: %s = 0x%" PRIx64 "\n", __FUNCTION__,
-                note_desc[type].name, val);
+        elf_msg(elf, "ELF: note: %s = %#" PRIx64 "\n", note_desc[type].name, val);
         parms->elf_notes[type].type = XEN_ENT_LONG;
         parms->elf_notes[type].data.num = val;
     }
@@ -172,9 +170,9 @@ elf_errorstatus elf_xen_parse_note(struct elf_binary *elf,
         break;
     case XEN_ELFNOTE_PAE_MODE:
         if ( !strcmp(str, "yes") )
-            parms->pae = 2 /* extended_cr3 */;
+            parms->pae = XEN_PAE_EXTCR3;
         if ( strstr(str, "bimodal") )
-            parms->pae = 3 /* bimodal */;
+            parms->pae = XEN_PAE_BIMODAL;
         break;
     case XEN_ELFNOTE_BSD_SYMTAB:
         if ( !strcmp(str, "yes") )
@@ -189,6 +187,9 @@ elf_errorstatus elf_xen_parse_note(struct elf_binary *elf,
         break;
     case XEN_ELFNOTE_INIT_P2M:
         parms->p2m_base = val;
+        break;
+    case XEN_ELFNOTE_MOD_START_PFN:
+        parms->unmapped_initrd = !!val;
         break;
     case XEN_ELFNOTE_PADDR_OFFSET:
         parms->elf_paddr_offset = val;
@@ -212,6 +213,9 @@ elf_errorstatus elf_xen_parse_note(struct elf_binary *elf,
                 elf, note, sizeof(*parms->f_supported), i);
         break;
 
+    case XEN_ELFNOTE_PHYS32_ENTRY:
+        parms->phys_entry = val;
+        break;
     }
     return 0;
 }
@@ -303,7 +307,7 @@ elf_errorstatus elf_xen_parse_guest_info(struct elf_binary *elf,
             }
             name[len] = STAR(h);
         }
-        elf_msg(elf, "%s: %s=\"%s\"\n", __FUNCTION__, name, value);
+        elf_msg(elf, "ELF: %s=\"%s\"\n", name, value);
 
         /* strings */
         if ( !strcmp(name, "LOADER") )
@@ -317,9 +321,9 @@ elf_errorstatus elf_xen_parse_guest_info(struct elf_binary *elf,
         if ( !strcmp(name, "PAE") )
         {
             if ( !strcmp(value, "yes[extended-cr3]") )
-                parms->pae = 2 /* extended_cr3 */;
+                parms->pae = XEN_PAE_EXTCR3;
             else if ( !strncmp(value, "yes", 3) )
-                parms->pae = 1 /* yes */;
+                parms->pae = XEN_PAE_YES;
         }
         if ( !strcmp(name, "BSD_SYMTAB") )
             parms->bsd_symtab = 1;
@@ -356,9 +360,8 @@ static elf_errorstatus elf_xen_note_check(struct elf_binary *elf,
         unsigned machine = elf_uval(elf, elf->ehdr, e_machine);
         if ( (machine == EM_386) || (machine == EM_X86_64) )
         {
-            elf_err(elf, "%s: ERROR: Not a Xen-ELF image: "
-                    "No ELF notes or '__xen_guest' section found.\n",
-                    __FUNCTION__);
+            elf_err(elf, "ERROR: Not a Xen-ELF image: "
+                    "No ELF notes or '__xen_guest' section found\n");
             return -1;
         }
         return 0;
@@ -366,7 +369,7 @@ static elf_errorstatus elf_xen_note_check(struct elf_binary *elf,
 
     if ( elf_uval(elf, elf->ehdr, e_machine) == EM_ARM )
     {
-         elf_msg(elf, "%s: Not bothering with notes on ARM\n", __FUNCTION__);
+         elf_msg(elf, "ELF: Not bothering with notes on ARM\n");
          return 0;
     }
 
@@ -376,9 +379,10 @@ static elf_errorstatus elf_xen_note_check(struct elf_binary *elf,
          ((strlen(parms->guest_os) == 0) ||
           strncmp(parms->guest_os, "linux", 5)) )
     {
-        elf_err(elf, "%s: ERROR: Will only load images built for the generic "
-                "loader or Linux images (Not '%.*s' and '%.*s')\n",
-                __FUNCTION__, (int)sizeof(parms->loader), parms->loader,
+        elf_err(elf,
+                "ERROR: Will only load images built for the generic loader or Linux images"
+                " (Not '%.*s' and '%.*s')\n",
+                (int)sizeof(parms->loader), parms->loader,
                 (int)sizeof(parms->guest_os), parms->guest_os);
         return -1;
     }
@@ -386,8 +390,8 @@ static elf_errorstatus elf_xen_note_check(struct elf_binary *elf,
     if ( (strlen(parms->xen_ver) == 0) ||
          strncmp(parms->xen_ver, "xen-3.0", 7) )
     {
-        elf_err(elf, "%s: ERROR: Xen will only load images built "
-                "for Xen v3.0 (Not '%.*s')\n", __FUNCTION__,
+        elf_err(elf, "ERROR: Xen will only load images built for Xen v3.0 "
+                "(Not '%.*s')\n",
                 (int)sizeof(parms->xen_ver), parms->xen_ver);
         return -1;
     }
@@ -397,11 +401,12 @@ static elf_errorstatus elf_xen_note_check(struct elf_binary *elf,
 static elf_errorstatus elf_xen_addr_calc_check(struct elf_binary *elf,
                                    struct elf_dom_parms *parms)
 {
+    uint64_t virt_offset;
+
     if ( (parms->elf_paddr_offset != UNSET_ADDR) &&
          (parms->virt_base == UNSET_ADDR) )
     {
-        elf_err(elf, "%s: ERROR: ELF_PADDR_OFFSET set, VIRT_BASE unset\n",
-                __FUNCTION__);
+        elf_err(elf, "ERROR: ELF_PADDR_OFFSET set, VIRT_BASE unset\n");
         return -1;
     }
 
@@ -409,8 +414,8 @@ static elf_errorstatus elf_xen_addr_calc_check(struct elf_binary *elf,
     if ( parms->virt_base == UNSET_ADDR )
     {
         parms->virt_base = 0;
-        elf_msg(elf, "%s: VIRT_BASE unset, using 0x%" PRIx64 "\n",
-                __FUNCTION__, parms->virt_base);
+        elf_msg(elf, "ELF: VIRT_BASE unset, using %#" PRIx64 "\n",
+                parms->virt_base);
     }
 
     /*
@@ -428,13 +433,13 @@ static elf_errorstatus elf_xen_addr_calc_check(struct elf_binary *elf,
             parms->elf_paddr_offset = 0;
         else
             parms->elf_paddr_offset = parms->virt_base;
-        elf_msg(elf, "%s: ELF_PADDR_OFFSET unset, using 0x%" PRIx64 "\n",
-                __FUNCTION__, parms->elf_paddr_offset);
+        elf_msg(elf, "ELF_PADDR_OFFSET unset, using %#" PRIx64 "\n",
+                parms->elf_paddr_offset);
     }
 
-    parms->virt_offset = parms->virt_base - parms->elf_paddr_offset;
-    parms->virt_kstart = elf->pstart + parms->virt_offset;
-    parms->virt_kend   = elf->pend   + parms->virt_offset;
+    virt_offset = parms->virt_base - parms->elf_paddr_offset;
+    parms->virt_kstart = elf->pstart + virt_offset;
+    parms->virt_kend   = elf->pend   + virt_offset;
 
     if ( parms->virt_entry == UNSET_ADDR )
         parms->virt_entry = elf_uval(elf, elf->ehdr, e_entry);
@@ -443,13 +448,13 @@ static elf_errorstatus elf_xen_addr_calc_check(struct elf_binary *elf,
     {
         elf_parse_bsdsyms(elf, elf->pend);
         if ( elf->bsd_symtab_pend )
-            parms->virt_kend = elf->bsd_symtab_pend + parms->virt_offset;
+            parms->virt_kend = elf->bsd_symtab_pend + virt_offset;
     }
 
-    elf_msg(elf, "%s: addresses:\n", __FUNCTION__);
+    elf_msg(elf, "ELF: addresses:\n");
     elf_msg(elf, "    virt_base        = 0x%" PRIx64 "\n", parms->virt_base);
     elf_msg(elf, "    elf_paddr_offset = 0x%" PRIx64 "\n", parms->elf_paddr_offset);
-    elf_msg(elf, "    virt_offset      = 0x%" PRIx64 "\n", parms->virt_offset);
+    elf_msg(elf, "    virt_offset      = 0x%" PRIx64 "\n", virt_offset);
     elf_msg(elf, "    virt_kstart      = 0x%" PRIx64 "\n", parms->virt_kstart);
     elf_msg(elf, "    virt_kend        = 0x%" PRIx64 "\n", parms->virt_kend);
     elf_msg(elf, "    virt_entry       = 0x%" PRIx64 "\n", parms->virt_entry);
@@ -460,8 +465,7 @@ static elf_errorstatus elf_xen_addr_calc_check(struct elf_binary *elf,
          (parms->virt_entry > parms->virt_kend) ||
          (parms->virt_base > parms->virt_kstart) )
     {
-        elf_err(elf, "%s: ERROR: ELF start or entries are out of bounds.\n",
-                __FUNCTION__);
+        elf_err(elf, "ERROR: ELF start or entries are out of bounds\n");
         return -1;
     }
 
@@ -469,8 +473,7 @@ static elf_errorstatus elf_xen_addr_calc_check(struct elf_binary *elf,
          (parms->p2m_base >= parms->virt_kstart) &&
          (parms->p2m_base < parms->virt_kend) )
     {
-        elf_err(elf, "%s: ERROR: P->M table base is out of bounds.\n",
-                __FUNCTION__);
+        elf_err(elf, "ERROR: P->M table base is out of bounds\n");
         return -1;
     }
 
@@ -496,6 +499,7 @@ elf_errorstatus elf_xen_parse(struct elf_binary *elf,
     parms->virt_hv_start_low = UNSET_ADDR;
     parms->p2m_base = UNSET_ADDR;
     parms->elf_paddr_offset = UNSET_ADDR;
+    parms->phys_entry = UNSET_ADDR32;
 
     /* Find and parse elf notes. */
     count = elf_phdr_count(elf);
@@ -551,7 +555,7 @@ elf_errorstatus elf_xen_parse(struct elf_binary *elf,
                 return -1;
 
             if ( xen_elfnotes == 0 && more_notes > 0 )
-                elf_msg(elf, "%s: using notes from SHT_NOTE section\n", __FUNCTION__);
+                elf_msg(elf, "ELF: using notes from SHT_NOTE section\n");
 
             xen_elfnotes += more_notes;
         }
@@ -569,7 +573,7 @@ elf_errorstatus elf_xen_parse(struct elf_binary *elf,
             parms->guest_info = elf_section_start(elf, shdr);
             parms->elf_note_start = ELF_INVALID_PTRVAL;
             parms->elf_note_end   = ELF_INVALID_PTRVAL;
-            elf_msg(elf, "%s: __xen_guest: \"%s\"\n", __FUNCTION__,
+            elf_msg(elf, "ELF: __xen_guest: \"%s\"\n",
                     elf_strfmt(elf, parms->guest_info));
             elf_xen_parse_guest_info(elf, parms);
         }

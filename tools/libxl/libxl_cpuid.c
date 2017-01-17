@@ -334,7 +334,7 @@ int libxl_cpuid_parse_config_xend(libxl_cpuid_policy_list *cpuid,
 
 void libxl_cpuid_apply_policy(libxl_ctx *ctx, uint32_t domid)
 {
-    xc_cpuid_apply_policy(ctx->xch, domid);
+    xc_cpuid_apply_policy(ctx->xch, domid, NULL, 0);
 }
 
 void libxl_cpuid_set(libxl_ctx *ctx, uint32_t domid,
@@ -465,7 +465,7 @@ int libxl__cpuid_policy_list_parse_json(libxl__gc *gc,
     return 0;
 }
 
-int libxl_cpuid_policy_list_length(libxl_cpuid_policy_list *pl)
+int libxl_cpuid_policy_list_length(const libxl_cpuid_policy_list *pl)
 {
     int i = 0;
     libxl_cpuid_policy_list l = *pl;
@@ -480,7 +480,7 @@ int libxl_cpuid_policy_list_length(libxl_cpuid_policy_list *pl)
 
 void libxl_cpuid_policy_list_copy(libxl_ctx *ctx,
                                   libxl_cpuid_policy_list *dst,
-                                  libxl_cpuid_policy_list *src)
+                                  const libxl_cpuid_policy_list *src)
 {
     GC_INIT(ctx);
     int i, j, len;

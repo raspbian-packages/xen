@@ -5,8 +5,10 @@
 #include <xen/config.h>
 #include <xen/list.h>
 #include <xen/spinlock.h>
+#include <xen/rwlock.h>
 #include <asm/io.h>
 #include <asm/uaccess.h>
+#include <asm/x86_emulate.h>
 
 /*
  * Per-page-frame information.
@@ -276,6 +278,7 @@ extern void share_xen_page_with_guest(
     struct page_info *page, struct domain *d, int readonly);
 extern void share_xen_page_with_privileged_guests(
     struct page_info *page, int readonly);
+extern void free_shared_domheap_page(struct page_info *page);
 
 #define frame_table ((struct page_info *)FRAMETABLE_VIRT_START)
 #define spage_table ((struct spage_info *)SPAGETABLE_VIRT_START)
@@ -320,7 +323,7 @@ int free_page_type(struct page_info *page, unsigned long type,
 
 void init_guest_l4_table(l4_pgentry_t[], const struct domain *,
                          bool_t zap_ro_mpt);
-void fill_ro_mpt(unsigned long mfn);
+bool_t fill_ro_mpt(unsigned long mfn);
 void zap_ro_mpt(unsigned long mfn);
 
 int is_iomem_page(unsigned long mfn);
@@ -476,17 +479,33 @@ extern struct rangeset *mmio_ro_ranges;
 #define compat_cr3_to_pfn(cr3) (((unsigned)(cr3) >> 12) | ((unsigned)(cr3) << 20))
 
 #ifdef MEMORY_GUARD
-void memguard_init(void);
 void memguard_guard_range(void *p, unsigned long l);
 void memguard_unguard_range(void *p, unsigned long l);
 #else
-#define memguard_init()                ((void)0)
 #define memguard_guard_range(_p,_l)    ((void)0)
 #define memguard_unguard_range(_p,_l)  ((void)0)
 #endif
 
 void memguard_guard_stack(void *p);
 void memguard_unguard_stack(void *p);
+
+struct mmio_ro_emulate_ctxt {
+        unsigned long cr2;
+        unsigned int seg, bdf;
+};
+
+extern int mmio_ro_emulated_write(enum x86_segment seg,
+                                  unsigned long offset,
+                                  void *p_data,
+                                  unsigned int bytes,
+                                  struct x86_emulate_ctxt *ctxt);
+extern int mmcfg_intercept_write(enum x86_segment seg,
+                                 unsigned long offset,
+                                 void *p_data,
+                                 unsigned int bytes,
+                                 struct x86_emulate_ctxt *ctxt);
+int pv_emul_cpuid(unsigned int *eax, unsigned int *ebx, unsigned int *ecx,
+                  unsigned int *edx, struct x86_emulate_ctxt *ctxt);
 
 int  ptwr_do_page_fault(struct vcpu *, unsigned long,
                         struct cpu_user_regs *);
@@ -566,11 +585,18 @@ typedef struct mm_lock {
 } mm_lock_t;
 
 typedef struct mm_rwlock {
-    rwlock_t           lock;
+    percpu_rwlock_t    lock;
     int                unlock_level;
     int                recurse_count;
     int                locker; /* CPU that holds the write lock */
     const char        *locker_function; /* func that took it */
 } mm_rwlock_t;
+
+#define arch_free_heap_page(d, pg)                                      \
+    page_list_del2(pg, is_xen_heap_page(pg) ?                           \
+                       &(d)->xenpage_list : &(d)->page_list,            \
+                   &(d)->arch.relmem_list)
+
+extern const char zero_page[];
 
 #endif /* __ASM_X86_MM_H__ */

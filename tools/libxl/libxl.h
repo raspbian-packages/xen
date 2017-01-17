@@ -67,6 +67,28 @@
  * the same $(XEN_VERSION) (e.g. throughout a major release).
  */
 
+/* LIBXL_HAVE_CONSOLE_NOTIFY_FD
+ *
+ * If this is defined, libxl_console_exec and
+ * libxl_primary_console_exe take a notify_fd parameter. That
+ * parameter will be used to notify the caller that the console is connected.
+ */
+#define LIBXL_HAVE_CONSOLE_NOTIFY_FD 1
+
+/* LIBXL_HAVE_CONST_COPY_AND_LENGTH_FUNCTIONS
+ *
+ * If this is defined, the copy functions have constified src parameter and the
+ * length functions accept constified parameter.
+ */
+#define LIBXL_HAVE_CONST_COPY_AND_LENGTH_FUNCTIONS 1
+
+/* LIBXL_HAVE_DOMAIN_NEED_MEMORY_CONST_B_INFO
+ *
+ * If this is defined, libxl_domain_need_memory no longer modifies
+ * the b_info paseed in.
+ */
+#define LIBXL_HAVE_DOMAIN_NEED_MEMORY_CONST_B_INFO 1
+
 /* LIBXL_HAVE_VNUMA
  *
  * If this is defined the type libxl_vnode_info exists, and a
@@ -123,6 +145,12 @@
 #define LIBXL_HAVE_DOMAIN_NODEAFFINITY 1
 
 /*
+ * LIBXL_HAVE_PVUSB indicates functions for plugging in USB devices
+ * through pvusb -- both hotplug and at domain creation time..
+ */
+#define LIBXL_HAVE_PVUSB 1
+
+/*
  * LIBXL_HAVE_BUILDINFO_HVM_VENDOR_DEVICE indicates that the
  * libxl_vendor_device field is present in the hvm sections of
  * libxl_domain_build_info. This field tells libxl which
@@ -146,6 +174,12 @@
  * containing the soft affinity of a vcpu.
  */
 #define LIBXL_HAVE_VCPUINFO_SOFT_AFFINITY 1
+
+/*
+ * LIBXL_HAVE_SET_VCPUAFFINITY_FORCE indicates that the
+ * libxl_set_vcpuaffinity_force() library call is available.
+ */
+#define LIBXL_HAVE_SET_VCPUAFFINITY_FORCE 1
 
 /*
  * LIBXL_HAVE_DEVICE_DISK_DIRECT_IO_SAFE indicates that a
@@ -200,9 +234,58 @@
 #define LIBXL_HAVE_DEVICETREE_PASSTHROUGH 1
 
 /*
+ * libxl_domain_build_info has device_model_user to specify the user to
+ * run the device model with. See docs/misc/qemu-deprivilege.txt.
+ */
+#define LIBXL_HAVE_DEVICE_MODEL_USER 1
+
+/*
+ * libxl_vcpu_sched_params is used to store per-vcpu params.
+ */
+#define LIBXL_HAVE_VCPU_SCHED_PARAMS 1
+
+/*
+ * LIBXL_HAVE_SCHED_RTDS_VCPU_PARAMS indicates RTDS scheduler
+ * now supports per-vcpu settings.
+ */
+#define LIBXL_HAVE_SCHED_RTDS_VCPU_PARAMS 1
+
+/*
  * libxl_domain_build_info has the arm.gic_version field.
  */
 #define LIBXL_HAVE_BUILDINFO_ARM_GIC_VERSION 1
+
+/*
+ * LIBXL_HAVE_SOFT_RESET indicates that libxl supports performing
+ * 'soft reset' for domains and there is 'soft_reset' shutdown reason
+ * in enum libxl_shutdown_reason.
+ */
+#define LIBXL_HAVE_SOFT_RESET 1
+
+/*
+ * LIBXL_HAVE_APIC_ASSIST indicates that the 'apic_assist' value
+ * is present in the viridian enlightenment enumeration.
+ */
+#define LIBXL_HAVE_APIC_ASSIST 1
+
+/*
+ * LIBXL_HAVE_BUILD_ID means that libxl_version_info has the extra
+ * field for the hypervisor build_id.
+ */
+#define LIBXL_HAVE_BUILD_ID 1
+
+/*
+ * LIBXL_HAVE_QEMU_MONITOR_COMMAND indiactes the availability of the
+ * libxl_qemu_monitor_command() function.
+ */
+#define LIBXL_HAVE_QEMU_MONITOR_COMMAND 1
+
+/*
+ * LIBXL_HAVE_SCHED_CREDIT2_PARAMS indicates the existance of a
+ * libxl_sched_credit2_params structure, containing Credit2 scheduler
+ * wide parameters (i.e., the ratelimiting value).
+ */
+#define LIBXL_HAVE_SCHED_CREDIT2_PARAMS 1
 
 /*
  * libxl ABI compatibility
@@ -547,6 +630,15 @@ typedef struct libxl__ctx libxl_ctx;
 #define LIBXL_HAVE_DOMINFO_OUTSTANDING_MEMKB 1
 
 /*
+ * LIBXL_HAVE_DOMINFO_NEVER_STOP
+ *
+ * If this is defined, libxl_dominfo will contain a flag called never_stop
+ * indicating that the specific domain should never be stopped by the
+ * toolstack.
+ */
+#define LIBXL_HAVE_DOMINFO_NEVER_STOP 1
+
+/*
  * LIBXL_HAVE_QXL
  *
  * If defined, then the libxl_vga_interface_type will contain another value:
@@ -615,6 +707,15 @@ typedef struct libxl__ctx libxl_ctx;
  * include a params structure.
  */
 #define LIBXL_HAVE_DOMAIN_CREATE_RESTORE_PARAMS 1
+
+/*
+ * LIBXL_HAVE_DOMAIN_CREATE_RESTORE_SEND_BACK_FD 1
+ *
+ * If this is defined, libxl_domain_create_restore()'s API includes the
+ * send_back_fd param. This is used only with COLO, for the libxl migration
+ * back channel; other callers should pass -1.
+ */
+#define LIBXL_HAVE_DOMAIN_CREATE_RESTORE_SEND_BACK_FD 1
 
 /*
  * LIBXL_HAVE_CREATEINFO_PVH
@@ -773,7 +874,7 @@ typedef uint8_t libxl_mac[6];
 #define LIBXL_MAC_FMT "%02hhx:%02hhx:%02hhx:%02hhx:%02hhx:%02hhx"
 #define LIBXL_MAC_FMTLEN ((2*6)+5) /* 6 hex bytes plus 5 colons */
 #define LIBXL_MAC_BYTES(mac) mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]
-void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
+void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, const libxl_mac *src);
 
 #if defined(__i386__) || defined(__x86_64__)
 /*
@@ -796,6 +897,13 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
  * If this is defined, the Cache Allocation Technology feature is supported.
  */
 #define LIBXL_HAVE_PSR_CAT 1
+
+/*
+ * LIBXL_HAVE_PSR_CDP
+ *
+ * If this is defined, the Code and Data Prioritization feature is supported.
+ */
+#define LIBXL_HAVE_PSR_CDP 1
 #endif
 
 /*
@@ -833,21 +941,92 @@ void libxl_mac_copy(libxl_ctx *ctx, libxl_mac *dst, libxl_mac *src);
  */
 #define LIBXL_HAVE_SRM_V1 1
 
+/*
+ * libxl_domain_build_info has the u.hvm.gfx_passthru_kind field and
+ * the libxl_gfx_passthru_kind enumeration is defined.
+*/
+#define LIBXL_HAVE_GFX_PASSTHRU_KIND
+
+/*
+ * LIBXL_HAVE_DEVICE_MODEL_VERSION_NONE
+ *
+ * In the case that LIBXL_HAVE_DEVICE_MODEL_VERSION_NONE is set libxl
+ * allows the creation of HVM guests without a device model.
+ */
+#define LIBXL_HAVE_DEVICE_MODEL_VERSION_NONE 1
+
+/*
+ * LIBXL_HAVE_CHECKPOINTED_STREAM
+ *
+ * If this is defined, then libxl_checkpointed_stream exists.
+ */
+#define LIBXL_HAVE_CHECKPOINTED_STREAM 1
+
+/*
+ * LIBXL_HAVE_BUILDINFO_HVM_SYSTEM_FIRMWARE
+ *
+ * libxl_domain_build_info has u.hvm.system_firmware field which can be use
+ * to provide a different firmware blob (like SeaBIOS or OVMF).
+ */
+#define LIBXL_HAVE_BUILDINFO_HVM_SYSTEM_FIRMWARE
+
+/*
+ * ERROR_REMUS_XXX error code only exists from Xen 4.5, Xen 4.6 and it
+ * is changed to ERROR_CHECKPOINT_XXX in Xen 4.7
+ */
+#if defined(LIBXL_API_VERSION) && LIBXL_API_VERSION >= 0x040500 \
+                               && LIBXL_API_VERSION < 0x040700
+#define ERROR_REMUS_DEVOPS_DOES_NOT_MATCH \
+        ERROR_CHECKPOINT_DEVOPS_DOES_NOT_MATCH
+#define ERROR_REMUS_DEVICE_NOT_SUPPORTED \
+        ERROR_CHECKPOINT_DEVICE_NOT_SUPPORTED
+#endif
+
+/*
+ * LIBXL_HAVE_VGA_INTERFACE_TYPE_UNKNOWN
+ *
+ * In the case that LIBXL_HAVE_VGA_INTERFACE_TYPE_UNKNOWN is set the
+ * libxl_vga_interface_type enumeration type contains a
+ * LIBXL_VGA_INTERFACE_TYPE_UNKNOWN identifier. This is used to signal
+ * that a libxl_vga_interface_type type has not been initialized yet.
+ */
+#define LIBXL_HAVE_VGA_INTERFACE_TYPE_UNKNOWN 1
+
+/*
+ * LIBXL_HAVE_BYTEARRAY_UUID
+ *
+ * If this is defined, the internal member of libxl_uuid is defined
+ * as a 16 byte array that contains the UUID in big endian format.
+ * Also, the same structure layout is used across all OSes.
+ */
+#define LIBXL_HAVE_BYTEARRAY_UUID 1
+
+/*
+ * LIBXL_HAVE_MEMKB_64BITS
+ *
+ * If this is defined libxl_set_memory_target(), libxl_domain_setmaxmem()
+ * and libxl_wait_for_free_memory()  will take a 64 bit value for the memory
+ * size parameter.
+ * From Xen 4.8 on libxl_get_memory_target(), libxl_domain_need_memory() and
+ * libxl_get_free_memory() return the memory size in a 64 bit value, too.
+ */
+#define LIBXL_HAVE_MEMKB_64BITS 1
+
 typedef char **libxl_string_list;
 void libxl_string_list_dispose(libxl_string_list *sl);
 int libxl_string_list_length(const libxl_string_list *sl);
 void libxl_string_list_copy(libxl_ctx *ctx, libxl_string_list *dst,
-                            libxl_string_list *src);
+                            const libxl_string_list *src);
 
 typedef char **libxl_key_value_list;
 void libxl_key_value_list_dispose(libxl_key_value_list *kvl);
-int libxl_key_value_list_length(libxl_key_value_list *kvl);
+int libxl_key_value_list_length(const libxl_key_value_list *kvl);
 void libxl_key_value_list_copy(libxl_ctx *ctx,
                                libxl_key_value_list *dst,
-                               libxl_key_value_list *src);
+                               const libxl_key_value_list *src);
 
 typedef uint32_t libxl_hwcap[8];
-void libxl_hwcap_copy(libxl_ctx *ctx, libxl_hwcap *dst, libxl_hwcap *src);
+void libxl_hwcap_copy(libxl_ctx *ctx, libxl_hwcap *dst, const libxl_hwcap *src);
 
 typedef uint64_t libxl_ev_user;
 
@@ -865,10 +1044,10 @@ void libxl_bitmap_dispose(libxl_bitmap *map);
 typedef struct libxl__cpuid_policy libxl_cpuid_policy;
 typedef libxl_cpuid_policy * libxl_cpuid_policy_list;
 void libxl_cpuid_dispose(libxl_cpuid_policy_list *cpuid_list);
-int libxl_cpuid_policy_list_length(libxl_cpuid_policy_list *l);
+int libxl_cpuid_policy_list_length(const libxl_cpuid_policy_list *l);
 void libxl_cpuid_policy_list_copy(libxl_ctx *ctx,
                                   libxl_cpuid_policy_list *dst,
-                                  libxl_cpuid_policy_list *src);
+                                  const libxl_cpuid_policy_list *src);
 
 #define LIBXL_PCI_FUNC_ALL (~0U)
 
@@ -1103,6 +1282,7 @@ int libxl_domain_create_new(libxl_ctx *ctx, libxl_domain_config *d_config,
                             LIBXL_EXTERNAL_CALLERS_ONLY;
 int libxl_domain_create_restore(libxl_ctx *ctx, libxl_domain_config *d_config,
                                 uint32_t *domid, int restore_fd,
+                                int send_back_fd,
                                 const libxl_domain_restore_params *params,
                                 const libxl_asyncop_how *ao_how,
                                 const libxl_asyncprogress_how *aop_console_how)
@@ -1110,7 +1290,7 @@ int libxl_domain_create_restore(libxl_ctx *ctx, libxl_domain_config *d_config,
 
 #if defined(LIBXL_API_VERSION) && LIBXL_API_VERSION < 0x040400
 
-int static inline libxl_domain_create_restore_0x040200(
+static inline int libxl_domain_create_restore_0x040200(
     libxl_ctx *ctx, libxl_domain_config *d_config,
     uint32_t *domid, int restore_fd,
     const libxl_asyncop_how *ao_how,
@@ -1123,7 +1303,7 @@ int static inline libxl_domain_create_restore_0x040200(
     libxl_domain_restore_params_init(&params);
 
     ret = libxl_domain_create_restore(
-        ctx, d_config, domid, restore_fd, &params, ao_how, aop_console_how);
+        ctx, d_config, domid, restore_fd, -1, &params, ao_how, aop_console_how);
 
     libxl_domain_restore_params_dispose(&params);
     return ret;
@@ -1131,7 +1311,32 @@ int static inline libxl_domain_create_restore_0x040200(
 
 #define libxl_domain_create_restore libxl_domain_create_restore_0x040200
 
+#elif defined(LIBXL_API_VERSION) && LIBXL_API_VERSION >= 0x040400 \
+                                 && LIBXL_API_VERSION < 0x040700
+
+static inline int libxl_domain_create_restore_0x040400(
+    libxl_ctx *ctx, libxl_domain_config *d_config,
+    uint32_t *domid, int restore_fd,
+    const libxl_domain_restore_params *params,
+    const libxl_asyncop_how *ao_how,
+    const libxl_asyncprogress_how *aop_console_how)
+    LIBXL_EXTERNAL_CALLERS_ONLY
+{
+    return libxl_domain_create_restore(ctx, d_config, domid, restore_fd,
+                                       -1, params, ao_how, aop_console_how);
+}
+
+#define libxl_domain_create_restore libxl_domain_create_restore_0x040400
+
 #endif
+
+int libxl_domain_soft_reset(libxl_ctx *ctx,
+                            libxl_domain_config *d_config,
+                            uint32_t domid,
+                            const libxl_asyncop_how *ao_how,
+                            const libxl_asyncprogress_how
+                            *aop_console_how)
+                            LIBXL_EXTERNAL_CALLERS_ONLY;
 
   /* A progress report will be made via ao_console_how, of type
    * domain_create_console_available, when the domain's primary
@@ -1147,7 +1352,8 @@ void libxl_domain_config_dispose(libxl_domain_config *d_config);
  * works with DomU.
  */
 int libxl_retrieve_domain_configuration(libxl_ctx *ctx, uint32_t domid,
-                                        libxl_domain_config *d_config);
+                                        libxl_domain_config *d_config)
+                                        LIBXL_EXTERNAL_CALLERS_ONLY;
 
 int libxl_domain_suspend(libxl_ctx *ctx, uint32_t domid, int fd,
                          int flags, /* LIBXL_SUSPEND_* */
@@ -1164,6 +1370,11 @@ int libxl_domain_resume(libxl_ctx *ctx, uint32_t domid, int suspend_cancel,
                         const libxl_asyncop_how *ao_how)
                         LIBXL_EXTERNAL_CALLERS_ONLY;
 
+/*
+ * This function doesn't return unless something has gone wrong with
+ * the replication to the secondary. If this function returns then the
+ * caller should resume the (primary) domain.
+ */
 int libxl_domain_remus_start(libxl_ctx *ctx, libxl_domain_remus_info *info,
                              uint32_t domid, int send_fd, int recv_fd,
                              const libxl_asyncop_how *ao_how)
@@ -1205,10 +1416,12 @@ int libxl_domain_core_dump(libxl_ctx *ctx, uint32_t domid,
                            const libxl_asyncop_how *ao_how)
                            LIBXL_EXTERNAL_CALLERS_ONLY;
 
-int libxl_domain_setmaxmem(libxl_ctx *ctx, uint32_t domid, uint32_t target_memkb);
-int libxl_set_memory_target(libxl_ctx *ctx, uint32_t domid, int32_t target_memkb, int relative, int enforce);
-int libxl_get_memory_target(libxl_ctx *ctx, uint32_t domid, uint32_t *out_target);
-
+int libxl_domain_setmaxmem(libxl_ctx *ctx, uint32_t domid, uint64_t target_memkb);
+int libxl_set_memory_target(libxl_ctx *ctx, uint32_t domid, int64_t target_memkb, int relative, int enforce);
+int libxl_get_memory_target(libxl_ctx *ctx, uint32_t domid, uint64_t *out_target);
+int libxl_get_memory_target_0x040700(libxl_ctx *ctx, uint32_t domid,
+                                     uint32_t *out_target)
+    LIBXL_EXTERNAL_CALLERS_ONLY;
 
 /*
  * WARNING
@@ -1220,12 +1433,19 @@ int libxl_get_memory_target(libxl_ctx *ctx, uint32_t domid, uint32_t *out_target
  * existing programs which use them in roughly the same way as libxl.
  */
 /* how much free memory in the system a domain needs to be built */
-int libxl_domain_need_memory(libxl_ctx *ctx, libxl_domain_build_info *b_info,
-                             uint32_t *need_memkb);
+int libxl_domain_need_memory(libxl_ctx *ctx,
+                             const libxl_domain_build_info *b_info_in,
+                             uint64_t *need_memkb);
+int libxl_domain_need_memory_0x040700(libxl_ctx *ctx,
+                                      const libxl_domain_build_info *b_info_in,
+                                      uint32_t *need_memkb)
+    LIBXL_EXTERNAL_CALLERS_ONLY;
 /* how much free memory is available in the system */
-int libxl_get_free_memory(libxl_ctx *ctx, uint32_t *memkb);
+int libxl_get_free_memory(libxl_ctx *ctx, uint64_t *memkb);
+int libxl_get_free_memory_0x040700(libxl_ctx *ctx, uint32_t *memkb)
+    LIBXL_EXTERNAL_CALLERS_ONLY;
 /* wait for a given amount of memory to be free in the system */
-int libxl_wait_for_free_memory(libxl_ctx *ctx, uint32_t domid, uint32_t memory_kb, int wait_secs);
+int libxl_wait_for_free_memory(libxl_ctx *ctx, uint32_t domid, uint64_t memory_kb, int wait_secs);
 /*
  * Wait for the memory target of a domain to be reached. Does not
  * decrement wait_secs if the domain is making progress toward reaching
@@ -1241,16 +1461,51 @@ int libxl_wait_for_free_memory(libxl_ctx *ctx, uint32_t domid, uint32_t memory_k
  */
 int libxl_wait_for_memory_target(libxl_ctx *ctx, uint32_t domid, int wait_secs);
 
+#if defined(LIBXL_API_VERSION) && LIBXL_API_VERSION < 0x040800
+#define libxl_get_memory_target libxl_get_memory_target_0x040700
+#define libxl_domain_need_memory libxl_domain_need_memory_0x040700
+#define libxl_get_free_memory libxl_get_free_memory_0x040700
+#endif
+
 int libxl_vncviewer_exec(libxl_ctx *ctx, uint32_t domid, int autopass);
-int libxl_console_exec(libxl_ctx *ctx, uint32_t domid, int cons_num, libxl_console_type type);
+
+/*
+ * If notify_fd is not -1, xenconsole will write 0x00 to it to nofity
+ * the caller that it has connected to the guest console.
+ */
+int libxl_console_exec(libxl_ctx *ctx, uint32_t domid, int cons_num,
+                       libxl_console_type type, int notify_fd);
 /* libxl_primary_console_exec finds the domid and console number
  * corresponding to the primary console of the given vm, then calls
  * libxl_console_exec with the right arguments (domid might be different
  * if the guest is using stubdoms).
  * This function can be called after creating the device model, in
  * case of HVM guests, and before libxl_run_bootloader in case of PV
- * guests using pygrub. */
-int libxl_primary_console_exec(libxl_ctx *ctx, uint32_t domid_vm);
+ * guests using pygrub.
+ * If notify_fd is not -1, xenconsole will write 0x00 to it to nofity
+ * the caller that it has connected to the guest console.
+ */
+int libxl_primary_console_exec(libxl_ctx *ctx, uint32_t domid_vm,
+                               int notify_fd);
+
+#if defined(LIBXL_API_VERSION) && LIBXL_API_VERSION < 0x040800
+
+static inline int libxl_console_exec_0x040700(libxl_ctx *ctx,
+                                              uint32_t domid, int cons_num,
+                                              libxl_console_type type)
+{
+    return libxl_console_exec(ctx, domid, cons_num, type, -1);
+}
+#define libxl_console_exec libxl_console_exec_0x040700
+
+static inline int libxl_primary_console_exec_0x040700(libxl_ctx *ctx,
+                                                      uint32_t domid_vm)
+{
+    return libxl_primary_console_exec(ctx, domid_vm, -1);
+}
+#define libxl_primary_console_exec libxl_primary_console_exec_0x040700
+
+#endif
 
 /* libxl_console_get_tty retrieves the specified domain's console tty path
  * and stores it in path. Caller is responsible for freeing the memory.
@@ -1362,6 +1617,71 @@ void libxl_vtpminfo_list_free(libxl_vtpminfo *, int nr_vtpms);
  *
  *   This function does not interact with the guest and therefore
  *   cannot block on the guest.
+ *
+ * Controllers
+ * -----------
+ *
+ * Most devices are treated individually.  Some classes of device,
+ * however, like USB or SCSI, inherently have the need to have a
+ * hierarchy of different levels, with lower-level devices "attached"
+ * to higher-level ones.  USB for instance has "controllers" at the
+ * top, which have buses, on which are devices, which consist of
+ * multiple interfaces.  SCSI has "hosts" at the top, then buses,
+ * targets, and LUNs.
+ *
+ * In that case, for each <class>, there will be a set of functions
+ * and types for each <level>.  For example, for <class>=usb, there
+ * may be <levels> ctrl (controller) and dev (device), with ctrl being
+ * level 0.
+ *
+ * libxl_device_<class><level0>_<function> will act more or
+ * less like top-level non-bus devices: they will either create or
+ * accept a libxl_devid which will be unique within the
+ * <class><level0> libxl_devid namespace.
+ *
+ * Lower-level devices must have a unique way to be identified.  One
+ * way to do this would be to name it via the name of the next level
+ * up plus an index; for instance, <ctrl devid, port number>.  Another
+ * way would be to have another devid namespace for that level.  This
+ * identifier will be used for queries and removals.
+ *
+ * Lower-level devices will include in their
+ * libxl_device_<class><level> struct a field referring to the unique
+ * index of the level above.  For instance, libxl_device_usbdev might
+ * contain the controller devid.
+ *
+ * In the case where there are multiple different ways to implement a
+ * given device -- for instance, one which is fully PV and one which
+ * uses an emulator -- the controller will contain a field which
+ * specifies what type of implementation is used.  The implementations
+ * of individual devices will be known by the controller to which they
+ * are attached.
+ *
+ * If libxl_device_<class><level>_add receives an empty reference to
+ * the level above, it may return an error.  Or it may (but is not
+ * required to) automatically choose a suitable device in the level
+ * above to which to attach the new device at this level.  It may also
+ * (but is not required to) automatically create a new device at the
+ * level above if no suitable devices exist.  Each class should
+ * document its behavior.
+ *
+ * libxl_device_<class><level>_list will list all devices of <class>
+ * at <level> in the domain.  For example, libxl_device_usbctrl_list
+ * will list all usb controllers; libxl_class_usbdev_list will list
+ * all usb devices across all controllers.
+ *
+ * For each class, the domain config file will contain a single list
+ * for each level.  libxl will first iterate through the list of
+ * top-level devices, then iterate through each level down in turn,
+ * adding devices to devices in the level above.  For instance, there
+ * will be one list for all usb controllers, and one list for all usb
+ * devices.
+ *
+ * If libxl_device_<class><level>_add automatically creates
+ * higher-level devices as necessary, then it is permissible for the
+ * higher-level lists to be empty and the device list to have devices
+ * with the field containing a reference to the higher level device
+ * uninitialized.
  */
 
 /* Disks */
@@ -1389,6 +1709,77 @@ int libxl_device_disk_getinfo(libxl_ctx *ctx, uint32_t domid,
 int libxl_cdrom_insert(libxl_ctx *ctx, uint32_t domid, libxl_device_disk *disk,
                        const libxl_asyncop_how *ao_how)
                        LIBXL_EXTERNAL_CALLERS_ONLY;
+
+/*
+ * USB
+ *
+ * For each device removed or added, one of these protocols is available:
+ * - PV (i.e., PVUSB)
+ * - DEVICEMODEL (i.e, qemu)
+ *
+ * PV is available for either PV or HVM domains.  DEVICEMODEL is only
+ * available for HVM domains.  The caller can additionally specify
+ * "AUTO", in which case the library will try to determine the best
+ * protocol automatically.
+ *
+ * At the moment, the only protocol implemented is PV.
+ *
+ * One can add/remove USB controllers to/from guest, and attach/detach USB
+ * devices to/from USB controllers.
+ *
+ * To add USB controllers and USB devices, one can adding USB controllers
+ * first and then attaching USB devices to some USB controller, or adding
+ * USB devices to guest directly, it will automatically create a USB
+ * controller for USB devices to attach.
+ *
+ * To remove USB controllers or USB devices, one can remove USB devices
+ * under USB controller one by one and then remove USB controller, or
+ * remove USB controller directly, it will remove all USB devices under
+ * it automatically.
+ *
+ */
+/* USB Controllers*/
+int libxl_device_usbctrl_add(libxl_ctx *ctx, uint32_t domid,
+                             libxl_device_usbctrl *usbctrl,
+                             const libxl_asyncop_how *ao_how)
+                             LIBXL_EXTERNAL_CALLERS_ONLY;
+
+int libxl_device_usbctrl_remove(libxl_ctx *ctx, uint32_t domid,
+                                libxl_device_usbctrl *usbctrl,
+                                const libxl_asyncop_how *ao_how)
+                                LIBXL_EXTERNAL_CALLERS_ONLY;
+
+int libxl_device_usbctrl_destroy(libxl_ctx *ctx, uint32_t domid,
+                                 libxl_device_usbctrl *usbctrl,
+                                 const libxl_asyncop_how *ao_how)
+                                 LIBXL_EXTERNAL_CALLERS_ONLY;
+
+libxl_device_usbctrl *libxl_device_usbctrl_list(libxl_ctx *ctx,
+                                                uint32_t domid, int *num);
+
+void libxl_device_usbctrl_list_free(libxl_device_usbctrl *list, int nr);
+
+
+int libxl_device_usbctrl_getinfo(libxl_ctx *ctx, uint32_t domid,
+                                 libxl_device_usbctrl *usbctrl,
+                                 libxl_usbctrlinfo *usbctrlinfo);
+
+/* USB Devices */
+
+int libxl_device_usbdev_add(libxl_ctx *ctx, uint32_t domid,
+                            libxl_device_usbdev *usbdev,
+                            const libxl_asyncop_how *ao_how)
+                            LIBXL_EXTERNAL_CALLERS_ONLY;
+
+int libxl_device_usbdev_remove(libxl_ctx *ctx, uint32_t domid,
+                               libxl_device_usbdev *usbdev,
+                               const libxl_asyncop_how *ao_how)
+                               LIBXL_EXTERNAL_CALLERS_ONLY;
+
+libxl_device_usbdev *
+libxl_device_usbdev_list(libxl_ctx *ctx, uint32_t domid, int *num);
+
+void libxl_device_usbdev_list_free(libxl_device_usbdev *list, int nr);
 
 /* Network Interfaces */
 int libxl_device_nic_add(libxl_ctx *ctx, uint32_t domid, libxl_device_nic *nic,
@@ -1555,12 +1946,14 @@ void libxl_cpuid_set(libxl_ctx *ctx, uint32_t domid,
  */
 int libxl_userdata_store(libxl_ctx *ctx, uint32_t domid,
                               const char *userdata_userid,
-                              const uint8_t *data, int datalen);
+                              const uint8_t *data, int datalen)
+                              LIBXL_EXTERNAL_CALLERS_ONLY;
   /* If datalen==0, data is not used and the user data for
    * that domain and userdata_userid is deleted. */
 int libxl_userdata_retrieve(libxl_ctx *ctx, uint32_t domid,
                                  const char *userdata_userid,
-                                 uint8_t **data_r, int *datalen_r);
+                                 uint8_t **data_r, int *datalen_r)
+                                 LIBXL_EXTERNAL_CALLERS_ONLY;
   /* On successful return, *data_r is from malloc.
    * If there is no data for that domain and userdata_userid,
    * *data_r and *datalen_r will be set to 0.
@@ -1575,6 +1968,10 @@ int libxl_get_physinfo(libxl_ctx *ctx, libxl_physinfo *physinfo);
 int libxl_set_vcpuaffinity(libxl_ctx *ctx, uint32_t domid, uint32_t vcpuid,
                            const libxl_bitmap *cpumap_hard,
                            const libxl_bitmap *cpumap_soft);
+int libxl_set_vcpuaffinity_force(libxl_ctx *ctx, uint32_t domid,
+                                 uint32_t vcpuid,
+                                 const libxl_bitmap *cpumap_hard,
+                                 const libxl_bitmap *cpumap_soft);
 int libxl_set_vcpuaffinity_all(libxl_ctx *ctx, uint32_t domid,
                                unsigned int max_vcpus,
                                const libxl_bitmap *cpumap_hard,
@@ -1595,13 +1992,20 @@ int libxl_domain_get_nodeaffinity(libxl_ctx *ctx, uint32_t domid,
                                   libxl_bitmap *nodemap);
 int libxl_set_vcpuonline(libxl_ctx *ctx, uint32_t domid, libxl_bitmap *cpumap);
 
-libxl_scheduler libxl_get_scheduler(libxl_ctx *ctx);
+/* A return value less than 0 should be interpreted as a libxl_error, while a
+ * return value greater than or equal to 0 should be interpreted as a
+ * libxl_scheduler. */
+int libxl_get_scheduler(libxl_ctx *ctx);
 
 /* Per-scheduler parameters */
 int libxl_sched_credit_params_get(libxl_ctx *ctx, uint32_t poolid,
                                   libxl_sched_credit_params *scinfo);
 int libxl_sched_credit_params_set(libxl_ctx *ctx, uint32_t poolid,
                                   libxl_sched_credit_params *scinfo);
+int libxl_sched_credit2_params_get(libxl_ctx *ctx, uint32_t poolid,
+                                   libxl_sched_credit2_params *scinfo);
+int libxl_sched_credit2_params_set(libxl_ctx *ctx, uint32_t poolid,
+                                   libxl_sched_credit2_params *scinfo);
 
 /* Scheduler Per-domain parameters */
 
@@ -1613,10 +2017,40 @@ int libxl_sched_credit_params_set(libxl_ctx *ctx, uint32_t poolid,
 #define LIBXL_DOMAIN_SCHED_PARAM_EXTRATIME_DEFAULT -1
 #define LIBXL_DOMAIN_SCHED_PARAM_BUDGET_DEFAULT    -1
 
+/* Per-VCPU parameters */
+#define LIBXL_SCHED_PARAM_VCPU_INDEX_DEFAULT   -1
+
+/* Get the per-domain scheduling parameters.
+ * For schedulers that support per-vcpu settings (e.g., RTDS),
+ * calling *_domain_get functions will get default scheduling
+ * parameters.
+ */
 int libxl_domain_sched_params_get(libxl_ctx *ctx, uint32_t domid,
                                   libxl_domain_sched_params *params);
+
+/* Set the per-domain scheduling parameters.
+ * For schedulers that support per-vcpu settings (e.g., RTDS),
+ * calling *_domain_set functions will set all vcpus with the same
+ * scheduling parameters.
+ */
 int libxl_domain_sched_params_set(libxl_ctx *ctx, uint32_t domid,
                                   const libxl_domain_sched_params *params);
+
+/* Get the per-vcpu scheduling parameters */
+int libxl_vcpu_sched_params_get(libxl_ctx *ctx, uint32_t domid,
+                                libxl_vcpu_sched_params *params);
+
+/* Get the per-vcpu scheduling parameters of all vcpus of a domain */
+int libxl_vcpu_sched_params_get_all(libxl_ctx *ctx, uint32_t domid,
+                                    libxl_vcpu_sched_params *params);
+
+/* Set the per-vcpu scheduling parameters */
+int libxl_vcpu_sched_params_set(libxl_ctx *ctx, uint32_t domid,
+                                const libxl_vcpu_sched_params *params);
+
+/* Set the per-vcpu scheduling parameters of all vcpus of a domain */
+int libxl_vcpu_sched_params_set_all(libxl_ctx *ctx, uint32_t domid,
+                                    const libxl_vcpu_sched_params *params);
 
 int libxl_send_trigger(libxl_ctx *ctx, uint32_t domid,
                        libxl_trigger trigger, uint32_t vcpuid);
@@ -1675,7 +2109,7 @@ int libxl_flask_loadpolicy(libxl_ctx *ctx, void *policy, uint32_t size);
 int libxl_ms_vm_genid_generate(libxl_ctx *ctx, libxl_ms_vm_genid *id);
 bool libxl_ms_vm_genid_is_zero(const libxl_ms_vm_genid *id);
 void libxl_ms_vm_genid_copy(libxl_ctx *ctx, libxl_ms_vm_genid *dst,
-                            libxl_ms_vm_genid *src);
+                            const libxl_ms_vm_genid *src);
 
 #ifdef LIBXL_HAVE_PSR_CMT
 int libxl_psr_cmt_attach(libxl_ctx *ctx, uint32_t domid);
@@ -1737,6 +2171,14 @@ void libxl_psr_cat_info_list_free(libxl_psr_cat_info *list, int nr);
  * return ERROR_FAIL, but also leave errno valid. */
 int libxl_fd_set_cloexec(libxl_ctx *ctx, int fd, int cloexec);
 int libxl_fd_set_nonblock(libxl_ctx *ctx, int fd, int nonblock);
+
+/*
+ * Issue a qmp monitor command to the device model of the specified domain.
+ * The function returns the output of the command in a new allocated buffer
+ * via output.
+ */
+int libxl_qemu_monitor_command(libxl_ctx *ctx, uint32_t domid,
+                               const char *command_line, char **output);
 
 #include <libxl_event.h>
 

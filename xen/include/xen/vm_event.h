@@ -24,6 +24,7 @@
 #define __VM_EVENT_H__
 
 #include <xen/sched.h>
+#include <public/vm_event.h>
 
 /* Clean up on domain destruction */
 void vm_event_cleanup(struct domain *d);
@@ -74,8 +75,10 @@ int vm_event_domctl(struct domain *d, xen_domctl_vm_event_op_t *vec,
 void vm_event_vcpu_pause(struct vcpu *v);
 void vm_event_vcpu_unpause(struct vcpu *v);
 
-#endif /* __VM_EVENT_H__ */
+void vm_event_fill_regs(vm_event_request_t *req);
+void vm_event_set_registers(struct vcpu *v, vm_event_response_t *rsp);
 
+#endif /* __VM_EVENT_H__ */
 
 /*
  * Local variables:

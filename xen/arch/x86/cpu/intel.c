@@ -18,20 +18,30 @@
 
 #define select_idle_routine(x) ((void)0)
 
-static unsigned int probe_intel_cpuid_faulting(void)
+static bool __init probe_intel_cpuid_faulting(void)
 {
 	uint64_t x;
-	return !rdmsr_safe(MSR_INTEL_PLATFORM_INFO, x) &&
-		(x & MSR_PLATFORM_INFO_CPUID_FAULTING);
+
+	if (rdmsr_safe(MSR_INTEL_PLATFORM_INFO, x) ||
+	    !(x & MSR_PLATFORM_INFO_CPUID_FAULTING))
+		return 0;
+
+	expected_levelling_cap |= LCAP_faulting;
+	levelling_caps |=  LCAP_faulting;
+	__set_bit(X86_FEATURE_CPUID_FAULTING, boot_cpu_data.x86_capability);
+	return 1;
 }
 
-static DEFINE_PER_CPU(bool_t, cpuid_faulting_enabled);
-void set_cpuid_faulting(bool_t enable)
+DEFINE_PER_CPU(bool, cpuid_faulting_enabled);
+
+static void set_cpuid_faulting(bool enable)
 {
+	bool *this_enabled = &this_cpu(cpuid_faulting_enabled);
 	uint32_t hi, lo;
 
-	if (!cpu_has_cpuid_faulting ||
-	    this_cpu(cpuid_faulting_enabled) == enable )
+	ASSERT(cpu_has_cpuid_faulting);
+
+	if (*this_enabled == enable)
 		return;
 
 	rdmsr(MSR_INTEL_MISC_FEATURES_ENABLES, lo, hi);
@@ -40,40 +50,44 @@ void set_cpuid_faulting(bool_t enable)
 		lo |= MSR_MISC_FEATURES_CPUID_FAULTING;
 	wrmsr(MSR_INTEL_MISC_FEATURES_ENABLES, lo, hi);
 
-	this_cpu(cpuid_faulting_enabled) = enable;
+	*this_enabled = enable;
 }
 
 /*
- * opt_cpuid_mask_ecx/edx: cpuid.1[ecx, edx] feature mask.
- * For example, E8400[Intel Core 2 Duo Processor series] ecx = 0x0008E3FD,
- * edx = 0xBFEBFBFF when executing CPUID.EAX = 1 normally. If you want to
- * 'rev down' to E8400, you can set these values in these Xen boot parameters.
+ * Set caps in expected_levelling_cap, probe a specific masking MSR, and set
+ * caps in levelling_caps if it is found, or clobber the MSR index if missing.
+ * If preset, reads the default value into msr_val.
  */
-static void __devinit set_cpuidmask(const struct cpuinfo_x86 *c)
+static uint64_t __init _probe_mask_msr(unsigned int *msr, uint64_t caps)
 {
-	static unsigned int msr_basic, msr_ext, msr_xsave;
-	static enum { not_parsed, no_mask, set_mask } status;
-	u64 msr_val;
+	uint64_t val = 0;
 
-	if (status == no_mask)
-		return;
+	expected_levelling_cap |= caps;
 
-	if (status == set_mask)
-		goto setmask;
+	if (rdmsr_safe(*msr, val) || wrmsr_safe(*msr, val))
+		*msr = 0;
+	else
+		levelling_caps |= caps;
 
-	ASSERT((status == not_parsed) && (c == &boot_cpu_data));
-	status = no_mask;
+	return val;
+}
 
-	if (!~(opt_cpuid_mask_ecx & opt_cpuid_mask_edx &
-	       opt_cpuid_mask_ext_ecx & opt_cpuid_mask_ext_edx &
-	       opt_cpuid_mask_xsave_eax))
-		return;
+/* Indices of the masking MSRs, or 0 if unavailable. */
+static unsigned int __read_mostly msr_basic, __read_mostly msr_ext,
+	__read_mostly msr_xsave;
+
+/*
+ * Probe for the existance of the expected masking MSRs.  They might easily
+ * not be available if Xen is running virtualised.
+ */
+static void __init probe_masking_msrs(void)
+{
+	const struct cpuinfo_x86 *c = &boot_cpu_data;
+	unsigned int exp_msr_basic, exp_msr_ext, exp_msr_xsave;
 
 	/* Only family 6 supports this feature. */
-	if (c->x86 != 6) {
-		printk("No CPUID feature masking support available\n");
+	if (c->x86 != 6)
 		return;
-	}
 
 	switch (c->x86_model) {
 	case 0x17: /* Yorkfield, Wolfdale, Penryn, Harpertown(DP) */
@@ -100,83 +114,201 @@ static void __devinit set_cpuidmask(const struct cpuinfo_x86 *c)
 		break;
 	}
 
-	status = set_mask;
+	exp_msr_basic = msr_basic;
+	exp_msr_ext   = msr_ext;
+	exp_msr_xsave = msr_xsave;
 
-	if (~(opt_cpuid_mask_ecx & opt_cpuid_mask_edx)) {
-		if (msr_basic)
-			printk("Writing CPUID feature mask ecx:edx -> %08x:%08x\n",
-			       opt_cpuid_mask_ecx, opt_cpuid_mask_edx);
-		else
-			printk("No CPUID feature mask available\n");
-	}
-	else
-		msr_basic = 0;
+	if (msr_basic)
+		cpuidmask_defaults._1cd = _probe_mask_msr(&msr_basic, LCAP_1cd);
 
-	if (~(opt_cpuid_mask_ext_ecx & opt_cpuid_mask_ext_edx)) {
-		if (msr_ext)
-			printk("Writing CPUID extended feature mask ecx:edx -> %08x:%08x\n",
-			       opt_cpuid_mask_ext_ecx, opt_cpuid_mask_ext_edx);
-		else
-			printk("No CPUID extended feature mask available\n");
-	}
-	else
-		msr_ext = 0;
+	if (msr_ext)
+		cpuidmask_defaults.e1cd = _probe_mask_msr(&msr_ext, LCAP_e1cd);
 
-	if (~opt_cpuid_mask_xsave_eax) {
-		if (msr_xsave)
-			printk("Writing CPUID xsave feature mask eax -> %08x\n",
-			       opt_cpuid_mask_xsave_eax);
-		else
-			printk("No CPUID xsave feature mask available\n");
-	}
-	else
-		msr_xsave = 0;
+	if (msr_xsave)
+		cpuidmask_defaults.Da1 = _probe_mask_msr(&msr_xsave, LCAP_Da1);
 
- setmask:
-	if (msr_basic &&
-	    wrmsr_safe(msr_basic,
-		       ((u64)opt_cpuid_mask_edx << 32) | opt_cpuid_mask_ecx)){
-		msr_basic = 0;
-		printk("Failed to set CPUID feature mask\n");
-	}
+	/*
+	 * Don't bother warning about a mismatch if virtualised.  These MSRs
+	 * are not architectural and almost never virtualised.
+	 */
+	if ((expected_levelling_cap == levelling_caps) ||
+	    cpu_has_hypervisor)
+		return;
 
-	if (msr_ext &&
-	    wrmsr_safe(msr_ext,
-		       ((u64)opt_cpuid_mask_ext_edx << 32) | opt_cpuid_mask_ext_ecx)){
-		msr_ext = 0;
-		printk("Failed to set CPUID extended feature mask\n");
-	}
-
-	if (msr_xsave &&
-	    (rdmsr_safe(msr_xsave, msr_val) ||
-	     wrmsr_safe(msr_xsave,
-			(msr_val & (~0ULL << 32)) | opt_cpuid_mask_xsave_eax))){
-		msr_xsave = 0;
-		printk("Failed to set CPUID xsave feature mask\n");
-	}
+	printk(XENLOG_WARNING "Mismatch between expected (%#x) "
+	       "and real (%#x) levelling caps: missing %#x\n",
+	       expected_levelling_cap, levelling_caps,
+	       (expected_levelling_cap ^ levelling_caps) & levelling_caps);
+	printk(XENLOG_WARNING "Fam %#x, model %#x expected (%#x/%#x/%#x), "
+	       "got (%#x/%#x/%#x)\n", c->x86, c->x86_model,
+	       exp_msr_basic, exp_msr_ext, exp_msr_xsave,
+	       msr_basic, msr_ext, msr_xsave);
+	printk(XENLOG_WARNING
+	       "If not running virtualised, please report a bug\n");
 }
 
-void __devinit early_intel_workaround(struct cpuinfo_x86 *c)
+/*
+ * Context switch levelling state to the next domain.  A parameter of NULL is
+ * used to context switch to the default host state (by the cpu bringup-code,
+ * crash path, etc).
+ */
+static void intel_ctxt_switch_levelling(const struct vcpu *next)
 {
-	if (c->x86_vendor != X86_VENDOR_INTEL)
+	struct cpuidmasks *these_masks = &this_cpu(cpuidmasks);
+	const struct domain *nextd = next ? next->domain : NULL;
+	const struct cpuidmasks *masks;
+
+	if (cpu_has_cpuid_faulting) {
+		/*
+		 * We *should* be enabling faulting for the control domain.
+		 *
+		 * Unfortunately, the domain builder (having only ever been a
+		 * PV guest) expects to be able to see host cpuid state in a
+		 * native CPUID instruction, to correctly build a CPUID policy
+		 * for HVM guests (notably the xstate leaves).
+		 *
+		 * This logic is fundimentally broken for HVM toolstack
+		 * domains, and faulting causes PV guests to behave like HVM
+		 * guests from their point of view.
+		 *
+		 * Future development plans will move responsibility for
+		 * generating the maximum full cpuid policy into Xen, at which
+		 * this problem will disappear.
+		 */
+		set_cpuid_faulting(nextd && is_pv_domain(nextd) &&
+				   !is_control_domain(nextd));
 		return;
+	}
+
+	masks = (nextd && is_pv_domain(nextd) && nextd->arch.pv_domain.cpuidmasks)
+		? nextd->arch.pv_domain.cpuidmasks : &cpuidmask_defaults;
+
+        if (msr_basic) {
+		uint64_t val = masks->_1cd;
+
+		/*
+		 * OSXSAVE defaults to 1, which causes fast-forwarding of
+		 * Xen's real setting.  Clobber it if disabled by the guest
+		 * kernel.
+		 */
+		if (next && is_pv_vcpu(next) && !is_idle_vcpu(next) &&
+		    !(next->arch.pv_vcpu.ctrlreg[4] & X86_CR4_OSXSAVE))
+			val &= ~(uint64_t)cpufeat_mask(X86_FEATURE_OSXSAVE);
+
+		if (unlikely(these_masks->_1cd != val)) {
+			wrmsrl(msr_basic, val);
+			these_masks->_1cd = val;
+		}
+        }
+
+#define LAZY(msr, field)						\
+	({								\
+		if (unlikely(these_masks->field != masks->field) &&	\
+		    (msr))						\
+		{							\
+			wrmsrl((msr), masks->field);			\
+			these_masks->field = masks->field;		\
+		}							\
+	})
+
+	LAZY(msr_ext,   e1cd);
+	LAZY(msr_xsave, Da1);
+
+#undef LAZY
+}
+
+/*
+ * opt_cpuid_mask_ecx/edx: cpuid.1[ecx, edx] feature mask.
+ * For example, E8400[Intel Core 2 Duo Processor series] ecx = 0x0008E3FD,
+ * edx = 0xBFEBFBFF when executing CPUID.EAX = 1 normally. If you want to
+ * 'rev down' to E8400, you can set these values in these Xen boot parameters.
+ */
+static void __init noinline intel_init_levelling(void)
+{
+	if (!probe_intel_cpuid_faulting())
+		probe_masking_msrs();
+
+	if (msr_basic) {
+		uint32_t ecx, edx, tmp;
+
+		cpuid(0x00000001, &tmp, &tmp, &ecx, &edx);
+
+		ecx &= opt_cpuid_mask_ecx;
+		edx &= opt_cpuid_mask_edx;
+
+		/* Fast-forward bits - Must be set. */
+		if (ecx & cpufeat_mask(X86_FEATURE_XSAVE))
+			ecx |= cpufeat_mask(X86_FEATURE_OSXSAVE);
+		edx |= cpufeat_mask(X86_FEATURE_APIC);
+
+		cpuidmask_defaults._1cd &= ((u64)edx << 32) | ecx;
+	}
+
+	if (msr_ext) {
+		uint32_t ecx, edx, tmp;
+
+		cpuid(0x80000001, &tmp, &tmp, &ecx, &edx);
+
+		ecx &= opt_cpuid_mask_ext_ecx;
+		edx &= opt_cpuid_mask_ext_edx;
+
+		cpuidmask_defaults.e1cd &= ((u64)edx << 32) | ecx;
+	}
+
+	if (msr_xsave) {
+		uint32_t eax, tmp;
+
+		cpuid_count(0x0000000d, 1, &eax, &tmp, &tmp, &tmp);
+
+		eax &= opt_cpuid_mask_xsave_eax;
+
+		cpuidmask_defaults.Da1 &= (~0ULL << 32) | eax;
+	}
+
+	if (opt_cpu_info) {
+		printk(XENLOG_INFO "Levelling caps: %#x\n", levelling_caps);
+
+		if (!cpu_has_cpuid_faulting)
+			printk(XENLOG_INFO
+			       "MSR defaults: 1d 0x%08x, 1c 0x%08x, e1d 0x%08x, "
+			       "e1c 0x%08x, Da1 0x%08x\n",
+			       (uint32_t)(cpuidmask_defaults._1cd >> 32),
+			       (uint32_t)cpuidmask_defaults._1cd,
+			       (uint32_t)(cpuidmask_defaults.e1cd >> 32),
+			       (uint32_t)cpuidmask_defaults.e1cd,
+			       (uint32_t)cpuidmask_defaults.Da1);
+	}
+
+	if (levelling_caps)
+		ctxt_switch_levelling = intel_ctxt_switch_levelling;
+}
+
+static void early_init_intel(struct cpuinfo_x86 *c)
+{
 	/* Netburst reports 64 bytes clflush size, but does IO in 128 bytes */
 	if (c->x86 == 15 && c->x86_cache_alignment == 64)
 		c->x86_cache_alignment = 128;
 
-	/* Unmask CPUID levels if masked: */
+	/* Unmask CPUID levels and NX if masked: */
 	if (c->x86 > 6 || (c->x86 == 6 && c->x86_model >= 0xd)) {
-		u64 misc_enable;
+		u64 misc_enable, disable;
 
 		rdmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
 
-		if (misc_enable & MSR_IA32_MISC_ENABLE_LIMIT_CPUID) {
-			misc_enable &= ~MSR_IA32_MISC_ENABLE_LIMIT_CPUID;
-			wrmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
-			c->cpuid_level = cpuid_eax(0);
-			if (opt_cpu_info || c == &boot_cpu_data)
-				printk(KERN_INFO "revised cpuid level: %d\n",
-				       c->cpuid_level);
+		disable = misc_enable & (MSR_IA32_MISC_ENABLE_LIMIT_CPUID |
+					 MSR_IA32_MISC_ENABLE_XD_DISABLE);
+		if (disable) {
+			wrmsrl(MSR_IA32_MISC_ENABLE, misc_enable & ~disable);
+			bootsym(trampoline_misc_enable_off) |= disable;
+		}
+
+		if (disable & MSR_IA32_MISC_ENABLE_LIMIT_CPUID)
+			printk(KERN_INFO "revised cpuid level: %d\n",
+			       cpuid_eax(0));
+		if (disable & MSR_IA32_MISC_ENABLE_XD_DISABLE) {
+			write_efer(read_efer() | EFER_NX);
+			printk(KERN_INFO
+			       "re-enabled NX (Execute Disable) protection\n");
 		}
 	}
 
@@ -184,6 +316,14 @@ void __devinit early_intel_workaround(struct cpuinfo_x86 *c)
 	if (boot_cpu_data.x86 == 0xF && boot_cpu_data.x86_model == 3 &&
 	    (boot_cpu_data.x86_mask == 3 || boot_cpu_data.x86_mask == 4))
 		paddr_bits = 36;
+
+	if (c == &boot_cpu_data)
+		intel_init_levelling();
+
+	if (test_bit(X86_FEATURE_CPUID_FAULTING, boot_cpu_data.x86_capability))
+		__set_bit(X86_FEATURE_CPUID_FAULTING, c->x86_capability);
+
+	intel_ctxt_switch_levelling(NULL);
 }
 
 /*
@@ -193,7 +333,7 @@ void __devinit early_intel_workaround(struct cpuinfo_x86 *c)
  * Xeon 7400 erratum AAI65 (and further newer Xeons)
  * MONITOR/MWAIT may have excessive false wakeups
  */
-static void __devinit Intel_errata_workarounds(struct cpuinfo_x86 *c)
+static void Intel_errata_workarounds(struct cpuinfo_x86 *c)
 {
 	unsigned long lo, hi;
 
@@ -209,14 +349,14 @@ static void __devinit Intel_errata_workarounds(struct cpuinfo_x86 *c)
 
 	if (c->x86 == 6 && cpu_has_clflush &&
 	    (c->x86_model == 29 || c->x86_model == 46 || c->x86_model == 47))
-		set_bit(X86_FEATURE_CLFLUSH_MONITOR, c->x86_capability);
+		__set_bit(X86_FEATURE_CLFLUSH_MONITOR, c->x86_capability);
 }
 
 
 /*
  * find out the number of processor cores on the die
  */
-static int __devinit num_cpu_cores(struct cpuinfo_x86 *c)
+static int num_cpu_cores(struct cpuinfo_x86 *c)
 {
 	unsigned int eax, ebx, ecx, edx;
 
@@ -231,7 +371,7 @@ static int __devinit num_cpu_cores(struct cpuinfo_x86 *c)
 		return 1;
 }
 
-static void __devinit init_intel(struct cpuinfo_x86 *c)
+static void init_intel(struct cpuinfo_x86 *c)
 {
 	unsigned int l2 = 0;
 
@@ -244,7 +384,7 @@ static void __devinit init_intel(struct cpuinfo_x86 *c)
 		unsigned eax = cpuid_eax(10);
 		/* Check for version and the number of counters */
 		if ((eax & 0xff) && (((eax>>8) & 0xff) > 1))
-			set_bit(X86_FEATURE_ARCH_PERFMON, c->x86_capability);
+			__set_bit(X86_FEATURE_ARCH_PERFMON, c->x86_capability);
 	}
 
 	if ( !cpu_has(c, X86_FEATURE_XTOPOLOGY) )
@@ -253,42 +393,27 @@ static void __devinit init_intel(struct cpuinfo_x86 *c)
 		detect_ht(c);
 	}
 
-	if (c == &boot_cpu_data && c->x86 == 6) {
-		if (probe_intel_cpuid_faulting())
-			set_bit(X86_FEATURE_CPUID_FAULTING, c->x86_capability);
-	} else if (boot_cpu_has(X86_FEATURE_CPUID_FAULTING)) {
-		BUG_ON(!probe_intel_cpuid_faulting());
-		set_bit(X86_FEATURE_CPUID_FAULTING, c->x86_capability);
-	}
-
-	if (!cpu_has_cpuid_faulting)
-		set_cpuidmask(c);
-	else if ((c == &boot_cpu_data) &&
-		 (~(opt_cpuid_mask_ecx & opt_cpuid_mask_edx &
-		    opt_cpuid_mask_ext_ecx & opt_cpuid_mask_ext_edx &
-		    opt_cpuid_mask_xsave_eax)))
-		printk("No CPUID feature masking support available\n");
-
 	/* Work around errata */
 	Intel_errata_workarounds(c);
 
 	if ((c->x86 == 0xf && c->x86_model >= 0x03) ||
 		(c->x86 == 0x6 && c->x86_model >= 0x0e))
-		set_bit(X86_FEATURE_CONSTANT_TSC, c->x86_capability);
-	if (cpuid_edx(0x80000007) & (1u<<8)) {
-		set_bit(X86_FEATURE_CONSTANT_TSC, c->x86_capability);
-		set_bit(X86_FEATURE_NONSTOP_TSC, c->x86_capability);
-		set_bit(X86_FEATURE_TSC_RELIABLE, c->x86_capability);
+		__set_bit(X86_FEATURE_CONSTANT_TSC, c->x86_capability);
+	if (cpu_has(c, X86_FEATURE_ITSC)) {
+		__set_bit(X86_FEATURE_CONSTANT_TSC, c->x86_capability);
+		__set_bit(X86_FEATURE_NONSTOP_TSC, c->x86_capability);
+		__set_bit(X86_FEATURE_TSC_RELIABLE, c->x86_capability);
 	}
 	if ( opt_arat &&
 	     ( c->cpuid_level >= 0x00000006 ) &&
 	     ( cpuid_eax(0x00000006) & (1u<<2) ) )
-		set_bit(X86_FEATURE_ARAT, c->x86_capability);
+		__set_bit(X86_FEATURE_ARAT, c->x86_capability);
 }
 
 static const struct cpu_dev intel_cpu_dev = {
 	.c_vendor	= "Intel",
 	.c_ident 	= { "GenuineIntel" },
+	.c_early_init	= early_init_intel,
 	.c_init		= init_intel,
 };
 

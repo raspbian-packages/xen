@@ -44,18 +44,18 @@ struct hvm_mmio_ops {
 
 static inline paddr_t hvm_mmio_first_byte(const ioreq_t *p)
 {
-    return p->df ?
+    return unlikely(p->df) ?
            p->addr - (p->count - 1ul) * p->size :
            p->addr;
 }
 
 static inline paddr_t hvm_mmio_last_byte(const ioreq_t *p)
 {
-    unsigned long count = p->count;
+    unsigned long size = p->size;
 
-    return p->df ?
-           p->addr + p->size - 1:
-           p->addr + (count * p->size) - 1;
+    return unlikely(p->df) ?
+           p->addr + size - 1:
+           p->addr + (p->count * size) - 1;
 }
 
 typedef int (*portio_action_t)(
@@ -119,7 +119,7 @@ void relocate_portio_handler(
 void send_timeoffset_req(unsigned long timeoff);
 void send_invalidate_req(void);
 int handle_mmio(void);
-int handle_mmio_with_translation(unsigned long gva, unsigned long gpfn,
+int handle_mmio_with_translation(unsigned long gla, unsigned long gpfn,
                                  struct npfec);
 int handle_pio(uint16_t port, unsigned int size, int dir);
 void hvm_interrupt_post(struct vcpu *v, int vector, int type);
@@ -128,13 +128,19 @@ void hvm_dpci_eoi(struct domain *d, unsigned int guest_irq,
 void msix_write_completion(struct vcpu *);
 void msixtbl_init(struct domain *d);
 
+enum stdvga_cache_state {
+    STDVGA_CACHE_UNINITIALIZED,
+    STDVGA_CACHE_ENABLED,
+    STDVGA_CACHE_DISABLED
+};
+
 struct hvm_hw_stdvga {
     uint8_t sr_index;
     uint8_t sr[8];
     uint8_t gr_index;
     uint8_t gr[9];
     bool_t stdvga;
-    bool_t cache;
+    enum stdvga_cache_state cache;
     uint32_t latch;
     struct page_info *vram_page[64];  /* shadow of 0xa0000-0xaffff */
     spinlock_t lock;

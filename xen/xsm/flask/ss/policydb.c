@@ -638,8 +638,7 @@ static int (*destroy_f[SYM_NUM]) (void *key, void *datum, void *datap) =
 
 static void ocontext_destroy(struct ocontext *c, int i)
 {
-    context_destroy(&c->context[0]);
-    context_destroy(&c->context[1]);
+    context_destroy(&c->context);
     if ( i == OCON_ISID || i == OCON_DTREE )
         xfree(c->u.name);
     xfree(c);
@@ -747,14 +746,14 @@ int policydb_load_isids(struct policydb *p, struct sidtab *s)
     head = p->ocontexts[OCON_ISID];
     for ( c = head; c; c = c->next )
     {
-        if ( !c->context[0].user )
+        if ( !c->context.user )
         {
             printk(KERN_ERR "Flask:  SID %s was never "
                    "defined.\n", c->u.name);
             rc = -EINVAL;
             goto out;
         }
-        if ( sidtab_insert(s, c->sid[0], &c->context[0]) )
+        if ( sidtab_insert(s, c->sid, &c->context) )
         {
             printk(KERN_ERR "Flask:  unable to load initial "
                    "SID %s.\n", c->u.name);
@@ -1258,6 +1257,7 @@ static int role_read(struct policydb *p, struct hashtab *h, void *fp)
     int rc;
     __le32 buf[3];
     u32 len;
+    u32 ver = p->policyvers;
 
     role = xzalloc(struct role_datum);
     if ( !role )
@@ -1266,7 +1266,7 @@ static int role_read(struct policydb *p, struct hashtab *h, void *fp)
         goto out;
     }
 
-    if ( p->policyvers >= POLICYDB_VERSION_BOUNDARY )
+    if ( ver >= POLICYDB_VERSION_BOUNDARY )
         rc = next_entry(buf, fp, sizeof(buf[0]) * 3);
     else
         rc = next_entry(buf, fp, sizeof(buf[0]) * 2);
@@ -1276,7 +1276,7 @@ static int role_read(struct policydb *p, struct hashtab *h, void *fp)
 
     len = le32_to_cpu(buf[0]);
     role->value = le32_to_cpu(buf[1]);
-    if ( p->policyvers >= POLICYDB_VERSION_BOUNDARY )
+    if ( ver >= POLICYDB_VERSION_BOUNDARY )
         role->bounds = le32_to_cpu(buf[2]);
 
     key = xmalloc_array(char, len + 1);
@@ -1328,6 +1328,7 @@ static int type_read(struct policydb *p, struct hashtab *h, void *fp)
     int rc;
     __le32 buf[4];
     u32 len;
+    u32 ver = p->policyvers;
 
     typdatum = xzalloc(struct type_datum);
     if ( !typdatum )
@@ -1336,7 +1337,7 @@ static int type_read(struct policydb *p, struct hashtab *h, void *fp)
         return rc;
     }
 
-    if ( p->policyvers >= POLICYDB_VERSION_BOUNDARY )
+    if ( ver >= POLICYDB_VERSION_BOUNDARY )
         rc = next_entry(buf, fp, sizeof(buf[0]) * 4);
     else
         rc = next_entry(buf, fp, sizeof(buf[0]) * 3);
@@ -1346,7 +1347,7 @@ static int type_read(struct policydb *p, struct hashtab *h, void *fp)
 
     len = le32_to_cpu(buf[0]);
     typdatum->value = le32_to_cpu(buf[1]);
-    if ( p->policyvers >= POLICYDB_VERSION_BOUNDARY )
+    if ( ver >= POLICYDB_VERSION_BOUNDARY )
     {
         u32 prop = le32_to_cpu(buf[2]);
 
@@ -1421,6 +1422,7 @@ static int user_read(struct policydb *p, struct hashtab *h, void *fp)
     int rc;
     __le32 buf[3];
     u32 len;
+    u32 ver = p->policyvers;
 
     usrdatum = xzalloc(struct user_datum);
     if ( !usrdatum )
@@ -1429,7 +1431,7 @@ static int user_read(struct policydb *p, struct hashtab *h, void *fp)
         goto out;
     }
 
-    if ( p->policyvers >= POLICYDB_VERSION_BOUNDARY )
+    if ( ver >= POLICYDB_VERSION_BOUNDARY )
         rc = next_entry(buf, fp, sizeof(buf[0]) * 3);
     else
         rc = next_entry(buf, fp, sizeof(buf[0]) * 2);
@@ -1439,7 +1441,7 @@ static int user_read(struct policydb *p, struct hashtab *h, void *fp)
 
     len = le32_to_cpu(buf[0]);
     usrdatum->value = le32_to_cpu(buf[1]);
-    if ( p->policyvers >= POLICYDB_VERSION_BOUNDARY )
+    if ( ver >= POLICYDB_VERSION_BOUNDARY )
         usrdatum->bounds = le32_to_cpu(buf[2]);
 
     key = xmalloc_array(char, len + 1);
@@ -1457,7 +1459,7 @@ static int user_read(struct policydb *p, struct hashtab *h, void *fp)
     if ( rc )
         goto bad;
 
-    if ( p->policyvers >= POLICYDB_VERSION_MLS )
+    if ( ver >= POLICYDB_VERSION_MLS )
     {
         rc = mls_read_range_helper(&usrdatum->range, fp);
         if ( rc )
@@ -1841,6 +1843,7 @@ int policydb_read(struct policydb *p, void *fp)
             goto bad;
         }
     }
+    p->allow_unknown = !!(le32_to_cpu(buf[1]) & ALLOW_UNKNOWN);
 
     if ( p->policyvers >= POLICYDB_VERSION_POLCAP &&
          ebitmap_read(&p->policycaps, fp) != 0 )
@@ -2012,8 +2015,8 @@ int policydb_read(struct policydb *p, void *fp)
                 rc = next_entry(buf, fp, sizeof(u32));
                 if ( rc < 0 )
                     goto bad;
-                c->sid[0] = le32_to_cpu(buf[0]);
-                rc = context_read_and_validate(&c->context[0], p, fp);
+                c->sid = le32_to_cpu(buf[0]);
+                rc = context_read_and_validate(&c->context, p, fp);
                 if ( rc )
                     goto bad;
                 break;
@@ -2028,7 +2031,7 @@ int policydb_read(struct policydb *p, void *fp)
                 if ( rc < 0 )
                     goto bad;
                 c->u.pirq = le32_to_cpu(buf[0]);
-                rc = context_read_and_validate(&c->context[0], p, fp);
+                rc = context_read_and_validate(&c->context, p, fp);
                 if ( rc )
                     goto bad;
                 break;
@@ -2044,7 +2047,7 @@ int policydb_read(struct policydb *p, void *fp)
                     goto bad;
                 c->u.ioport.low_ioport = le32_to_cpu(buf[0]);
                 c->u.ioport.high_ioport = le32_to_cpu(buf[1]);
-                rc = context_read_and_validate(&c->context[0], p, fp);
+                rc = context_read_and_validate(&c->context, p, fp);
                 if ( rc )
                     goto bad;
                 break;
@@ -2072,7 +2075,7 @@ int policydb_read(struct policydb *p, void *fp)
                     c->u.iomem.low_iomem = le32_to_cpu(buf[0]);
                     c->u.iomem.high_iomem = le32_to_cpu(buf[1]);
                 }
-                rc = context_read_and_validate(&c->context[0], p, fp);
+                rc = context_read_and_validate(&c->context, p, fp);
                 if ( rc )
                     goto bad;
                 break;
@@ -2087,7 +2090,7 @@ int policydb_read(struct policydb *p, void *fp)
                 if ( rc < 0 )
                     goto bad;
                 c->u.device = le32_to_cpu(buf[0]);
-                rc = context_read_and_validate(&c->context[0], p, fp);
+                rc = context_read_and_validate(&c->context, p, fp);
                 if ( rc )
                     goto bad;
                 break;
@@ -2110,7 +2113,7 @@ int policydb_read(struct policydb *p, void *fp)
                 if ( rc < 0 )
                     goto bad;
                 c->u.name[len] = 0;
-                rc = context_read_and_validate(&c->context[0], p, fp);
+                rc = context_read_and_validate(&c->context, p, fp);
                 if ( rc )
                     goto bad;
                 break;

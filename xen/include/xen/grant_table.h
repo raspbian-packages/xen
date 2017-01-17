@@ -23,6 +23,7 @@
 #ifndef __XEN_GRANT_TABLE_H__
 #define __XEN_GRANT_TABLE_H__
 
+#include <xen/rwlock.h>
 #include <public/grant_table.h>
 #include <asm/page.h>
 #include <asm/grant_table.h>
@@ -51,13 +52,15 @@
 /* The maximum size of a grant table. */
 extern unsigned int max_grant_frames;
 
+DECLARE_PERCPU_RWLOCK_GLOBAL(grant_rwlock);
+
 /* Per-domain grant information. */
 struct grant_table {
     /*
      * Lock protecting updates to grant table state (version, active
      * entry list, etc.)
      */
-    rwlock_t              lock;
+    percpu_rwlock_t       lock;
     /* Table size. Number of frames shared with guest */
     unsigned int          nr_grant_frames;
     /* Shared grant table (see include/public/grant_table.h). */
@@ -82,12 +85,37 @@ struct grant_table {
     unsigned              gt_version;
 };
 
+static inline void grant_read_lock(struct grant_table *gt)
+{
+    percpu_read_lock(grant_rwlock, &gt->lock);
+}
+
+static inline void grant_read_unlock(struct grant_table *gt)
+{
+    percpu_read_unlock(grant_rwlock, &gt->lock);
+}
+
+static inline void grant_write_lock(struct grant_table *gt)
+{
+    percpu_write_lock(grant_rwlock, &gt->lock);
+}
+
+static inline void grant_write_unlock(struct grant_table *gt)
+{
+    percpu_write_unlock(grant_rwlock, &gt->lock);
+}
+
 /* Create/destroy per-domain grant table context. */
 int grant_table_create(
     struct domain *d);
 void grant_table_destroy(
     struct domain *d);
 void grant_table_init_vcpu(struct vcpu *v);
+
+/*
+ * Check if domain has active grants and log first 10 of them.
+ */
+void grant_table_warn_active_grants(struct domain *d);
 
 /* Domain death release of granted mappings of other domains' memory. */
 void
@@ -120,5 +148,8 @@ static inline unsigned int grant_to_status_frames(int grant_frames)
     return (grant_frames * GRANT_PER_PAGE + GRANT_STATUS_PER_PAGE - 1) /
         GRANT_STATUS_PER_PAGE;
 }
+
+int mem_sharing_gref_to_gfn(struct grant_table *gt, grant_ref_t ref,
+                            gfn_t *gfn, uint16_t *status);
 
 #endif /* __XEN_GRANT_TABLE_H__ */

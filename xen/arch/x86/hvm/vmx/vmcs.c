@@ -37,8 +37,10 @@
 #include <asm/hvm/vmx/vvmx.h>
 #include <asm/hvm/vmx/vmcs.h>
 #include <asm/flushtlb.h>
+#include <asm/monitor.h>
 #include <asm/shadow.h>
 #include <asm/tboot.h>
+#include <asm/apic.h>
 
 static bool_t __read_mostly opt_vpid_enabled = 1;
 boolean_param("vpid", opt_vpid_enabled);
@@ -63,7 +65,7 @@ integer_param("ple_gap", ple_gap);
 static unsigned int __read_mostly ple_window = 4096;
 integer_param("ple_window", ple_window);
 
-static bool_t __read_mostly opt_pml_enabled = 0;
+static bool_t __read_mostly opt_pml_enabled = 1;
 static s8 __read_mostly opt_ept_ad = -1;
 
 /*
@@ -107,20 +109,8 @@ u64 vmx_ept_vpid_cap __read_mostly;
 u64 vmx_vmfunc __read_mostly;
 bool_t vmx_virt_exception __read_mostly;
 
-const u32 vmx_introspection_force_enabled_msrs[] = {
-    MSR_IA32_SYSENTER_EIP,
-    MSR_IA32_SYSENTER_ESP,
-    MSR_IA32_SYSENTER_CS,
-    MSR_IA32_MC0_CTL,
-    MSR_STAR,
-    MSR_LSTAR
-};
-
-const unsigned int vmx_introspection_force_enabled_msrs_size =
-    ARRAY_SIZE(vmx_introspection_force_enabled_msrs);
-
-static DEFINE_PER_CPU_READ_MOSTLY(struct vmcs_struct *, vmxon_region);
-static DEFINE_PER_CPU(struct vmcs_struct *, current_vmcs);
+static DEFINE_PER_CPU_READ_MOSTLY(paddr_t, vmxon_region);
+static DEFINE_PER_CPU(paddr_t, current_vmcs);
 static DEFINE_PER_CPU(struct list_head, active_vmcs_list);
 DEFINE_PER_CPU(bool_t, vmxon);
 
@@ -148,6 +138,7 @@ static void __init vmx_display_features(void)
     P(cpu_has_vmx_vmfunc, "VM Functions");
     P(cpu_has_vmx_virt_exceptions, "Virtualisation Exceptions");
     P(cpu_has_vmx_pml, "Page Modification Logging");
+    P(cpu_has_vmx_tsc_scaling, "TSC Scaling");
 #undef P
 
     if ( !printed )
@@ -240,7 +231,9 @@ static int vmx_init_vmcs_config(void)
                SECONDARY_EXEC_PAUSE_LOOP_EXITING |
                SECONDARY_EXEC_ENABLE_INVPCID |
                SECONDARY_EXEC_ENABLE_VM_FUNCTIONS |
-               SECONDARY_EXEC_ENABLE_VIRT_EXCEPTIONS);
+               SECONDARY_EXEC_ENABLE_VIRT_EXCEPTIONS |
+               SECONDARY_EXEC_XSAVES |
+               SECONDARY_EXEC_TSC_SCALING);
         rdmsrl(MSR_IA32_VMX_MISC, _vmx_misc_cap);
         if ( _vmx_misc_cap & VMX_MISC_VMWRITE_ALL )
             opt |= SECONDARY_EXEC_ENABLE_VMCS_SHADOWING;
@@ -483,25 +476,28 @@ static int vmx_init_vmcs_config(void)
     return 0;
 }
 
-static struct vmcs_struct *vmx_alloc_vmcs(void)
+static paddr_t vmx_alloc_vmcs(void)
 {
+    struct page_info *pg;
     struct vmcs_struct *vmcs;
 
-    if ( (vmcs = alloc_xenheap_page()) == NULL )
+    if ( (pg = alloc_domheap_page(NULL, 0)) == NULL )
     {
         gdprintk(XENLOG_WARNING, "Failed to allocate VMCS.\n");
-        return NULL;
+        return 0;
     }
 
+    vmcs = __map_domain_page(pg);
     clear_page(vmcs);
     vmcs->vmcs_revision_id = vmcs_revision_id;
+    unmap_domain_page(vmcs);
 
-    return vmcs;
+    return page_to_maddr(pg);
 }
 
-static void vmx_free_vmcs(struct vmcs_struct *vmcs)
+static void vmx_free_vmcs(paddr_t pa)
 {
-    free_xenheap_page(vmcs);
+    free_domheap_page(maddr_to_page(pa));
 }
 
 static void __vmx_clear_vmcs(void *info)
@@ -514,7 +510,7 @@ static void __vmx_clear_vmcs(void *info)
 
     if ( arch_vmx->active_cpu == smp_processor_id() )
     {
-        __vmpclear(virt_to_maddr(arch_vmx->vmcs));
+        __vmpclear(arch_vmx->vmcs_pa);
         if ( arch_vmx->vmcs_shadow_maddr )
             __vmpclear(arch_vmx->vmcs_shadow_maddr);
 
@@ -523,8 +519,8 @@ static void __vmx_clear_vmcs(void *info)
 
         list_del(&arch_vmx->active_list);
 
-        if ( arch_vmx->vmcs == this_cpu(current_vmcs) )
-            this_cpu(current_vmcs) = NULL;
+        if ( arch_vmx->vmcs_pa == this_cpu(current_vmcs) )
+            this_cpu(current_vmcs) = 0;
     }
 }
 
@@ -550,8 +546,8 @@ static void vmx_load_vmcs(struct vcpu *v)
 
     ASSERT(v->arch.hvm_vmx.active_cpu == smp_processor_id());
 
-    __vmptrld(virt_to_maddr(v->arch.hvm_vmx.vmcs));
-    this_cpu(current_vmcs) = v->arch.hvm_vmx.vmcs;
+    __vmptrld(v->arch.hvm_vmx.vmcs_pa);
+    this_cpu(current_vmcs) = v->arch.hvm_vmx.vmcs_pa;
 
     local_irq_restore(flags);
 }
@@ -565,11 +561,11 @@ int vmx_cpu_up_prepare(unsigned int cpu)
     if ( nvmx_cpu_up_prepare(cpu) != 0 )
         printk("CPU%d: Could not allocate virtual VMCS buffer.\n", cpu);
 
-    if ( per_cpu(vmxon_region, cpu) != NULL )
+    if ( per_cpu(vmxon_region, cpu) )
         return 0;
 
     per_cpu(vmxon_region, cpu) = vmx_alloc_vmcs();
-    if ( per_cpu(vmxon_region, cpu) != NULL )
+    if ( per_cpu(vmxon_region, cpu) )
         return 0;
 
     printk("CPU%d: Could not allocate host VMCS\n", cpu);
@@ -580,7 +576,7 @@ int vmx_cpu_up_prepare(unsigned int cpu)
 void vmx_cpu_dead(unsigned int cpu)
 {
     vmx_free_vmcs(per_cpu(vmxon_region, cpu));
-    per_cpu(vmxon_region, cpu) = NULL;
+    per_cpu(vmxon_region, cpu) = 0;
     nvmx_cpu_dead(cpu);
 }
 
@@ -608,14 +604,14 @@ int vmx_cpu_up(void)
         return -EINVAL;
     }
 
-    rdmsr(IA32_FEATURE_CONTROL_MSR, eax, edx);
+    rdmsr(MSR_IA32_FEATURE_CONTROL, eax, edx);
 
-    bios_locked = !!(eax & IA32_FEATURE_CONTROL_MSR_LOCK);
+    bios_locked = !!(eax & IA32_FEATURE_CONTROL_LOCK);
     if ( bios_locked )
     {
         if ( !(eax & (tboot_in_measured_env()
-                      ? IA32_FEATURE_CONTROL_MSR_ENABLE_VMXON_INSIDE_SMX
-                      : IA32_FEATURE_CONTROL_MSR_ENABLE_VMXON_OUTSIDE_SMX)) )
+                      ? IA32_FEATURE_CONTROL_ENABLE_VMXON_INSIDE_SMX
+                      : IA32_FEATURE_CONTROL_ENABLE_VMXON_OUTSIDE_SMX)) )
         {
             printk("CPU%d: VMX disabled by BIOS.\n", cpu);
             return -EINVAL;
@@ -623,11 +619,11 @@ int vmx_cpu_up(void)
     }
     else
     {
-        eax  = IA32_FEATURE_CONTROL_MSR_LOCK;
-        eax |= IA32_FEATURE_CONTROL_MSR_ENABLE_VMXON_OUTSIDE_SMX;
-        if ( test_bit(X86_FEATURE_SMXE, &boot_cpu_data.x86_capability) )
-            eax |= IA32_FEATURE_CONTROL_MSR_ENABLE_VMXON_INSIDE_SMX;
-        wrmsr(IA32_FEATURE_CONTROL_MSR, eax, 0);
+        eax  = IA32_FEATURE_CONTROL_LOCK;
+        eax |= IA32_FEATURE_CONTROL_ENABLE_VMXON_OUTSIDE_SMX;
+        if ( test_bit(X86_FEATURE_SMX, &boot_cpu_data.x86_capability) )
+            eax |= IA32_FEATURE_CONTROL_ENABLE_VMXON_INSIDE_SMX;
+        wrmsr(MSR_IA32_FEATURE_CONTROL, eax, 0);
     }
 
     if ( (rc = vmx_init_vmcs_config()) != 0 )
@@ -638,13 +634,13 @@ int vmx_cpu_up(void)
     if ( (rc = vmx_cpu_up_prepare(cpu)) != 0 )
         return rc;
 
-    switch ( __vmxon(virt_to_maddr(this_cpu(vmxon_region))) )
+    switch ( __vmxon(this_cpu(vmxon_region)) )
     {
     case -2: /* #UD or #GP */
         if ( bios_locked &&
-             test_bit(X86_FEATURE_SMXE, &boot_cpu_data.x86_capability) &&
-             (!(eax & IA32_FEATURE_CONTROL_MSR_ENABLE_VMXON_OUTSIDE_SMX) ||
-              !(eax & IA32_FEATURE_CONTROL_MSR_ENABLE_VMXON_INSIDE_SMX)) )
+             test_bit(X86_FEATURE_SMX, &boot_cpu_data.x86_capability) &&
+             (!(eax & IA32_FEATURE_CONTROL_ENABLE_VMXON_OUTSIDE_SMX) ||
+              !(eax & IA32_FEATURE_CONTROL_ENABLE_VMXON_INSIDE_SMX)) )
         {
             printk("CPU%d: VMXON failed: perhaps because of TXT settings "
                    "in your BIOS configuration?\n", cpu);
@@ -670,6 +666,8 @@ int vmx_cpu_up(void)
 
     if ( cpu_has_vmx_vpid )
         vpid_sync_all();
+
+    vmx_pi_per_cpu_init(cpu);
 
     return 0;
 }
@@ -710,7 +708,7 @@ bool_t vmx_vmcs_try_enter(struct vcpu *v)
      * vmx_vmcs_enter/exit and scheduling tail critical regions.
      */
     if ( likely(v == current) )
-        return v->arch.hvm_vmx.vmcs == this_cpu(current_vmcs);
+        return v->arch.hvm_vmx.vmcs_pa == this_cpu(current_vmcs);
 
     fv = &this_cpu(foreign_vmcs);
 
@@ -800,17 +798,8 @@ void vmx_disable_intercept_for_msr(struct vcpu *v, u32 msr, int type)
     if ( msr_bitmap == NULL )
         return;
 
-    if ( unlikely(d->arch.monitor.mov_to_msr_enabled &&
-                  d->arch.monitor.mov_to_msr_extended) &&
-         vm_event_check_ring(&d->vm_event->monitor) )
-    {
-        unsigned int i;
-
-        /* Filter out MSR-s needed for memory introspection */
-        for ( i = 0; i < vmx_introspection_force_enabled_msrs_size; i++ )
-            if ( msr == vmx_introspection_force_enabled_msrs[i] )
-                return;
-    }
+    if ( unlikely(monitored_msr(d, msr)) )
+        return;
 
     /*
      * See Intel PRM Vol. 3, 20.6.9 (MSR-Bitmap Address). Early manuals
@@ -906,17 +895,17 @@ int vmx_check_msr_bitmap(unsigned long *msr_bitmap, u32 msr, int access_type)
 /*
  * Switch VMCS between layer 1 & 2 guest
  */
-void vmx_vmcs_switch(struct vmcs_struct *from, struct vmcs_struct *to)
+void vmx_vmcs_switch(paddr_t from, paddr_t to)
 {
     struct arch_vmx_struct *vmx = &current->arch.hvm_vmx;
     spin_lock(&vmx->vmcs_lock);
 
-    __vmpclear(virt_to_maddr(from));
+    __vmpclear(from);
     if ( vmx->vmcs_shadow_maddr )
         __vmpclear(vmx->vmcs_shadow_maddr);
-    __vmptrld(virt_to_maddr(to));
+    __vmptrld(to);
 
-    vmx->vmcs = to;
+    vmx->vmcs_pa = to;
     vmx->launched = 0;
     this_cpu(current_vmcs) = to;
 
@@ -929,37 +918,54 @@ void vmx_vmcs_switch(struct vmcs_struct *from, struct vmcs_struct *to)
     spin_unlock(&vmx->vmcs_lock);
 }
 
-void virtual_vmcs_enter(void *vvmcs)
+void virtual_vmcs_enter(const struct vcpu *v)
 {
-    __vmptrld(pfn_to_paddr(domain_page_map_to_mfn(vvmcs)));
+    __vmptrld(v->arch.hvm_vmx.vmcs_shadow_maddr);
 }
 
-void virtual_vmcs_exit(void *vvmcs)
+void virtual_vmcs_exit(const struct vcpu *v)
 {
-    struct vmcs_struct *cur = this_cpu(current_vmcs);
+    paddr_t cur = this_cpu(current_vmcs);
 
-    __vmpclear(pfn_to_paddr(domain_page_map_to_mfn(vvmcs)));
+    __vmpclear(v->arch.hvm_vmx.vmcs_shadow_maddr);
     if ( cur )
-        __vmptrld(virt_to_maddr(cur));
-
+        __vmptrld(cur);
 }
 
-u64 virtual_vmcs_vmread(void *vvmcs, u32 vmcs_encoding)
+u64 virtual_vmcs_vmread(const struct vcpu *v, u32 vmcs_encoding)
 {
     u64 res;
 
-    virtual_vmcs_enter(vvmcs);
+    virtual_vmcs_enter(v);
     __vmread(vmcs_encoding, &res);
-    virtual_vmcs_exit(vvmcs);
+    virtual_vmcs_exit(v);
 
     return res;
 }
 
-void virtual_vmcs_vmwrite(void *vvmcs, u32 vmcs_encoding, u64 val)
+void virtual_vmcs_vmwrite(const struct vcpu *v, u32 vmcs_encoding, u64 val)
 {
-    virtual_vmcs_enter(vvmcs);
+    virtual_vmcs_enter(v);
     __vmwrite(vmcs_encoding, val);
-    virtual_vmcs_exit(vvmcs);
+    virtual_vmcs_exit(v);
+}
+
+/*
+ * This function is only called in a vCPU's initialization phase,
+ * so we can update the posted-interrupt descriptor in non-atomic way.
+ */
+static void pi_desc_init(struct vcpu *v)
+{
+    uint32_t dest;
+
+    v->arch.hvm_vmx.pi_desc.nv = posted_intr_vector;
+
+    dest = cpu_physical_id(v->processor);
+
+    if ( x2apic_enabled )
+        v->arch.hvm_vmx.pi_desc.ndst = dest;
+    else
+        v->arch.hvm_vmx.pi_desc.ndst = MASK_INSR(dest, PI_xAPIC_NDST_MASK);
 }
 
 static int construct_vmcs(struct vcpu *v)
@@ -976,7 +982,7 @@ static int construct_vmcs(struct vcpu *v)
     __vmwrite(PIN_BASED_VM_EXEC_CONTROL, vmx_pin_based_exec_control);
 
     v->arch.hvm_vmx.exec_control = vmx_cpu_based_exec_control;
-    if ( d->arch.vtsc )
+    if ( d->arch.vtsc && !cpu_has_vmx_tsc_scaling )
         v->arch.hvm_vmx.exec_control |= CPU_BASED_RDTSC_EXITING;
 
     v->arch.hvm_vmx.secondary_exec_control = vmx_secondary_exec_control;
@@ -1013,7 +1019,7 @@ static int construct_vmcs(struct vcpu *v)
         ~(SECONDARY_EXEC_ENABLE_VM_FUNCTIONS |
           SECONDARY_EXEC_ENABLE_VIRT_EXCEPTIONS);
 
-    if ( is_pvh_domain(d) )
+    if ( !has_vlapic(d) )
     {
         /* Disable virtual apics, TPR */
         v->arch.hvm_vmx.secondary_exec_control &=
@@ -1025,7 +1031,10 @@ static int construct_vmcs(struct vcpu *v)
         /* In turn, disable posted interrupts. */
         __vmwrite(PIN_BASED_VM_EXEC_CONTROL,
                   vmx_pin_based_exec_control & ~PIN_BASED_POSTED_INTERRUPT);
+    }
 
+    if ( is_pvh_domain(d) )
+    {
         /* Unrestricted guest (real mode for EPT) */
         v->arch.hvm_vmx.secondary_exec_control &=
             ~SECONDARY_EXEC_UNRESTRICTED_GUEST;
@@ -1100,6 +1109,9 @@ static int construct_vmcs(struct vcpu *v)
 
     if ( cpu_has_vmx_posted_intr_processing )
     {
+        if ( iommu_intpost )
+            pi_desc_init(v);
+
         __vmwrite(PI_DESC_ADDR, virt_to_maddr(&v->arch.hvm_vmx.pi_desc));
         __vmwrite(POSTED_INTR_NOTIFICATION_VECTOR, posted_intr_vector);
     }
@@ -1171,7 +1183,7 @@ static int construct_vmcs(struct vcpu *v)
     __vmwrite(GUEST_FS_AR_BYTES, 0xc093);
     __vmwrite(GUEST_GS_AR_BYTES, 0xc093);
     if ( is_pvh_domain(d) )
-        /* CS.L == 1, exec, read/write, accessed. PVH 32bitfixme. */
+        /* CS.L == 1, exec, read/write, accessed. */
         __vmwrite(GUEST_CS_AR_BYTES, 0xa09b);
     else
         __vmwrite(GUEST_CS_AR_BYTES, 0xc09b); /* exec/read, accessed */
@@ -1249,6 +1261,13 @@ static int construct_vmcs(struct vcpu *v)
         __vmwrite(HOST_PAT, host_pat);
         __vmwrite(GUEST_PAT, guest_pat);
     }
+    if ( cpu_has_vmx_mpx )
+        __vmwrite(GUEST_BNDCFGS, 0);
+    if ( cpu_has_vmx_xsaves )
+        __vmwrite(XSS_EXIT_BITMAP, 0);
+
+    if ( cpu_has_vmx_tsc_scaling )
+        __vmwrite(TSC_MULTIPLIER, d->arch.hvm_domain.tsc_scaling_ratio);
 
     vmx_vmcs_exit(v);
 
@@ -1500,7 +1519,7 @@ int vmx_domain_enable_pml(struct domain *d)
     if ( vmx_domain_pml_enabled(d) )
         return 0;
 
-    for_each_vcpu( d, v )
+    for_each_vcpu ( d, v )
         if ( (rc = vmx_vcpu_enable_pml(v)) != 0 )
             goto error;
 
@@ -1509,7 +1528,7 @@ int vmx_domain_enable_pml(struct domain *d)
     return 0;
 
  error:
-    for_each_vcpu( d, v )
+    for_each_vcpu ( d, v )
         if ( vmx_vcpu_pml_enabled(v) )
             vmx_vcpu_disable_pml(v);
     return rc;
@@ -1530,7 +1549,7 @@ void vmx_domain_disable_pml(struct domain *d)
     if ( !vmx_domain_pml_enabled(d) )
         return;
 
-    for_each_vcpu( d, v )
+    for_each_vcpu ( d, v )
         vmx_vcpu_disable_pml(v);
 
     d->arch.hvm_domain.vmx.status &= ~VMX_DOMAIN_PML_ENABLED;
@@ -1549,8 +1568,32 @@ void vmx_domain_flush_pml_buffers(struct domain *d)
     if ( !vmx_domain_pml_enabled(d) )
         return;
 
-    for_each_vcpu( d, v )
+    for_each_vcpu ( d, v )
         vmx_vcpu_flush_pml_buffer(v);
+}
+
+static void vmx_vcpu_update_eptp(struct vcpu *v, u64 eptp)
+{
+    vmx_vmcs_enter(v);
+    __vmwrite(EPT_POINTER, eptp);
+    vmx_vmcs_exit(v);
+}
+
+/*
+ * Update EPTP data to VMCS of all vcpus of the domain. Must be called when
+ * domain is paused.
+ */
+void vmx_domain_update_eptp(struct domain *d)
+{
+    struct p2m_domain *p2m = p2m_get_hostp2m(d);
+    struct vcpu *v;
+
+    ASSERT(atomic_read(&d->pause_count));
+
+    for_each_vcpu ( d, v )
+        vmx_vcpu_update_eptp(v, ept_get_eptp(&p2m->ept));
+
+    ept_sync_domain(p2m);
 }
 
 int vmx_create_vmcs(struct vcpu *v)
@@ -1558,17 +1601,17 @@ int vmx_create_vmcs(struct vcpu *v)
     struct arch_vmx_struct *arch_vmx = &v->arch.hvm_vmx;
     int rc;
 
-    if ( (arch_vmx->vmcs = vmx_alloc_vmcs()) == NULL )
+    if ( (arch_vmx->vmcs_pa = vmx_alloc_vmcs()) == 0 )
         return -ENOMEM;
 
     INIT_LIST_HEAD(&arch_vmx->active_list);
-    __vmpclear(virt_to_maddr(arch_vmx->vmcs));
+    __vmpclear(arch_vmx->vmcs_pa);
     arch_vmx->active_cpu = -1;
     arch_vmx->launched   = 0;
 
     if ( (rc = construct_vmcs(v)) != 0 )
     {
-        vmx_free_vmcs(arch_vmx->vmcs);
+        vmx_free_vmcs(arch_vmx->vmcs_pa);
         return rc;
     }
 
@@ -1581,28 +1624,26 @@ void vmx_destroy_vmcs(struct vcpu *v)
 
     vmx_clear_vmcs(v);
 
-    vmx_free_vmcs(arch_vmx->vmcs);
+    vmx_free_vmcs(arch_vmx->vmcs_pa);
 
     free_xenheap_page(v->arch.hvm_vmx.host_msr_area);
     free_xenheap_page(v->arch.hvm_vmx.msr_area);
     free_xenheap_page(v->arch.hvm_vmx.msr_bitmap);
 }
 
-void vm_launch_fail(void)
+void vmx_vmentry_failure(void)
 {
+    struct vcpu *curr = current;
     unsigned long error;
 
     __vmread(VM_INSTRUCTION_ERROR, &error);
-    printk("<vm_launch_fail> error code %lx\n", error);
-    domain_crash_synchronous();
-}
+    gprintk(XENLOG_ERR, "VM%s error: %#lx\n",
+            curr->arch.hvm_vmx.launched ? "RESUME" : "LAUNCH", error);
 
-void vm_resume_fail(void)
-{
-    unsigned long error;
+    if ( error == VMX_INSN_INVALID_CONTROL_STATE ||
+         error == VMX_INSN_INVALID_HOST_STATE )
+        vmcs_dump_vcpu(curr);
 
-    __vmread(VM_INSTRUCTION_ERROR, &error);
-    printk("<vm_resume_fail> error code %lx\n", error);
     domain_crash_synchronous();
 }
 
@@ -1612,7 +1653,7 @@ void vmx_do_resume(struct vcpu *v)
 
     if ( v->arch.hvm_vmx.active_cpu == smp_processor_id() )
     {
-        if ( v->arch.hvm_vmx.vmcs != this_cpu(current_vmcs) )
+        if ( v->arch.hvm_vmx.vmcs_pa != this_cpu(current_vmcs) )
             vmx_load_vmcs(v);
     }
     else
@@ -1815,7 +1856,8 @@ void vmcs_dump_vcpu(struct vcpu *v)
            vmr32(VM_EXIT_REASON), vmr(EXIT_QUALIFICATION));
     printk("IDTVectoring: info=%08x errcode=%08x\n",
            vmr32(IDT_VECTORING_INFO), vmr32(IDT_VECTORING_ERROR_CODE));
-    printk("TSC Offset = 0x%016lx\n", vmr(TSC_OFFSET));
+    printk("TSC Offset = 0x%016lx  TSC Multiplier = 0x%016lx\n",
+           vmr(TSC_OFFSET), vmr(TSC_MULTIPLIER));
     if ( (v->arch.hvm_vmx.exec_control & CPU_BASED_TPR_SHADOW) ||
          (vmx_pin_based_exec_control & PIN_BASED_POSTED_INTERRUPT) )
         printk("TPR Threshold = 0x%02x  PostedIntrVec = 0x%02x\n",
@@ -1869,15 +1911,9 @@ static void vmcs_dump(unsigned char ch)
     printk("**************************************\n");
 }
 
-static struct keyhandler vmcs_dump_keyhandler = {
-    .diagnostic = 1,
-    .u.fn = vmcs_dump,
-    .desc = "dump Intel's VMCS"
-};
-
 void __init setup_vmcs_dump(void)
 {
-    register_keyhandler('v', &vmcs_dump_keyhandler);
+    register_keyhandler('v', vmcs_dump, "dump VT-x VMCSs", 1);
 }
 
 

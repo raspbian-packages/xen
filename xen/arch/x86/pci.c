@@ -7,6 +7,7 @@
 #include <xen/spinlock.h>
 #include <xen/pci.h>
 #include <asm/io.h>
+#include <xsm/xsm.h>
 
 static DEFINE_SPINLOCK(pci_config_lock);
 
@@ -73,7 +74,12 @@ int pci_conf_write_intercept(unsigned int seg, unsigned int bdf,
                              uint32_t *data)
 {
     struct pci_dev *pdev;
-    int rc = 0;
+    int rc = xsm_pci_config_permission(XSM_HOOK, current->domain, bdf,
+                                       reg, reg + size - 1, 1);
+
+    if ( rc < 0 )
+        return rc;
+    ASSERT(!rc);
 
     /*
      * Avoid expensive operations when no hook is going to do anything
@@ -82,13 +88,13 @@ int pci_conf_write_intercept(unsigned int seg, unsigned int bdf,
     if ( reg < 64 || reg >= 256 )
         return 0;
 
-    spin_lock(&pcidevs_lock);
+    pcidevs_lock();
 
     pdev = pci_get_pdev(seg, PCI_BUS(bdf), PCI_DEVFN2(bdf));
     if ( pdev )
         rc = pci_msi_conf_write_intercept(pdev, reg, size, data);
 
-    spin_unlock(&pcidevs_lock);
+    pcidevs_unlock();
 
     return rc;
 }

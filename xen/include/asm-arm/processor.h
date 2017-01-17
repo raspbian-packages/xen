@@ -9,7 +9,50 @@
 #include <public/arch-arm.h>
 
 /* MIDR Main ID Register */
-#define MIDR_MASK    0xff0ffff0
+#define MIDR_REVISION_MASK      0xf
+#define MIDR_RESIVION(midr)     ((midr) & MIDR_REVISION_MASK)
+#define MIDR_PARTNUM_SHIFT      4
+#define MIDR_PARTNUM_MASK       (0xfff << MIDR_PARTNUM_SHIFT)
+#define MIDR_PARTNUM(midr) \
+    (((midr) & MIDR_PARTNUM_MASK) >> MIDR_PARTNUM_SHIFT)
+#define MIDR_ARCHITECTURE_SHIFT 16
+#define MIDR_ARCHITECTURE_MASK  (0xf << MIDR_ARCHITECTURE_SHIFT)
+#define MIDR_ARCHITECTURE(midr) \
+    (((midr) & MIDR_ARCHITECTURE_MASK) >> MIDR_ARCHITECTURE_SHIFT)
+#define MIDR_VARIANT_SHIFT      20
+#define MIDR_VARIANT_MASK       (0xf << MIDR_VARIANT_SHIFT)
+#define MIDR_VARIANT(midr) \
+    (((midr) & MIDR_VARIANT_MASK) >> MIDR_VARIANT_SHIFT)
+#define MIDR_IMPLEMENTOR_SHIFT  24
+#define MIDR_IMPLEMENTOR_MASK   (0xff << MIDR_IMPLEMENTOR_SHIFT)
+#define MIDR_IMPLEMENTOR(midr) \
+    (((midr) & MIDR_IMPLEMENTOR_MASK) >> MIDR_IMPLEMENTOR_SHIFT)
+
+#define MIDR_CPU_MODEL(imp, partnum)            \
+    (((imp)     << MIDR_IMPLEMENTOR_SHIFT) |    \
+     (0xf       << MIDR_ARCHITECTURE_SHIFT) |   \
+     ((partnum) << MIDR_PARTNUM_SHIFT))
+
+#define MIDR_CPU_MODEL_MASK \
+     (MIDR_IMPLEMENTOR_MASK | MIDR_PARTNUM_MASK | MIDR_ARCHITECTURE_MASK)
+
+#define MIDR_IS_CPU_MODEL_RANGE(midr, model, rv_min, rv_max)            \
+({                                                                      \
+        u32 _model = (midr) & MIDR_CPU_MODEL_MASK;                      \
+        u32 _rv = (midr) & (MIDR_REVISION_MASK | MIDR_VARIANT_MASK);    \
+                                                                        \
+        _model == (model) && _rv >= (rv_min) && _rv <= (rv_max);        \
+})
+
+#define ARM_CPU_IMP_ARM             0x41
+
+#define ARM_CPU_PART_CORTEX_A15     0xC0F
+#define ARM_CPU_PART_CORTEX_A53     0xD03
+#define ARM_CPU_PART_CORTEX_A57     0xD07
+
+#define MIDR_CORTEX_A15 MIDR_CPU_MODEL(ARM_CPU_IMP_ARM, ARM_CPU_PART_CORTEX_A15)
+#define MIDR_CORTEX_A53 MIDR_CPU_MODEL(ARM_CPU_IMP_ARM, ARM_CPU_PART_CORTEX_A53)
+#define MIDR_CORTEX_A57 MIDR_CPU_MODEL(ARM_CPU_IMP_ARM, ARM_CPU_PART_CORTEX_A57)
 
 /* MPIDR Multiprocessor Affinity Register */
 #define _MPIDR_UP           (30)
@@ -18,10 +61,13 @@
 #define MPIDR_SMP           (_AC(1,U) << _MPIDR_SMP)
 #define MPIDR_AFF0_SHIFT    (0)
 #define MPIDR_AFF0_MASK     (_AC(0xff,U) << MPIDR_AFF0_SHIFT)
+#ifdef CONFIG_ARM_64
+#define MPIDR_HWID_MASK     _AC(0xff00ffffff,UL)
+#else
 #define MPIDR_HWID_MASK     _AC(0xffffff,U)
+#endif
 #define MPIDR_INVALID       (~MPIDR_HWID_MASK)
 #define MPIDR_LEVEL_BITS    (8)
-#define AFFINITY_MASK(level)    ~((_AC(0x1,U) << ((level) * MPIDR_LEVEL_BITS)) - 1)
 
 
 /*
@@ -36,6 +82,8 @@
 
 #define MPIDR_AFFINITY_LEVEL(mpidr, level) \
          ((mpidr >> MPIDR_LEVEL_SHIFT(level)) & MPIDR_LEVEL_MASK)
+
+#define AFFINITY_MASK(level)    ~((_AC(0x1,UL) << MPIDR_LEVEL_SHIFT(level)) - 1)
 
 /* TTBCR Translation Table Base Control Register */
 #define TTBCR_EAE    _AC(0x80000000,U)
@@ -348,7 +396,7 @@ extern void identify_cpu(struct cpuinfo_arm *);
 extern struct cpuinfo_arm cpu_data[];
 #define current_cpu_data cpu_data[smp_processor_id()]
 
-extern u32 __cpu_logical_map[];
+extern register_t __cpu_logical_map[];
 #define cpu_logical_map(cpu) __cpu_logical_map[cpu]
 
 /* HSR data abort size definition */
@@ -565,6 +613,13 @@ union hsr {
 
 #define FSC_LL_MASK    (_AC(0x03,U)<<0)
 
+/* HPFAR_EL2: Hypervisor IPA Fault Address Register */
+#ifdef CONFIG_ARM_64
+#define HPFAR_MASK	GENMASK(39, 4)
+#else
+#define HPFAR_MASK	GENMASK(31, 4)
+#endif
+
 /* Time counter hypervisor control register */
 #define CNTHCTL_EL2_EL1PCTEN (1u<<0) /* Kernel/user access to physical counter */
 #define CNTHCTL_EL2_EL1PCEN  (1u<<1) /* Kernel/user access to CNTP timer regs */
@@ -634,6 +689,8 @@ void vcpu_regs_user_to_hyp(struct vcpu *vcpu,
 
 int call_smc(register_t function_id, register_t arg0, register_t arg1,
              register_t arg2);
+
+void do_trap_guest_error(struct cpu_user_regs *regs);
 
 #endif /* __ASSEMBLY__ */
 #endif /* __ASM_ARM_PROCESSOR_H */

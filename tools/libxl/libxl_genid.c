@@ -52,7 +52,7 @@ bool libxl_ms_vm_genid_is_zero(const libxl_ms_vm_genid *id)
 }
 
 void libxl_ms_vm_genid_copy(libxl_ctx *ctx, libxl_ms_vm_genid *dst,
-                            libxl_ms_vm_genid *src)
+                            const libxl_ms_vm_genid *src)
 {
     memcpy(dst, src, LIBXL_MS_VM_GENID_LEN);
 }
@@ -77,9 +77,9 @@ int libxl__ms_vm_genid_set(libxl__gc *gc, uint32_t domid,
         rc = ERROR_FAIL;
         goto out;
     }
-    rc = libxl__xs_write(gc, XBT_NULL,
-                         GCSPRINTF("%s/platform/generation-id", dom_path),
-                         "%"PRIu64 ":%" PRIu64, genid[0], genid[1]);
+    rc = libxl__xs_printf(gc, XBT_NULL,
+			  GCSPRINTF("%s/platform/generation-id", dom_path),
+			  "%"PRIu64 ":%" PRIu64, genid[0], genid[1]);
     if (rc < 0)
         goto out;
 

@@ -1,7 +1,7 @@
 Section: kernel
 Priority: optional
 Maintainer: Debian Xen Team <pkg-xen-devel@lists.alioth.debian.org>
-Uploaders: Guido Trotter <ultrotter@debian.org>, Bastian Blank <waldi@debian.org>
+Uploaders: Guido Trotter <ultrotter@debian.org>, Bastian Blank <waldi@debian.org>, Ian Jackson <ian.jackson@eu.citrix.com>
 Build-Depends:
  autotools-dev,
  debhelper (>> 9),
@@ -11,7 +11,7 @@ Build-Depends:
  bcc [i386 amd64],
  gcc-multilib [i386 amd64],
  e2fslibs-dev,
- iasl [i386 amd64],
+ iasl,
  seabios (>= 1.7.4-2~) [i386 amd64],
  libaio-dev,
  libfdt-dev [armhf arm64],
@@ -20,7 +20,6 @@ Build-Depends:
  libncurses5-dev,
  libpixman-1-dev,
  libyajl-dev,
- libssl-dev,
  pkg-config,
  uuid-dev,
  zlib1g-dev,

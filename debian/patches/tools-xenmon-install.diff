@@ -1,17 +1,14 @@
-From f85560a654ad09dc421d4d5092df06634dca9e0c Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:47:31 +0200
+X-Dgit-Generated: 4.8.0-1 9ec2fb473f9f58e6c168bf9826e762091dc8d663
 Subject: tools-xenmon-install.diff
 
 Patch-Name: tools-xenmon-install.diff
----
- tools/xenmon/Makefile | 4 ++++
- 1 file changed, 4 insertions(+)
 
-diff --git a/tools/xenmon/Makefile b/tools/xenmon/Makefile
-index cb6d7f8..3eb4fc9 100644
---- a/tools/xenmon/Makefile
-+++ b/tools/xenmon/Makefile
+---
+
+--- xen-4.8.0.orig/tools/xenmon/Makefile
++++ xen-4.8.0/tools/xenmon/Makefile
 @@ -13,6 +13,10 @@
  XEN_ROOT=$(CURDIR)/../..
  include $(XEN_ROOT)/tools/Rules.mk
@@ -21,5 +18,5 @@ index cb6d7f8..3eb4fc9 100644
 +INSTALL_PYTHON_PROG = $(XEN_ROOT)/tools/python/install-wrap "$(PYTHON_PATH)" $(INSTALL_PROG)
 +
  CFLAGS  += -Werror
+ CFLAGS  += $(CFLAGS_libxenevtchn)
  CFLAGS  += $(CFLAGS_libxenctrl)
- LDLIBS  += $(LDLIBS_libxenctrl)

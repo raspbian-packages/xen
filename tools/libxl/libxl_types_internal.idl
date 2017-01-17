@@ -14,6 +14,7 @@ libxl__qmp_message_type = Enumeration("qmp_message_type", [
     ])
 
 libxl__device_kind = Enumeration("device_kind", [
+    (0, "NONE"),
     (1, "VIF"),
     (2, "VBD"),
     (3, "QDISK"),
@@ -22,6 +23,8 @@ libxl__device_kind = Enumeration("device_kind", [
     (6, "VKBD"),
     (7, "CONSOLE"),
     (8, "VTPM"),
+    (9, "VUSB"),
+    (10, "QUSB"),
     ])
 
 libxl__console_backend = Enumeration("console_backend", [

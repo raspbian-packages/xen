@@ -23,18 +23,17 @@
 #include <xen/multiboot.h>
 #endif
 #include <xen/bitops.h>
-#ifdef HAS_DEVICE_TREE
+#ifdef CONFIG_HAS_DEVICE_TREE
 # include <asm/setup.h>
 # include <xen/device_tree.h>
 #endif
 
-char *__initdata policy_buffer = NULL;
-u32 __initdata policy_size = 0;
-
 #ifdef CONFIG_MULTIBOOT
 int __init xsm_multiboot_policy_init(unsigned long *module_map,
                                      const multiboot_info_t *mbi,
-                                     void *(*bootstrap_map)(const module_t *))
+                                     void *(*bootstrap_map)(const module_t *),
+                                     void **policy_buffer,
+                                     size_t *policy_size)
 {
     int i;
     module_t *mod = (module_t *)__va(mbi->mods_addr);
@@ -56,8 +55,8 @@ int __init xsm_multiboot_policy_init(unsigned long *module_map,
 
         if ( (xsm_magic_t)(*_policy_start) == XSM_MAGIC )
         {
-            policy_buffer = (char *)_policy_start;
-            policy_size = _policy_len;
+            *policy_buffer = _policy_start;
+            *policy_size = _policy_len;
 
             printk("Policy len %#lx, start at %p.\n",
                    _policy_len,_policy_start);
@@ -74,12 +73,11 @@ int __init xsm_multiboot_policy_init(unsigned long *module_map,
 }
 #endif
 
-#ifdef HAS_DEVICE_TREE
-int __init xsm_dt_policy_init(void)
+#ifdef CONFIG_HAS_DEVICE_TREE
+int __init xsm_dt_policy_init(void **policy_buffer, size_t *policy_size)
 {
     struct bootmodule *mod = boot_module_find_by_kind(BOOTMOD_XSM);
     paddr_t paddr, len;
-    xsm_magic_t magic;
 
     if ( !mod || !mod->size )
         return 0;
@@ -87,24 +85,21 @@ int __init xsm_dt_policy_init(void)
     paddr = mod->start;
     len = mod->size;
 
-    copy_from_paddr(&magic, paddr, sizeof(magic));
-
-    if ( magic != XSM_MAGIC )
+    if ( !has_xsm_magic(paddr) )
     {
-        printk(XENLOG_ERR "xsm: Invalid magic for XSM blob got 0x%x "
-               "expected 0x%x\n", magic, XSM_MAGIC);
+        printk(XENLOG_ERR "xsm: Invalid magic for XSM blob\n");
         return -EINVAL;
     }
 
     printk("xsm: Policy len = 0x%"PRIpaddr" start at 0x%"PRIpaddr"\n",
            len, paddr);
 
-    policy_buffer = xmalloc_bytes(len);
-    if ( !policy_buffer )
+    *policy_buffer = xmalloc_bytes(len);
+    if ( !*policy_buffer )
         return -ENOMEM;
 
-    copy_from_paddr(policy_buffer, paddr, len);
-    policy_size = len;
+    copy_from_paddr(*policy_buffer, paddr, len);
+    *policy_size = len;
 
     return 0;
 }

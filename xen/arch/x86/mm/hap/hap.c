@@ -430,7 +430,7 @@ static mfn_t hap_make_monitor_table(struct vcpu *v)
  oom:
     HAP_ERROR("out of memory building monitor pagetable\n");
     domain_crash(d);
-    return _mfn(INVALID_MFN);
+    return INVALID_MFN;
 }
 
 static void hap_destroy_monitor_table(struct vcpu* v, mfn_t mmfn)
@@ -447,6 +447,8 @@ static void hap_destroy_monitor_table(struct vcpu* v, mfn_t mmfn)
 void hap_domain_init(struct domain *d)
 {
     INIT_PAGE_LIST_HEAD(&d->arch.paging.hap.freelist);
+
+    d->arch.paging.gfn_bits = hap_paddr_bits - PAGE_SHIFT;
 
     /* Use HAP logdirty mechanism. */
     paging_log_dirty_init(d, hap_enable_log_dirty,
@@ -507,7 +509,7 @@ int hap_enable(struct domain *d, u32 mode)
         }
 
         for ( i = 0; i < MAX_EPTP; i++ )
-            d->arch.altp2m_eptp[i] = INVALID_MFN;
+            d->arch.altp2m_eptp[i] = mfn_x(INVALID_MFN);
 
         for ( i = 0; i < MAX_ALTP2M; i++ )
         {
@@ -671,31 +673,27 @@ static int hap_page_fault(struct vcpu *v, unsigned long va,
 {
     struct domain *d = v->domain;
 
-    HAP_ERROR("Intercepted a guest #PF (%u:%u) with HAP enabled.\n",
-              d->domain_id, v->vcpu_id);
+    HAP_ERROR("Intercepted a guest #PF (%pv) with HAP enabled\n", v);
     domain_crash(d);
     return 0;
 }
 
 /*
  * HAP guests can handle invlpg without needing any action from Xen, so
- * should not be intercepting it.
+ * should not be intercepting it.  However, we need to correctly handle
+ * getting here from instruction emulation.
  */
-static int hap_invlpg(struct vcpu *v, unsigned long va)
+static bool_t hap_invlpg(struct vcpu *v, unsigned long va)
 {
-    if (nestedhvm_enabled(v->domain)) {
-        /* Emulate INVLPGA:
-         * Must perform the flush right now or an other vcpu may
-         * use it when we use the next VMRUN emulation, otherwise.
-         */
+    /*
+     * Emulate INVLPGA:
+     * Must perform the flush right now or an other vcpu may
+     * use it when we use the next VMRUN emulation, otherwise.
+     */
+    if ( nestedhvm_enabled(v->domain) && vcpu_nestedhvm(v).nv_p2m )
         p2m_flush(v, vcpu_nestedhvm(v).nv_p2m);
-        return 1;
-    }
 
-    HAP_ERROR("Intercepted a guest INVLPG (%u:%u) with HAP enabled.\n",
-              v->domain->domain_id, v->vcpu_id);
-    domain_crash(v->domain);
-    return 0;
+    return 1;
 }
 
 static void hap_update_cr3(struct vcpu *v, int do_locking)

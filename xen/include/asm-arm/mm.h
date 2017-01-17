@@ -33,6 +33,12 @@ struct page_info
         struct {
             /* Type reference count and various PGT_xxx flags and fields. */
             unsigned long type_info;
+            /*
+             * Reference count for page table used in the P2M code.
+             * The counter is protected by the p2m->lock of the
+             * associated domain.
+             */
+            unsigned long p2m_refcount;
         } inuse;
         /* Page is on a free list: ((count_info & PGC_count_mask) == 0). */
         struct {
@@ -157,9 +163,9 @@ extern void setup_pagetables(unsigned long boot_phys_offset, paddr_t xen_paddr);
 extern void remove_early_mappings(void);
 /* Allocate and initialise pagetables for a secondary CPU. Sets init_ttbr to the
  * new page table */
-extern int __cpuinit init_secondary_pagetables(int cpu);
+extern int init_secondary_pagetables(int cpu);
 /* Switch secondary CPUS to its own pagetables and finalise MMU setup */
-extern void __cpuinit mmu_init_secondary_cpu(void);
+extern void mmu_init_secondary_cpu(void);
 /* Set up the xenheap: up to 1GB of contiguous, always-mapped memory.
  * Base must be 32MB aligned and size a multiple of 32MB. */
 extern void setup_xenheap_mappings(unsigned long base_mfn, unsigned long nr_mfns);
@@ -275,7 +281,7 @@ static inline void *page_to_virt(const struct page_info *pg)
     return mfn_to_virt(page_to_mfn(pg));
 }
 
-struct page_info *get_page_from_gva(struct domain *d, vaddr_t va,
+struct page_info *get_page_from_gva(struct vcpu *v, vaddr_t va,
                                     unsigned long flags);
 
 /*
@@ -325,7 +331,6 @@ unsigned long domain_get_maximum_gpfn(struct domain *d);
 
 extern struct domain *dom_xen, *dom_io, *dom_cow;
 
-#define memguard_init(_s)              (_s)
 #define memguard_guard_stack(_p)       ((void)0)
 #define memguard_guard_range(_p,_l)    ((void)0)
 #define memguard_unguard_range(_p,_l)  ((void)0)

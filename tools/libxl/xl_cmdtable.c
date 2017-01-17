@@ -164,7 +164,8 @@ struct cmd_spec cmd_table[] = {
       "                migrate-receive [-d -e]\n"
       "-e              Do not wait in the background (on <host>) for the death\n"
       "                of the domain.\n"
-      "--debug         Print huge (!) amount of debug during the migration process."
+      "--debug         Print huge (!) amount of debug during the migration process.\n"
+      "-p              Do not unpause domain after migrating it."
     },
     { "restore",
       &main_restore, 0, 1,
@@ -222,7 +223,8 @@ struct cmd_spec cmd_table[] = {
     { "vcpu-pin",
       &main_vcpupin, 1, 1,
       "Set which CPUs a VCPU can use",
-      "<Domain> <VCPU|all> <Hard affinity|-|all> <Soft affinity|-|all>",
+      "[option] <Domain> <VCPU|all> <Hard affinity|-|all> <Soft affinity|-|all>",
+      "-f, --force        undo an override pinning done by the kernel",
     },
     { "vcpu-set",
       &main_vcpuset, 0, 1,
@@ -263,13 +265,17 @@ struct cmd_spec cmd_table[] = {
       "[-d <Domain> [-w[=WEIGHT]]] [-p CPUPOOL]",
       "-d DOMAIN, --domain=DOMAIN     Domain to modify\n"
       "-w WEIGHT, --weight=WEIGHT     Weight (int)\n"
+      "-s         --schedparam        Query / modify scheduler parameters\n"
+      "-r RLIMIT, --ratelimit_us=RLIMIT Set the scheduling rate limit, in microseconds\n"
       "-p CPUPOOL, --cpupool=CPUPOOL  Restrict output to CPUPOOL"
     },
     { "sched-rtds",
       &main_sched_rtds, 0, 1,
       "Get/set rtds scheduler parameters",
-      "[-d <Domain> [-p[=PERIOD]] [-b[=BUDGET]]]",
+      "[-d <Domain> [-v[=VCPUID/all]] [-p[=PERIOD]] [-b[=BUDGET]]]",
       "-d DOMAIN, --domain=DOMAIN     Domain to modify\n"
+      "-v VCPUID/all, --vcpuid=VCPUID/all    VCPU to modify or output;\n"
+      "               Using '-v all' to modify/output all vcpus\n"
       "-p PERIOD, --period=PERIOD     Period (us)\n"
       "-b BUDGET, --budget=BUDGET     Budget (us)\n"
     },
@@ -401,7 +407,6 @@ struct cmd_spec cmd_table[] = {
       "[<Domain>|-a] [-w[=WEIGHT]|-c[=CAP]|-p[=COMPRESS]]",
       "  -a                             Operate on all tmem\n"
       "  -w WEIGHT                      Weight (int)\n"
-      "  -c CAP                         Cap (int)\n"
       "  -p COMPRESS                    Compress (int)",
     },
     { "tmem-shared-auth",
@@ -499,7 +504,9 @@ struct cmd_spec cmd_table[] = {
       "-b                      Replicate memory checkpoints to /dev/null (blackhole).\n"
       "                        Works only in unsafe mode.\n"
       "-n                      Disable network output buffering. Works only in unsafe mode.\n"
-      "-d                      Disable disk replication. Works only in unsafe mode."
+      "-d                      Disable disk replication. Works only in unsafe mode.\n"
+      "-c                      Enable COLO HA. It is conflict with -i and -b, and memory\n"
+      "                        checkpoint must be disabled"
     },
 #endif
     { "devd",
@@ -543,6 +550,8 @@ struct cmd_spec cmd_table[] = {
       "Set cache capacity bitmasks(CBM) for a domain",
       "[options] <Domain> <CBM>",
       "-s <socket>       Specify the socket to process, otherwise all sockets are processed\n"
+      "-c                Set code CBM if CDP is supported\n"
+      "-d                Set data CBM if CDP is supported\n"
     },
     { "psr-cat-show",
       &main_psr_cat_show, 0, 1,
@@ -551,6 +560,36 @@ struct cmd_spec cmd_table[] = {
     },
 
 #endif
+    { "usbctrl-attach",
+      &main_usbctrl_attach, 0, 1,
+      "Create a virtual USB controller for a domain",
+      "<Domain> [type=pv] [version=<version>] [ports=<number>]",
+    },
+    { "usbctrl-detach",
+      &main_usbctrl_detach, 0, 1,
+      "Remove the virtual USB controller specified by <DevId> for a domain",
+      "<Domain> <DevId>",
+    },
+    { "usbdev-attach",
+      &main_usbdev_attach, 0, 1,
+      "Attach a USB device to a domain",
+      "<Domain> hostbus=<busnum> hostaddr=<devnum> [controller=<DevId> [port=<port>]]",
+    },
+    { "usbdev-detach",
+      &main_usbdev_detach, 0, 1,
+      "Detach a USB device from a domain",
+      "<Domain> <controller> <port>",
+    },
+    { "usb-list",
+      &main_usblist, 0, 0,
+      "List information about all USB controllers and devices for a domain",
+      "<Domain>",
+    },
+    { "qemu-monitor-command",
+      &main_qemu_monitor_command, 0, 1,
+      "Issue a qemu monitor command to the device model of a domain",
+      "<Domain> <Command>",
+    },
 };
 
 int cmdtable_len = sizeof(cmd_table)/sizeof(struct cmd_spec);

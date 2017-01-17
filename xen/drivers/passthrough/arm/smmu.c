@@ -196,10 +196,6 @@ static inline int pci_for_each_dma_alias(struct pci_dev *pdev,
 #define PHYS_MASK_SHIFT		PADDR_BITS
 typedef paddr_t phys_addr_t;
 
-#ifdef CONFIG_ARM_64
-# define CONFIG_64BIT
-#endif
-
 #define VA_BITS		0	/* Only used for configuring stage-1 input size */
 
 /* The macro ACCESS_ONCE start to be replaced in Linux in favor of
@@ -2544,9 +2540,9 @@ static int force_stage = 2;
  */
 static u32 platform_features = ARM_SMMU_FEAT_COHERENT_WALK;
 
-static void arm_smmu_iotlb_flush_all(struct domain *d)
+static int __must_check arm_smmu_iotlb_flush_all(struct domain *d)
 {
-	struct arm_smmu_xen_domain *smmu_domain = domain_hvm_iommu(d)->arch.priv;
+	struct arm_smmu_xen_domain *smmu_domain = dom_iommu(d)->arch.priv;
 	struct iommu_domain *cfg;
 
 	spin_lock(&smmu_domain->lock);
@@ -2561,13 +2557,16 @@ static void arm_smmu_iotlb_flush_all(struct domain *d)
 		arm_smmu_tlb_inv_context(cfg->priv);
 	}
 	spin_unlock(&smmu_domain->lock);
+
+	return 0;
 }
 
-static void arm_smmu_iotlb_flush(struct domain *d, unsigned long gfn,
-                                 unsigned int page_count)
+static int __must_check arm_smmu_iotlb_flush(struct domain *d,
+                                             unsigned long gfn,
+                                             unsigned int page_count)
 {
-    /* ARM SMMU v1 doesn't have flush by VMA and VMID */
-    arm_smmu_iotlb_flush_all(d);
+	/* ARM SMMU v1 doesn't have flush by VMA and VMID */
+	return arm_smmu_iotlb_flush_all(d);
 }
 
 static struct iommu_domain *arm_smmu_get_domain(struct domain *d,
@@ -2577,7 +2576,7 @@ static struct iommu_domain *arm_smmu_get_domain(struct domain *d,
 	struct arm_smmu_xen_domain *xen_domain;
 	struct arm_smmu_device *smmu;
 
-	xen_domain = domain_hvm_iommu(d)->arch.priv;
+	xen_domain = dom_iommu(d)->arch.priv;
 
 	smmu = find_smmu_for_device(dev);
 	if (!smmu)
@@ -2610,7 +2609,7 @@ static int arm_smmu_assign_dev(struct domain *d, u8 devfn,
 	struct arm_smmu_xen_domain *xen_domain;
 	int ret = 0;
 
-	xen_domain = domain_hvm_iommu(d)->arch.priv;
+	xen_domain = dom_iommu(d)->arch.priv;
 
 	if (!dev->archdata.iommu) {
 		dev->archdata.iommu = xzalloc(struct arm_smmu_xen_device);
@@ -2671,7 +2670,7 @@ static int arm_smmu_deassign_dev(struct domain *d, struct device *dev)
 	struct iommu_domain *domain = dev_iommu_domain(dev);
 	struct arm_smmu_xen_domain *xen_domain;
 
-	xen_domain = domain_hvm_iommu(d)->arch.priv;
+	xen_domain = dom_iommu(d)->arch.priv;
 
 	if (!domain || domain->priv->cfg.domain != d) {
 		dev_err(dev, " not attached to domain %d\n", d->domain_id);
@@ -2728,7 +2727,7 @@ static int arm_smmu_iommu_domain_init(struct domain *d)
 	spin_lock_init(&xen_domain->lock);
 	INIT_LIST_HEAD(&xen_domain->contexts);
 
-	domain_hvm_iommu(d)->arch.priv = xen_domain;
+	dom_iommu(d)->arch.priv = xen_domain;
 
 	/* Coherent walk can be enabled only when all SMMUs support it. */
 	if (platform_features & ARM_SMMU_FEAT_COHERENT_WALK)
@@ -2743,14 +2742,14 @@ static void __hwdom_init arm_smmu_iommu_hwdom_init(struct domain *d)
 
 static void arm_smmu_iommu_domain_teardown(struct domain *d)
 {
-	struct arm_smmu_xen_domain *xen_domain = domain_hvm_iommu(d)->arch.priv;
+	struct arm_smmu_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
 
 	ASSERT(list_empty(&xen_domain->contexts));
 	xfree(xen_domain);
 }
 
-static int arm_smmu_map_page(struct domain *d, unsigned long gfn,
-			     unsigned long mfn, unsigned int flags)
+static int __must_check arm_smmu_map_page(struct domain *d, unsigned long gfn,
+			unsigned long mfn, unsigned int flags)
 {
 	p2m_type_t t;
 
@@ -2775,10 +2774,10 @@ static int arm_smmu_map_page(struct domain *d, unsigned long gfn,
 	 * The function guest_physmap_add_entry replaces the current mapping
 	 * if there is already one...
 	 */
-	return guest_physmap_add_entry(d, gfn, mfn, 0, t);
+	return guest_physmap_add_entry(d, _gfn(gfn), _mfn(mfn), 0, t);
 }
 
-static int arm_smmu_unmap_page(struct domain *d, unsigned long gfn)
+static int __must_check arm_smmu_unmap_page(struct domain *d, unsigned long gfn)
 {
 	/*
 	 * This function should only be used by gnttab code when the domain
@@ -2787,7 +2786,7 @@ static int arm_smmu_unmap_page(struct domain *d, unsigned long gfn)
 	if ( !is_domain_direct_mapped(d) )
 		return -EINVAL;
 
-	guest_physmap_remove_page(d, gfn, gfn, 0);
+	guest_physmap_remove_page(d, _gfn(gfn), _mfn(gfn), 0);
 
 	return 0;
 }

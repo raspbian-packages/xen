@@ -117,6 +117,12 @@
 #define TRAP_virtualisation   20
 #define TRAP_nr               32
 
+#define TRAP_HAVE_EC                                                    \
+    ((1u << TRAP_double_fault) | (1u << TRAP_invalid_tss) |             \
+     (1u << TRAP_no_segment) | (1u << TRAP_stack_error) |               \
+     (1u << TRAP_gp_fault) | (1u << TRAP_page_fault) |                  \
+     (1u << TRAP_alignment_check))
+
 /* Set for entry via SYSCALL. Informs return code to use SYSRETQ not IRETQ. */
 /* NB. Same as VGCF_in_syscall. No bits in common with any other TRAP_ defn. */
 #define TRAP_syscall         256
@@ -128,22 +134,30 @@
 #define TBF_EXCEPTION          1
 #define TBF_EXCEPTION_ERRCODE  2
 #define TBF_INTERRUPT          8
-#define TBF_FAILSAFE          16
 
 /* 'arch_vcpu' flags values */
 #define _TF_kernel_mode        0
 #define TF_kernel_mode         (1<<_TF_kernel_mode)
 
 /* #PF error code values. */
-#define PFEC_page_present   (1U<<0)
-#define PFEC_write_access   (1U<<1)
-#define PFEC_user_mode      (1U<<2)
-#define PFEC_reserved_bit   (1U<<3)
-#define PFEC_insn_fetch     (1U<<4)
-#define PFEC_page_paged     (1U<<5)
-#define PFEC_page_shared    (1U<<6)
+#define PFEC_page_present   (_AC(1,U) << 0)
+#define PFEC_write_access   (_AC(1,U) << 1)
+#define PFEC_user_mode      (_AC(1,U) << 2)
+#define PFEC_reserved_bit   (_AC(1,U) << 3)
+#define PFEC_insn_fetch     (_AC(1,U) << 4)
+#define PFEC_prot_key       (_AC(1,U) << 5)
+/* Internally used only flags. */
+#define PFEC_page_paged     (1U<<16)
+#define PFEC_page_shared    (1U<<17)
+
+/* Other exception error code values. */
+#define X86_XEC_EXT         (_AC(1,U) << 0)
+#define X86_XEC_IDT         (_AC(1,U) << 1)
+#define X86_XEC_TI          (_AC(1,U) << 2)
 
 #define XEN_MINIMAL_CR4 (X86_CR4_PGE | X86_CR4_PAE)
+
+#define XEN_CR4_PV32_BITS (X86_CR4_SMEP|X86_CR4_SMAP)
 
 #define XEN_SYSCALL_MASK (X86_EFLAGS_AC|X86_EFLAGS_VM|X86_EFLAGS_RF|    \
                           X86_EFLAGS_NT|X86_EFLAGS_DF|X86_EFLAGS_IF|    \
@@ -184,7 +198,6 @@ struct cpuinfo_x86 {
     char x86_model_id[64];
     int  x86_cache_size; /* in KB - valid for CPUS which support this call  */
     int  x86_cache_alignment;    /* In bytes */
-    int  x86_power;
     __u32 x86_max_cores; /* cpuid returned max cores value */
     __u32 booted_cores;  /* number of cores as seen by OS */
     __u32 x86_num_siblings; /* cpuid logical cpus per chip value */
@@ -204,14 +217,19 @@ extern struct cpuinfo_x86 boot_cpu_data;
 extern struct cpuinfo_x86 cpu_data[];
 #define current_cpu_data cpu_data[smp_processor_id()]
 
-extern void set_cpuid_faulting(bool_t enable);
+extern void (*ctxt_switch_levelling)(const struct vcpu *next);
 
 extern u64 host_pat;
 extern bool_t opt_cpu_info;
 extern u32 cpuid_ext_features;
+extern u64 trampoline_misc_enable_off;
 
-/* Maximum width of physical addresses supported by the hardware */
+/* Maximum width of physical addresses supported by the hardware. */
 extern unsigned int paddr_bits;
+/* Max physical address width supported within HAP guests. */
+extern unsigned int hap_paddr_bits;
+/* Maximum width of virtual addresses supported by the hardware. */
+extern unsigned int vaddr_bits;
 
 extern const struct x86_cpu_id *x86_match_cpu(const struct x86_cpu_id table[]);
 
@@ -219,7 +237,6 @@ extern void identify_cpu(struct cpuinfo_x86 *);
 extern void setup_clear_cpu_cap(unsigned int);
 extern void print_cpu_info(unsigned int cpu);
 extern unsigned int init_intel_cacheinfo(struct cpuinfo_x86 *c);
-extern void dodgy_tsc(void);
 
 extern void detect_extended_topology(struct cpuinfo_x86 *c);
 
@@ -323,16 +340,14 @@ static inline unsigned long read_cr2(void)
     return cr2;
 }
 
-DECLARE_PER_CPU(unsigned long, cr4);
-
 static inline unsigned long read_cr4(void)
 {
-    return this_cpu(cr4);
+    return get_cpu_info()->cr4;
 }
 
 static inline void write_cr4(unsigned long val)
 {
-    this_cpu(cr4) = val;
+    get_cpu_info()->cr4 = val;
     asm volatile ( "mov %0,%%cr4" : : "r" (val) );
 }
 
@@ -365,6 +380,46 @@ static always_inline void clear_in_cr4 (unsigned long mask)
 {
     mmu_cr4_features &= ~mask;
     write_cr4(read_cr4() & ~mask);
+}
+
+static inline unsigned int read_pkru(void)
+{
+    unsigned int pkru;
+    unsigned long cr4 = read_cr4();
+
+    /*
+     * _PAGE_PKEY_BITS have a conflict with _PAGE_GNTTAB used by PV guests,
+     * so that X86_CR4_PKE  is disabled on hypervisor. To use RDPKRU, CR4.PKE
+     * gets temporarily enabled.
+     */
+    write_cr4(cr4 | X86_CR4_PKE);
+    asm volatile (".byte 0x0f,0x01,0xee"
+        : "=a" (pkru) : "c" (0) : "dx");
+    write_cr4(cr4);
+
+    return pkru;
+}
+
+/* Macros for PKRU domain */
+#define PKRU_READ  (0)
+#define PKRU_WRITE (1)
+#define PKRU_ATTRS (2)
+
+/*
+ * PKRU defines 32 bits, there are 16 domains and 2 attribute bits per
+ * domain in pkru, pkeys is index to a defined domain, so the value of
+ * pte_pkeys * PKRU_ATTRS + R/W is offset of a defined domain attribute.
+ */
+static inline bool_t read_pkru_ad(uint32_t pkru, unsigned int pkey)
+{
+    ASSERT(pkey < 16);
+    return (pkru >> (pkey * PKRU_ATTRS + PKRU_READ)) & 1;
+}
+
+static inline bool_t read_pkru_wd(uint32_t pkru, unsigned int pkey)
+{
+    ASSERT(pkey < 16);
+    return (pkru >> (pkey * PKRU_ATTRS + PKRU_WRITE)) & 1;
 }
 
 /*
@@ -471,10 +526,6 @@ DECLARE_PER_CPU(struct tss_struct, init_tss);
 
 extern void init_int80_direct_trap(struct vcpu *v);
 
-#define set_int80_direct_trap(_ed)  ((void)0)
-
-extern int gpf_emulate_4gb(struct cpu_user_regs *regs);
-
 extern void write_ptbase(struct vcpu *v);
 
 void destroy_gdt(struct vcpu *d);
@@ -496,7 +547,7 @@ void show_registers(const struct cpu_user_regs *regs);
 void show_execution_state(const struct cpu_user_regs *regs);
 #define dump_execution_state() run_in_exception_handler(show_execution_state)
 void show_page_walk(unsigned long addr);
-void noreturn fatal_trap(const struct cpu_user_regs *regs);
+void noreturn fatal_trap(const struct cpu_user_regs *regs, bool_t show_remote);
 
 void compat_show_guest_stack(struct vcpu *v,
                              const struct cpu_user_regs *regs, int lines);
@@ -561,8 +612,6 @@ struct stubs {
 DECLARE_PER_CPU(struct stubs, stubs);
 unsigned long alloc_stub_page(unsigned int cpu, unsigned long *mfn);
 
-extern int hypercall(void);
-
 int cpuid_hypervisor_leaves( uint32_t idx, uint32_t sub_idx,
           uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx);
 int rdmsr_hypervisor_regs(uint32_t idx, uint64_t *val);
@@ -573,9 +622,8 @@ int microcode_update(XEN_GUEST_HANDLE_PARAM(const_void), unsigned long len);
 int microcode_resume_cpu(unsigned int cpu);
 
 enum get_cpu_vendor {
-   gcv_host_early,
-   gcv_host_late,
-   gcv_guest
+    gcv_host,
+    gcv_guest,
 };
 
 int get_cpu_vendor(const char vendor_id[], enum get_cpu_vendor);

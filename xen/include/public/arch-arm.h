@@ -173,7 +173,7 @@
     typedef union { type *p; unsigned long q; }                 \
         __guest_handle_ ## name;                                \
     typedef union { type *p; uint64_aligned_t q; }              \
-        __guest_handle_64_ ## name;
+        __guest_handle_64_ ## name
 
 /*
  * XEN_GUEST_HANDLE represents a guest pointer, when passed as a field
@@ -195,9 +195,6 @@
         _sxghr_tmp->q = 0;                                  \
         _sxghr_tmp->p = val;                                \
     } while ( 0 )
-#ifdef __XEN_TOOLS__
-#define get_xen_guest_handle(val, hnd)  do { val = (hnd).p; } while (0)
-#endif
 #define set_xen_guest_handle(hnd, val) set_xen_guest_handle_raw(hnd, val)
 
 #if defined(__GNUC__) && !defined(__STRICT_ANSI__)
@@ -394,38 +391,42 @@ typedef uint64_t xen_callback_t;
  */
 
 /* vGIC v2 mappings */
-#define GUEST_GICD_BASE   0x03001000ULL
-#define GUEST_GICD_SIZE   0x00001000ULL
-#define GUEST_GICC_BASE   0x03002000ULL
-#define GUEST_GICC_SIZE   0x00000100ULL
+#define GUEST_GICD_BASE   xen_mk_ullong(0x03001000)
+#define GUEST_GICD_SIZE   xen_mk_ullong(0x00001000)
+#define GUEST_GICC_BASE   xen_mk_ullong(0x03002000)
+#define GUEST_GICC_SIZE   xen_mk_ullong(0x00002000)
 
 /* vGIC v3 mappings */
-#define GUEST_GICV3_GICD_BASE      0x03001000ULL
-#define GUEST_GICV3_GICD_SIZE      0x00010000ULL
+#define GUEST_GICV3_GICD_BASE      xen_mk_ullong(0x03001000)
+#define GUEST_GICV3_GICD_SIZE      xen_mk_ullong(0x00010000)
 
-#define GUEST_GICV3_RDIST_STRIDE   0x20000ULL
+#define GUEST_GICV3_RDIST_STRIDE   xen_mk_ullong(0x00020000)
 #define GUEST_GICV3_RDIST_REGIONS  1
 
-#define GUEST_GICV3_GICR0_BASE     0x03020000ULL    /* vCPU0 - vCPU127 */
-#define GUEST_GICV3_GICR0_SIZE     0x01000000ULL
+#define GUEST_GICV3_GICR0_BASE     xen_mk_ullong(0x03020000) /* vCPU0..127 */
+#define GUEST_GICV3_GICR0_SIZE     xen_mk_ullong(0x01000000)
+
+/* ACPI tables physical address */
+#define GUEST_ACPI_BASE 0x20000000ULL
+#define GUEST_ACPI_SIZE 0x02000000ULL
 
 /*
  * 16MB == 4096 pages reserved for guest to use as a region to map its
  * grant table in.
  */
-#define GUEST_GNTTAB_BASE 0x38000000ULL
-#define GUEST_GNTTAB_SIZE 0x01000000ULL
+#define GUEST_GNTTAB_BASE xen_mk_ullong(0x38000000)
+#define GUEST_GNTTAB_SIZE xen_mk_ullong(0x01000000)
 
-#define GUEST_MAGIC_BASE  0x39000000ULL
-#define GUEST_MAGIC_SIZE  0x01000000ULL
+#define GUEST_MAGIC_BASE  xen_mk_ullong(0x39000000)
+#define GUEST_MAGIC_SIZE  xen_mk_ullong(0x01000000)
 
 #define GUEST_RAM_BANKS   2
 
-#define GUEST_RAM0_BASE   0x40000000ULL /* 3GB of low RAM @ 1GB */
-#define GUEST_RAM0_SIZE   0xc0000000ULL
+#define GUEST_RAM0_BASE   xen_mk_ullong(0x40000000) /* 3GB of low RAM @ 1GB */
+#define GUEST_RAM0_SIZE   xen_mk_ullong(0xc0000000)
 
-#define GUEST_RAM1_BASE   0x0200000000ULL /* 1016GB of RAM @ 8GB */
-#define GUEST_RAM1_SIZE   0xfe00000000ULL
+#define GUEST_RAM1_BASE   xen_mk_ullong(0x0200000000) /* 1016GB of RAM @ 8GB */
+#define GUEST_RAM1_SIZE   xen_mk_ullong(0xfe00000000)
 
 #define GUEST_RAM_BASE    GUEST_RAM0_BASE /* Lowest RAM address */
 /* Largest amount of actual RAM, not including holes */
@@ -433,6 +434,9 @@ typedef uint64_t xen_callback_t;
 /* Suitable for e.g. const uint64_t ramfoo[] = GUEST_RAM_BANK_FOOS; */
 #define GUEST_RAM_BANK_BASES   { GUEST_RAM0_BASE, GUEST_RAM1_BASE }
 #define GUEST_RAM_BANK_SIZES   { GUEST_RAM0_SIZE, GUEST_RAM1_SIZE }
+
+/* Current supported guest VCPUs */
+#define GUEST_MAX_VCPUS 128
 
 /* Interrupts */
 #define GUEST_TIMER_VIRT_PPI    27

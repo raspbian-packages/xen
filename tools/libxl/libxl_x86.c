@@ -1,11 +1,27 @@
 #include "libxl_internal.h"
 #include "libxl_arch.h"
 
+#include <xc_dom.h>
+
 int libxl__arch_domain_prepare_config(libxl__gc *gc,
                                       libxl_domain_config *d_config,
                                       xc_domain_configuration_t *xc_config)
 {
-    /* No specific configuration right now */
+
+    if (d_config->c_info.type == LIBXL_DOMAIN_TYPE_HVM) {
+        if (d_config->b_info.device_model_version !=
+            LIBXL_DEVICE_MODEL_VERSION_NONE) {
+            xc_config->emulation_flags = XEN_X86_EMU_ALL;
+        } else if (libxl_defbool_val(d_config->b_info.u.hvm.apic)) {
+            /*
+             * HVM guests without device model may want
+             * to have LAPIC emulation.
+             */
+            xc_config->emulation_flags = XEN_X86_EMU_LAPIC;
+        }
+    } else {
+        xc_config->emulation_flags = 0;
+    }
 
     return 0;
 }
@@ -30,7 +46,7 @@ static const char *e820_names(int type)
     return "Unknown";
 }
 
-static int e820_sanitize(libxl_ctx *ctx, struct e820entry src[],
+static int e820_sanitize(libxl__gc *gc, struct e820entry src[],
                          uint32_t *nr_entries,
                          unsigned long map_limitkb,
                          unsigned long balloon_kb)
@@ -91,11 +107,11 @@ static int e820_sanitize(libxl_ctx *ctx, struct e820entry src[],
     ram_end = e820[idx].addr + e820[idx].size;
     idx ++;
 
-    LIBXL__LOG(ctx, LIBXL__LOG_DEBUG, "Memory: %"PRIu64"kB End of RAM: " \
-               "0x%"PRIx64" (PFN) Delta: %"PRIu64"kB, PCI start: %"PRIu64"kB " \
-               "(0x%"PRIx64" PFN), Balloon %"PRIu64"kB\n", (uint64_t)map_limitkb,
-               ram_end >> 12, delta_kb, start_kb ,start >> 12,
-               (uint64_t)balloon_kb);
+    LOG(DEBUG, "Memory: %"PRIu64"kB End of RAM: " \
+        "0x%"PRIx64" (PFN) Delta: %"PRIu64"kB, PCI start: %"PRIu64"kB " \
+        "(0x%"PRIx64" PFN), Balloon %"PRIu64"kB\n", (uint64_t)map_limitkb,
+        ram_end >> 12, delta_kb, start_kb ,start >> 12,
+        (uint64_t)balloon_kb);
 
 
     /* This whole code below is to guard against if the Intel IGD is passed into
@@ -150,7 +166,7 @@ static int e820_sanitize(libxl_ctx *ctx, struct e820entry src[],
             if (src[i].addr + src[i].size != end) {
                 /* We messed up somewhere */
                 src[i].type = 0;
-                LIBXL__LOG_ERRNO(ctx, LIBXL__LOG_ERROR, "Computed E820 wrongly. Continuing on.");
+                LOGE(ERROR, "Computed E820 wrongly. Continuing on.");
             }
         }
         /* Lastly, convert the RAM to UNSUABLE. Look in the Linux kernel
@@ -212,9 +228,8 @@ static int e820_sanitize(libxl_ctx *ctx, struct e820entry src[],
     nr = idx;
 
     for (i = 0; i < nr; i++) {
-      LIBXL__LOG(ctx, LIBXL__LOG_DEBUG, ":\t[%"PRIx64" -> %"PRIx64"] %s",
-                 e820[i].addr >> 12, (e820[i].addr + e820[i].size) >> 12,
-                 e820_names(e820[i].type));
+      LOG(DEBUG, ":\t[%"PRIx64" -> %"PRIx64"] %s", e820[i].addr >> 12,
+          (e820[i].addr + e820[i].size) >> 12, e820_names(e820[i].type));
     }
 
     /* Done: copy the sanitized version. */
@@ -236,7 +251,7 @@ static int e820_host_sanitize(libxl__gc *gc,
 
     *nr = rc;
 
-    rc = e820_sanitize(CTX, map, nr, b_info->target_memkb,
+    rc = e820_sanitize(gc, map, nr, b_info->target_memkb,
                        (b_info->max_memkb - b_info->target_memkb) +
                        b_info->u.pv.slack_memkb);
     return rc;
@@ -335,14 +350,22 @@ int libxl__arch_domain_create(libxl__gc *gc, libxl_domain_config *d_config,
             libxl_defbool_val(d_config->b_info.u.pv.e820_host)) {
         ret = libxl__e820_alloc(gc, domid, d_config);
         if (ret) {
-            LIBXL__LOG_ERRNO(gc->owner, LIBXL__LOG_ERROR,
-                    "Failed while collecting E820 with: %d (errno:%d)\n",
-                    ret, errno);
+            LOGE(ERROR, "Failed while collecting E820 with: %d (errno:%d)\n",
+                 ret, errno);
         }
     }
 
 out:
     return ret;
+}
+
+int libxl__arch_extra_memory(libxl__gc *gc,
+                             const libxl_domain_build_info *info,
+                             uint64_t *out)
+{
+    *out = LIBXL_MAXMEM_CONSTANT;
+
+    return 0;
 }
 
 int libxl__arch_domain_init_hw_description(libxl__gc *gc,
@@ -357,7 +380,16 @@ int libxl__arch_domain_finalise_hw_description(libxl__gc *gc,
                                                libxl_domain_build_info *info,
                                                struct xc_dom_image *dom)
 {
-    return 0;
+    int rc = 0;
+
+    if ((info->type == LIBXL_DOMAIN_TYPE_HVM) &&
+        (info->device_model_version == LIBXL_DEVICE_MODEL_VERSION_NONE)) {
+        rc = libxl__dom_load_acpi(gc, info, dom);
+        if (rc != 0)
+            LOGE(ERROR, "libxl_dom_load_acpi failed");
+    }
+
+    return rc;
 }
 
 /* Return 0 on success, ERROR_* on failure. */
@@ -473,7 +505,7 @@ int libxl__arch_domain_map_irq(libxl__gc *gc, uint32_t domid, int irq)
 int libxl__arch_domain_construct_memmap(libxl__gc *gc,
                                         libxl_domain_config *d_config,
                                         uint32_t domid,
-                                        struct xc_hvm_build_args *args)
+                                        struct xc_dom_image *dom)
 {
     int rc = 0;
     unsigned int nr = 0, i;
@@ -481,7 +513,9 @@ int libxl__arch_domain_construct_memmap(libxl__gc *gc,
     unsigned int e820_entries = 1;
     struct e820entry *e820 = NULL;
     uint64_t highmem_size =
-                    args->highmem_end ? args->highmem_end - (1ull << 32) : 0;
+                    dom->highmem_end ? dom->highmem_end - (1ull << 32) : 0;
+    uint32_t lowmem_start = dom->device_model ? GUEST_LOW_MEM_START_DEFAULT : 0;
+    unsigned page_size = XC_DOM_PAGE_SIZE(dom);
 
     /* Add all rdm entries. */
     for (i = 0; i < d_config->num_rdms; i++)
@@ -493,6 +527,10 @@ int libxl__arch_domain_construct_memmap(libxl__gc *gc,
     if (highmem_size)
         e820_entries++;
 
+    for (i = 0; i < MAX_ACPI_MODULES; i++)
+        if (dom->acpi_modules[i].length)
+            e820_entries++;
+
     if (e820_entries >= E820MAX) {
         LOG(ERROR, "Ooops! Too many entries in the memory map!");
         rc = ERROR_INVAL;
@@ -502,8 +540,8 @@ int libxl__arch_domain_construct_memmap(libxl__gc *gc,
     e820 = libxl__malloc(gc, sizeof(struct e820entry) * e820_entries);
 
     /* Low memory */
-    e820[nr].addr = GUEST_LOW_MEM_START_DEFAULT;
-    e820[nr].size = args->lowmem_end - GUEST_LOW_MEM_START_DEFAULT;
+    e820[nr].addr = lowmem_start;
+    e820[nr].size = dom->lowmem_end - lowmem_start;
     e820[nr].type = E820_RAM;
     nr++;
 
@@ -516,6 +554,16 @@ int libxl__arch_domain_construct_memmap(libxl__gc *gc,
         e820[nr].size = d_config->rdms[i].size;
         e820[nr].type = E820_RESERVED;
         nr++;
+    }
+
+    for (i = 0; i < MAX_ACPI_MODULES; i++) {
+        if (dom->acpi_modules[i].length) {
+            e820[nr].addr = dom->acpi_modules[i].guest_addr_out & ~(page_size - 1);
+            e820[nr].size = dom->acpi_modules[i].length +
+                (dom->acpi_modules[i].guest_addr_out & (page_size - 1));
+            e820[nr].type = E820_ACPI;
+            nr++;
+        }
     }
 
     /* High memory */
@@ -532,6 +580,12 @@ int libxl__arch_domain_construct_memmap(libxl__gc *gc,
 
 out:
     return rc;
+}
+
+void libxl__arch_domain_build_info_acpi_setdefault(
+                                        libxl_domain_build_info *b_info)
+{
+    libxl_defbool_setdefault(&b_info->acpi, true);
 }
 
 /*

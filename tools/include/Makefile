@@ -19,6 +19,7 @@ xen/.dir:
 	ln -sf ../xen-sys/$(XEN_OS) xen/sys
 	ln -sf $(addprefix $(XEN_ROOT)/xen/include/xen/,libelf.h elfstructs.h) xen/libelf/
 	ln -s ../xen-foreign xen/foreign
+	ln -sf $(XEN_ROOT)/xen/include/acpi acpi
 	touch $@
 
 # Not xen/xsm as that clashes with link to
@@ -57,7 +58,7 @@ install: all
 
 .PHONY: clean
 clean:
-	rm -rf xen xen-xsm
+	rm -rf xen xen-xsm acpi
 	$(MAKE) -C xen-foreign clean
 
 

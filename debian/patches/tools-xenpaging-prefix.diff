@@ -1,21 +1,18 @@
-From 96a45c8ccb73dc6763aca3f1233a79ab97fb0c88 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:47:08 +0200
+X-Dgit-Generated: 4.8.0-1 26811faa1d2ddf9d8a3a92b75fb360a877529e9b
 Subject: tools-xenpaging-prefix.diff
 
 Patch-Name: tools-xenpaging-prefix.diff
----
- tools/xenpaging/Makefile | 2 +-
- 1 file changed, 1 insertion(+), 1 deletion(-)
 
-diff --git a/tools/xenpaging/Makefile b/tools/xenpaging/Makefile
-index 2407a30..f3747b3 100644
---- a/tools/xenpaging/Makefile
-+++ b/tools/xenpaging/Makefile
+---
+
+--- xen-4.8.0.orig/tools/xenpaging/Makefile
++++ xen-4.8.0/tools/xenpaging/Makefile
 @@ -4,7 +4,7 @@ include $(XEN_ROOT)/tools/Rules.mk
  # xenpaging.c and file_ops.c incorrectly use libxc internals
- CFLAGS += $(CFLAGS_libxenctrl) $(CFLAGS_libxenstore) $(PTHREAD_CFLAGS) -I$(XEN_ROOT)/tools/libxc
- LDLIBS += $(LDLIBS_libxenctrl) $(LDLIBS_libxenstore) $(PTHREAD_LIBS)
+ CFLAGS += $(CFLAGS_libxentoollog) $(CFLAGS_libxenevtchn) $(CFLAGS_libxenctrl) $(CFLAGS_libxenstore) $(PTHREAD_CFLAGS) -I$(XEN_ROOT)/tools/libxc $(CFLAGS_libxencall)
+ LDLIBS += $(LDLIBS_libxentoollog) $(LDLIBS_libxenevtchn) $(LDLIBS_libxenctrl) $(LDLIBS_libxenstore) $(PTHREAD_LIBS)
 -LDFLAGS += $(PTHREAD_LDFLAGS)
 +LDFLAGS += $(PTHREAD_LDFLAGS) $(call LDFLAGS_RPATH,../lib)
  

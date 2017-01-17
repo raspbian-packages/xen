@@ -60,6 +60,7 @@ static unsigned char vmcoreinfo_data[VMCOREINFO_BYTES];
 static size_t vmcoreinfo_size = 0;
 
 xen_kexec_reserve_t kexec_crash_area;
+paddr_t __initdata kexec_crash_area_limit = ~(paddr_t)0;
 static struct {
     u64 start, end;
     unsigned long size;
@@ -86,7 +87,7 @@ static void *crash_heap_current = NULL, *crash_heap_end = NULL;
 /*
  * Parse command lines in the format
  *
- *   crashkernel=<ramsize-range>:<size>[,...][@<offset>]
+ *   crashkernel=<ramsize-range>:<size>[,...][{@,<}<address>]
  *
  * with <ramsize-range> being of form
  *
@@ -94,7 +95,7 @@ static void *crash_heap_current = NULL, *crash_heap_end = NULL;
  *
  * as well as the legacy ones in the format
  *
- *   crashkernel=<size>[@<offset>]
+ *   crashkernel=<size>[{@,<}<address>]
  */
 static void __init parse_crashkernel(const char *str)
 {
@@ -109,7 +110,7 @@ static void __init parse_crashkernel(const char *str)
             {
                 printk(XENLOG_WARNING "crashkernel: too many ranges\n");
                 cur = NULL;
-                str = strchr(str, '@');
+                str = strpbrk(str, "@<");
                 break;
             }
 
@@ -154,9 +155,16 @@ static void __init parse_crashkernel(const char *str)
     }
     else
         kexec_crash_area.size = parse_size_and_unit(cur = str, &str);
-    if ( cur != str && *str == '@' )
-        kexec_crash_area.start = parse_size_and_unit(cur = str + 1, &str);
-    if ( cur == str )
+    if ( cur != str )
+    {
+        if ( *str == '@' )
+            kexec_crash_area.start = parse_size_and_unit(cur = str + 1, &str);
+        else if ( *str == '<' )
+            kexec_crash_area_limit = parse_size_and_unit(cur = str + 1, &str);
+        else
+            printk(XENLOG_WARNING "crashkernel: '%s' ignored\n", str);
+    }
+    if ( cur && cur == str )
         printk(XENLOG_WARNING "crashkernel: memory value expected\n");
 }
 custom_param("crashkernel", parse_crashkernel);
@@ -374,11 +382,6 @@ static void do_crashdump_trigger(unsigned char key)
     printk(" * no crash kernel loaded!\n");
 }
 
-static struct keyhandler crashdump_trigger_keyhandler = {
-    .u.fn = do_crashdump_trigger,
-    .desc = "trigger a crashdump"
-};
-
 static void setup_note(Elf_Note *n, const char *name, int type, int descsz)
 {
     int l = strlen(name) + 1;
@@ -571,7 +574,7 @@ static int __init kexec_init(void)
     if ( ! crash_notes )
         return -ENOMEM;
 
-    register_keyhandler('C', &crashdump_trigger_keyhandler);
+    register_keyhandler('C', do_crashdump_trigger, "trigger a crashdump", 0);
 
     cpu_callback(&cpu_nfb, CPU_UP_PREPARE, cpu);
     register_cpu_notifier(&cpu_nfb);

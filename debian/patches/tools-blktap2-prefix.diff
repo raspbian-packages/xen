@@ -1,19 +1,14 @@
-From 85fba7aaa37170064971807e1209b119b6b9cf0e Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:53 +0200
+X-Dgit-Generated: 4.8.0-1 b555310b511dc66899cb910408d7fb3fa9457c08
 Subject: tools-blktap2-prefix.diff
 
 Patch-Name: tools-blktap2-prefix.diff
----
- tools/blktap2/control/Makefile | 26 ++++++++------------------
- tools/blktap2/vhd/Makefile     |  1 +
- tools/blktap2/vhd/lib/Makefile | 29 +++++++++--------------------
- 3 files changed, 18 insertions(+), 38 deletions(-)
 
-diff --git a/tools/blktap2/control/Makefile b/tools/blktap2/control/Makefile
-index 767f52a..c09ed65 100644
---- a/tools/blktap2/control/Makefile
-+++ b/tools/blktap2/control/Makefile
+---
+
+--- xen-4.8.0.orig/tools/blktap2/control/Makefile
++++ xen-4.8.0/tools/blktap2/control/Makefile
 @@ -1,10 +1,7 @@
  XEN_ROOT := $(CURDIR)/../../../
  include $(XEN_ROOT)/tools/Rules.mk
@@ -73,10 +68,8 @@ index 767f52a..c09ed65 100644
  	rm -f *~
  
  distclean: clean
-diff --git a/tools/blktap2/vhd/Makefile b/tools/blktap2/vhd/Makefile
-index fabd665..9802805 100644
---- a/tools/blktap2/vhd/Makefile
-+++ b/tools/blktap2/vhd/Makefile
+--- xen-4.8.0.orig/tools/blktap2/vhd/Makefile
++++ xen-4.8.0/tools/blktap2/vhd/Makefile
 @@ -12,6 +12,7 @@ CFLAGS            += -Werror
  CFLAGS            += -Wno-unused
  CFLAGS            += -I../include
@@ -85,10 +78,8 @@ index fabd665..9802805 100644
  
  ifeq ($(CONFIG_X86_64),y)
  CFLAGS            += -fPIC
-diff --git a/tools/blktap2/vhd/lib/Makefile b/tools/blktap2/vhd/lib/Makefile
-index ab2d648..bd6501d 100644
---- a/tools/blktap2/vhd/lib/Makefile
-+++ b/tools/blktap2/vhd/lib/Makefile
+--- xen-4.8.0.orig/tools/blktap2/vhd/lib/Makefile
++++ xen-4.8.0/tools/blktap2/vhd/lib/Makefile
 @@ -2,25 +2,19 @@ XEN_ROOT=$(CURDIR)/../../../..
  BLKTAP_ROOT := ../..
  include $(XEN_ROOT)/tools/Rules.mk

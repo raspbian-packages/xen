@@ -78,6 +78,11 @@ struct pci_dev {
     struct pci_dev_info info;
     struct arch_pci_dev arch;
     struct {
+        struct list_head list;
+        unsigned int cap_pos;
+        unsigned int queue_depth;
+    } ats;
+    struct {
         s_time_t time;
         unsigned int count;
 #define PT_FAULT_THRESHOLD 10
@@ -94,7 +99,10 @@ struct pci_dev {
  * interrupt handling related (the mask bit register).
  */
 
-extern spinlock_t pcidevs_lock;
+void pcidevs_lock(void);
+void pcidevs_unlock(void);
+bool_t __must_check pcidevs_locked(void);
+bool_t __must_check pcidevs_trylock(void);
 
 bool_t pci_known_segment(u16 seg);
 bool_t pci_device_detect(u16 seg, u8 bus, u8 dev, u8 func);

@@ -20,7 +20,6 @@
 
 #define NR_GIC_LOCAL_IRQS  NR_LOCAL_IRQS
 #define NR_GIC_SGI         16
-#define MAX_RDIST_COUNT    4
 
 #define GICD_CTLR       (0x000)
 #define GICD_TYPER      (0x004)
@@ -42,8 +41,12 @@
 #define GICD_IPRIORITYR (0x400)
 #define GICD_IPRIORITYRN (0x7F8)
 #define GICD_ITARGETSR  (0x800)
+#define GICD_ITARGETSR7 (0x81C)
+#define GICD_ITARGETSR8 (0x820)
 #define GICD_ITARGETSRN (0xBF8)
 #define GICD_ICFGR      (0xC00)
+#define GICD_ICFGR1     (0xC04)
+#define GICD_ICFGR2     (0xC08)
 #define GICD_ICFGRN     (0xCFC)
 #define GICD_NSACR      (0xE00)
 #define GICD_NSACRN     (0xEFC)
@@ -76,6 +79,7 @@
 #define GICC_HPPIR      (0x0018)
 #define GICC_APR        (0x00D0)
 #define GICC_NSAPR      (0x00E0)
+#define GICC_IIDR       (0x00FC)
 #define GICC_DIR        (0x1000)
 
 #define GICH_HCR        (0x00)
@@ -96,6 +100,7 @@
 #define GICD_TYPE_CPUS_SHIFT 5
 #define GICD_TYPE_CPUS  0x0e0
 #define GICD_TYPE_SEC   0x400
+#define GICD_TYPER_DVIS (1U << 18)
 
 #define GICC_CTL_ENABLE 0x1
 #define GICC_CTL_EOI    (0x1 << 9)
@@ -162,7 +167,7 @@
 
 #define DT_MATCH_GIC_V3 DT_MATCH_COMPATIBLE("arm,gic-v3")
 
-#ifdef HAS_GICV3
+#ifdef CONFIG_HAS_GICV3
 /*
  * GICv3 registers that needs to be saved/restored
  */
@@ -190,7 +195,7 @@ struct gic_v2 {
  */
 union gic_state_data {
     struct gic_v2 v2;
-#ifdef HAS_GICV3
+#ifdef CONFIG_HAS_GICV3
     struct gic_v3 v3;
 #endif
 };
@@ -217,9 +222,11 @@ enum gic_version {
 
 extern enum gic_version gic_hw_version(void);
 
+/* Program the IRQ type into the GIC */
+void gic_set_irq_type(struct irq_desc *desc, unsigned int type);
+
 /* Program the GIC to route an interrupt */
-extern void gic_route_irq_to_xen(struct irq_desc *desc, const cpumask_t *cpu_mask,
-                                 unsigned int priority);
+extern void gic_route_irq_to_xen(struct irq_desc *desc, unsigned int priority);
 extern int gic_route_irq_to_guest(struct domain *, unsigned int virq,
                                   struct irq_desc *desc,
                                   unsigned int priority);
@@ -232,7 +239,7 @@ extern void gic_inject(void);
 extern void gic_clear_pending_irqs(struct vcpu *v);
 extern int gic_events_need_delivery(void);
 
-extern void __cpuinit init_maintenance_interrupt(void);
+extern void init_maintenance_interrupt(void);
 extern void gic_raise_guest_irq(struct vcpu *v, unsigned int irq,
         unsigned int priority);
 extern void gic_raise_inflight_irq(struct vcpu *v, unsigned int virtual_irq);
@@ -324,10 +331,10 @@ struct gic_hw_operations {
     void (*deactivate_irq)(struct irq_desc *irqd);
     /* Read IRQ id and Ack */
     unsigned int (*read_irq)(void);
-    /* Set IRQ property */
-    void (*set_irq_properties)(struct irq_desc *desc,
-                               const cpumask_t *cpu_mask,
-                               unsigned int priority);
+    /* Set IRQ type */
+    void (*set_irq_type)(struct irq_desc *desc, unsigned int type);
+    /* Set IRQ priority */
+    void (*set_irq_priority)(struct irq_desc *desc, unsigned int priority);
     /* Send SGI */
     void (*send_SGI)(enum gic_sgi sgi, enum gic_sgi_mode irqmode,
                      const cpumask_t *online_mask);
@@ -350,14 +357,24 @@ struct gic_hw_operations {
     unsigned int (*read_apr)(int apr_reg);
     /* Secondary CPU init */
     int (*secondary_init)(void);
+    /* Create GIC node for the hardware domain */
     int (*make_hwdom_dt_node)(const struct domain *d,
-                              const struct dt_device_node *node, void *fdt);
+                              const struct dt_device_node *gic, void *fdt);
+    /* Create MADT table for the hardware domain */
+    int (*make_hwdom_madt)(const struct domain *d, u32 offset);
+    /* Map extra GIC MMIO, irqs and other hw stuffs to the hardware domain. */
+    int (*map_hwdom_extra_mappings)(struct domain *d);
+    /* Deny access to GIC regions */
+    int (*iomem_deny_access)(const struct domain *d);
 };
 
 void register_gic_ops(const struct gic_hw_operations *ops);
 int gic_make_hwdom_dt_node(const struct domain *d,
-                           const struct dt_device_node *node,
+                           const struct dt_device_node *gic,
                            void *fdt);
+int gic_make_hwdom_madt(const struct domain *d, u32 offset);
+int gic_map_hwdom_extra_mappings(struct domain *d);
+int gic_iomem_deny_access(const struct domain *d);
 
 #endif /* __ASSEMBLY__ */
 #endif

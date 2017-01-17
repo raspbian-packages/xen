@@ -21,6 +21,9 @@
  * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
+/* Allow uniquely identifying static symbols in the 3 generated objects. */
+asm(".file \"" __OBJECT_FILE__ "\"");
+
 #include <xen/types.h>
 #include <xen/mm.h>
 #include <xen/paging.h>
@@ -29,30 +32,32 @@
 #include <asm/page.h>
 #include <asm/guest_pt.h>
 
+extern const uint32_t gw_page_flags[];
+#if GUEST_PAGING_LEVELS == CONFIG_PAGING_LEVELS
+const uint32_t gw_page_flags[] = {
+    /* I/F -  Usr Wr */
+    /* 0   0   0   0 */ _PAGE_PRESENT,
+    /* 0   0   0   1 */ _PAGE_PRESENT|_PAGE_RW,
+    /* 0   0   1   0 */ _PAGE_PRESENT|_PAGE_USER,
+    /* 0   0   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER,
+    /* 0   1   0   0 */ _PAGE_PRESENT,
+    /* 0   1   0   1 */ _PAGE_PRESENT|_PAGE_RW,
+    /* 0   1   1   0 */ _PAGE_PRESENT|_PAGE_USER,
+    /* 0   1   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER,
+    /* 1   0   0   0 */ _PAGE_PRESENT|_PAGE_NX_BIT,
+    /* 1   0   0   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_NX_BIT,
+    /* 1   0   1   0 */ _PAGE_PRESENT|_PAGE_USER|_PAGE_NX_BIT,
+    /* 1   0   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER|_PAGE_NX_BIT,
+    /* 1   1   0   0 */ _PAGE_PRESENT|_PAGE_NX_BIT,
+    /* 1   1   0   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_NX_BIT,
+    /* 1   1   1   0 */ _PAGE_PRESENT|_PAGE_USER|_PAGE_NX_BIT,
+    /* 1   1   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER|_PAGE_NX_BIT,
+};
+#endif
 
 /* Flags that are needed in a pagetable entry, with the sense of NX inverted */
 static uint32_t mandatory_flags(struct vcpu *v, uint32_t pfec) 
 {
-    static const uint32_t flags[] = {
-        /* I/F -  Usr Wr */
-        /* 0   0   0   0 */ _PAGE_PRESENT, 
-        /* 0   0   0   1 */ _PAGE_PRESENT|_PAGE_RW,
-        /* 0   0   1   0 */ _PAGE_PRESENT|_PAGE_USER,
-        /* 0   0   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER,
-        /* 0   1   0   0 */ _PAGE_PRESENT, 
-        /* 0   1   0   1 */ _PAGE_PRESENT|_PAGE_RW,
-        /* 0   1   1   0 */ _PAGE_PRESENT|_PAGE_USER,
-        /* 0   1   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER,
-        /* 1   0   0   0 */ _PAGE_PRESENT|_PAGE_NX_BIT, 
-        /* 1   0   0   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_NX_BIT,
-        /* 1   0   1   0 */ _PAGE_PRESENT|_PAGE_USER|_PAGE_NX_BIT,
-        /* 1   0   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER|_PAGE_NX_BIT,
-        /* 1   1   0   0 */ _PAGE_PRESENT|_PAGE_NX_BIT, 
-        /* 1   1   0   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_NX_BIT,
-        /* 1   1   1   0 */ _PAGE_PRESENT|_PAGE_USER|_PAGE_NX_BIT,
-        /* 1   1   1   1 */ _PAGE_PRESENT|_PAGE_RW|_PAGE_USER|_PAGE_NX_BIT,
-    };
-
     /* Don't demand not-NX if the CPU wouldn't enforce it. */
     if ( !guest_supports_nx(v) )
         pfec &= ~PFEC_insn_fetch;
@@ -62,7 +67,7 @@ static uint32_t mandatory_flags(struct vcpu *v, uint32_t pfec)
          && !(pfec & PFEC_user_mode) )
         pfec &= ~PFEC_write_access;
 
-    return flags[(pfec & 0x1f) >> 1] | _PAGE_INVALID_BITS;
+    return gw_page_flags[(pfec & 0x1f) >> 1] | _PAGE_INVALID_BITS;
 }
 
 /* Modify a guest pagetable entry to set the Accessed and Dirty bits.
@@ -85,45 +90,53 @@ static uint32_t set_ad_bits(void *guest_p, void *walk_p, int set_dirty)
     return 0;
 }
 
-/* If the map is non-NULL, we leave this function having 
- * acquired an extra ref on mfn_to_page(*mfn) */
-void *map_domain_gfn(struct p2m_domain *p2m, gfn_t gfn, mfn_t *mfn,
-                     p2m_type_t *p2mt, p2m_query_t q, uint32_t *rc)
+#if GUEST_PAGING_LEVELS >= 4
+static bool_t pkey_fault(struct vcpu *vcpu, uint32_t pfec,
+        uint32_t pte_flags, uint32_t pte_pkey)
 {
-    struct page_info *page;
-    void *map;
+    uint32_t pkru;
 
-    /* Translate the gfn, unsharing if shared */
-    page = get_page_from_gfn_p2m(p2m->domain, p2m, gfn_x(gfn), p2mt, NULL,
-                                 q);
-    if ( p2m_is_paging(*p2mt) )
-    {
-        ASSERT(p2m_is_hostp2m(p2m));
-        if ( page )
-            put_page(page);
-        p2m_mem_paging_populate(p2m->domain, gfn_x(gfn));
-        *rc = _PAGE_PAGED;
-        return NULL;
-    }
-    if ( p2m_is_shared(*p2mt) )
-    {
-        if ( page )
-            put_page(page);
-        *rc = _PAGE_SHARED;
-        return NULL;
-    }
-    if ( !page )
-    {
-        *rc |= _PAGE_PRESENT;
-        return NULL;
-    }
-    *mfn = _mfn(page_to_mfn(page));
-    ASSERT(mfn_valid(mfn_x(*mfn)));
+    /* When page isn't present,  PKEY isn't checked. */
+    if ( !(pfec & PFEC_page_present) || is_pv_vcpu(vcpu) )
+        return 0;
 
-    map = map_domain_page(*mfn);
-    return map;
+    /*
+     * PKU:  additional mechanism by which the paging controls
+     * access to user-mode addresses based on the value in the
+     * PKRU register. A fault is considered as a PKU violation if all
+     * of the following conditions are true:
+     * 1.CR4_PKE=1.
+     * 2.EFER_LMA=1.
+     * 3.Page is present with no reserved bit violations.
+     * 4.The access is not an instruction fetch.
+     * 5.The access is to a user page.
+     * 6.PKRU.AD=1 or
+     *      the access is a data write and PKRU.WD=1 and
+     *          either CR0.WP=1 or it is a user access.
+     */
+    if ( !hvm_pku_enabled(vcpu) ||
+         !hvm_long_mode_enabled(vcpu) ||
+         (pfec & PFEC_reserved_bit) ||
+         (pfec & PFEC_insn_fetch) ||
+         !(pte_flags & _PAGE_USER) )
+        return 0;
+
+    pkru = read_pkru();
+    if ( unlikely(pkru) )
+    {
+        bool_t pkru_ad = read_pkru_ad(pkru, pte_pkey);
+        bool_t pkru_wd = read_pkru_wd(pkru, pte_pkey);
+
+        /* Condition 6 */
+        if ( pkru_ad ||
+             (pkru_wd && (pfec & PFEC_write_access) &&
+              (hvm_wp_enabled(vcpu) || (pfec & PFEC_user_mode))) )
+            return 1;
+    }
+
+    return 0;
 }
-
+#endif
 
 /* Walk the guest pagetables, after the manner of a hardware walker. */
 /* Because the walk is essentially random, it can cause a deadlock 
@@ -142,6 +155,7 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
     guest_l3e_t *l3p = NULL;
     guest_l4e_t *l4p;
 #endif
+    unsigned int pkey;
     uint32_t gflags, mflags, iflags, rc = 0;
     bool_t smep = 0, smap = 0;
     bool_t pse1G = 0, pse2M = 0;
@@ -212,6 +226,11 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
         rc |= _PAGE_PRESENT;
         goto out;
     }
+    if ( gflags & _PAGE_PSE )
+    {
+        rc |= _PAGE_PSE | _PAGE_INVALID_BIT;
+        goto out;
+    }
     rc |= ((gflags & mflags) ^ mflags);
 
     /* Map the l3 table */
@@ -225,6 +244,7 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
         goto out;
     /* Get the l3e and check its flags*/
     gw->l3e = l3p[guest_l3_table_offset(va)];
+    pkey = guest_l3e_get_pkey(gw->l3e);
     gflags = guest_l3e_get_flags(gw->l3e) ^ iflags;
     if ( !(gflags & _PAGE_PRESENT) ) {
         rc |= _PAGE_PRESENT;
@@ -232,7 +252,7 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
     }
     rc |= ((gflags & mflags) ^ mflags);
     
-    pse1G = (gflags & _PAGE_PSE) && guest_supports_1G_superpages(v); 
+    pse1G = !!(gflags & _PAGE_PSE);
 
     if ( pse1G )
     {
@@ -252,6 +272,8 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
             /* _PAGE_PSE_PAT not set: remove _PAGE_PAT from flags. */
             flags &= ~_PAGE_PAT;
 
+        if ( !guest_supports_1G_superpages(v) )
+            rc |= _PAGE_PSE | _PAGE_INVALID_BIT;
         if ( gfn_x(start) & GUEST_L3_GFN_MASK & ~0x1 )
             rc |= _PAGE_INVALID_BITS;
 
@@ -259,7 +281,7 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
         start = _gfn((gfn_x(start) & ~GUEST_L3_GFN_MASK) +
                      ((va >> PAGE_SHIFT) & GUEST_L3_GFN_MASK));
         gw->l1e = guest_l1e_from_gfn(start, flags);
-        gw->l2mfn = gw->l1mfn = _mfn(INVALID_MFN);
+        gw->l2mfn = gw->l1mfn = INVALID_MFN;
         goto set_ad;
     }
 
@@ -296,6 +318,7 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
 
 #endif /* All levels... */
 
+    pkey = guest_l2e_get_pkey(gw->l2e);
     gflags = guest_l2e_get_flags(gw->l2e) ^ iflags;
     if ( !(gflags & _PAGE_PRESENT) ) {
         rc |= _PAGE_PRESENT;
@@ -326,26 +349,14 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
             flags &= ~_PAGE_PAT;
 
         if ( gfn_x(start) & GUEST_L2_GFN_MASK & ~0x1 )
-        {
-#if GUEST_PAGING_LEVELS == 2
-            /*
-             * Note that _PAGE_INVALID_BITS is zero in this case, yielding a
-             * no-op here.
-             *
-             * Architecturally, the walk should fail if bit 21 is set (others
-             * aren't being checked at least in PSE36 mode), but we'll ignore
-             * this here in order to avoid specifying a non-natural, non-zero
-             * _PAGE_INVALID_BITS value just for that case.
-             */
-#endif
             rc |= _PAGE_INVALID_BITS;
-        }
+
         /* Increment the pfn by the right number of 4k pages.  
          * Mask out PAT and invalid bits. */
         start = _gfn((gfn_x(start) & ~GUEST_L2_GFN_MASK) +
                      guest_l1_table_offset(va));
         gw->l1e = guest_l1e_from_gfn(start, flags);
-        gw->l1mfn = _mfn(INVALID_MFN);
+        gw->l1mfn = INVALID_MFN;
     } 
     else 
     {
@@ -359,6 +370,7 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
         if(l1p == NULL)
             goto out;
         gw->l1e = l1p[guest_l1_table_offset(va)];
+        pkey = guest_l1e_get_pkey(gw->l1e);
         gflags = guest_l1e_get_flags(gw->l1e) ^ iflags;
         if ( !(gflags & _PAGE_PRESENT) ) {
             rc |= _PAGE_PRESENT;
@@ -369,6 +381,8 @@ guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m,
 
 #if GUEST_PAGING_LEVELS >= 4 /* 64-bit only... */
 set_ad:
+    if ( pkey_fault(v, pfec, gflags, pkey) )
+        rc |= _PAGE_PKEY_BITS;
 #endif
     /* Now re-invert the user-mode requirement for SMEP and SMAP */
     if ( smep || smap )
@@ -421,6 +435,12 @@ set_ad:
         unmap_domain_page(l1p);
         put_page(mfn_to_page(mfn_x(gw->l1mfn)));
     }
+
+    /* If this guest has a restricted physical address space then the
+     * target GFN must fit within it. */
+    if ( !(rc & _PAGE_PRESENT)
+         && gfn_x(guest_l1e_get_gfn(gw->l1e)) >> d->arch.paging.gfn_bits )
+        rc |= _PAGE_INVALID_BITS;
 
     return rc;
 }

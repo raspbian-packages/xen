@@ -353,7 +353,7 @@ static unsigned long __init compute_dom0_nr_pages(
 
         vstart = parms->virt_base;
         vend = round_pgup(parms->virt_kend);
-        if ( !parms->elf_notes[XEN_ELFNOTE_MOD_START_PFN].data.num )
+        if ( !parms->unmapped_initrd )
             vend += round_pgup(initrd_len);
         end = vend + nr_pages * sizeof_long;
 
@@ -427,7 +427,7 @@ static __init void pvh_add_mem_mapping(struct domain *d, unsigned long gfn,
         if ( !iomem_access_permitted(d, mfn + i, mfn + i) )
         {
             omfn = get_gfn_query_unlocked(d, gfn + i, &t);
-            guest_physmap_remove_page(d, gfn + i, mfn_x(omfn), PAGE_ORDER_4K);
+            guest_physmap_remove_page(d, _gfn(gfn + i), omfn, PAGE_ORDER_4K);
             continue;
         }
 
@@ -436,7 +436,8 @@ static __init void pvh_add_mem_mapping(struct domain *d, unsigned long gfn,
         else
             a = p2m_access_rw;
 
-        if ( (rc = set_mmio_p2m_entry(d, gfn + i, _mfn(mfn + i), a)) )
+        if ( (rc = set_mmio_p2m_entry(d, gfn + i, _mfn(mfn + i),
+                                      PAGE_ORDER_4K, a)) )
             panic("pvh_add_mem_mapping: gfn:%lx mfn:%lx i:%ld rc:%d\n",
                   gfn, mfn, i, rc);
         if ( !(i & 0xfffff) )
@@ -529,7 +530,7 @@ static __init void pvh_map_all_iomem(struct domain *d, unsigned long nr_pages)
             if ( get_gpfn_from_mfn(mfn) != INVALID_M2P_ENTRY )
                 continue;
 
-            rc = guest_physmap_add_page(d, start_pfn, mfn, 0);
+            rc = guest_physmap_add_page(d, _gfn(start_pfn), _mfn(mfn), 0);
             if ( rc != 0 )
                 panic("Unable to add gpfn %#lx mfn %#lx to Dom0 physmap: %d",
                       start_pfn, mfn, rc);
@@ -604,7 +605,7 @@ static __init void dom0_update_physmap(struct domain *d, unsigned long pfn,
 {
     if ( is_pvh_domain(d) )
     {
-        int rc = guest_physmap_add_page(d, pfn, mfn, 0);
+        int rc = guest_physmap_add_page(d, _gfn(pfn), _mfn(mfn), 0);
         BUG_ON(rc);
         return;
     }
@@ -941,7 +942,7 @@ int __init construct_dom0(
 
     if ( (rc = elf_init(&elf, image_start, image_len)) != 0 )
         return rc;
-#ifdef VERBOSE
+#ifdef CONFIG_VERBOSE_DEBUG
     elf_set_verbose(&elf);
 #endif
     elf_parse_binary(&elf);
@@ -953,8 +954,8 @@ int __init construct_dom0(
     compat32   = 0;
     machine = elf_uval(&elf, elf.ehdr, e_machine);
     printk(" Xen  kernel: 64-bit, lsb, compat32\n");
-    if (elf_32bit(&elf) && parms.pae == PAEKERN_bimodal)
-        parms.pae = PAEKERN_extended_cr3;
+    if (elf_32bit(&elf) && parms.pae == XEN_PAE_BIMODAL)
+        parms.pae = XEN_PAE_EXTCR3;
     if (elf_32bit(&elf) && parms.pae && machine == EM_386)
     {
         compat32 = 1;
@@ -1005,7 +1006,7 @@ int __init construct_dom0(
 
     nr_pages = compute_dom0_nr_pages(d, &parms, initrd_len);
 
-    if ( parms.pae == PAEKERN_extended_cr3 )
+    if ( parms.pae == XEN_PAE_EXTCR3 )
             set_bit(VMASST_TYPE_pae_extended_cr3, &d->vm_assist);
 
     if ( (parms.virt_hv_start_low != UNSET_ADDR) && elf_32bit(&elf) )
@@ -1037,7 +1038,7 @@ int __init construct_dom0(
     v_start          = parms.virt_base;
     vkern_start      = parms.virt_kstart;
     vkern_end        = parms.virt_kend;
-    if ( parms.elf_notes[XEN_ELFNOTE_MOD_START_PFN].data.num )
+    if ( parms.unmapped_initrd )
     {
         vinitrd_start  = vinitrd_end = 0;
         vphysmap_start = round_pgup(vkern_end);
@@ -1533,7 +1534,7 @@ int __init construct_dom0(
 
     /* The hardware domain is initially permitted full I/O capabilities. */
     rc |= ioports_permit_access(d, 0, 0xFFFF);
-    rc |= iomem_permit_access(d, 0UL, ~0UL);
+    rc |= iomem_permit_access(d, 0UL, (1UL << (paddr_bits - PAGE_SHIFT)) - 1);
     rc |= irqs_permit_access(d, 1, nr_irqs_gsi - 1);
 
     /*

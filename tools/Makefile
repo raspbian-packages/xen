@@ -3,8 +3,9 @@ include $(XEN_ROOT)/tools/Rules.mk
 
 SUBDIRS-y :=
 SUBDIRS-y += include
+SUBDIRS-y += libs
 SUBDIRS-y += libxc
-SUBDIRS-$(FLASK_ENABLE) += flask
+SUBDIRS-y += flask
 SUBDIRS-y += xenstore
 SUBDIRS-y += misc
 SUBDIRS-y += examples
@@ -29,6 +30,7 @@ endif
 
 SUBDIRS-y += xenpmd
 SUBDIRS-y += libxl
+SUBDIRS-y += helpers
 SUBDIRS-$(CONFIG_X86) += xenpaging
 SUBDIRS-$(CONFIG_X86) += debugger/gdbsx
 SUBDIRS-$(CONFIG_X86) += debugger/kdd
@@ -58,9 +60,11 @@ build all: subdirs-all
 
 .PHONY: install
 install: subdirs-install
-	$(INSTALL_DIR) $(DESTDIR)$(XEN_DUMP_DIR)
-	$(INSTALL_DIR) $(DESTDIR)/var/log/xen
-	$(INSTALL_DIR) $(DESTDIR)/var/lib/xen
+	$(INSTALL_DIR) -m 700 $(DESTDIR)$(XEN_DUMP_DIR)
+	$(INSTALL_DIR) $(DESTDIR)$(XEN_LOG_DIR)
+	$(INSTALL_DIR) $(DESTDIR)$(XEN_RUN_DIR)
+	$(INSTALL_DIR) $(DESTDIR)$(XEN_LIB_DIR)
+	$(INSTALL_DIR) $(DESTDIR)$(XEN_RUN_STORED)
 
 .PHONY: uninstall
 uninstall: D=$(DESTDIR)
@@ -73,7 +77,9 @@ uninstall:
 	rm -f  $(D)$(SYSCONFIG_DIR)/xendomains
 	rm -f  $(D)$(sbindir)/xendomains
 	rm -f  $(D)$(SYSCONFIG_DIR)/xencommons
-	rm -rf $(D)/var/lib/xen*
+	rm -rf $(D)$(XEN_LIB_DIR)
+	rm -rf $(D)$(XEN_LIB_STORED)
+	rm -rf $(D)$(XEN_RUN_STORED)
 	rm -rf $(D)$(bindir)/cpuperf-perfcntr $(D)$(bindir)/cpuperf-xen
 	rm -rf $(D)$(bindir)/xc_shadow
 	rm -rf $(D)$(bindir)/pygrub
@@ -182,28 +188,25 @@ qemu-xen-traditional-dir-force-update: qemu-xen-traditional-dir-find
 		$(GIT) reset --hard $(QEMU_TRADITIONAL_REVISION); \
 	fi
 
-subdir-all-qemu-xen-traditional-dir: qemu-xen-traditional-dir-find
+qemu-traditional-recurse = \
 	set -e; \
 		$(buildmakevars2shellvars); \
 		export CONFIG_BLKTAP1=n; \
 		cd qemu-xen-traditional-dir; \
-		$(QEMU_ROOT)/xen-setup \
-		$(IOEMU_EXTRA_LDFLAGS) \
-		--cpu=$(IOEMU_CPU_ARCH) \
-		$(IOEMU_CONFIGURE_CROSS); \
-		$(MAKE) all
+		$(1)
 
-subdir-install-qemu-xen-traditional-dir: qemu-xen-traditional-dir-find
-	set -e; \
-		$(buildmakevars2shellvars); \
-		export CONFIG_BLKTAP1=n; \
-		cd qemu-xen-traditional-dir; \
+subdir-all-qemu-xen-traditional-dir: qemu-xen-traditional-dir-find
+	$(call qemu-traditional-recurse,\
 		$(QEMU_ROOT)/xen-setup \
-		--extra-cflags="$(EXTRA_CFLAGS_QEMU_TRADITIONAL)" \
+		--extra-cflags="-D__XEN_TOOLS__ $(EXTRA_CFLAGS_QEMU_TRADITIONAL)" \
 		$(IOEMU_EXTRA_LDFLAGS) \
 		--cpu=$(IOEMU_CPU_ARCH) \
 		$(IOEMU_CONFIGURE_CROSS); \
-		$(MAKE) install
+		$(MAKE) all \
+	)
+
+subdir-install-qemu-xen-traditional-dir: subdir-all-qemu-xen-traditional-dir
+	$(call qemu-traditional-recurse,$(MAKE) install)
 
 subdir-clean-qemu-xen-traditional-dir:
 	set -e; if test -d qemu-xen-traditional-dir/.; then \
@@ -229,7 +232,7 @@ qemu-xen-dir-force-update: qemu-xen-dir-find
 	fi
 
 ifeq ($(debug),y)
-QEMU_XEN_ENABLE_DEBUG := --enable-debug --enable-trace-backend=stderr
+QEMU_XEN_ENABLE_DEBUG := --enable-debug
 else
 QEMU_XEN_ENABLE_DEBUG :=
 endif
@@ -241,19 +244,42 @@ subdir-all-qemu-xen-dir: qemu-xen-dir-find
 		source=.; \
 	fi; \
 	cd qemu-xen-dir; \
+	if $$source/scripts/tracetool.py --check-backend --backend log ; then \
+		enable_trace_backend='--enable-trace-backend=log'; \
+	elif $$source/scripts/tracetool.py --check-backend --backend stderr ; then \
+		enable_trace_backend='--enable-trace-backend=stderr'; \
+	else \
+		enable_trace_backend='' ; \
+	fi ; \
 	$$source/configure --enable-xen --target-list=i386-softmmu \
 		$(QEMU_XEN_ENABLE_DEBUG) \
+		$$enable_trace_backend \
 		--prefix=$(LIBEXEC) \
 		--libdir=$(LIBEXEC_LIB) \
 		--includedir=$(LIBEXEC_INC) \
 		--source-path=$$source \
-		--extra-cflags="-I$(XEN_ROOT)/tools/include \
+		--extra-cflags="-DXC_WANT_COMPAT_EVTCHN_API=1 \
+		-DXC_WANT_COMPAT_GNTTAB_API=1 \
+		-DXC_WANT_COMPAT_MAP_FOREIGN_API=1 \
+		-I$(XEN_ROOT)/tools/include \
+		-I$(XEN_ROOT)/tools/libs/toollog/include \
+		-I$(XEN_ROOT)/tools/libs/evtchn/include \
+		-I$(XEN_ROOT)/tools/libs/gnttab/include \
+		-I$(XEN_ROOT)/tools/libs/foreignmemory/include \
 		-I$(XEN_ROOT)/tools/libxc/include \
 		-I$(XEN_ROOT)/tools/xenstore/include \
 		-I$(XEN_ROOT)/tools/xenstore/compat/include \
 		$(EXTRA_CFLAGS_QEMU_XEN)" \
 		--extra-ldflags="-L$(XEN_ROOT)/tools/libxc \
 		-L$(XEN_ROOT)/tools/xenstore \
+		-L$(XEN_ROOT)/tools/libs/evtchn \
+		-L$(XEN_ROOT)/tools/libs/gnttab \
+		-L$(XEN_ROOT)/tools/libs/foreignmemory \
+		-Wl,-rpath-link=$(XEN_ROOT)/tools/libs/toollog \
+		-Wl,-rpath-link=$(XEN_ROOT)/tools/libs/evtchn \
+		-Wl,-rpath-link=$(XEN_ROOT)/tools/libs/gnttab \
+		-Wl,-rpath-link=$(XEN_ROOT)/tools/libs/call \
+		-Wl,-rpath-link=$(XEN_ROOT)/tools/libs/foreignmemory \
 		$(QEMU_UPSTREAM_RPATH)" \
 		--bindir=$(LIBEXEC_BIN) \
 		--datadir=$(SHAREDIR)/qemu-xen \

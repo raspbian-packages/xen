@@ -1,5 +1,4 @@
-
-#!/bin/bash
+#!/bin/sh
 #
 # xendriverdomain    Script to start services needed in a Xen driver domain
 #
@@ -25,7 +24,7 @@ xendriverdomain_config=@CONFIG_DIR@/@CONFIG_LEAF_DIR@
 
 test -f $xendriverdomain_config/xendriverdomain && . $xendriverdomain_config/xendriverdomain
 
-XLDEVD_PIDFILE=/var/run/xldevd.pid
+XLDEVD_PIDFILE=@XEN_RUN_DIR@/xldevd.pid
 
 # not running in Xen dom0 or domU
 if ! test -d /proc/xen ; then
@@ -56,7 +55,7 @@ do_stop () {
         echo Stopping xl devd...
 	if read 2>/dev/null <$XLDEVD_PIDFILE pid; then
 		kill $pid
-		while kill -9 $pid >/dev/null 2>&1; do sleep 0.1; done
+		while kill -9 $pid >/dev/null 2>&1; do sleep 1; done
 		rm -f $XLDEVD_PIDFILE
 	fi
 }

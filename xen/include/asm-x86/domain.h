@@ -14,6 +14,7 @@
 #define has_32bit_shinfo(d)    ((d)->arch.has_32bit_shinfo)
 #define is_pv_32bit_domain(d)  ((d)->arch.is_32bit_pv)
 #define is_pv_32bit_vcpu(v)    (is_pv_32bit_domain((v)->domain))
+#define is_pvh_32bit_domain(d) (is_pvh_domain(d) && has_32bit_shinfo(d))
 
 #define is_hvm_pv_evtchn_domain(d) (has_hvm_container_domain(d) && \
         d->arch.hvm_domain.irq.callback_via_type == HVMIRQ_callback_vector)
@@ -193,6 +194,9 @@ struct paging_domain {
     /* log dirty support */
     struct log_dirty_domain log_dirty;
 
+    /* Number of valid bits in a gfn. */
+    unsigned int gfn_bits;
+
     /* preemption handling */
     struct {
         const struct domain *dom;
@@ -247,8 +251,12 @@ struct pv_domain
 {
     l1_pgentry_t **gdt_ldt_l1tab;
 
+    atomic_t nr_l4_pages;
+
     /* map_domain_page() mapping cache. */
     struct mapcache_domain mapcache;
+
+    struct cpuidmasks *cpuidmasks;
 };
 
 struct monitor_write_data {
@@ -336,6 +344,21 @@ struct arch_domain
     u8 x86_vendor;           /* CPU vendor */
     u8 x86_model;            /* CPU model */
 
+    /*
+     * The width of the FIP/FDP register in the FPU that needs to be
+     * saved/restored during a context switch.  This is needed because
+     * the FPU can either: a) restore the 64-bit FIP/FDP and clear FCS
+     * and FDS; or b) restore the 32-bit FIP/FDP (clearing the upper
+     * 32-bits of FIP/FDP) and restore FCS/FDS.
+     *
+     * Which one is needed depends on the guest.
+     *
+     * This can be either: 8, 4 or 0.  0 means auto-detect the size
+     * based on the width of FIP/FDP values that are written by the
+     * guest.
+     */
+    uint8_t x87_fip_width;
+
     cpuid_input_t *cpuids;
 
     struct PITState vpit;
@@ -346,12 +369,15 @@ struct arch_domain
     s_time_t vtsc_last;      /* previous TSC value (guarantee monotonicity) */
     spinlock_t vtsc_lock;
     uint64_t vtsc_offset;    /* adjustment for save/restore/migrate */
-    uint32_t tsc_khz;        /* cached khz for certain emulated cases */
-    struct time_scale vtsc_to_ns; /* scaling for certain emulated cases */
-    struct time_scale ns_to_vtsc; /* scaling for certain emulated cases */
+    uint32_t tsc_khz;        /* cached guest khz for certain emulated or
+                                hardware TSC scaling cases */
+    struct time_scale vtsc_to_ns; /* scaling for certain emulated or
+                                     hardware TSC scaling cases */
+    struct time_scale ns_to_vtsc; /* scaling for certain emulated or
+                                     hardware TSC scaling cases */
     uint32_t incarnation;    /* incremented every restore or live migrate
                                 (possibly other cases in the future */
-#if !defined(NDEBUG) || defined(PERF_COUNTERS)
+#if !defined(NDEBUG) || defined(CONFIG_PERF_COUNTERS)
     uint64_t vtsc_kerncount;
     uint64_t vtsc_usercount;
 #endif
@@ -370,24 +396,35 @@ struct arch_domain
     unsigned long *pirq_eoi_map;
     unsigned long pirq_eoi_map_mfn;
 
-    /* Monitor options */
+    /* Arch-specific monitor options */
     struct {
         unsigned int write_ctrlreg_enabled       : 4;
         unsigned int write_ctrlreg_sync          : 4;
         unsigned int write_ctrlreg_onchangeonly  : 4;
-        unsigned int mov_to_msr_enabled          : 1;
-        unsigned int mov_to_msr_extended         : 1;
         unsigned int singlestep_enabled          : 1;
         unsigned int software_breakpoint_enabled : 1;
-        unsigned int guest_request_enabled       : 1;
-        unsigned int guest_request_sync          : 1;
+        unsigned int debug_exception_enabled     : 1;
+        unsigned int debug_exception_sync        : 1;
+        unsigned int cpuid_enabled               : 1;
+        struct monitor_msr_bitmap *msr_bitmap;
     } monitor;
 
     /* Mem_access emulation control */
-    bool_t mem_access_emulate_enabled;
+    bool_t mem_access_emulate_each_rep;
 
-    struct monitor_write_data *event_write_data;
+    /* Emulated devices enabled bitmap. */
+    uint32_t emulation_flags;
 } __cacheline_aligned;
+
+#define has_vlapic(d)      (!!((d)->arch.emulation_flags & XEN_X86_EMU_LAPIC))
+#define has_vhpet(d)       (!!((d)->arch.emulation_flags & XEN_X86_EMU_HPET))
+#define has_vpm(d)         (!!((d)->arch.emulation_flags & XEN_X86_EMU_PM))
+#define has_vrtc(d)        (!!((d)->arch.emulation_flags & XEN_X86_EMU_RTC))
+#define has_vioapic(d)     (!!((d)->arch.emulation_flags & XEN_X86_EMU_IOAPIC))
+#define has_vpic(d)        (!!((d)->arch.emulation_flags & XEN_X86_EMU_PIC))
+#define has_vvga(d)        (!!((d)->arch.emulation_flags & XEN_X86_EMU_VGA))
+#define has_viommu(d)      (!!((d)->arch.emulation_flags & XEN_X86_EMU_IOMMU))
+#define has_vpit(d)        (!!((d)->arch.emulation_flags & XEN_X86_EMU_PIT))
 
 #define has_arch_pdevs(d)    (!list_empty(&(d)->arch.pdev_list))
 
@@ -440,7 +477,9 @@ struct pv_vcpu
     /* I/O-port access bitmap. */
     XEN_GUEST_HANDLE(uint8) iobmp; /* Guest kernel vaddr of the bitmap. */
     unsigned int iobmp_limit; /* Number of ports represented in the bitmap. */
-    unsigned int iopl;        /* Current IOPL for this VCPU. */
+#define IOPL(val) MASK_INSR(val, X86_EFLAGS_IOPL)
+    unsigned int iopl;        /* Current IOPL for this VCPU, shifted left by
+                               * 12 to match the eflags register. */
 
     /* Current LDT details. */
     unsigned long shadow_ldt_mapcnt;
@@ -518,6 +557,9 @@ struct arch_vcpu
      * and thus should be saved/restored. */
     bool_t nonlazy_xstate_used;
 
+    /* Has the guest enabled CPUID faulting? */
+    bool cpuid_faulting;
+
     /*
      * The SMAP check policy when updating runstate_guest(v) and the
      * secondary system time.
@@ -533,16 +575,7 @@ struct arch_vcpu
     /* A secondary copy of the vcpu time info. */
     XEN_GUEST_HANDLE(vcpu_time_info_t) time_info_guest;
 
-    /*
-     * Should we emulate the next matching instruction on VCPU resume
-     * after a vm_event?
-     */
-    struct {
-        uint32_t emulate_flags;
-        unsigned long gpa;
-        unsigned long eip;
-        struct vm_event_emul_read_data *emul_read_data;
-    } vm_event;
+    struct arch_vm_event *vm_event;
 };
 
 smap_check_policy_t smap_policy_change(struct vcpu *v,
@@ -585,6 +618,19 @@ void domain_cpuid(struct domain *d,
                   unsigned int  *edx);
 
 #define domain_max_vcpus(d) (is_hvm_domain(d) ? HVM_MAX_VCPUS : MAX_VIRT_CPUS)
+
+static inline struct vcpu_guest_context *alloc_vcpu_guest_context(void)
+{
+    return vmalloc(sizeof(struct vcpu_guest_context));
+}
+
+static inline void free_vcpu_guest_context(struct vcpu_guest_context *vgc)
+{
+    vfree(vgc);
+}
+
+struct vcpu_hvm_context;
+int arch_set_info_hvm_guest(struct vcpu *v, const struct vcpu_hvm_context *ctx);
 
 #endif /* __ASM_DOMAIN_H__ */
 

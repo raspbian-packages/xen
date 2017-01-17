@@ -85,7 +85,7 @@ void spin_debug_disable(void)
 
 #endif
 
-#ifdef LOCK_PROFILE
+#ifdef CONFIG_LOCK_PROFILE
 
 #define LOCK_PROFILE_REL                                                     \
     if (lock->profile)                                                       \
@@ -141,7 +141,7 @@ void _spin_lock(spinlock_t *lock)
     while ( tickets.tail != observe_head(&lock->tickets) )
     {
         LOCK_PROFILE_BLOCK;
-        cpu_relax();
+        arch_lock_relax();
     }
     LOCK_PROFILE_GOT;
     preempt_disable();
@@ -170,6 +170,7 @@ void _spin_unlock(spinlock_t *lock)
     preempt_enable();
     LOCK_PROFILE_REL;
     add_sized(&lock->tickets.head, 1);
+    arch_lock_signal();
 }
 
 void _spin_unlock_irq(spinlock_t *lock)
@@ -187,7 +188,15 @@ void _spin_unlock_irqrestore(spinlock_t *lock, unsigned long flags)
 int _spin_is_locked(spinlock_t *lock)
 {
     check_lock(&lock->debug);
-    return lock->tickets.head != lock->tickets.tail;
+
+    /*
+     * Recursive locks may be locked by another CPU, yet we return
+     * "false" here, making this function suitable only for use in
+     * ASSERT()s and alike.
+     */
+    return lock->recurse_cpu == SPINLOCK_NO_CPU
+           ? lock->tickets.head != lock->tickets.tail
+           : lock->recurse_cpu == smp_processor_id();
 }
 
 int _spin_trylock(spinlock_t *lock)
@@ -203,7 +212,7 @@ int _spin_trylock(spinlock_t *lock)
     if ( cmpxchg(&lock->tickets.head_tail,
                  old.head_tail, new.head_tail) != old.head_tail )
         return 0;
-#ifdef LOCK_PROFILE
+#ifdef CONFIG_LOCK_PROFILE
     if (lock->profile)
         lock->profile->time_locked = NOW();
 #endif
@@ -218,7 +227,7 @@ int _spin_trylock(spinlock_t *lock)
 void _spin_barrier(spinlock_t *lock)
 {
     spinlock_tickets_t sample;
-#ifdef LOCK_PROFILE
+#ifdef CONFIG_LOCK_PROFILE
     s_time_t block = NOW();
 #endif
 
@@ -228,8 +237,8 @@ void _spin_barrier(spinlock_t *lock)
     if ( sample.head != sample.tail )
     {
         while ( observe_head(&lock->tickets) == sample.head )
-            cpu_relax();
-#ifdef LOCK_PROFILE
+            arch_lock_relax();
+#ifdef CONFIG_LOCK_PROFILE
         if ( lock->profile )
         {
             lock->profile->time_block += NOW() - block;
@@ -245,7 +254,7 @@ int _spin_trylock_recursive(spinlock_t *lock)
     unsigned int cpu = smp_processor_id();
 
     /* Don't allow overflow of recurse_cpu field. */
-    BUILD_BUG_ON(NR_CPUS > 0xfffu);
+    BUILD_BUG_ON(NR_CPUS > SPINLOCK_NO_CPU);
 
     check_lock(&lock->debug);
 
@@ -257,7 +266,7 @@ int _spin_trylock_recursive(spinlock_t *lock)
     }
 
     /* We support only fairly shallow recursion, else the counter overflows. */
-    ASSERT(lock->recurse_cnt < 0xfu);
+    ASSERT(lock->recurse_cnt < SPINLOCK_MAX_RECURSE);
     lock->recurse_cnt++;
 
     return 1;
@@ -274,7 +283,7 @@ void _spin_lock_recursive(spinlock_t *lock)
     }
 
     /* We support only fairly shallow recursion, else the counter overflows. */
-    ASSERT(lock->recurse_cnt < 0xfu);
+    ASSERT(lock->recurse_cnt < SPINLOCK_MAX_RECURSE);
     lock->recurse_cnt++;
 }
 
@@ -282,216 +291,12 @@ void _spin_unlock_recursive(spinlock_t *lock)
 {
     if ( likely(--lock->recurse_cnt == 0) )
     {
-        lock->recurse_cpu = 0xfffu;
+        lock->recurse_cpu = SPINLOCK_NO_CPU;
         spin_unlock(lock);
     }
 }
 
-void _read_lock(rwlock_t *lock)
-{
-    uint32_t x;
-
-    check_lock(&lock->debug);
-    do {
-        while ( (x = lock->lock) & RW_WRITE_FLAG )
-            cpu_relax();
-    } while ( cmpxchg(&lock->lock, x, x+1) != x );
-    preempt_disable();
-}
-
-void _read_lock_irq(rwlock_t *lock)
-{
-    uint32_t x;
-
-    ASSERT(local_irq_is_enabled());
-    local_irq_disable();
-    check_lock(&lock->debug);
-    do {
-        if ( (x = lock->lock) & RW_WRITE_FLAG )
-        {
-            local_irq_enable();
-            while ( (x = lock->lock) & RW_WRITE_FLAG )
-                cpu_relax();
-            local_irq_disable();
-        }
-    } while ( cmpxchg(&lock->lock, x, x+1) != x );
-    preempt_disable();
-}
-
-unsigned long _read_lock_irqsave(rwlock_t *lock)
-{
-    uint32_t x;
-    unsigned long flags;
-
-    local_irq_save(flags);
-    check_lock(&lock->debug);
-    do {
-        if ( (x = lock->lock) & RW_WRITE_FLAG )
-        {
-            local_irq_restore(flags);
-            while ( (x = lock->lock) & RW_WRITE_FLAG )
-                cpu_relax();
-            local_irq_disable();
-        }
-    } while ( cmpxchg(&lock->lock, x, x+1) != x );
-    preempt_disable();
-    return flags;
-}
-
-int _read_trylock(rwlock_t *lock)
-{
-    uint32_t x;
-
-    check_lock(&lock->debug);
-    do {
-        if ( (x = lock->lock) & RW_WRITE_FLAG )
-            return 0;
-    } while ( cmpxchg(&lock->lock, x, x+1) != x );
-    preempt_disable();
-    return 1;
-}
-
-#ifndef _raw_read_unlock
-# define _raw_read_unlock(l) do {                      \
-    uint32_t x = (l)->lock, y;                         \
-    while ( (y = cmpxchg(&(l)->lock, x, x - 1)) != x ) \
-        x = y;                                         \
-} while (0)
-#endif
-
-inline void _read_unlock(rwlock_t *lock)
-{
-    preempt_enable();
-    _raw_read_unlock(lock);
-}
-
-void _read_unlock_irq(rwlock_t *lock)
-{
-    _read_unlock(lock);
-    local_irq_enable();
-}
-
-void _read_unlock_irqrestore(rwlock_t *lock, unsigned long flags)
-{
-    _read_unlock(lock);
-    local_irq_restore(flags);
-}
-
-void _write_lock(rwlock_t *lock)
-{
-    uint32_t x;
-
-    check_lock(&lock->debug);
-    do {
-        while ( (x = lock->lock) & RW_WRITE_FLAG )
-            cpu_relax();
-    } while ( cmpxchg(&lock->lock, x, x|RW_WRITE_FLAG) != x );
-    while ( x != 0 )
-    {
-        cpu_relax();
-        x = lock->lock & ~RW_WRITE_FLAG;
-    }
-    preempt_disable();
-}
-
-void _write_lock_irq(rwlock_t *lock)
-{
-    uint32_t x;
-
-    ASSERT(local_irq_is_enabled());
-    local_irq_disable();
-    check_lock(&lock->debug);
-    do {
-        if ( (x = lock->lock) & RW_WRITE_FLAG )
-        {
-            local_irq_enable();
-            while ( (x = lock->lock) & RW_WRITE_FLAG )
-                cpu_relax();
-            local_irq_disable();
-        }
-    } while ( cmpxchg(&lock->lock, x, x|RW_WRITE_FLAG) != x );
-    while ( x != 0 )
-    {
-        cpu_relax();
-        x = lock->lock & ~RW_WRITE_FLAG;
-    }
-    preempt_disable();
-}
-
-unsigned long _write_lock_irqsave(rwlock_t *lock)
-{
-    uint32_t x;
-    unsigned long flags;
-
-    local_irq_save(flags);
-    check_lock(&lock->debug);
-    do {
-        if ( (x = lock->lock) & RW_WRITE_FLAG )
-        {
-            local_irq_restore(flags);
-            while ( (x = lock->lock) & RW_WRITE_FLAG )
-                cpu_relax();
-            local_irq_disable();
-        }
-    } while ( cmpxchg(&lock->lock, x, x|RW_WRITE_FLAG) != x );
-    while ( x != 0 )
-    {
-        cpu_relax();
-        x = lock->lock & ~RW_WRITE_FLAG;
-    }
-    preempt_disable();
-    return flags;
-}
-
-int _write_trylock(rwlock_t *lock)
-{
-    uint32_t x;
-
-    check_lock(&lock->debug);
-    do {
-        if ( (x = lock->lock) != 0 )
-            return 0;
-    } while ( cmpxchg(&lock->lock, x, x|RW_WRITE_FLAG) != x );
-    preempt_disable();
-    return 1;
-}
-
-#ifndef _raw_write_unlock
-# define _raw_write_unlock(l) xchg(&(l)->lock, 0)
-#endif
-
-inline void _write_unlock(rwlock_t *lock)
-{
-    preempt_enable();
-    if ( _raw_write_unlock(lock) != RW_WRITE_FLAG )
-        BUG();
-}
-
-void _write_unlock_irq(rwlock_t *lock)
-{
-    _write_unlock(lock);
-    local_irq_enable();
-}
-
-void _write_unlock_irqrestore(rwlock_t *lock, unsigned long flags)
-{
-    _write_unlock(lock);
-    local_irq_restore(flags);
-}
-
-int _rw_is_locked(rwlock_t *lock)
-{
-    check_lock(&lock->debug);
-    return (lock->lock != 0); /* anyone in critical section? */
-}
-
-int _rw_is_write_locked(rwlock_t *lock)
-{
-    check_lock(&lock->debug);
-    return (lock->lock == RW_WRITE_FLAG); /* writer in critical section? */
-}
-
-#ifdef LOCK_PROFILE
+#ifdef CONFIG_LOCK_PROFILE
 
 struct lock_profile_anc {
     struct lock_profile_qhead *head_q;   /* first head of this type */

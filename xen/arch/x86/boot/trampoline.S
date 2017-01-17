@@ -32,9 +32,13 @@ GLOBAL(trampoline_realmode_entry)
         lmsw    %ax                       # CR0.PE = 1 (enter protected mode)
         ljmpl   $BOOT_CS32,$bootsym_rel(trampoline_protmode_entry,6)
 
+        .balign 8
+        .word   0
 idt_48: .word   0, 0, 0 # base = limit = 0
+        .word   0
 gdt_48: .word   6*8-1
         .long   bootsym_rel(trampoline_gdt,4)
+
 trampoline_gdt:
         /* 0x0000: unused */
         .quad   0x0000000000000000
@@ -55,6 +59,9 @@ trampoline_gdt:
         .long   trampoline_gdt + BOOT_PSEUDORM_CS + 2 - .
         .long   trampoline_gdt + BOOT_PSEUDORM_DS + 2 - .
         .popsection
+
+GLOBAL(trampoline_misc_enable_off)
+        .quad   0
 
 GLOBAL(cpuid_ext_features)
         .long   0
@@ -84,21 +91,33 @@ trampoline_protmode_entry:
         add     bootsym_rel(trampoline_xen_phys_start,4,%eax)
         mov     %eax,%cr3
 
+        /* Adjust IA32_MISC_ENABLE if needed (for NX enabling below). */
+        mov     bootsym_rel(trampoline_misc_enable_off,4,%esi)
+        mov     bootsym_rel(trampoline_misc_enable_off+4,4,%edi)
+        mov     %esi,%eax
+        or      %edi,%eax
+        jz      1f
+        mov     $MSR_IA32_MISC_ENABLE,%ecx
+        rdmsr
+        not     %esi
+        not     %edi
+        and     %esi,%eax
+        and     %edi,%edx
+        wrmsr
+1:
+
         /* Set up EFER (Extended Feature Enable Register). */
         mov     bootsym_rel(cpuid_ext_features,4,%edi)
-        test    $0x20100800,%edi /* SYSCALL/SYSRET, No Execute, Long Mode? */
-        jz      .Lskip_efer
         movl    $MSR_EFER,%ecx
         rdmsr
-        btsl    $_EFER_LME,%eax /* Long Mode      */
-        btsl    $_EFER_SCE,%eax /* SYSCALL/SYSRET */
-        btl     $20,%edi        /* No Execute?    */
+        or      $EFER_LME|EFER_SCE,%eax   /* Long Mode + SYSCALL/SYSRET */
+        bt      $cpufeat_bit(X86_FEATURE_NX),%edi /* No Execute? */
         jnc     1f
         btsl    $_EFER_NX,%eax  /* No Execute     */
 1:      wrmsr
-.Lskip_efer:
 
-        mov     $0x80050033,%eax /* hi-to-lo: PG,AM,WP,NE,ET,MP,PE */
+        mov     $(X86_CR0_PG | X86_CR0_AM | X86_CR0_WP | X86_CR0_NE |\
+                  X86_CR0_ET | X86_CR0_MP | X86_CR0_PE), %eax
         mov     %eax,%cr0
         jmp     1f
 1:

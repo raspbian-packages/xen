@@ -98,39 +98,6 @@ static void smp_store_cpu_info(int id)
             secondary_socket_cpumask = NULL;
         }
     }
-
-    /*
-     * Certain Athlons might work (for various values of 'work') in SMP
-     * but they are not certified as MP capable.
-     */
-    if ( (c->x86_vendor == X86_VENDOR_AMD) && (c->x86 == 6) )
-    {
-        /* Athlon 660/661 is valid. */ 
-        if ( (c->x86_model==6) && ((c->x86_mask==0) || (c->x86_mask==1)) )
-            goto valid_k7;
-
-        /* Duron 670 is valid */
-        if ( (c->x86_model==7) && (c->x86_mask==0) )
-            goto valid_k7;
-
-        /*
-         * Athlon 662, Duron 671, and Athlon >model 7 have capability bit.
-         * It's worth noting that the A5 stepping (662) of some Athlon XP's
-         * have the MP bit set.
-         * See http://www.heise.de/newsticker/data/jow-18.10.01-000 for more.
-         */
-        if ( ((c->x86_model==6) && (c->x86_mask>=2)) ||
-             ((c->x86_model==7) && (c->x86_mask>=1)) ||
-             (c->x86_model> 7) )
-            if (cpu_has_mp)
-                goto valid_k7;
-
-        /* If we get here, it's not a certified SMP capable AMD system. */
-        add_taint(TAINT_UNSAFE_SMP);
-    }
-
- valid_k7:
-    ;
 }
 
 /*
@@ -156,7 +123,7 @@ static void synchronize_tsc_master(unsigned int slave)
 
     for ( i = 1; i <= 5; i++ )
     {
-        tsc_value = rdtsc();
+        tsc_value = rdtsc_ordered();
         wmb();
         atomic_inc(&tsc_count);
         while ( atomic_read(&tsc_count) != (i<<1) )
@@ -332,8 +299,7 @@ void start_secondary(void *unused)
     set_processor_id(cpu);
     set_current(idle_vcpu[cpu]);
     this_cpu(curr_vcpu) = idle_vcpu[cpu];
-    if ( cpu_has_efer )
-        rdmsrl(MSR_EFER, this_cpu(efer));
+    rdmsrl(MSR_EFER, this_cpu(efer));
 
     /*
      * Just as during early bootstrap, it is convenient here to disable
@@ -362,11 +328,11 @@ void start_secondary(void *unused)
 
     percpu_traps_init();
 
-    init_percpu_time();
-
     cpu_init();
 
     smp_callin();
+
+    init_percpu_time();
 
     setup_secondary_APIC_clock();
 
@@ -388,7 +354,7 @@ void start_secondary(void *unused)
      * this lock ensures we don't half assign or remove an irq from a cpu.
      */
     lock_vector_lock();
-    __setup_vector_irq(cpu);
+    setup_vector_irq(cpu);
     cpumask_set_cpu(cpu, &cpu_online_map);
     unlock_vector_lock();
 
@@ -855,7 +821,7 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
     {
         printk("weird, boot CPU (#%d) not listed by the BIOS.\n",
                boot_cpu_physical_apicid);
-        physid_set(hard_smp_processor_id(), phys_cpu_present_map);
+        physid_set(get_apic_id(), phys_cpu_present_map);
     }
 
     /* If we couldn't find a local APIC, then get out of here now! */
@@ -923,7 +889,8 @@ void __cpu_disable(void)
 
     /* It's now safe to remove this processor from the online map */
     cpumask_clear_cpu(cpu, &cpu_online_map);
-    fixup_irqs();
+    fixup_irqs(&cpu_online_map, 1);
+    fixup_eoi();
 
     if ( cpu_disable_scheduler(cpu) )
         BUG();
@@ -993,7 +960,8 @@ int cpu_add(uint32_t apic_id, uint32_t acpi_id, uint32_t pxm)
             cpu = node;
             goto out;
         }
-        apicid_to_node[apic_id] = node;
+        if ( apic_id < MAX_LOCAL_APIC )
+             apicid_to_node[apic_id] = node;
     }
 
     /* Physically added CPUs do not have synchronised TSC. */
@@ -1028,6 +996,8 @@ int __cpu_up(unsigned int cpu)
     if ( (ret = do_boot_cpu(apicid, cpu)) != 0 )
         return ret;
 
+    time_latch_stamps();
+
     set_cpu_state(CPU_STATE_ONLINE);
     while ( !cpu_online(cpu) )
     {
@@ -1041,19 +1011,6 @@ int __cpu_up(unsigned int cpu)
 
 void __init smp_cpus_done(void)
 {
-    /*
-     * Don't taint if we are running SMP kernel on a single non-MP
-     * approved Athlon
-     */
-    if ( tainted & TAINT_UNSAFE_SMP )
-    {
-        if ( num_online_cpus() > 1 )
-            printk(KERN_INFO "WARNING: This combination of AMD "
-                   "processors is not suitable for SMP.\n");
-        else
-            tainted &= ~TAINT_UNSAFE_SMP;
-    }
-
     if ( nmi_watchdog == NMI_LOCAL_APIC )
         check_nmi_watchdog();
 

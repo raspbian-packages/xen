@@ -66,7 +66,7 @@ let process_domains store cons domains =
 let sigusr1_handler store =
 	try
 		let channel = open_out_gen [ Open_wronly; Open_creat; Open_trunc; ]
-		                           0o600 "/var/run/xenstored/db.debug" in
+		                           0o600 (Paths.xen_run_stored ^ "/db.debug") in
 		finally (fun () -> Store.dump store channel)
 			(fun () -> close_out channel)
 	with _ ->
@@ -81,7 +81,7 @@ let config_filename cf =
 	| Some name -> name
 	| None      -> Define.default_config_dir ^ "/oxenstored.conf"
 
-let default_pidfile = "/var/run/xenstored.pid"
+let default_pidfile = Paths.xen_run_dir ^ "/xenstored.pid"
 
 let ring_scan_interval = ref 20
 
@@ -95,6 +95,7 @@ let parse_config filename =
 		("quota-transaction", Config.Set_int Define.maxtransaction);
 		("quota-maxentity", Config.Set_int Quota.maxent);
 		("quota-maxsize", Config.Set_int Quota.maxsize);
+		("quota-maxrequests", Config.Set_int Define.maxrequests);
 		("test-eagain", Config.Set_bool Transaction.test_eagain);
 		("persistent", Config.Set_bool Disk.enable);
 		("xenstored-log-file", Config.String Logging.set_xenstored_log_destination);
@@ -176,7 +177,7 @@ let from_channel store cons doms chan =
 			if domid > 0 then
 				Domains.create xc doms domid mfn port
 			else
-				Domains.create0 false doms
+				Domains.create0 doms
 			in
 		Connections.add_domain cons ndom;
 		in
@@ -265,7 +266,7 @@ let _ =
 	let quit = ref false in
 
 	if cf.restart then (
-		DB.from_file store domains cons "/var/run/xenstored/db";
+		DB.from_file store domains cons (Paths.xen_run_stored ^ "/db");
 		Event.bind_dom_exc_virq eventchn
 	) else (
 		if !Disk.enable then (
@@ -278,8 +279,7 @@ let _ =
 			Store.mkdir store (Perms.Connection.create 0) localpath;
 
 		if cf.domain_init then (
-			let usingxiu = Xenctrl.is_fake () in
-			Connections.add_domain cons (Domains.create0 usingxiu domains);
+			Connections.add_domain cons (Domains.create0 domains);
 			Event.bind_dom_exc_virq eventchn
 		);
 	);
@@ -293,7 +293,7 @@ let _ =
 
 	Logging.init_xenstored_log();
 	if cf.activate_access_log then begin
-		let post_rotate () = DB.to_file store cons "/var/run/xenstored/db" in
+		let post_rotate () = DB.to_file store cons (Paths.xen_run_stored ^ "/db") in
 		Logging.init_access_log post_rotate
 	end;
 
@@ -428,8 +428,7 @@ let _ =
 		process_domains store cons domains
 		in
 
-	if Systemd.launched_by_systemd () then
-		Systemd.sd_notify_ready ();
+	Systemd.sd_notify_ready ();
 	while not !quit
 	do
 		try
@@ -440,5 +439,5 @@ let _ =
 				raise exc
 	done;
 	info "stopping xenstored";
-	DB.to_file store cons "/var/run/xenstored/db";
+	DB.to_file store cons (Paths.xen_run_stored ^ "/db");
 	()

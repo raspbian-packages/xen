@@ -325,10 +325,14 @@ void hvm_set_callback_via(struct domain *d, uint64_t via)
     unsigned int gsi=0, pdev=0, pintx=0;
     uint8_t via_type;
 
-    via_type = (uint8_t)(via >> 56) + 1;
+    via_type = (uint8_t)MASK_EXTR(via, HVM_PARAM_CALLBACK_IRQ_TYPE_MASK) + 1;
     if ( ((via_type == HVMIRQ_callback_gsi) && (via == 0)) ||
          (via_type > HVMIRQ_callback_vector) )
         via_type = HVMIRQ_callback_none;
+
+    if ( via_type != HVMIRQ_callback_vector &&
+         (!has_vlapic(d) || !has_vioapic(d) || !has_vpic(d)) )
+        return;
 
     spin_lock(&d->arch.hvm_domain.irq_lock);
 
@@ -382,7 +386,8 @@ void hvm_set_callback_via(struct domain *d, uint64_t via)
 
     spin_unlock(&d->arch.hvm_domain.irq_lock);
 
-    dprintk(XENLOG_G_INFO, "Dom%u callback via changed to ", d->domain_id);
+#ifndef NDEBUG
+    printk(XENLOG_G_INFO "Dom%u callback via changed to ", d->domain_id);
     switch ( via_type )
     {
     case HVMIRQ_callback_gsi:
@@ -398,6 +403,7 @@ void hvm_set_callback_via(struct domain *d, uint64_t via)
         printk("None\n");
         break;
     }
+#endif
 }
 
 struct hvm_intack hvm_vcpu_has_pending_irq(struct vcpu *v)
@@ -527,15 +533,9 @@ static void dump_irq_info(unsigned char key)
     rcu_read_unlock(&domlist_read_lock);
 }
 
-static struct keyhandler dump_irq_info_keyhandler = {
-    .diagnostic = 1,
-    .u.fn = dump_irq_info,
-    .desc = "dump HVM irq info"
-};
-
 static int __init dump_irq_info_key_init(void)
 {
-    register_keyhandler('I', &dump_irq_info_keyhandler);
+    register_keyhandler('I', dump_irq_info, "dump HVM irq info", 1);
     return 0;
 }
 __initcall(dump_irq_info_key_init);

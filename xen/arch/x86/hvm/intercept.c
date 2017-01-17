@@ -34,16 +34,16 @@
 static bool_t hvm_mmio_accept(const struct hvm_io_handler *handler,
                               const ioreq_t *p)
 {
-    paddr_t first = hvm_mmio_first_byte(p);
-    paddr_t last = hvm_mmio_last_byte(p);
+    paddr_t first = hvm_mmio_first_byte(p), last;
 
     BUG_ON(handler->type != IOREQ_TYPE_COPY);
 
     if ( !handler->mmio.ops->check(current, first) )
         return 0;
 
-    /* Make sure the handler will accept the whole access */
-    if ( p->size > 1 &&
+    /* Make sure the handler will accept the whole access. */
+    last = hvm_mmio_last_byte(p);
+    if ( last != first &&
          !handler->mmio.ops->check(current, last) )
         domain_crash(current->domain);
 
@@ -148,11 +148,9 @@ int hvm_process_io_intercept(const struct hvm_io_handler *handler,
                     ASSERT_UNREACHABLE();
                     /* fall through */
                 default:
-                    rc = X86EMUL_UNHANDLEABLE;
-                    break;
+                    domain_crash(current->domain);
+                    return X86EMUL_UNHANDLEABLE;
                 }
-                if ( rc != X86EMUL_OKAY )
-                    break;
             }
             else
                 p->data = data;
@@ -178,11 +176,9 @@ int hvm_process_io_intercept(const struct hvm_io_handler *handler,
                     ASSERT_UNREACHABLE();
                     /* fall through */
                 default:
-                    rc = X86EMUL_UNHANDLEABLE;
-                    break;
+                    domain_crash(current->domain);
+                    return X86EMUL_UNHANDLEABLE;
                 }
-                if ( rc != X86EMUL_OKAY )
-                    break;
             }
             else
                 data = p->data;
@@ -196,8 +192,20 @@ int hvm_process_io_intercept(const struct hvm_io_handler *handler,
         }
     }
 
-    if ( i != 0 && rc == X86EMUL_UNHANDLEABLE )
-        domain_crash(current->domain);
+    if ( i )
+    {
+        p->count = i;
+        rc = X86EMUL_OKAY;
+    }
+    else if ( rc == X86EMUL_UNHANDLEABLE )
+    {
+        /*
+         * Don't forward entire batches to the device model: This would
+         * prevent the internal handlers to see subsequent iterations of
+         * the request.
+         */
+        p->count = 1;
+    }
 
     return rc;
 }
@@ -249,6 +257,8 @@ int hvm_io_intercept(ioreq_t *p)
 struct hvm_io_handler *hvm_next_io_handler(struct domain *d)
 {
     unsigned int i = d->arch.hvm_domain.io_handler_count++;
+
+    ASSERT(d->arch.hvm_domain.io_handler);
 
     if ( i == NR_IO_HANDLERS )
     {

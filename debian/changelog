@@ -1,4 +1,4 @@
-xen (4.6.0-1+rpi1) stretch-staging; urgency=medium
+xen (4.8.0-1+rpi1) stretch-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -6,7 +6,118 @@ xen (4.6.0-1+rpi1) stretch-staging; urgency=medium
   [changes introduced in 4.6.0-1+rpi1 by Peter Michael Green]
   * Use kernel 3.18 for now as I haven't dealt with 4.2 yet.
 
- -- Peter Michael Green <plugwash@raspbian.org>  Sat, 28 Nov 2015 12:02:15 +0000
+ -- Peter Michael Green <plugwash@raspbian.org>  Tue, 17 Jan 2017 05:25:26 +0000
+
+xen (4.8.0-1) unstable; urgency=high
+
+  * Update to upstream Xen 4.8.0.
+    Includes the following security fixes:
+        XSA-201   CVE-2016-9815 CVE-2016-9816 CVE-2016-9817 CVE-2016-9818
+        XSA-198   CVE-2016-9379 CVE-2016-9380
+        XSA-196   CVE-2016-9378 CVE-2016-9377   Closes:#845669
+        XSA-195   CVE-2016-9383
+        XSA-194   CVE-2016-9384                 Closes:#845667
+        XSA-193   CVE-2016-9385
+        XSA-192   CVE-2016-9382
+        XSA-191   CVE-2016-9386
+    Includes other bugfixes too:
+        Closes:#812166, Closes:#818525.
+
+  Cherry picks from upstream:
+  * Security fixes:
+        XSA-204   CVE-2016-10013                 Closes:#848713
+        XSA-203   CVE-2016-10025
+        XSA-202   CVE-2016-10024
+    For completeness, the following XSAs do not apply here:
+        XSA-197   CVE-2016-9381      Bug is in qemu
+        XSA-199   CVE-2016-9637      Bug is in qemu
+        XSA-200   CVE-2016-9932      Xen 4.8 is not affected
+  * Cherry pick a build failure fix:
+      "x86/emul: add likely()/unlikely() to test harness"
+
+  [ Ian Jackson ]
+  * Drop -lcrypto search from upstream configure, and from our
+    Build-Depends.  Closes:#844419.
+  * Change my own email address to my work (Citrix) address.  When
+    uploading, I will swap hats to effectively sponsor my own upload.
+
+  [ Ian Campbell ]
+  * Start a qemu process in dom0 to service the toolstacks loopback disk
+    attaches. (Closes: #770456)
+  * Remove correct pidfile when stopping xenconsoled.
+  * Check that xenstored has actually started before talking to it.
+    Incorporate a timeout so as not to block boot (Mitigates #737613)
+  * Correct syntax error in xen-init-list when running with xend
+    (Closes: #763102)
+  * Apply SELinux labels to directories created by initscripts. Patch from
+    Russell Coker. (Closes: #764912)
+  * Include a reportbug control file to redirect bugs to src:xen for
+    packages which contain the Xen version in the name.  Closes:#796370.
+
+  [ Lubomir Host ]
+  * Fix xen-init-name to not fail looking for a nonexistent 'config'
+    entry in xl's JSON output.  Closes:#818129.
+
+ -- Ian Jackson <ian.jackson@eu.citrix.com>  Thu, 22 Dec 2016 14:51:46 +0000
+
+xen (4.8.0~rc5-1) unstable; urgency=medium
+
+  * New upstream version, Xen 4.8.0 RC5.
+
+ -- Ian Jackson <ijackson@chiark.greenend.org.uk>  Fri, 11 Nov 2016 15:26:58 +0000
+
+xen (4.8.0~rc3-1) unstable; urgency=medium
+
+  * Upload 4.8.0~rc3 to unstable.  (RC5 is out upstream, but let's not
+    update to that in the middle of the Xen 4.6 -> 4.8 transition.)
+  * No source changes.
+
+ -- Ian Jackson <ijackson@chiark.greenend.org.uk>  Sat, 05 Nov 2016 15:08:47 +0000
+
+xen (4.8.0~rc3-0exp2) experimental; urgency=medium
+
+  * Build-Depend on iasl on all architectures.  ARM has ACPI now.
+    Fixes FTBFS on arm64 (at least).
+  * Add qemu-utils and seabios to Suggests.
+  * Pass -no-pie -fno-pic to x86 emulator test build.  (Patch
+    also submitted upstream.)  Fixes FTBFS on i386 with GCC6.
+  * Add myself to Uploaders.
+
+ -- Ian Jackson <ijackson@chiark.greenend.org.uk>  Tue, 01 Nov 2016 18:00:25 +0000
+
+xen (4.8.0~rc3-0exp1) experimental; urgency=high
+
+  * New upstream version, Xen 4.8.0 RC3.
+    Fixes many outstanding CVEs.
+  * Incorporated many changes from 4.8.0-0ubuntu2
+    - libxen-dev is M-A: same
+    - Work around grep bug http://bugs.launchpad.net/bugs/1547466
+    - debian/xen-hypervisor-4.6.xen.cfg:
+      Additional config file to simplify grub configuration.
+    - Use new library/abiname scheme.
+    - Document what xl and xm are in default.xen
+    - Add libvirtd dependency to xendomains init script
+    (Thanks to Stefan Bader and others.)
+
+ -- Ian Jackson <ijackson@chiark.greenend.org.uk>  Mon, 24 Oct 2016 17:31:27 +0100
+
+xen (4.6.0-1+nmu2) unstable; urgency=medium
+
+  * Ensure debian/control.md5sum is correctly updated. Fixes FTBFS of
+    4.6.0-1+nmu1 on buildds where linux-support-4.2.0-1 is not expected to be
+    installed.
+
+ -- Ian Campbell <ijc@debian.org>  Tue, 09 Feb 2016 16:41:16 +0000
+
+xen (4.6.0-1+nmu1) unstable; urgency=medium
+
+  * Non-maintainer upload.
+  * Drop unused patching in of $(PREFIX), $(SBINDIR) and $(BINDIR)
+    which are no longer used by the upstream build system.
+  * Use correct/consistent LIBEXEC dirs throughout build
+    (Closes: #805508).
+
+ -- Ian Campbell <ijc@debian.org>  Tue, 19 Jan 2016 14:43:54 +0000
 
 xen (4.6.0-1) unstable; urgency=medium
 

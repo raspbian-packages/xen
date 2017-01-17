@@ -267,10 +267,9 @@ common_start:
                                       * find that multiprocessor extensions are
                                       * present and the system is SMP  */
         mrs   x0, mpidr_el1
-        tbz   x0, _MPIDR_SMP, 1f     /* Multiprocessor extension not supported? */
         tbnz  x0, _MPIDR_UP, 1f      /* Uniprocessor system? */
 
-        mov   x13, #(~MPIDR_HWID_MASK)
+        ldr   x13, =(~MPIDR_HWID_MASK)
         bic   x24, x0, x13           /* Mask out flags to get CPU ID */
 1:
 
@@ -309,8 +308,8 @@ common_start:
         b.eq  el2 /* Yes */
 
         /* OK, we're boned. */
-        PRINT("- Xen must be entered in NS EL2 mode -\r\n" \
-              "- Please update the bootloader -\r\n")
+        PRINT("- Xen must be entered in NS EL2 mode -\r\n")
+        PRINT("- Please update the bootloader -\r\n")
         b fail
 
 el2:    PRINT("- Xen starting at EL2 -\r\n")
@@ -342,8 +341,8 @@ skip_bss:
          * Top byte is used
          * PT walks use Inner-Shareable accesses,
          * PT walks are write-back, write-allocate in both cache levels,
-         * Full 64-bit address space goes through this table. */
-        ldr   x0, =(TCR_RES1|TCR_SH0_IS|TCR_ORGN0_WBWA|TCR_IRGN0_WBWA|TCR_T0SZ(0))
+         * 48-bit virtual address space goes through this table. */
+        ldr   x0, =(TCR_RES1|TCR_SH0_IS|TCR_ORGN0_WBWA|TCR_IRGN0_WBWA|TCR_T0SZ(64-48))
         /* ID_AA64MMFR0_EL1[3:0] (PARange) corresponds to TCR_EL2[18:16] (PS) */
         mrs   x1, ID_AA64MMFR0_EL1
         bfi   x0, x1, #16, #3
@@ -360,6 +359,11 @@ skip_bss:
          * MMU translation disabled (for now). */
         ldr   x0, =(HSCTLR_BASE)
         msr   SCTLR_EL2, x0
+
+        /* Ensure that any exceptions encountered at EL2
+         * are handled using the EL2 stack pointer, rather
+         * than SP_EL0. */
+        msr spsel, #1
 
         /* Rebuild the boot pagetable's first-level entries. The structure
          * is described in mm.c.
@@ -595,7 +599,9 @@ launch:
         mov   x0, x20                /* Marshal args: - phys_offset */
         mov   x1, x21                /*               - FDT */
         mov   x2, x24                /*               - CPU ID */
-        cbz   x22, start_xen         /* and disappear into the land of C */
+        cbnz  x22, 1f
+        b     start_xen              /* and disappear into the land of C */
+1:
         b     start_secondary        /* (to the appropriate entry point) */
 
 /* Fail-stop */

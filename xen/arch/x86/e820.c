@@ -419,8 +419,6 @@ static void __init clip_to_limit(uint64_t limit, char *warnmsg)
 }
 
 /* Conservative estimate of top-of-RAM by looking for MTRR WB regions. */
-#define MSR_MTRRphysBase(reg) (0x200 + 2 * (reg))
-#define MSR_MTRRphysMask(reg) (0x200 + 2 * (reg) + 1)
 static uint64_t __init mtrr_top_of_ram(void)
 {
     uint32_t eax, ebx, ecx, edx;
@@ -451,11 +449,12 @@ static uint64_t __init mtrr_top_of_ram(void)
          return 0;
 
     /* Find the physical address size for this CPU. */
-    cpuid(0x80000000, &eax, &ebx, &ecx, &edx);
-    if ( eax >= 0x80000008 )
+    eax = cpuid_eax(0x80000000);
+    if ( (eax >> 16) == 0x8000 && eax >= 0x80000008 )
     {
-        cpuid(0x80000008, &eax, &ebx, &ecx, &edx);
-        phys_bits = (uint8_t)eax;
+        phys_bits = (uint8_t)cpuid_eax(0x80000008);
+        if ( phys_bits > PADDR_BITS )
+            phys_bits = PADDR_BITS;
     }
     addr_mask = ((1ull << phys_bits) - 1) & ~((1ull << 12) - 1);
 
@@ -476,8 +475,8 @@ static uint64_t __init mtrr_top_of_ram(void)
     top = 0;
     for ( i = 0; i < (uint8_t)mtrr_cap; i++ )
     {
-        rdmsrl(MSR_MTRRphysBase(i), base);
-        rdmsrl(MSR_MTRRphysMask(i), mask);
+        rdmsrl(MSR_IA32_MTRR_PHYSBASE(i), base);
+        rdmsrl(MSR_IA32_MTRR_PHYSMASK(i), mask);
 
         if ( e820_verbose )
             printk(" MTRR[%d]: base %"PRIx64" mask %"PRIx64"\n",

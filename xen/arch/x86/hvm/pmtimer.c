@@ -66,7 +66,11 @@ static void pmt_update_sci(PMTState *s)
 
 void hvm_acpi_power_button(struct domain *d)
 {
-    PMTState *s = &d->arch.hvm_domain.pl_time.vpmt;
+    PMTState *s = &d->arch.hvm_domain.pl_time->vpmt;
+
+    if ( !has_vpm(d) )
+        return;
+
     spin_lock(&s->lock);
     s->pm.pm1a_sts |= PWRBTN_STS;
     pmt_update_sci(s);
@@ -75,7 +79,11 @@ void hvm_acpi_power_button(struct domain *d)
 
 void hvm_acpi_sleep_button(struct domain *d)
 {
-    PMTState *s = &d->arch.hvm_domain.pl_time.vpmt;
+    PMTState *s = &d->arch.hvm_domain.pl_time->vpmt;
+
+    if ( !has_vpm(d) )
+        return;
+
     spin_lock(&s->lock);
     s->pm.pm1a_sts |= SLPBTN_STS;
     pmt_update_sci(s);
@@ -144,7 +152,7 @@ static int handle_evt_io(
     int dir, unsigned int port, unsigned int bytes, uint32_t *val)
 {
     struct vcpu *v = current;
-    PMTState *s = &v->domain->arch.hvm_domain.pl_time.vpmt;
+    PMTState *s = &v->domain->arch.hvm_domain.pl_time->vpmt;
     uint32_t addr, data, byte;
     int i;
 
@@ -207,45 +215,42 @@ static int handle_pmt_io(
     int dir, unsigned int port, unsigned int bytes, uint32_t *val)
 {
     struct vcpu *v = current;
-    PMTState *s = &v->domain->arch.hvm_domain.pl_time.vpmt;
+    PMTState *s = &v->domain->arch.hvm_domain.pl_time->vpmt;
 
-    if ( bytes != 4 )
+    if ( bytes != 4 || dir != IOREQ_READ )
     {
         gdprintk(XENLOG_WARNING, "HVM_PMT bad access\n");
         *val = ~0;
-        return X86EMUL_OKAY;
     }
-    
-    if ( dir == IOREQ_READ )
+    else if ( spin_trylock(&s->lock) )
     {
-        if ( spin_trylock(&s->lock) )
-        {
-            /* We hold the lock: update timer value and return it. */
-            pmt_update_time(s);
-            *val = s->pm.tmr_val;
-            spin_unlock(&s->lock);
-        }
-        else
-        {
-            /*
-             * Someone else is updating the timer: rather than do the work
-             * again ourselves, wait for them to finish and then steal their
-             * updated value with a lock-free atomic read.
-             */
-            spin_barrier(&s->lock);
-            *val = *(volatile uint32_t *)&s->pm.tmr_val;
-        }
-        return X86EMUL_OKAY;
+        /* We hold the lock: update timer value and return it. */
+        pmt_update_time(s);
+        *val = s->pm.tmr_val;
+        spin_unlock(&s->lock);
+    }
+    else
+    {
+        /*
+         * Someone else is updating the timer: rather than do the work
+         * again ourselves, wait for them to finish and then steal their
+         * updated value with a lock-free atomic read.
+         */
+        spin_barrier(&s->lock);
+        *val = read_atomic(&s->pm.tmr_val);
     }
 
-    return X86EMUL_UNHANDLEABLE;
+    return X86EMUL_OKAY;
 }
 
 static int pmtimer_save(struct domain *d, hvm_domain_context_t *h)
 {
-    PMTState *s = &d->arch.hvm_domain.pl_time.vpmt;
+    PMTState *s = &d->arch.hvm_domain.pl_time->vpmt;
     uint32_t x, msb = s->pm.tmr_val & TMR_VAL_MSB;
     int rc;
+
+    if ( !has_vpm(d) )
+        return 0;
 
     spin_lock(&s->lock);
 
@@ -271,7 +276,10 @@ static int pmtimer_save(struct domain *d, hvm_domain_context_t *h)
 
 static int pmtimer_load(struct domain *d, hvm_domain_context_t *h)
 {
-    PMTState *s = &d->arch.hvm_domain.pl_time.vpmt;
+    PMTState *s = &d->arch.hvm_domain.pl_time->vpmt;
+
+    if ( !has_vpm(d) )
+        return -ENODEV;
 
     spin_lock(&s->lock);
 
@@ -301,6 +309,9 @@ int pmtimer_change_ioport(struct domain *d, unsigned int version)
 {
     unsigned int old_version;
 
+    if ( !has_vpm(d) )
+        return -ENODEV;
+
     /* Check that version is changing. */
     old_version = d->arch.hvm_domain.params[HVM_PARAM_ACPI_IOPORTS_LOCATION];
     if ( version == old_version )
@@ -328,7 +339,10 @@ int pmtimer_change_ioport(struct domain *d, unsigned int version)
 
 void pmtimer_init(struct vcpu *v)
 {
-    PMTState *s = &v->domain->arch.hvm_domain.pl_time.vpmt;
+    PMTState *s = &v->domain->arch.hvm_domain.pl_time->vpmt;
+
+    if ( !has_vpm(v->domain) )
+        return;
 
     spin_lock_init(&s->lock);
 
@@ -349,12 +363,19 @@ void pmtimer_init(struct vcpu *v)
 
 void pmtimer_deinit(struct domain *d)
 {
-    PMTState *s = &d->arch.hvm_domain.pl_time.vpmt;
+    PMTState *s = &d->arch.hvm_domain.pl_time->vpmt;
+
+    if ( !has_vpm(d) )
+        return;
+
     kill_timer(&s->timer);
 }
 
 void pmtimer_reset(struct domain *d)
 {
+    if ( !has_vpm(d) )
+        return;
+
     /* Reset the counter. */
-    d->arch.hvm_domain.pl_time.vpmt.pm.tmr_val = 0;
+    d->arch.hvm_domain.pl_time->vpmt.pm.tmr_val = 0;
 }

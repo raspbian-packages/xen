@@ -61,7 +61,7 @@
 
 #define GET_HW_RES_IN_NS(msr, val) \
     do { rdmsrl(msr, val); val = tsc_ticks2ns(val); } while( 0 )
-#define GET_MC6_RES(val)  GET_HW_RES_IN_NS(0x664, val) /* Atom E3000 only */
+#define GET_MC6_RES(val)  GET_HW_RES_IN_NS(0x664, val)
 #define GET_PC2_RES(val)  GET_HW_RES_IN_NS(0x60D, val) /* SNB onwards */
 #define GET_PC3_RES(val)  GET_HW_RES_IN_NS(0x3F8, val)
 #define GET_PC6_RES(val)  GET_HW_RES_IN_NS(0x3F9, val)
@@ -158,10 +158,12 @@ static void do_get_hw_residencies(void *arg)
     case 0x46:
     /* Broadwell */
     case 0x3D:
+    case 0x47:
     case 0x4F:
     case 0x56:
-    /* future */
+    /* Skylake */
     case 0x4E:
+    case 0x5E:
         GET_PC2_RES(hw_res->pc2);
         GET_CC7_RES(hw_res->cc7);
         /* fall through */
@@ -198,16 +200,26 @@ static void do_get_hw_residencies(void *arg)
         break;
     /* Silvermont */
     case 0x37:
-        GET_MC6_RES(hw_res->mc6);
-        /* fall through */
     case 0x4A:
     case 0x4D:
     case 0x5A:
     case 0x5D:
     /* Airmont */
     case 0x4C:
+        GET_MC6_RES(hw_res->mc6);
         GET_PC7_RES(hw_res->pc6); /* abusing GET_PC7_RES */
         GET_CC1_RES(hw_res->cc1);
+        GET_CC6_RES(hw_res->cc6);
+        break;
+    /* Goldmont */
+    case 0x5C:
+    case 0x5F:
+        GET_PC2_RES(hw_res->pc2);
+        GET_PC3_RES(hw_res->pc3);
+        GET_PC6_RES(hw_res->pc6);
+        GET_PC10_RES(hw_res->pc10);
+        GET_CC1_RES(hw_res->cc1);
+        GET_CC3_RES(hw_res->cc3);
         GET_CC6_RES(hw_res->cc6);
         break;
     }
@@ -334,15 +346,9 @@ static void dump_cx(unsigned char key)
             print_acpi_power(cpu, processor_powers[cpu]);
 }
 
-static struct keyhandler dump_cx_keyhandler = {
-    .diagnostic = 1,
-    .u.fn = dump_cx,
-    .desc = "dump ACPI Cx structures"
-};
-
 static int __init cpu_idle_key_init(void)
 {
-    register_keyhandler('c', &dump_cx_keyhandler);
+    register_keyhandler('c', dump_cx, "dump ACPI Cx structures", 1);
     return 0;
 }
 __initcall(cpu_idle_key_init);
@@ -486,7 +492,7 @@ void trace_exit_reason(u32 *irq_traced)
  */
 bool_t errata_c6_eoi_workaround(void)
 {
-    static bool_t fix_needed = -1;
+    static int8_t fix_needed = -1;
 
     if ( unlikely(fix_needed == -1) )
     {
@@ -1035,7 +1041,7 @@ static void set_cx(
     case ACPI_ADR_SPACE_FIXED_HARDWARE:
         if ( xen_cx->reg.bit_width == VENDOR_INTEL &&
              xen_cx->reg.bit_offset == NATIVE_CSTATE_BEYOND_HALT &&
-             boot_cpu_has(X86_FEATURE_MWAIT) )
+             boot_cpu_has(X86_FEATURE_MONITOR) )
             cx->entry_method = ACPI_CSTATE_EM_FFH;
         else
             cx->entry_method = ACPI_CSTATE_EM_HALT;

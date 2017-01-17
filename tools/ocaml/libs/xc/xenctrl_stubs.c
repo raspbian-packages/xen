@@ -29,6 +29,7 @@
 #include <stdint.h>
 #include <string.h>
 
+#define XC_WANT_COMPAT_MAP_FOREIGN_API
 #include <xenctrl.h>
 
 #include "mmap_stubs.h"
@@ -126,13 +127,6 @@ CAMLprim value stub_xc_interface_open(void)
 }
 
 
-CAMLprim value stub_xc_interface_is_fake(void)
-{
-	CAMLparam0();
-	int is_fake = xc_interface_is_fake();
-	CAMLreturn(Val_int(is_fake));
-}
-
 CAMLprim value stub_xc_interface_close(value xch)
 {
 	CAMLparam1(xch);
@@ -175,7 +169,7 @@ CAMLprim value stub_xc_domain_create(value xch, value ssidref,
 	}
 
 	caml_enter_blocking_section();
-	result = xc_domain_create(_H(xch), c_ssidref, h, c_flags, &domid);
+	result = xc_domain_create(_H(xch), c_ssidref, h, c_flags, &domid, NULL);
 	caml_leave_blocking_section();
 
 	if (result < 0)
@@ -802,7 +796,7 @@ CAMLprim value stub_xc_domain_cpuid_apply_policy(value xch, value domid)
 #if defined(__i386__) || defined(__x86_64__)
 	int r;
 
-	r = xc_cpuid_apply_policy(_H(xch), _D(domid));
+	r = xc_cpuid_apply_policy(_H(xch), _D(domid), NULL, 0);
 	if (r < 0)
 		failwith_xc(_H(xch));
 #else
@@ -1218,6 +1212,44 @@ CAMLprim value stub_xc_domain_deassign_device(value xch, value domid, value desc
 	if (ret < 0)
 		failwith_xc(_H(xch));
 	CAMLreturn(Val_unit);
+}
+
+CAMLprim value stub_xc_get_cpu_featureset(value xch, value idx)
+{
+	CAMLparam2(xch, idx);
+	CAMLlocal1(bitmap_val);
+#if defined(__i386__) || defined(__x86_64__)
+
+	/* Safe, because of the global ocaml lock. */
+	static uint32_t fs_len;
+
+	if (fs_len == 0)
+	{
+		int ret = xc_get_cpu_featureset(_H(xch), 0, &fs_len, NULL);
+
+		if (ret || (fs_len == 0))
+			failwith_xc(_H(xch));
+	}
+
+	{
+		/* To/from hypervisor to retrieve actual featureset */
+		uint32_t fs[fs_len], len = fs_len;
+		unsigned int i;
+
+		int ret = xc_get_cpu_featureset(_H(xch), Int_val(idx), &len, fs);
+
+		if (ret)
+			failwith_xc(_H(xch));
+
+		bitmap_val = caml_alloc(len, 0);
+
+		for (i = 0; i < len; ++i)
+			Store_field(bitmap_val, i, caml_copy_int64(fs[i]));
+	}
+#else
+	caml_failwith("xc_get_cpu_featureset: not implemented");
+#endif
+	CAMLreturn(bitmap_val);
 }
 
 CAMLprim value stub_xc_watchdog(value xch, value domid, value timeout)

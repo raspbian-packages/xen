@@ -64,9 +64,14 @@ enum cpufreq_controller cpufreq_controller = FREQCTL_xen;
 
 static void __init setup_cpufreq_option(char *str)
 {
-    char *arg;
+    char *arg = strpbrk(str, ",:");
+    int choice;
 
-    if ( !strcmp(str, "dom0-kernel") )
+    if ( arg )
+        *arg++ = '\0';
+    choice = parse_bool(str);
+
+    if ( choice < 0 && !strcmp(str, "dom0-kernel") )
     {
         xen_processor_pmbits &= ~XEN_PROCESSOR_PM_PX;
         cpufreq_controller = FREQCTL_dom0_kernel;
@@ -74,19 +79,20 @@ static void __init setup_cpufreq_option(char *str)
         return;
     }
 
-    if ( !strcmp(str, "none") )
+    if ( choice == 0 || !strcmp(str, "none") )
     {
         xen_processor_pmbits &= ~XEN_PROCESSOR_PM_PX;
         cpufreq_controller = FREQCTL_none;
         return;
     }
 
-    if ( (arg = strpbrk(str, ",:")) != NULL )
-        *arg++ = '\0';
-
-    if ( !strcmp(str, "xen") )
+    if ( choice > 0 || !strcmp(str, "xen") )
+    {
+        xen_processor_pmbits |= XEN_PROCESSOR_PM_PX;
+        cpufreq_controller = FREQCTL_xen;
         if ( arg && *arg )
             cpufreq_cmdline_parse(arg);
+    }
 }
 custom_param("cpufreq", setup_cpufreq_option);
 
@@ -120,13 +126,15 @@ int __init cpufreq_register_governor(struct cpufreq_governor *governor)
 
 int cpufreq_limit_change(unsigned int cpu)
 {
-    struct processor_performance *perf = &processor_pminfo[cpu]->perf;
+    struct processor_performance *perf;
     struct cpufreq_policy *data;
     struct cpufreq_policy policy;
 
     if (!cpu_online(cpu) || !(data = per_cpu(cpufreq_cpu_policy, cpu)) ||
         !processor_pminfo[cpu])
         return -ENODEV;
+
+    perf = &processor_pminfo[cpu]->perf;
 
     if (perf->platform_limit >= perf->state_count)
         return -EINVAL;
@@ -149,12 +157,15 @@ int cpufreq_add_cpu(unsigned int cpu)
     struct cpufreq_dom *cpufreq_dom = NULL;
     struct cpufreq_policy new_policy;
     struct cpufreq_policy *policy;
-    struct processor_performance *perf = &processor_pminfo[cpu]->perf;
+    struct processor_performance *perf;
 
     /* to protect the case when Px was not controlled by xen */
-    if (!processor_pminfo[cpu]      ||
-        !(perf->init & XEN_PX_INIT) ||
-        !cpu_online(cpu))
+    if ( !processor_pminfo[cpu] || !cpu_online(cpu) )
+        return -EINVAL;
+
+    perf = &processor_pminfo[cpu]->perf;
+
+    if ( !(perf->init & XEN_PX_INIT) )
         return -EINVAL;
 
     if (!cpufreq_driver)
@@ -304,12 +315,15 @@ int cpufreq_del_cpu(unsigned int cpu)
     struct list_head *pos;
     struct cpufreq_dom *cpufreq_dom = NULL;
     struct cpufreq_policy *policy;
-    struct processor_performance *perf = &processor_pminfo[cpu]->perf;
+    struct processor_performance *perf;
 
     /* to protect the case when Px was not controlled by xen */
-    if (!processor_pminfo[cpu]      ||
-        !(perf->init & XEN_PX_INIT) ||
-        !cpu_online(cpu))
+    if ( !processor_pminfo[cpu] || !cpu_online(cpu) )
+        return -EINVAL;
+
+    perf = &processor_pminfo[cpu]->perf;
+
+    if ( !(perf->init & XEN_PX_INIT) )
         return -EINVAL;
 
     if (!per_cpu(cpufreq_cpu_policy, cpu))
@@ -631,10 +645,22 @@ static struct notifier_block cpu_nfb = {
 
 static int __init cpufreq_presmp_init(void)
 {
-    void *cpu = (void *)(long)smp_processor_id();
-    cpu_callback(&cpu_nfb, CPU_ONLINE, cpu);
     register_cpu_notifier(&cpu_nfb);
     return 0;
 }
 presmp_initcall(cpufreq_presmp_init);
 
+int __init cpufreq_register_driver(struct cpufreq_driver *driver_data)
+{
+   if ( !driver_data || !driver_data->init ||
+        !driver_data->verify || !driver_data->exit ||
+        (!driver_data->target == !driver_data->setpolicy) )
+        return -EINVAL;
+
+    if ( cpufreq_driver )
+        return -EBUSY;
+
+    cpufreq_driver = driver_data;
+
+    return 0;
+}

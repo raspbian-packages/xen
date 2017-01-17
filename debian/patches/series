@@ -1,3 +1,5 @@
+gitarchiveinfo-reset
+rerun-autogen.sh-stretch
 version.diff
 config-prefix.diff
 tools-libfsimage-abiname.diff
@@ -23,13 +25,10 @@ tools-pygrub-remove-static-solaris-support
 tools-include-install.diff
 tools-xenmon-install.diff
 tools-xenstore-compatibility.diff
-CVE-2015-7812.diff
-CVE-2015-7813.diff
-CVE-2015-7814.diff
-CVE-2015-7835.diff
-CVE-2015-7969.diff
-CVE-2015-7970.diff
-CVE-2015-7969.1.diff
-CVE-2015-7971.diff
-CVE-2015-7972.diff
+ubuntu-tools-libs-abiname.diff
+toolstestsx86_emulator-pass--no-pie--fno
+x86-force-eflags.if-on-when-exiting-to-p
+x86hvm-add-missing-null-check-before-usi
+x86emul-correct-the-handling-of-eflags-w
+x86emul-add-likelyunlikely-to-test-harne
 armv6.diff

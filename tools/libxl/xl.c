@@ -45,6 +45,7 @@ char *default_bridge = NULL;
 char *default_gatewaydev = NULL;
 char *default_vifbackend = NULL;
 char *default_remus_netbufscript = NULL;
+char *default_colo_proxy_script = NULL;
 enum output_format default_output_format = OUTPUT_FORMAT_JSON;
 int claim_mode = 1;
 bool progress_use_cr = 0;
@@ -179,6 +180,8 @@ static void parse_global_config(const char *configfile,
 
     xlu_cfg_replace_string (config, "remus.default.netbufscript",
         &default_remus_netbufscript, 0);
+    xlu_cfg_replace_string (config, "colo.default.proxyscript",
+        &default_colo_proxy_script, 0);
 
     xlu_cfg_destroy(config);
 }
@@ -318,7 +321,7 @@ int main(int argc, char **argv)
             break;
         default:
             fprintf(stderr, "unknown global option\n");
-            exit(2);
+            exit(EXIT_FAILURE);
         }
     }
 
@@ -326,13 +329,13 @@ int main(int argc, char **argv)
 
     if (!cmd) {
         help(NULL);
-        exit(1);
+        exit(EXIT_FAILURE);
     }
     opterr = 0;
 
     logger = xtl_createlogger_stdiostream(stderr, minmsglevel,
         (progress_use_cr ? XTL_STDIOSTREAM_PROGRESS_USE_CR : 0));
-    if (!logger) exit(1);
+    if (!logger) exit(EXIT_FAILURE);
 
     atexit(xl_ctx_free);
 
@@ -355,16 +358,16 @@ int main(int argc, char **argv)
     if (cspec) {
         if (dryrun_only && !cspec->can_dryrun) {
             fprintf(stderr, "command does not implement -N (dryrun) option\n");
-            ret = 1;
+            ret = EXIT_FAILURE;
             goto xit;
         }
         ret = cspec->cmd_impl(argc, argv);
     } else if (!strcmp(cmd, "help")) {
         help(argv[1]);
-        ret = 0;
+        ret = EXIT_SUCCESS;
     } else {
         fprintf(stderr, "command not implemented\n");
-        ret = 1;
+        ret = EXIT_FAILURE;
     }
 
  xit:

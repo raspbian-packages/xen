@@ -29,8 +29,10 @@
 #include <xen/timer.h>
 #include <xen/irq.h>
 #include <xen/console.h>
+#include <asm/cpuerrata.h>
 #include <asm/gic.h>
 #include <asm/psci.h>
+#include <asm/acpi.h>
 
 cpumask_t cpu_online_map;
 cpumask_t cpu_present_map;
@@ -39,7 +41,7 @@ cpumask_t cpu_possible_map;
 struct cpuinfo_arm cpu_data[NR_CPUS];
 
 /* CPU logical map: map xen cpuid to an MPIDR */
-u32 __cpu_logical_map[NR_CPUS] = { [0 ... NR_CPUS-1] = MPIDR_INVALID };
+register_t __cpu_logical_map[NR_CPUS] = { [0 ... NR_CPUS-1] = MPIDR_INVALID };
 
 /* Fake one node for now. See also include/asm-arm/numa.h */
 nodemask_t __read_mostly node_online_map = { { [0] = 1UL } };
@@ -92,29 +94,19 @@ smp_clear_cpu_maps (void)
  * MPIDR values related to logical cpus
  * Code base on Linux arch/arm/kernel/devtree.c
  */
-void __init smp_init_cpus(void)
+static void __init dt_smp_init_cpus(void)
 {
     register_t mpidr;
     struct dt_device_node *cpus = dt_find_node_by_path("/cpus");
     struct dt_device_node *cpu;
     unsigned int i, j;
     unsigned int cpuidx = 1;
-    static u32 tmp_map[NR_CPUS] __initdata =
+    static register_t tmp_map[NR_CPUS] __initdata =
     {
         [0 ... NR_CPUS - 1] = MPIDR_INVALID
     };
     bool_t bootcpu_valid = 0;
     int rc;
-
-    /* scan the DTB for a PSCI node and set a global variable */
-    psci_init();
-
-    if ( (rc = arch_smp_init()) < 0 )
-    {
-        printk(XENLOG_WARNING "SMP init failed (%d)\n"
-               "Using only 1 CPU\n", rc);
-        return;
-    }
 
     mpidr = boot_cpu_data.mpidr.bits & MPIDR_HWID_MASK;
 
@@ -129,7 +121,8 @@ void __init smp_init_cpus(void)
     {
         const __be32 *prop;
         u64 addr;
-        u32 reg_len, hwid;
+        u32 reg_len;
+        register_t hwid;
 
         if ( !dt_device_type_is_equal(cpu, "cpu") )
             continue;
@@ -169,7 +162,7 @@ void __init smp_init_cpus(void)
          */
         if ( hwid & ~MPIDR_HWID_MASK )
         {
-            printk(XENLOG_WARNING "cpu node `%s`: invalid hwid value (0x%x)\n",
+            printk(XENLOG_WARNING "cpu node `%s`: invalid hwid value (0x%"PRIregister")\n",
                    dt_node_full_name(cpu), hwid);
             continue;
         }
@@ -185,7 +178,7 @@ void __init smp_init_cpus(void)
             if ( tmp_map[j] == hwid )
             {
                 printk(XENLOG_WARNING
-                       "cpu node `%s`: duplicate /cpu reg properties %"PRIx32" in the DT\n",
+                       "cpu node `%s`: duplicate /cpu reg properties %"PRIregister" in the DT\n",
                        dt_node_full_name(cpu), hwid);
                 break;
             }
@@ -220,7 +213,7 @@ void __init smp_init_cpus(void)
 
         if ( (rc = arch_cpu_init(i, cpu)) < 0 )
         {
-            printk("cpu%d init failed (hwid %x): %d\n", i, hwid, rc);
+            printk("cpu%d init failed (hwid %"PRIregister"): %d\n", i, hwid, rc);
             tmp_map[i] = MPIDR_INVALID;
         }
         else
@@ -241,6 +234,27 @@ void __init smp_init_cpus(void)
         cpumask_set_cpu(i, &cpu_possible_map);
         cpu_logical_map(i) = tmp_map[i];
     }
+}
+
+void __init smp_init_cpus(void)
+{
+    int rc;
+
+    /* initialize PSCI and set a global variable */
+    psci_init();
+
+    if ( (rc = arch_smp_init()) < 0 )
+    {
+        printk(XENLOG_WARNING "SMP init failed (%d)\n"
+               "Using only 1 CPU\n", rc);
+        return;
+    }
+
+    if ( acpi_disabled )
+        dt_smp_init_cpus();
+    else
+        acpi_smp_init_cpus();
+
 }
 
 int __init
@@ -264,9 +278,9 @@ smp_prepare_cpus (unsigned int max_cpus)
 }
 
 /* Boot the current CPU */
-void __cpuinit start_secondary(unsigned long boot_phys_offset,
-                               unsigned long fdt_paddr,
-                               unsigned long hwid)
+void start_secondary(unsigned long boot_phys_offset,
+                     unsigned long fdt_paddr,
+                     unsigned long hwid)
 {
     unsigned int cpuid = init_data.cpuid;
 
@@ -274,7 +288,6 @@ void __cpuinit start_secondary(unsigned long boot_phys_offset,
 
     set_processor_id(cpuid);
 
-    current_cpu_data = boot_cpu_data;
     identify_cpu(&current_cpu_data);
 
     init_traps();
@@ -297,12 +310,13 @@ void __cpuinit start_secondary(unsigned long boot_phys_offset,
     smp_wmb();
 
     /* Now report this CPU is up */
-    smp_up_cpu = MPIDR_INVALID;
     cpumask_set_cpu(cpuid, &cpu_online_map);
     smp_wmb();
 
     local_irq_enable();
     local_abort_enable();
+
+    check_local_cpu_errata();
 
     printk(XENLOG_DEBUG "CPU %u booted.\n", smp_processor_id());
 

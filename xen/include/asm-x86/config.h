@@ -13,10 +13,10 @@
 #define BYTES_PER_LONG (1 << LONG_BYTEORDER)
 #define BITS_PER_LONG (BYTES_PER_LONG << 3)
 #define BITS_PER_BYTE 8
+#define POINTER_ALIGN BYTES_PER_LONG
 
 #define BITS_PER_XEN_ULONG BITS_PER_LONG
 
-#define CONFIG_X86 1
 #define CONFIG_PAGING_ASSISTANCE 1
 #define CONFIG_X86_LOCAL_APIC 1
 #define CONFIG_X86_GOOD_APIC 1
@@ -25,47 +25,29 @@
 #define CONFIG_HPET_TIMER 1
 #define CONFIG_X86_MCE_THERMAL 1
 #define CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS 1
-#define CONFIG_NUMA 1
 #define CONFIG_DISCONTIGMEM 1
 #define CONFIG_NUMA_EMU 1
-#define CONFIG_PAGEALLOC_MAX_ORDER (2 * PAGETABLE_ORDER)
 #define CONFIG_DOMAIN_PAGE 1
+
+#define CONFIG_PAGEALLOC_MAX_ORDER (2 * PAGETABLE_ORDER)
+#define CONFIG_DOMU_MAX_ORDER      PAGETABLE_ORDER
+#define CONFIG_HWDOM_MAX_ORDER     12
 
 /* Intel P4 currently has largest cache line (L2 line size is 128 bytes). */
 #define CONFIG_X86_L1_CACHE_SHIFT 7
 
-#define CONFIG_ACPI 1
-#define CONFIG_ACPI_BOOT 1
 #define CONFIG_ACPI_SLEEP 1
 #define CONFIG_ACPI_NUMA 1
 #define CONFIG_ACPI_SRAT 1
 #define CONFIG_ACPI_CSTATE 1
 
-#define CONFIG_VGA 1
-#define CONFIG_VIDEO 1
-
-#define CONFIG_HOTPLUG 1
-#define CONFIG_HOTPLUG_CPU 1
-
-#define CONFIG_XENOPROF 1
-#define CONFIG_KEXEC 1
 #define CONFIG_WATCHDOG 1
 
 #define CONFIG_MULTIBOOT 1
 
-#ifdef XSM_ENABLE
-#define CONFIG_LATE_HWDOM 1
-#endif
-
 #define HZ 100
 
 #define OPT_CONSOLE_STR "vga"
-
-#ifdef MAX_PHYS_CPUS
-#define NR_CPUS MAX_PHYS_CPUS
-#else
-#define NR_CPUS 256
-#endif
 
 /* Linkage for x86 */
 #define __ALIGN .align 16,0x90
@@ -123,8 +105,6 @@ extern unsigned char boot_edid_info[128];
 #endif
 
 #define asmlinkage
-
-#define CONFIG_COMPAT 1
 
 #include <xen/const.h>
 
@@ -351,6 +331,8 @@ extern unsigned long xen_phys_start;
                                   (1UL << VMASST_TYPE_4gb_segments_notify) | \
                                   (1UL << VMASST_TYPE_writable_pagetables) | \
                                   (1UL << VMASST_TYPE_pae_extended_cr3)    | \
+                                  (1UL << VMASST_TYPE_architectural_iopl)  | \
+                                  (1UL << VMASST_TYPE_runstate_update_flag)| \
                                   (1UL << VMASST_TYPE_m2p_strict))
 #define VM_ASSIST_VALID          NATIVE_VM_ASSIST_VALID
 #define COMPAT_VM_ASSIST_VALID   (NATIVE_VM_ASSIST_VALID & \

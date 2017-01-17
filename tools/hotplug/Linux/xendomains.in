@@ -45,11 +45,17 @@ fi
 
 # Correct exit code would probably be 5, but it's enough
 # if xend complains if we're not running as privileged domain
-if ! [ -e /proc/xen/privcmd ]; then
+if [ ! -e /dev/xen/privcmd ] && [ ! -e /proc/xen/privcmd ]; then
 	exit 0
 fi
 
-LOCKFILE=${XEN_LOCK_DIR}/xendomains
+# RHEL-based systems only shutdown a service if they find a lockfile
+# in /var/lock/subsys
+if [[ -d ${XEN_LOCK_DIR}/subsys ]] ; then
+    LOCKFILE=${XEN_LOCK_DIR}/subsys/xendomains
+else
+    LOCKFILE=${XEN_LOCK_DIR}/xendomains
+fi
 
 XENDOM_CONFIG=@CONFIG_DIR@/@CONFIG_LEAF_DIR@/xendomains
 
@@ -196,6 +202,15 @@ rdnames()
     done
 }
 
+# get xenstore domain id (or 0 if no xenstore domain)
+get_xsdomid()
+{
+    XS_DOMID=`${bindir}/xenstore-read /tool/xenstored/domid 2>/dev/null`
+    if test $? -ne 0; then
+        XS_DOMID=0
+    fi
+}
+
 LIST_GREP='(domain\|(domid\|(name\|^    {$\|"name":\|"domid":'
 parseln()
 {
@@ -216,12 +231,14 @@ parseln()
 
 is_running()
 {
+    get_xsdomid
     rdname $1
     RC=1
     name=;id=
     while read LN; do
 	parseln "$LN" || continue
 	if test $id = 0; then continue; fi
+	if test $id = $XS_DOMID; then continue; fi
 	case $name in
 	    ($NM)
 		RC=0
@@ -238,12 +255,13 @@ start()
 	return;
     fi
 
+    mkdir -p $(dirname "$LOCKFILE")
+    touch $LOCKFILE
+
     saved_domains=" "
     if [ "$XENDOMAINS_RESTORE" = "true" ] &&
        contains_something "$XENDOMAINS_SAVE"
     then
-	mkdir -p $(dirname "$LOCKFILE")
-	touch $LOCKFILE
 	echo -n "Restoring Xen domains:"
 	saved_domains=`ls $XENDOMAINS_SAVE`
         for dom in $XENDOMAINS_SAVE/*; do
@@ -269,7 +287,6 @@ start()
 
     if contains_something "$XENDOMAINS_AUTO"
     then
-	touch $LOCKFILE
 	echo -n "Starting auto Xen domains:"
 	# We expect config scripts for auto starting domains to be in
 	# XENDOMAINS_AUTO - they could just be symlinks to files elsewhere
@@ -302,10 +319,12 @@ start()
 
 all_zombies()
 {
+    get_xsdomid
     name=;id=
     while read LN; do
 	parseln "$LN" || continue
 	if test $id = 0; then continue; fi
+	if test $id = $XS_DOMID; then continue; fi
 	if test "$state" != "-b---d" -a "$state" != "-----d"; then
 	    return 1;
 	fi
@@ -351,11 +370,13 @@ stop()
     if test "$XENDOMAINS_AUTO_ONLY" = "true"; then
 	rdnames
     fi
+    get_xsdomid
     echo -n "Shutting down Xen domains:"
     name=;id=
     while read LN; do
 	parseln "$LN" || continue
 	if test $id = 0; then continue; fi
+	if test $id = $XS_DOMID; then continue; fi
 	echo -n " $name"
 	if test "$XENDOMAINS_AUTO_ONLY" = "true"; then
 	    eval "

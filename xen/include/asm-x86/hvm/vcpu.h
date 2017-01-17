@@ -60,12 +60,12 @@ struct hvm_vcpu_io {
 
     /*
      * HVM emulation:
-     *  Virtual address @mmio_gva maps to MMIO physical frame @mmio_gpfn.
+     *  Linear address @mmio_gla maps to MMIO physical frame @mmio_gpfn.
      *  The latter is known to be an MMIO frame (not RAM).
      *  This translation is only valid for accesses as per @mmio_access.
      */
     struct npfec        mmio_access;
-    unsigned long       mmio_gva;
+    unsigned long       mmio_gla;
     unsigned long       mmio_gpfn;
 
     /*
@@ -85,6 +85,8 @@ struct hvm_vcpu_io {
     bool_t mmio_retry;
 
     unsigned long msix_unmask_address;
+    unsigned long msix_snoop_address;
+    unsigned long msix_snoop_gpa;
 
     const struct g2m_ioport *g2m_ioport;
 };
@@ -104,8 +106,8 @@ struct nestedvcpu {
     void *nv_n2vmcx; /* shadow VMCB/VMCS used to run l2 guest */
 
     uint64_t nv_vvmcxaddr; /* l1 guest physical address of nv_vvmcx */
-    uint64_t nv_n1vmcx_pa; /* host physical address of nv_n1vmcx */
-    uint64_t nv_n2vmcx_pa; /* host physical address of nv_n2vmcx */
+    paddr_t nv_n1vmcx_pa; /* host physical address of nv_n1vmcx */
+    paddr_t nv_n2vmcx_pa; /* host physical address of nv_n2vmcx */
 
     /* SVM/VMX arch specific */
     union {
@@ -173,6 +175,7 @@ struct hvm_vcpu {
 
     u32                 msr_tsc_aux;
     u64                 msr_tsc_adjust;
+    u64                 msr_xss;
 
     union {
         struct arch_vmx_struct vmx;

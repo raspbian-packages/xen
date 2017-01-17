@@ -40,8 +40,9 @@ struct platform_desc {
 };
 
 /*
- * Quirk for platforms where the 4K GIC register ranges are placed at
- * 64K stride.
+ * Quirk for platforms where device tree incorrectly reports 4K GICC
+ * size, but actually the two GICC register ranges are placed at 64K
+ * stride.
  */
 #define PLATFORM_QUIRK_GIC_64K_STRIDE (1 << 0)
 
@@ -56,7 +57,6 @@ void platform_reset(void);
 void platform_poweroff(void);
 bool_t platform_has_quirk(uint32_t quirk);
 bool_t platform_device_is_blacklisted(const struct dt_device_node *node);
-unsigned int platform_dom0_evtchn_ppi(void);
 
 #define PLATFORM_START(_name, _namestr)                         \
 static const struct platform_desc  __plat_desc_##_name __used   \

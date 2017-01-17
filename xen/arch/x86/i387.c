@@ -17,19 +17,6 @@
 #include <asm/xstate.h>
 #include <asm/asm_defns.h>
 
-static void fpu_init(void)
-{
-    unsigned long val;
-    
-    asm volatile ( "fninit" );
-    if ( cpu_has_xmm )
-    {
-        /* load default value into MXCSR control/status register */
-        val = MXCSR_DEFAULT;
-        asm volatile ( "ldmxcsr %0" : : "m" (val) );
-    }
-}
-
 /*******************************/
 /*     FPU Restore Functions   */
 /*******************************/
@@ -62,7 +49,7 @@ static inline void fpu_fxrstor(struct vcpu *v)
      * sometimes new user value. Both should be ok. Use the FPU saved
      * data block as a safe address because it should be in L1.
      */
-    if ( !(fpu_ctxt->fsw & 0x0080) &&
+    if ( !(fpu_ctxt->fsw & ~fpu_ctxt->fcw & 0x003f) &&
          boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
     {
         asm volatile ( "fnclex\n\t"
@@ -122,14 +109,6 @@ static inline void fpu_fxrstor(struct vcpu *v)
     }
 }
 
-/* Restore x87 extended state */
-static inline void fpu_frstor(struct vcpu *v)
-{
-    const char *fpu_ctxt = v->arch.fpu_ctxt;
-
-    asm volatile ( "frstor %0" : : "m" (*fpu_ctxt) );
-}
-
 /*******************************/
 /*      FPU Save Functions     */
 /*******************************/
@@ -139,7 +118,19 @@ static inline uint64_t vcpu_xsave_mask(const struct vcpu *v)
     if ( v->fpu_dirtied )
         return v->arch.nonlazy_xstate_used ? XSTATE_ALL : XSTATE_LAZY;
 
-    return v->arch.nonlazy_xstate_used ? XSTATE_NONLAZY : 0;
+    ASSERT(v->arch.nonlazy_xstate_used);
+
+    /*
+     * The offsets of components which live in the extended region of
+     * compact xsave area are not fixed. Xsave area may be overwritten
+     * when a xsave with v->fpu_dirtied set is followed by one with
+     * v->fpu_dirtied clear.
+     * In such case, if hypervisor uses compact xsave area and guest
+     * has ever used lazy states (checking xcr0_accum excluding
+     * XSTATE_FP_SSE), vcpu_xsave_mask will return XSTATE_ALL. Otherwise
+     * return XSTATE_NONLAZY.
+     */
+    return xstate_all(v) ? XSTATE_ALL : XSTATE_NONLAZY;
 }
 
 /* Save x87 extended state */
@@ -165,9 +156,9 @@ static inline void fpu_xsave(struct vcpu *v)
 static inline void fpu_fxsave(struct vcpu *v)
 {
     typeof(v->arch.xsave_area->fpu_sse) *fpu_ctxt = v->arch.fpu_ctxt;
-    int word_size = cpu_has_fpu_sel ? 8 : 0;
+    unsigned int fip_width = v->domain->arch.x87_fip_width;
 
-    if ( !is_pv_32bit_vcpu(v) )
+    if ( fip_width != 4 )
     {
         /*
          * The only way to force fxsaveq on a wide range of gas versions.
@@ -185,7 +176,11 @@ static inline void fpu_fxsave(struct vcpu *v)
              boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
             return;
 
-        if ( word_size > 0 &&
+        /*
+         * If the FIP/FDP[63:32] are both zero, it is safe to use the
+         * 32-bit restore to also restore the selectors.
+         */
+        if ( !fip_width &&
              !((fpu_ctxt->fip.addr | fpu_ctxt->fdp.addr) >> 32) )
         {
             struct ix87_env fpu_env;
@@ -193,26 +188,18 @@ static inline void fpu_fxsave(struct vcpu *v)
             asm volatile ( "fnstenv %0" : "=m" (fpu_env) );
             fpu_ctxt->fip.sel = fpu_env.fcs;
             fpu_ctxt->fdp.sel = fpu_env.fds;
-            word_size = 4;
+            fip_width = 4;
         }
+        else
+            fip_width = 8;
     }
     else
     {
         asm volatile ( "fxsave %0" : "=m" (*fpu_ctxt) );
-        word_size = 4;
+        fip_width = 4;
     }
 
-    if ( word_size >= 0 )
-        fpu_ctxt->x[FPU_WORD_SIZE_OFFSET] = word_size;
-}
-
-/* Save x87 FPU state */
-static inline void fpu_fsave(struct vcpu *v)
-{
-    char *fpu_ctxt = v->arch.fpu_ctxt;
-
-    /* FWAIT is required to make FNSAVE synchronous. */
-    asm volatile ( "fnsave %0 ; fwait" : "=m" (*fpu_ctxt) );
+    fpu_ctxt->x[FPU_WORD_SIZE_OFFSET] = fip_width;
 }
 
 /*******************************/
@@ -223,11 +210,26 @@ void vcpu_restore_fpu_eager(struct vcpu *v)
 {
     ASSERT(!is_idle_vcpu(v));
     
-    /* save the nonlazy extended state which is not tracked by CR0.TS bit */
-    if ( v->arch.nonlazy_xstate_used )
+    /* Restore nonlazy extended state (i.e. parts not tracked by CR0.TS). */
+    if ( !v->arch.nonlazy_xstate_used )
+        return;
+
+    /* Avoid recursion */
+    clts();
+
+    /*
+     * When saving full state even with !v->fpu_dirtied (see vcpu_xsave_mask()
+     * above) we also need to restore full state, to prevent subsequently
+     * saving state belonging to another vCPU.
+     */
+    if ( xstate_all(v) )
     {
-        /* Avoid recursion */
-        clts();        
+        fpu_xrstor(v, XSTATE_ALL);
+        v->fpu_initialised = 1;
+        v->fpu_dirtied = 1;
+    }
+    else
+    {
         fpu_xrstor(v, XSTATE_NONLAZY);
         stts();
     }
@@ -248,15 +250,8 @@ void vcpu_restore_fpu_lazy(struct vcpu *v)
 
     if ( cpu_has_xsave )
         fpu_xrstor(v, XSTATE_LAZY);
-    else if ( v->fpu_initialised )
-    {
-        if ( cpu_has_fxsr )
-            fpu_fxrstor(v);
-        else
-            fpu_frstor(v);
-    }
     else
-        fpu_init();
+        fpu_fxrstor(v);
 
     v->fpu_initialised = 1;
     v->fpu_dirtied = 1;
@@ -278,10 +273,8 @@ static bool_t _vcpu_save_fpu(struct vcpu *v)
 
     if ( cpu_has_xsave )
         fpu_xsave(v);
-    else if ( cpu_has_fxsr )
-        fpu_fxsave(v);
     else
-        fpu_fsave(v);
+        fpu_fxsave(v);
 
     v->fpu_dirtied = 0;
 
@@ -312,8 +305,17 @@ int vcpu_init_fpu(struct vcpu *v)
         v->arch.fpu_ctxt = &v->arch.xsave_area->fpu_sse;
     else
     {
-        v->arch.fpu_ctxt = _xzalloc(sizeof(v->arch.xsave_area->fpu_sse), 16);
-        if ( !v->arch.fpu_ctxt )
+        BUILD_BUG_ON(__alignof(v->arch.xsave_area->fpu_sse) < 16);
+        v->arch.fpu_ctxt = _xzalloc(sizeof(v->arch.xsave_area->fpu_sse),
+                                    __alignof(v->arch.xsave_area->fpu_sse));
+        if ( v->arch.fpu_ctxt )
+        {
+            typeof(v->arch.xsave_area->fpu_sse) *fpu_sse = v->arch.fpu_ctxt;
+
+            fpu_sse->fcw = FCW_DEFAULT;
+            fpu_sse->mxcsr = MXCSR_DEFAULT;
+        }
+        else
             rc = -ENOMEM;
     }
 

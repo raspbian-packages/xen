@@ -25,7 +25,8 @@
 #include <xen/dmi.h>
 #include <xen/pfn.h>
 #include <xen/nodemask.h>
-#include <xen/tmem_xen.h> /* for opt_tmem only */
+#include <xen/tmem_xen.h>
+#include <xen/virtual_region.h>
 #include <xen/watchdog.h>
 #include <public/version.h>
 #include <compat/platform.h>
@@ -50,6 +51,7 @@
 #include <asm/nmi.h>
 #include <asm/alternative.h>
 #include <asm/mc146818rtc.h>
+#include <asm/cpuid.h>
 
 /* opt_nosmp: If true, secondary processors are ignored. */
 static bool_t __initdata opt_nosmp;
@@ -59,13 +61,7 @@ boolean_param("nosmp", opt_nosmp);
 static unsigned int __initdata max_cpus;
 integer_param("maxcpus", max_cpus);
 
-/* smep: Enable/disable Supervisor Mode Execution Protection (default on). */
-static bool_t __initdata disable_smep;
-invbool_param("smep", disable_smep);
-
-/* smap: Enable/disable Supervisor Mode Access Prevention (default on). */
-static bool_t __initdata disable_smap;
-invbool_param("smap", disable_smap);
+unsigned long __read_mostly cr4_pv32_mask;
 
 /* Boot dom0 in pvh mode */
 static bool_t __initdata opt_dom0pvh;
@@ -101,11 +97,64 @@ unsigned long __read_mostly xen_virt_end;
 
 DEFINE_PER_CPU(struct tss_struct, init_tss);
 
-char __section(".bss.stack_aligned") cpu0_stack[STACK_SIZE];
+char __section(".bss.stack_aligned") __aligned(STACK_SIZE)
+    cpu0_stack[STACK_SIZE];
 
 struct cpuinfo_x86 __read_mostly boot_cpu_data = { 0, 0, 0, 0, -1 };
 
 unsigned long __read_mostly mmu_cr4_features = XEN_MINIMAL_CR4;
+
+/* smep: Enable/disable Supervisor Mode Execution Protection (default on). */
+#define SMEP_HVM_ONLY (-1)
+static s8 __initdata opt_smep = 1;
+static void __init parse_smep_param(char *s)
+{
+    if ( !*s )
+    {
+        opt_smep = 1;
+        return;
+    }
+
+    switch ( parse_bool(s) )
+    {
+    case 0:
+        opt_smep = 0;
+        return;
+    case 1:
+        opt_smep = 1;
+        return;
+    }
+
+    if ( !strcmp(s, "hvm") )
+        opt_smep = SMEP_HVM_ONLY;
+}
+custom_param("smep", parse_smep_param);
+
+/* smap: Enable/disable Supervisor Mode Access Prevention (default on). */
+#define SMAP_HVM_ONLY (-1)
+static s8 __initdata opt_smap = 1;
+static void __init parse_smap_param(char *s)
+{
+    if ( !*s )
+    {
+        opt_smap = 1;
+        return;
+    }
+
+    switch ( parse_bool(s) )
+    {
+    case 0:
+        opt_smap = 0;
+        return;
+    case 1:
+        opt_smap = 1;
+        return;
+    }
+
+    if ( !strcmp(s, "hvm") )
+        opt_smap = SMAP_HVM_ONLY;
+}
+custom_param("smap", parse_smap_param);
 
 bool_t __read_mostly acpi_disabled;
 bool_t __initdata acpi_force;
@@ -176,16 +225,6 @@ void __init discard_initial_images(void)
     initial_images = NULL;
 }
 
-static void free_xen_data(char *s, char *e)
-{
-#ifndef MEMORY_GUARD
-    init_xenheap_pages(__pa(s), __pa(e));
-#endif
-    memguard_guard_range(s, e-s);
-    /* Also zap the mapping in the 1:1 area. */
-    memguard_guard_range(__va(__pa(s)), e-s);
-}
-
 extern char __init_begin[], __init_end[], __bss_start[], __bss_end[];
 
 static void __init init_idle_domain(void)
@@ -195,12 +234,12 @@ static void __init init_idle_domain(void)
     this_cpu(curr_vcpu) = current;
 }
 
-void __devinit srat_detect_node(int cpu)
+void srat_detect_node(int cpu)
 {
     nodeid_t node;
     u32 apicid = x86_cpu_to_apicid[cpu];
 
-    node = apicid_to_node[apicid];
+    node = apicid < MAX_LOCAL_APIC ? apicid_to_node[apicid] : NUMA_NO_NODE;
     if ( node == NUMA_NO_NODE )
         node = 0;
 
@@ -481,6 +520,7 @@ static void __init parse_video_info(void)
 
 static void __init kexec_reserve_area(struct e820map *e820)
 {
+#ifdef CONFIG_KEXEC
     unsigned long kdump_start = kexec_crash_area.start;
     unsigned long kdump_size  = kexec_crash_area.size;
     static bool_t __initdata is_reserved = 0;
@@ -503,18 +543,51 @@ static void __init kexec_reserve_area(struct e820map *e820)
         printk("Kdump: %luMB (%lukB) at %#lx\n",
                kdump_size >> 20, kdump_size >> 10, kdump_start);
     }
+#endif
+}
+
+static inline bool_t using_2M_mapping(void)
+{
+    return !l1_table_offset((unsigned long)__2M_text_end) &&
+           !l1_table_offset((unsigned long)__2M_rodata_start) &&
+           !l1_table_offset((unsigned long)__2M_rodata_end) &&
+           !l1_table_offset((unsigned long)__2M_init_start) &&
+           !l1_table_offset((unsigned long)__2M_init_end) &&
+           !l1_table_offset((unsigned long)__2M_rwdata_start) &&
+           !l1_table_offset((unsigned long)__2M_rwdata_end);
 }
 
 static void noinline init_done(void)
 {
+    void *va;
+    unsigned long start, end;
+
     system_state = SYS_STATE_active;
+
+    /* MUST be done prior to removing .init data. */
+    unregister_init_virtual_region();
 
     domain_unpause_by_systemcontroller(hardware_domain);
 
-    /* Free (or page-protect) the init areas. */
-    memset(__init_begin, 0xcc, __init_end - __init_begin); /* int3 poison */
-    free_xen_data(__init_begin, __init_end);
-    printk("Freed %ldkB init memory.\n", (long)(__init_end-__init_begin)>>10);
+    /* Zero the .init code and data. */
+    for ( va = __init_begin; va < _p(__init_end); va += PAGE_SIZE )
+        clear_page(va);
+
+    /* Destroy Xen's mappings, and reuse the pages. */
+    if ( using_2M_mapping() )
+    {
+        start = (unsigned long)&__2M_init_start,
+        end   = (unsigned long)&__2M_init_end;
+    }
+    else
+    {
+        start = (unsigned long)&__init_begin;
+        end   = (unsigned long)&__init_end;
+    }
+
+    destroy_xen_mappings(start, end);
+    init_xenheap_pages(__pa(start), __pa(end));
+    printk("Freed %lukB init memory\n", (end - start) >> 10);
 
     startup_cpu_idle_loop();
 }
@@ -580,6 +653,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
         .parity    = 'n',
         .stop_bits = 1
     };
+    struct xen_arch_domainconfig config = { .emulation_flags = 0 };
 
     /* Critical region without IDT or TSS.  Any fault is deadly! */
 
@@ -594,6 +668,8 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     smp_prepare_boot_cpu();
     sort_exception_tables();
+
+    setup_virtual_regions(__start___ex_table, __stop___ex_table);
 
     /* Full exception support from here on in. */
 
@@ -623,9 +699,8 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     parse_video_info();
 
-    if ( cpu_has_efer )
-        rdmsrl(MSR_EFER, this_cpu(efer));
-    asm volatile ( "mov %%cr4,%0" : "=r" (this_cpu(cr4)) );
+    rdmsrl(MSR_EFER, this_cpu(efer));
+    asm volatile ( "mov %%cr4,%0" : "=r" (get_cpu_info()->cr4) );
 
     /* We initialise the serial devices very early so we can get debugging. */
     ns16550.io_base = 0x3f8;
@@ -918,14 +993,55 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
             /* The only data mappings to be relocated are in the Xen area. */
             pl2e = __va(__pa(l2_xenmap));
+            /*
+             * Undo the temporary-hooking of the l1_identmap.  __2M_text_start
+             * is contained in this PTE.
+             */
+            BUG_ON(l2_table_offset((unsigned long)_erodata) ==
+                   l2_table_offset((unsigned long)_stext));
             *pl2e++ = l2e_from_pfn(xen_phys_start >> PAGE_SHIFT,
-                                   PAGE_HYPERVISOR_RWX | _PAGE_PSE);
+                                   PAGE_HYPERVISOR_RX | _PAGE_PSE);
             for ( i = 1; i < L2_PAGETABLE_ENTRIES; i++, pl2e++ )
             {
+                unsigned int flags;
+
                 if ( !(l2e_get_flags(*pl2e) & _PAGE_PRESENT) )
                     continue;
-                *pl2e = l2e_from_intpte(l2e_get_intpte(*pl2e) +
-                                        xen_phys_start);
+
+                if ( !using_2M_mapping() )
+                {
+                    *pl2e = l2e_from_intpte(l2e_get_intpte(*pl2e) +
+                                            xen_phys_start);
+                    continue;
+                }
+
+                if ( i < l2_table_offset((unsigned long)&__2M_text_end) )
+                {
+                    flags = PAGE_HYPERVISOR_RX | _PAGE_PSE;
+                }
+                else if ( i >= l2_table_offset((unsigned long)&__2M_rodata_start) &&
+                          i <  l2_table_offset((unsigned long)&__2M_rodata_end) )
+                {
+                    flags = PAGE_HYPERVISOR_RO | _PAGE_PSE;
+                }
+                else if ( i >= l2_table_offset((unsigned long)&__2M_init_start) &&
+                          i <  l2_table_offset((unsigned long)&__2M_init_end) )
+                {
+                    flags = PAGE_HYPERVISOR_RWX | _PAGE_PSE;
+                }
+                else if ( (i >= l2_table_offset((unsigned long)&__2M_rwdata_start) &&
+                           i <  l2_table_offset((unsigned long)&__2M_rwdata_end)) )
+                {
+                    flags = PAGE_HYPERVISOR_RW | _PAGE_PSE;
+                }
+                else
+                {
+                    *pl2e = l2e_empty();
+                    continue;
+                }
+
+                *pl2e = l2e_from_paddr(
+                    l2e_get_paddr(*pl2e) + xen_phys_start, flags);
             }
 
             /* Re-sync the stack and then switch to relocated pagetables. */
@@ -973,14 +1089,26 @@ void __init noreturn __start_xen(unsigned long mbi_p)
             }
         }
 
-        /* Don't overlap with modules. */
-        e = consider_modules(s, e, PAGE_ALIGN(kexec_crash_area.size),
-                             mod, mbi->mods_count, -1);
-        if ( !kexec_crash_area.start && (s < e) )
+#ifdef CONFIG_KEXEC
+        /*
+         * Looking backwards from the crash area limit, find a large
+         * enough range that does not overlap with modules.
+         */
+        while ( !kexec_crash_area.start )
         {
-            e = (e - kexec_crash_area.size) & PAGE_MASK;
-            kexec_crash_area.start = e;
+            /* Don't overlap with modules. */
+            e = consider_modules(s, e, PAGE_ALIGN(kexec_crash_area.size),
+                                 mod, mbi->mods_count, -1);
+            if ( s >= e )
+                break;
+            if ( e > kexec_crash_area_limit )
+            {
+                e = kexec_crash_area_limit & PAGE_MASK;
+                continue;
+            }
+            kexec_crash_area.start = (e - kexec_crash_area.size) & PAGE_MASK;
         }
+#endif
     }
 
     if ( modules_headroom && !mod->reserved )
@@ -1125,6 +1253,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
                          PFN_UP(mod[i].mod_end), PAGE_HYPERVISOR);
     }
 
+#ifdef CONFIG_KEXEC
     if ( kexec_crash_area.size )
     {
         unsigned long s = PFN_DOWN(kexec_crash_area.start);
@@ -1135,12 +1264,38 @@ void __init noreturn __start_xen(unsigned long mbi_p)
             map_pages_to_xen((unsigned long)__va(kexec_crash_area.start),
                              s, e - s, PAGE_HYPERVISOR);
     }
+#endif
 
     xen_virt_end = ((unsigned long)_end + (1UL << L2_PAGETABLE_SHIFT) - 1) &
                    ~((1UL << L2_PAGETABLE_SHIFT) - 1);
     destroy_xen_mappings(xen_virt_end, XEN_VIRT_START + BOOTSTRAP_MAP_BASE);
 
-    memguard_init();
+    /*
+     * If not using 2M mappings to gain suitable pagetable permissions
+     * directly from the relocation above, remap the code/data
+     * sections with decreased permissions.
+     */
+    if ( !using_2M_mapping() )
+    {
+        /* Mark .text as RX (avoiding the first 2M superpage). */
+        modify_xen_mappings(XEN_VIRT_START + MB(2),
+                            (unsigned long)&__2M_text_end,
+                            PAGE_HYPERVISOR_RX);
+
+        /* Mark .rodata as RO. */
+        modify_xen_mappings((unsigned long)&__2M_rodata_start,
+                            (unsigned long)&__2M_rodata_end,
+                            PAGE_HYPERVISOR_RO);
+
+        /* Mark .data and .bss as RW. */
+        modify_xen_mappings((unsigned long)&__2M_rwdata_start,
+                            (unsigned long)&__2M_rwdata_end,
+                            PAGE_HYPERVISOR_RW);
+
+        /* Drop the remaining mappings in the shattered superpage. */
+        destroy_xen_mappings((unsigned long)&__2M_rwdata_end,
+                             ROUNDUP((unsigned long)&__2M_rwdata_end, MB(2)));
+    }
 
     nr_pages = 0;
     for ( i = 0; i < e820.nr_map; i++ )
@@ -1209,11 +1364,11 @@ void __init noreturn __start_xen(unsigned long mbi_p)
             init_domheap_pages(s, e);
         }
 
-        if ( opt_tmem )
+        if ( tmem_enabled() )
         {
            printk(XENLOG_WARNING
                   "TMEM physical RAM limit exceeded, disabling TMEM\n");
-           opt_tmem = 0;
+           tmem_disable();
         }
     }
     else
@@ -1289,20 +1444,23 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     identify_cpu(&boot_cpu_data);
 
-    if ( cpu_has_fxsr )
-        set_in_cr4(X86_CR4_OSFXSR);
-    if ( cpu_has_xmm )
-        set_in_cr4(X86_CR4_OSXMMEXCPT);
+    set_in_cr4(X86_CR4_OSFXSR | X86_CR4_OSXMMEXCPT);
 
-    if ( disable_smep )
+    if ( !opt_smep )
         setup_clear_cpu_cap(X86_FEATURE_SMEP);
-    if ( cpu_has_smep )
+    if ( cpu_has_smep && opt_smep != SMEP_HVM_ONLY )
+        __set_bit(X86_FEATURE_XEN_SMEP, boot_cpu_data.x86_capability);
+    if ( boot_cpu_has(X86_FEATURE_XEN_SMEP) )
         set_in_cr4(X86_CR4_SMEP);
 
-    if ( disable_smap )
+    if ( !opt_smap )
         setup_clear_cpu_cap(X86_FEATURE_SMAP);
-    if ( cpu_has_smap )
+    if ( cpu_has_smap && opt_smap != SMAP_HVM_ONLY )
+        __set_bit(X86_FEATURE_XEN_SMAP, boot_cpu_data.x86_capability);
+    if ( boot_cpu_has(X86_FEATURE_XEN_SMAP) )
         set_in_cr4(X86_CR4_SMAP);
+
+    cr4_pv32_mask = mmu_cr4_features & XEN_CR4_PV32_BITS;
 
     if ( cpu_has_fsgsbase )
         set_in_cr4(X86_CR4_FSGSBASE);
@@ -1383,12 +1541,8 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     if ( opt_dom0pvh )
         domcr_flags |= DOMCRF_pvh | DOMCRF_hap;
 
-    /*
-     * Create initial domain 0.
-     * x86 doesn't support arch-configuration. So it's fine to pass
-     * NULL.
-     */
-    dom0 = domain_create(0, domcr_flags, 0, NULL);
+    /* Create initial domain 0. */
+    dom0 = domain_create(0, domcr_flags, 0, &config);
     if ( IS_ERR(dom0) || (alloc_dom0_vcpu0(dom0) == NULL) )
         panic("Error creating domain 0");
 
@@ -1434,13 +1588,18 @@ void __init noreturn __start_xen(unsigned long mbi_p)
                "Multiple initrd candidates, picking module #%u\n",
                initrdidx);
 
+    calculate_featuresets();
+
     /*
      * Temporarily clear SMAP in CR4 to allow user-accesses in construct_dom0().
      * This saves a large number of corner cases interactions with
      * copy_from_user().
      */
     if ( cpu_has_smap )
+    {
+        cr4_pv32_mask &= ~X86_CR4_SMAP;
         write_cr4(read_cr4() & ~X86_CR4_SMAP);
+    }
 
     printk("%sNX (Execute Disable) protection %sactive\n",
            cpu_has_nx ? XENLOG_INFO : XENLOG_WARNING "Warning: ",
@@ -1457,7 +1616,10 @@ void __init noreturn __start_xen(unsigned long mbi_p)
         panic("Could not set up DOM0 guest OS");
 
     if ( cpu_has_smap )
+    {
         write_cr4(read_cr4() | X86_CR4_SMAP);
+        cr4_pv32_mask |= X86_CR4_SMAP;
+    }
 
     /* Scrub RAM that is still free and so may go to an unprivileged domain. */
     scrub_heap_pages();

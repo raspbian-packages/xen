@@ -164,10 +164,7 @@ void msi_compose_msg(unsigned vector, const cpumask_t *cpu_mask, struct msi_msg 
 
     memset(msg, 0, sizeof(*msg));
     if ( !cpumask_intersects(cpu_mask, &cpu_online_map) )
-    {
-        dprintk(XENLOG_ERR,"%s, compose msi message error!!\n", __func__);
         return;
-    }
 
     if ( vector )
     {
@@ -434,8 +431,13 @@ static bool_t msi_set_mask_bit(struct irq_desc *desc, bool_t host, bool_t guest)
         {
             writel(flag, entry->mask_base + PCI_MSIX_ENTRY_VECTOR_CTRL_OFFSET);
             readl(entry->mask_base + PCI_MSIX_ENTRY_VECTOR_CTRL_OFFSET);
+
             if ( likely(control & PCI_MSIX_FLAGS_ENABLE) )
                 break;
+
+            entry->msi_attrib.host_masked = host;
+            entry->msi_attrib.guest_masked = guest;
+
             flag = 1;
         }
         else if ( flag && !(control & PCI_MSIX_FLAGS_MASKALL) )
@@ -694,7 +696,7 @@ static int msi_capability_init(struct pci_dev *dev,
     u8 slot = PCI_SLOT(dev->devfn);
     u8 func = PCI_FUNC(dev->devfn);
 
-    ASSERT(spin_is_locked(&pcidevs_lock));
+    ASSERT(pcidevs_locked());
     pos = pci_find_cap_offset(seg, bus, slot, func, PCI_CAP_ID_MSI);
     if ( !pos )
         return -ENODEV;
@@ -852,7 +854,7 @@ static int msix_capability_init(struct pci_dev *dev,
     u8 func = PCI_FUNC(dev->devfn);
     bool_t maskall = msix->host_maskall;
 
-    ASSERT(spin_is_locked(&pcidevs_lock));
+    ASSERT(pcidevs_locked());
 
     control = pci_conf_read16(seg, bus, slot, func, msix_control_reg(pos));
     /*
@@ -1042,7 +1044,7 @@ static int __pci_enable_msi(struct msi_info *msi, struct msi_desc **desc)
     struct pci_dev *pdev;
     struct msi_desc *old_desc;
 
-    ASSERT(spin_is_locked(&pcidevs_lock));
+    ASSERT(pcidevs_locked());
     pdev = pci_get_pdev(msi->seg, msi->bus, msi->devfn);
     if ( !pdev )
         return -ENODEV;
@@ -1103,7 +1105,7 @@ static int __pci_enable_msix(struct msi_info *msi, struct msi_desc **desc)
     u8 func = PCI_FUNC(msi->devfn);
     struct msi_desc *old_desc;
 
-    ASSERT(spin_is_locked(&pcidevs_lock));
+    ASSERT(pcidevs_locked());
     pdev = pci_get_pdev(msi->seg, msi->bus, msi->devfn);
     pos = pci_find_cap_offset(msi->seg, msi->bus, slot, func, PCI_CAP_ID_MSIX);
     if ( !pdev || !pos )
@@ -1205,7 +1207,7 @@ int pci_prepare_msix(u16 seg, u8 bus, u8 devfn, bool_t off)
     if ( !pos )
         return -ENODEV;
 
-    spin_lock(&pcidevs_lock);
+    pcidevs_lock();
     pdev = pci_get_pdev(seg, bus, devfn);
     if ( !pdev )
         rc = -ENODEV;
@@ -1224,7 +1226,7 @@ int pci_prepare_msix(u16 seg, u8 bus, u8 devfn, bool_t off)
         rc = msix_capability_init(pdev, pos, NULL, NULL,
                                   multi_msix_capable(control));
     }
-    spin_unlock(&pcidevs_lock);
+    pcidevs_unlock();
 
     return rc;
 }
@@ -1235,7 +1237,7 @@ int pci_prepare_msix(u16 seg, u8 bus, u8 devfn, bool_t off)
  */
 int pci_enable_msi(struct msi_info *msi, struct msi_desc **desc)
 {
-    ASSERT(spin_is_locked(&pcidevs_lock));
+    ASSERT(pcidevs_locked());
 
     if ( !use_msi )
         return -EPERM;
@@ -1292,17 +1294,17 @@ int pci_msi_conf_write_intercept(struct pci_dev *pdev, unsigned int reg,
                                           PCI_CAP_ID_MSIX);
         ASSERT(pos);
 
-        if ( reg < pos || reg >= msix_pba_offset_reg(pos) + 4 )
-            return 0;
+        if ( reg >= pos && reg < msix_pba_offset_reg(pos) + 4 )
+        {
+            if ( reg != msix_control_reg(pos) || size != 2 )
+                return -EACCES;
 
-        if ( reg != msix_control_reg(pos) || size != 2 )
-            return -EACCES;
+            pdev->msix->guest_maskall = !!(*data & PCI_MSIX_FLAGS_MASKALL);
+            if ( pdev->msix->host_maskall )
+                *data |= PCI_MSIX_FLAGS_MASKALL;
 
-        pdev->msix->guest_maskall = !!(*data & PCI_MSIX_FLAGS_MASKALL);
-        if ( pdev->msix->host_maskall )
-            *data |= PCI_MSIX_FLAGS_MASKALL;
-
-        return 1;
+            return 1;
+        }
     }
 
     entry = find_msi_entry(pdev, -1, PCI_CAP_ID_MSI);
@@ -1351,7 +1353,7 @@ int pci_restore_msi_state(struct pci_dev *pdev)
     unsigned int type = 0, pos = 0;
     u16 control = 0;
 
-    ASSERT(spin_is_locked(&pcidevs_lock));
+    ASSERT(pcidevs_locked());
 
     if ( !use_msi )
         return -EOPNOTSUPP;
@@ -1456,27 +1458,6 @@ int pci_restore_msi_state(struct pci_dev *pdev)
                          control | PCI_MSIX_FLAGS_ENABLE);
 
     return 0;
-}
-
-unsigned int pci_msix_get_table_len(struct pci_dev *pdev)
-{
-    int pos;
-    u16 control, seg = pdev->seg;
-    u8 bus, slot, func;
-    unsigned int len;
-
-    bus = pdev->bus;
-    slot = PCI_SLOT(pdev->devfn);
-    func = PCI_FUNC(pdev->devfn);
-
-    pos = pci_find_cap_offset(seg, bus, slot, func, PCI_CAP_ID_MSIX);
-    if ( !pos || !use_msi )
-        return 0;
-
-    control = pci_conf_read16(seg, bus, slot, func, msix_control_reg(pos));
-    len = msix_table_size(control) * PCI_MSIX_ENTRY_SIZE;
-
-    return len;
 }
 
 static int msi_cpu_callback(
@@ -1590,15 +1571,9 @@ static void dump_msi(unsigned char key)
     }
 }
 
-static struct keyhandler dump_msi_keyhandler = {
-    .diagnostic = 1,
-    .u.fn = dump_msi,
-    .desc = "dump MSI state"
-};
-
 static int __init msi_setup_keyhandler(void)
 {
-    register_keyhandler('M', &dump_msi_keyhandler);
+    register_keyhandler('M', dump_msi, "dump MSI state", 1);
     return 0;
 }
 __initcall(msi_setup_keyhandler);

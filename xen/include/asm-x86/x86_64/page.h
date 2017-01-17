@@ -134,11 +134,29 @@ typedef l4_pgentry_t root_pgentry_t;
 #define get_pte_flags(x) (((int)((x) >> 40) & ~0xFFF) | ((int)(x) & 0xFFF))
 #define put_pte_flags(x) (((intpte_t)((x) & ~0xFFF) << 40) | ((x) & 0xFFF))
 
+/*
+ * Protection keys define a new 4-bit protection key field
+ * (PKEY) in bits 62:59 of leaf entries of the page tables.
+ * This corresponds to bit 22:19 of a 24-bit flags.
+ *
+ * Notice: Bit 22 is used by _PAGE_GNTTAB which is visible to PV guests,
+ * so Protection keys must be disabled on PV guests.
+ */
+#define _PAGE_PKEY_BITS  (0x780000)	 /* Protection Keys, 22:19 */
+
+#define get_pte_pkey(x) (MASK_EXTR(get_pte_flags(x), _PAGE_PKEY_BITS))
+
 /* Bit 23 of a 24-bit flag mask. This corresponds to bit 63 of a pte.*/
 #define _PAGE_NX_BIT (1U<<23)
 
 /* Bit 22 of a 24-bit flag mask. This corresponds to bit 62 of a pte.*/
 #define _PAGE_GNTTAB (1U<<22)
+
+/*
+ * Bit 24 of a 24-bit flag mask!  This is not any bit of a real pte,
+ * and is only used for signalling in variables that contain flags.
+ */
+#define _PAGE_INVALID_BIT (1U<<24)
 
 /*
  * Bit 12 of a 24-bit flag mask. This corresponds to bit 52 of a pte.

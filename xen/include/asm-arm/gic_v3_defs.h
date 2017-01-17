@@ -29,16 +29,14 @@
 #define GICD_SETSPI_SR               (0x050)
 #define GICD_CLRSPI_SR               (0x058)
 #define GICD_IROUTER                 (0x6000)
-#define GICD_IROUTER31               (0x60F8)
 #define GICD_IROUTER32               (0x6100)
-#define GICD_IROUTERN                (0x7FF8)
-#define GICD_PIDR0                   (0xFFE0)
-#define GICD_PIDR1                   (0xFFE4)
+#define GICD_IROUTER1019             (0x7FD8)
 #define GICD_PIDR2                   (0xFFE8)
-#define GICD_PIDR3                   (0xFFEC)
-#define GICD_PIDR4                   (0xFFD0)
-#define GICD_PIDR5                   (0xFFD4)
-#define GICD_PIDR7                   (0xFFDC)
+
+/* Common between GICD_PIDR2 and GICR_PIDR2 */
+#define GIC_PIDR2_ARCH_MASK         (0xf0)
+#define GIC_PIDR2_ARCH_GICv3        (0x30)
+#define GIC_PIDR2_ARCH_GICv4        (0x40)
 
 #define GICC_SRE_EL2_SRE             (1UL << 0)
 #define GICC_SRE_EL2_DFB             (1UL << 1)
@@ -58,14 +56,6 @@
 
 #define GICR_WAKER_ProcessorSleep    (1U << 1)
 #define GICR_WAKER_ChildrenAsleep    (1U << 2)
-
-#define GICD_PIDR2_ARCH_REV_MASK     (0xf0)
-#define GICD_PIDR2_ARCH_REV_SHIFT    (0x4)
-#define GICD_PIDR2_ARCH_GICV3        (0x3)
-
-#define GICR_PIDR2_ARCH_REV_MASK     GICD_PIDR2_ARCH_REV_MASK
-#define GICR_PIDR2_ARCH_REV_SHIFT    GICD_PIDR2_ARCH_REV_SHIFT
-#define GICR_PIDR2_ARCH_GICV3        GICD_PIDR2_ARCH_GICV3
 
 #define GICR_SYNCR_NOT_BUSY          1
 /*
@@ -87,20 +77,11 @@
 #define GICR_INVLPIR                 (0x00A0)
 #define GICR_INVALLR                 (0x00B0)
 #define GICR_SYNCR                   (0x00C0)
-#define GICR_MOVLPIR                 (0x100)
-#define GICR_MOVALLR                 (0x0110)
-#define GICR_PIDR0                   GICD_PIDR0
-#define GICR_PIDR1                   GICD_PIDR1
 #define GICR_PIDR2                   GICD_PIDR2
-#define GICR_PIDR3                   GICD_PIDR3
-#define GICR_PIDR4                   GICD_PIDR4
-#define GICR_PIDR5                   GICD_PIDR5
-#define GICR_PIDR7                   GICD_PIDR7
 
 /* GICR for SGI's & PPI's */
 
 #define GICR_IGROUPR0                (0x0080)
-#define GICR_IGRPMODR0               (0x0F80)
 #define GICR_ISENABLER0              (0x0100)
 #define GICR_ICENABLER0              (0x0180)
 #define GICR_ISPENDR0                (0x0200)
@@ -111,6 +92,7 @@
 #define GICR_IPRIORITYR7             (0x041C)
 #define GICR_ICFGR0                  (0x0C00)
 #define GICR_ICFGR1                  (0x0C04)
+#define GICR_IGRPMODR0               (0x0D00)
 #define GICR_NSACR                   (0x0E00)
 
 #define GICR_TYPER_PLPIS             (1U << 0)
@@ -159,6 +141,7 @@ struct rdist_region {
     paddr_t base;
     paddr_t size;
     void __iomem *map_base;
+    bool single_rdist;
 };
 
 #endif /* __ASM_ARM_GIC_V3_DEFS_H__ */

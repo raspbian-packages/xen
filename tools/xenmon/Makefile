@@ -18,8 +18,10 @@ PYTHON_PATH ?= $(DEFAULT_PYTHON_PATH)
 INSTALL_PYTHON_PROG = $(XEN_ROOT)/tools/python/install-wrap "$(PYTHON_PATH)" $(INSTALL_PROG)
 
 CFLAGS  += -Werror
+CFLAGS  += $(CFLAGS_libxenevtchn)
 CFLAGS  += $(CFLAGS_libxenctrl)
 LDLIBS  += $(LDLIBS_libxenctrl)
+LDLIBS  += $(LDLIBS_libxenevtchn)
 LDFLAGS += $(call LDFLAGS_RPATH,../lib)
 
 SCRIPTS = xenmon.py

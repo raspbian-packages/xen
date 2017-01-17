@@ -21,6 +21,7 @@
 
 #include <xen/xen.h>
 #include <xen/io/protocols.h>
+#include <xen-tools/libs.h>
 
 #include "xg_private.h"
 #include "xc_dom.h"
@@ -49,7 +50,7 @@ const char *xc_domain_get_native_protocol(xc_interface *xch,
  * arm guests are hybrid and start off with paging disabled, therefore no
  * pagetables and nothing to do here.
  */
-static int count_pgtables_arm(struct xc_dom_image *dom)
+static int alloc_pgtables_arm(struct xc_dom_image *dom)
 {
     DOMPRINTF_CALLED(dom->xch);
     return 0;
@@ -69,7 +70,7 @@ static int alloc_magic_pages(struct xc_dom_image *dom)
     const xen_pfn_t base = GUEST_MAGIC_BASE >> XC_PAGE_SHIFT;
     xen_pfn_t p2m[NR_MAGIC_PAGES];
 
-    XC_BUILD_BUG_ON(NR_MAGIC_PAGES > GUEST_MAGIC_SIZE >> XC_PAGE_SHIFT);
+    BUILD_BUG_ON(NR_MAGIC_PAGES > GUEST_MAGIC_SIZE >> XC_PAGE_SHIFT);
 
     DOMPRINTF_CALLED(dom->xch);
 
@@ -119,9 +120,11 @@ static int shared_info_arm(struct xc_dom_image *dom, void *ptr)
 
 /* ------------------------------------------------------------------------ */
 
-static int vcpu_arm32(struct xc_dom_image *dom, void *ptr)
+static int vcpu_arm32(struct xc_dom_image *dom)
 {
-    vcpu_guest_context_t *ctxt = ptr;
+    vcpu_guest_context_any_t any_ctx;
+    vcpu_guest_context_t *ctxt = &any_ctx.c;
+    int rc;
 
     DOMPRINTF_CALLED(dom->xch);
 
@@ -154,12 +157,19 @@ static int vcpu_arm32(struct xc_dom_image *dom, void *ptr)
     DOMPRINTF("Initial state CPSR %#"PRIx32" PC %#"PRIx32,
            ctxt->user_regs.cpsr, ctxt->user_regs.pc32);
 
-    return 0;
+    rc = xc_vcpu_setcontext(dom->xch, dom->guest_domid, 0, &any_ctx);
+    if ( rc != 0 )
+        xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
+                     "%s: SETVCPUCONTEXT failed (rc=%d)", __func__, rc);
+
+    return rc;
 }
 
-static int vcpu_arm64(struct xc_dom_image *dom, void *ptr)
+static int vcpu_arm64(struct xc_dom_image *dom)
 {
-    vcpu_guest_context_t *ctxt = ptr;
+    vcpu_guest_context_any_t any_ctx;
+    vcpu_guest_context_t *ctxt = &any_ctx.c;
+    int rc;
 
     DOMPRINTF_CALLED(dom->xch);
     /* clear everything */
@@ -189,42 +199,15 @@ static int vcpu_arm64(struct xc_dom_image *dom, void *ptr)
     DOMPRINTF("Initial state CPSR %#"PRIx32" PC %#"PRIx64,
            ctxt->user_regs.cpsr, ctxt->user_regs.pc64);
 
-    return 0;
+    rc = xc_vcpu_setcontext(dom->xch, dom->guest_domid, 0, &any_ctx);
+    if ( rc != 0 )
+        xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
+                     "%s: SETVCPUCONTEXT failed (rc=%d)", __func__, rc);
+
+    return rc;
 }
 
 /* ------------------------------------------------------------------------ */
-
-static struct xc_dom_arch xc_dom_32 = {
-    .guest_type = "xen-3.0-armv7l",
-    .native_protocol = XEN_IO_PROTO_ABI_ARM,
-    .page_shift = PAGE_SHIFT_ARM,
-    .sizeof_pfn = 8,
-    .alloc_magic_pages = alloc_magic_pages,
-    .count_pgtables = count_pgtables_arm,
-    .setup_pgtables = setup_pgtables_arm,
-    .start_info = start_info_arm,
-    .shared_info = shared_info_arm,
-    .vcpu = vcpu_arm32,
-};
-
-static struct xc_dom_arch xc_dom_64 = {
-    .guest_type = "xen-3.0-aarch64",
-    .native_protocol = XEN_IO_PROTO_ABI_ARM,
-    .page_shift = PAGE_SHIFT_ARM,
-    .sizeof_pfn = 8,
-    .alloc_magic_pages = alloc_magic_pages,
-    .count_pgtables = count_pgtables_arm,
-    .setup_pgtables = setup_pgtables_arm,
-    .start_info = start_info_arm,
-    .shared_info = shared_info_arm,
-    .vcpu = vcpu_arm64,
-};
-
-static void __init register_arch_hooks(void)
-{
-    xc_dom_register_arch_hooks(&xc_dom_32);
-    xc_dom_register_arch_hooks(&xc_dom_64);
-}
 
 static int set_mode(xc_interface *xch, domid_t domid, char *guest_type)
 {
@@ -384,7 +367,7 @@ out:
     return rc < 0 ? rc : 0;
 }
 
-int arch_setup_meminit(struct xc_dom_image *dom)
+static int meminit(struct xc_dom_image *dom)
 {
     int i, rc;
     xen_pfn_t pfn;
@@ -457,7 +440,7 @@ int arch_setup_meminit(struct xc_dom_image *dom)
     if ( dom->p2m_host == NULL )
         return -EINVAL;
     for ( pfn = 0; pfn < p2m_size; pfn++ )
-        dom->p2m_host[pfn] = INVALID_P2M_ENTRY;
+        dom->p2m_host[pfn] = INVALID_PFN;
 
     /* setup initial p2m and allocate guest memory */
     for ( i = 0; i < GUEST_RAM_BANKS && dom->rambank_size[i]; i++ )
@@ -521,13 +504,20 @@ int arch_setup_meminit(struct xc_dom_image *dom)
     return 0;
 }
 
-int arch_setup_bootearly(struct xc_dom_image *dom)
+int xc_dom_feature_translated(struct xc_dom_image *dom)
+{
+    return 1;
+}
+
+/* ------------------------------------------------------------------------ */
+
+static int bootearly(struct xc_dom_image *dom)
 {
     DOMPRINTF("%s: doing nothing", __FUNCTION__);
     return 0;
 }
 
-int arch_setup_bootlate(struct xc_dom_image *dom)
+static int bootlate(struct xc_dom_image *dom)
 {
     /* XXX
      *   map shared info
@@ -537,9 +527,44 @@ int arch_setup_bootlate(struct xc_dom_image *dom)
     return 0;
 }
 
-int xc_dom_feature_translated(struct xc_dom_image *dom)
+/* ------------------------------------------------------------------------ */
+
+static struct xc_dom_arch xc_dom_32 = {
+    .guest_type = "xen-3.0-armv7l",
+    .native_protocol = XEN_IO_PROTO_ABI_ARM,
+    .page_shift = PAGE_SHIFT_ARM,
+    .sizeof_pfn = 8,
+    .alloc_magic_pages = alloc_magic_pages,
+    .alloc_pgtables = alloc_pgtables_arm,
+    .setup_pgtables = setup_pgtables_arm,
+    .start_info = start_info_arm,
+    .shared_info = shared_info_arm,
+    .vcpu = vcpu_arm32,
+    .meminit = meminit,
+    .bootearly = bootearly,
+    .bootlate = bootlate,
+};
+
+static struct xc_dom_arch xc_dom_64 = {
+    .guest_type = "xen-3.0-aarch64",
+    .native_protocol = XEN_IO_PROTO_ABI_ARM,
+    .page_shift = PAGE_SHIFT_ARM,
+    .sizeof_pfn = 8,
+    .alloc_magic_pages = alloc_magic_pages,
+    .alloc_pgtables = alloc_pgtables_arm,
+    .setup_pgtables = setup_pgtables_arm,
+    .start_info = start_info_arm,
+    .shared_info = shared_info_arm,
+    .vcpu = vcpu_arm64,
+    .meminit = meminit,
+    .bootearly = bootearly,
+    .bootlate = bootlate,
+};
+
+static void __init register_arch_hooks(void)
 {
-    return 1;
+    xc_dom_register_arch_hooks(&xc_dom_32);
+    xc_dom_register_arch_hooks(&xc_dom_64);
 }
 
 /*

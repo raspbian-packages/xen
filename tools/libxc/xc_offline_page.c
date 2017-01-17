@@ -282,7 +282,7 @@ static int change_pte(xc_interface *xch, int domid,
         uint64_t pte, new_pte;
         int j;
 
-        if ( (table_mfn == INVALID_P2M_ENTRY) ||
+        if ( (table_mfn == INVALID_PFN) ||
              ((minfo->pfn_type[i] & XEN_DOMCTL_PFINFO_LTAB_MASK) ==
               XEN_DOMCTL_PFINFO_XTAB) )
             continue;
@@ -504,7 +504,7 @@ int xc_exchange_page(xc_interface *xch, int domid, xen_pfn_t mfn)
     if ( xc_map_domain_meminfo(xch, domid, &minfo) )
     {
         PERROR("Could not map domain's memory information\n");
-        return -1;
+        goto failed;
     }
 
     /* For translation macros */

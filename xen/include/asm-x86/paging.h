@@ -57,14 +57,14 @@
  * requires VT or similar mechanisms */
 #define PG_external    (XEN_DOMCTL_SHADOW_ENABLE_EXTERNAL << PG_mode_shift)
 
-#define paging_mode_enabled(_d)   ((_d)->arch.paging.mode)
-#define paging_mode_shadow(_d)    ((_d)->arch.paging.mode & PG_SH_enable)
-#define paging_mode_hap(_d)       ((_d)->arch.paging.mode & PG_HAP_enable)
+#define paging_mode_enabled(_d)   (!!(_d)->arch.paging.mode)
+#define paging_mode_shadow(_d)    (!!((_d)->arch.paging.mode & PG_SH_enable))
+#define paging_mode_hap(_d)       (!!((_d)->arch.paging.mode & PG_HAP_enable))
 
-#define paging_mode_refcounts(_d) ((_d)->arch.paging.mode & PG_refcounts)
-#define paging_mode_log_dirty(_d) ((_d)->arch.paging.mode & PG_log_dirty)
-#define paging_mode_translate(_d) ((_d)->arch.paging.mode & PG_translate)
-#define paging_mode_external(_d)  ((_d)->arch.paging.mode & PG_external)
+#define paging_mode_refcounts(_d) (!!((_d)->arch.paging.mode & PG_refcounts))
+#define paging_mode_log_dirty(_d) (!!((_d)->arch.paging.mode & PG_log_dirty))
+#define paging_mode_translate(_d) (!!((_d)->arch.paging.mode & PG_translate))
+#define paging_mode_external(_d)  (!!((_d)->arch.paging.mode & PG_external))
 
 /* flags used for paging debug */
 #define PAGING_DEBUG_LOGDIRTY 0
@@ -87,6 +87,11 @@ struct shadow_paging_mode {
                                             unsigned long new,
                                             unsigned int bytes,
                                             struct sh_emulate_ctxt *sh_ctxt);
+    bool_t        (*write_guest_entry     )(struct vcpu *v, intpte_t *p,
+                                            intpte_t new, mfn_t gmfn);
+    bool_t        (*cmpxchg_guest_entry   )(struct vcpu *v, intpte_t *p,
+                                            intpte_t *old, intpte_t new,
+                                            mfn_t gmfn);
     mfn_t         (*make_monitor_table    )(struct vcpu *v);
     void          (*destroy_monitor_table )(struct vcpu *v, mfn_t mmfn);
     int           (*guess_wrmap           )(struct vcpu *v, 
@@ -104,7 +109,7 @@ struct shadow_paging_mode {
 struct paging_mode {
     int           (*page_fault            )(struct vcpu *v, unsigned long va,
                                             struct cpu_user_regs *regs);
-    int           (*invlpg                )(struct vcpu *v, unsigned long va);
+    bool_t        (*invlpg                )(struct vcpu *v, unsigned long va);
     unsigned long (*gva_to_gfn            )(struct vcpu *v,
                                             struct p2m_domain *p2m,
                                             unsigned long va,
@@ -119,15 +124,7 @@ struct paging_mode {
     void          (*write_p2m_entry       )(struct domain *d, unsigned long gfn,
                                             l1_pgentry_t *p, l1_pgentry_t new,
                                             unsigned int level);
-    int           (*write_guest_entry     )(struct vcpu *v, intpte_t *p,
-                                            intpte_t new, mfn_t gmfn);
-    int           (*cmpxchg_guest_entry   )(struct vcpu *v, intpte_t *p,
-                                            intpte_t *old, intpte_t new,
-                                            mfn_t gmfn);
-    void *        (*guest_map_l1e         )(struct vcpu *v, unsigned long va,
-                                            unsigned long *gl1mfn);
-    void          (*guest_get_eff_l1e     )(struct vcpu *v, unsigned long va,
-                                            void *eff_l1e);
+
     unsigned int guest_levels;
 
     /* paging support extension */
@@ -240,20 +237,19 @@ paging_fault(unsigned long va, struct cpu_user_regs *regs)
     return paging_get_hostmode(v)->page_fault(v, va, regs);
 }
 
-/* Handle invlpg requests on vcpus.
- * Returns 1 if the invlpg instruction should be issued on the hardware,
- * or 0 if it's safe not to do so. */
-static inline int paging_invlpg(struct vcpu *v, unsigned long va)
-{
-    return paging_get_hostmode(v)->invlpg(v, va);
-}
+/* Handle invlpg requests on vcpus. */
+void paging_invlpg(struct vcpu *v, unsigned long va);
 
 /* Translate a guest virtual address to the frame number that the
  * *guest* pagetables would map it to.  Returns INVALID_GFN if the guest
  * tables don't map this address for this kind of access.
  * pfec[0] is used to determine which kind of access this is when
  * walking the tables.  The caller should set the PFEC_page_present bit
- * in pfec[0]; in the failure case, that bit will be cleared if appropriate. */
+ * in pfec[0]; in the failure case, that bit will be cleared if appropriate.
+ *
+ * SDM Intel 64 Volume 3, Chapter Paging, PAGE-FAULT EXCEPTIONS:
+ * The PFEC_insn_fetch flag is set only when NX or SMEP are enabled.
+ */
 unsigned long paging_gva_to_gfn(struct vcpu *v,
                                 unsigned long va,
                                 uint32_t *pfec);
@@ -296,14 +292,15 @@ static inline void paging_update_paging_modes(struct vcpu *v)
 /* Write a new value into the guest pagetable, and update the
  * paging-assistance state appropriately.  Returns 0 if we page-faulted,
  * 1 for success. */
-static inline int paging_write_guest_entry(struct vcpu *v, intpte_t *p,
-                                           intpte_t new, mfn_t gmfn)
+static inline bool_t paging_write_guest_entry(struct vcpu *v, intpte_t *p,
+                                              intpte_t new, mfn_t gmfn)
 {
-    if ( unlikely(paging_mode_enabled(v->domain) 
-                  && v->arch.paging.mode != NULL) )
-        return paging_get_hostmode(v)->write_guest_entry(v, p, new, gmfn);
-    else 
-        return (!__copy_to_user(p, &new, sizeof(new)));
+#ifdef CONFIG_SHADOW_PAGING
+    if ( unlikely(paging_mode_shadow(v->domain)) && paging_get_hostmode(v) )
+        return paging_get_hostmode(v)->shadow.write_guest_entry(v, p, new,
+                                                                gmfn);
+#endif
+    return !__copy_to_user(p, &new, sizeof(new));
 }
 
 
@@ -311,15 +308,16 @@ static inline int paging_write_guest_entry(struct vcpu *v, intpte_t *p,
  * paging-assistance state appropriately.  Returns 0 if we page-faulted,
  * 1 if not.  N.B. caller should check the value of "old" to see if the
  * cmpxchg itself was successful. */
-static inline int paging_cmpxchg_guest_entry(struct vcpu *v, intpte_t *p,
-                                             intpte_t *old, intpte_t new, 
-                                             mfn_t gmfn)
+static inline bool_t paging_cmpxchg_guest_entry(struct vcpu *v, intpte_t *p,
+                                                intpte_t *old, intpte_t new,
+                                                mfn_t gmfn)
 {
-    if ( unlikely(paging_mode_enabled(v->domain) 
-                  && v->arch.paging.mode != NULL) )
-        return paging_get_hostmode(v)->cmpxchg_guest_entry(v, p, old, new, gmfn);
-    else 
-        return (!cmpxchg_user(p, *old, new));
+#ifdef CONFIG_SHADOW_PAGING
+    if ( unlikely(paging_mode_shadow(v->domain)) && paging_get_hostmode(v) )
+        return paging_get_hostmode(v)->shadow.cmpxchg_guest_entry(v, p, old,
+                                                                  new, gmfn);
+#endif
+    return !cmpxchg_user(p, *old, new);
 }
 
 /* Helper function that writes a pte in such a way that a concurrent read 
@@ -348,80 +346,6 @@ void pagetable_dying(struct domain *d, paddr_t gpa);
 /* Print paging-assistance info to the console */
 void paging_dump_domain_info(struct domain *d);
 void paging_dump_vcpu_info(struct vcpu *v);
-
-
-/*****************************************************************************
- * Access to the guest pagetables */
-
-/* Get a mapping of a PV guest's l1e for this virtual address. */
-static inline l1_pgentry_t *
-guest_map_l1e(struct vcpu *v, unsigned long addr, unsigned long *gl1mfn)
-{
-    l2_pgentry_t l2e;
-
-    if ( unlikely(!__addr_ok(addr)) )
-        return NULL;
-
-    if ( unlikely(paging_mode_translate(v->domain)) )
-        return paging_get_hostmode(v)->guest_map_l1e(v, addr, gl1mfn);
-
-    /* Find this l1e and its enclosing l1mfn in the linear map */
-    if ( __copy_from_user(&l2e,
-                          &__linear_l2_table[l2_linear_offset(addr)],
-                          sizeof(l2_pgentry_t)) != 0 )
-        return NULL;
-    /* Check flags that it will be safe to read the l1e */
-    if ( (l2e_get_flags(l2e) & (_PAGE_PRESENT | _PAGE_PSE)) 
-         != _PAGE_PRESENT )
-        return NULL;
-    *gl1mfn = l2e_get_pfn(l2e);
-    return (l1_pgentry_t *)map_domain_page(_mfn(*gl1mfn)) + l1_table_offset(addr);
-}
-
-/* Pull down the mapping we got from guest_map_l1e() */
-static inline void
-guest_unmap_l1e(struct vcpu *v, void *p)
-{
-    unmap_domain_page(p);
-}
-
-/* Read the guest's l1e that maps this address. */
-static inline void
-guest_get_eff_l1e(struct vcpu *v, unsigned long addr, l1_pgentry_t *eff_l1e)
-{
-    if ( unlikely(!__addr_ok(addr)) )
-    {
-        *eff_l1e = l1e_empty();
-        return;
-    }
-
-    if ( likely(!paging_mode_translate(v->domain)) )
-    {
-        ASSERT(!paging_mode_external(v->domain));
-        if ( __copy_from_user(eff_l1e,
-                              &__linear_l1_table[l1_linear_offset(addr)],
-                              sizeof(l1_pgentry_t)) != 0 )
-            *eff_l1e = l1e_empty();
-        return;
-    }
-        
-    paging_get_hostmode(v)->guest_get_eff_l1e(v, addr, eff_l1e);
-}
-
-/* Read the guest's l1e that maps this address, from the kernel-mode
- * pagetables. */
-static inline void
-guest_get_eff_kern_l1e(struct vcpu *v, unsigned long addr, void *eff_l1e)
-{
-    int user_mode = !(v->arch.flags & TF_kernel_mode);
-#define TOGGLE_MODE() if ( user_mode ) toggle_guest_mode(v)
-
-    TOGGLE_MODE();
-    guest_get_eff_l1e(v, addr, eff_l1e);
-    TOGGLE_MODE();
-}
-
-
 
 #endif /* XEN_PAGING_H */
 

@@ -42,16 +42,15 @@ nodeid_t cpu_to_node[NR_CPUS] __read_mostly = {
 /*
  * Keep BIOS's CPU2node information, should not be used for memory allocaion
  */
-nodeid_t apicid_to_node[MAX_LOCAL_APIC] __cpuinitdata = {
+nodeid_t apicid_to_node[MAX_LOCAL_APIC] = {
     [0 ... MAX_LOCAL_APIC-1] = NUMA_NO_NODE
 };
 cpumask_t node_to_cpumask[MAX_NUMNODES] __read_mostly;
 
 nodemask_t __read_mostly node_online_map = { { [0] = 1UL } };
 
-int numa_off __devinitdata = 0;
-
-int acpi_numa __devinitdata;
+bool_t numa_off = 0;
+s8 acpi_numa = 0;
 
 int srat_disabled(void)
 {
@@ -180,7 +179,6 @@ void __init setup_node_bootmem(nodeid_t nodeid, u64 start, u64 end)
     start_pfn = start >> PAGE_SHIFT;
     end_pfn = end >> PAGE_SHIFT;
 
-    NODE_DATA(nodeid)->node_id = nodeid;
     NODE_DATA(nodeid)->node_start_pfn = start_pfn;
     NODE_DATA(nodeid)->node_spanned_pages = end_pfn - start_pfn;
 
@@ -290,12 +288,12 @@ void __init numa_initmem_init(unsigned long start_pfn, unsigned long end_pfn)
                     (u64)end_pfn << PAGE_SHIFT);
 }
 
-__cpuinit void numa_add_cpu(int cpu)
+void numa_add_cpu(int cpu)
 {
     cpumask_set_cpu(cpu, &node_to_cpumask[cpu_to_node(cpu)]);
 } 
 
-void __cpuinit numa_set_node(int cpu, nodeid_t node)
+void numa_set_node(int cpu, nodeid_t node)
 {
     cpu_to_node[cpu] = node;
 }
@@ -349,23 +347,37 @@ void __init init_cpu_to_node(void)
         u32 apicid = x86_cpu_to_apicid[i];
         if ( apicid == BAD_APICID )
             continue;
-        node = apicid_to_node[apicid];
+        node = apicid < MAX_LOCAL_APIC ? apicid_to_node[apicid] : NUMA_NO_NODE;
         if ( node == NUMA_NO_NODE || !node_online(node) )
             node = 0;
         numa_set_node(i, node);
     }
 }
 
-EXPORT_SYMBOL(cpu_to_node);
-EXPORT_SYMBOL(node_to_cpumask);
-EXPORT_SYMBOL(memnode_shift);
-EXPORT_SYMBOL(memnodemap);
-EXPORT_SYMBOL(node_data);
+unsigned int __init arch_get_dma_bitsize(void)
+{
+    unsigned int node;
+
+    for_each_online_node(node)
+        if ( node_spanned_pages(node) &&
+             !(node_start_pfn(node) >> (32 - PAGE_SHIFT)) )
+            break;
+    if ( node >= MAX_NUMNODES )
+        panic("No node with memory below 4Gb");
+
+    /*
+     * Try to not reserve the whole node's memory for DMA, but dividing
+     * its spanned pages by (arbitrarily chosen) 4.
+     */
+    return min_t(unsigned int,
+                 flsl(node_start_pfn(node) + node_spanned_pages(node) / 4 - 1)
+                 + PAGE_SHIFT, 32);
+}
 
 static void dump_numa(unsigned char key)
 {
     s_time_t now = NOW();
-    unsigned int i, j;
+    unsigned int i, j, n;
     int err;
     struct domain *d;
     struct page_info *page;
@@ -377,20 +389,37 @@ static void dump_numa(unsigned char key)
 
     for_each_online_node ( i )
     {
-        paddr_t pa = (paddr_t)(NODE_DATA(i)->node_start_pfn + 1)<< PAGE_SHIFT;
-        printk("idx%d -> NODE%d start->%lu size->%lu free->%lu\n",
-               i, NODE_DATA(i)->node_id,
-               NODE_DATA(i)->node_start_pfn,
-               NODE_DATA(i)->node_spanned_pages,
+        paddr_t pa = pfn_to_paddr(node_start_pfn(i) + 1);
+
+        printk("NODE%u start->%lu size->%lu free->%lu\n",
+               i, node_start_pfn(i), node_spanned_pages(i),
                avail_node_heap_pages(i));
         /* sanity check phys_to_nid() */
-        printk("phys_to_nid(%"PRIpaddr") -> %d should be %d\n", pa,
-               phys_to_nid(pa),
-               NODE_DATA(i)->node_id);
+        if ( phys_to_nid(pa) != i )
+            printk("phys_to_nid(%"PRIpaddr") -> %d should be %u\n",
+                   pa, phys_to_nid(pa), i);
     }
 
+    j = cpumask_first(&cpu_online_map);
+    n = 0;
     for_each_online_cpu ( i )
-        printk("CPU%d -> NODE%d\n", i, cpu_to_node[i]);
+    {
+        if ( i != j + n || cpu_to_node[j] != cpu_to_node[i] )
+        {
+            if ( n > 1 )
+                printk("CPU%u...%u -> NODE%d\n", j, j + n - 1, cpu_to_node[j]);
+            else
+                printk("CPU%u -> NODE%d\n", j, cpu_to_node[j]);
+            j = i;
+            n = 1;
+        }
+        else
+            ++n;
+    }
+    if ( n > 1 )
+        printk("CPU%u...%u -> NODE%d\n", j, j + n - 1, cpu_to_node[j]);
+    else
+        printk("CPU%u -> NODE%d\n", j, cpu_to_node[j]);
 
     rcu_read_lock(&domlist_read_lock);
 
@@ -483,15 +512,9 @@ static void dump_numa(unsigned char key)
     rcu_read_unlock(&domlist_read_lock);
 }
 
-static struct keyhandler dump_numa_keyhandler = {
-    .diagnostic = 1,
-    .u.fn = dump_numa,
-    .desc = "dump numa info"
-};
-
 static __init int register_numa_trigger(void)
 {
-    register_keyhandler('u', &dump_numa_keyhandler);
+    register_keyhandler('u', dump_numa, "dump NUMA info", 1);
     return 0;
 }
 __initcall(register_numa_trigger);

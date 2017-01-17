@@ -13,6 +13,7 @@
 #include <xen/hypercall.h>
 #include <xen/init.h>
 #include <xen/lib.h>
+#include <xen/livepatch.h>
 #include <xen/sched.h>
 #include <xen/softirq.h>
 #include <xen/wait.h>
@@ -55,6 +56,11 @@ void idle_loop(void)
 
         do_tasklet();
         do_softirq();
+        /*
+         * We MUST be last (or before dsb, wfi). Otherwise after we get the
+         * softirq we would execute dsb,wfi (and sleep) and not patch.
+         */
+        check_for_livepatch_work();
     }
 }
 
@@ -181,6 +187,12 @@ static void ctxt_switch_to(struct vcpu *n)
     WRITE_SYSREG(n->arch.ttbcr, TCR_EL1);
     WRITE_SYSREG64(n->arch.ttbr0, TTBR0_EL1);
     WRITE_SYSREG64(n->arch.ttbr1, TTBR1_EL1);
+
+    /*
+     * Erratum #852523: DACR32_EL2 must be restored before one of the
+     * following sysregs: SCTLR_EL1, TCR_EL1, TTBR0_EL1, TTBR1_EL1 or
+     * CONTEXTIDR_EL1.
+     */
     if ( is_32bit_domain(n->domain) )
         WRITE_SYSREG(n->arch.dacr, DACR32_EL2);
     WRITE_SYSREG64(n->arch.par, PAR_EL1);
@@ -198,6 +210,10 @@ static void ctxt_switch_to(struct vcpu *n)
     /* Control Registers */
     WRITE_SYSREG(n->arch.cpacr, CPACR_EL1);
 
+    /*
+     * This write to sysreg CONTEXTIDR_EL1 ensures we don't hit erratum
+     * #852523. I.e DACR32_EL2 is not correctly synchronized.
+     */
     WRITE_SYSREG(n->arch.contextidr, CONTEXTIDR_EL1);
     WRITE_SYSREG(n->arch.tpidr_el0, TPIDR_EL0);
     WRITE_SYSREG(n->arch.tpidrro_el0, TPIDRRO_EL0);
@@ -229,10 +245,30 @@ static void ctxt_switch_to(struct vcpu *n)
 /* Update per-VCPU guest runstate shared memory area (if registered). */
 static void update_runstate_area(struct vcpu *v)
 {
+    void __user *guest_handle = NULL;
+
     if ( guest_handle_is_null(runstate_guest(v)) )
         return;
 
+    if ( VM_ASSIST(v->domain, runstate_update_flag) )
+    {
+        guest_handle = &v->runstate_guest.p->state_entry_time + 1;
+        guest_handle--;
+        v->runstate.state_entry_time |= XEN_RUNSTATE_UPDATE;
+        __raw_copy_to_guest(guest_handle,
+                            (void *)(&v->runstate.state_entry_time + 1) - 1, 1);
+        smp_wmb();
+    }
+
     __copy_to_guest(runstate_guest(v), &v->runstate, 1);
+
+    if ( guest_handle )
+    {
+        v->runstate.state_entry_time &= ~XEN_RUNSTATE_UPDATE;
+        smp_wmb();
+        __raw_copy_to_guest(guest_handle,
+                            (void *)(&v->runstate.state_entry_time + 1) - 1, 1);
+    }
 }
 
 static void schedule_tail(struct vcpu *prev)
@@ -264,7 +300,6 @@ static void continue_new_vcpu(struct vcpu *prev)
     else
         /* check_wakeup_from_wait(); */
         reset_stack_and_jump(return_to_new_vcpu64);
-
 }
 
 void context_switch(struct vcpu *prev, struct vcpu *next)
@@ -317,7 +352,7 @@ void hypercall_cancel_continuation(void)
     struct cpu_user_regs *regs = guest_cpu_user_regs();
     struct mc_state *mcs = &current->mc_state;
 
-    if ( test_bit(_MCSF_in_multicall, &mcs->flags) )
+    if ( mcs->flags & MCSF_in_multicall )
     {
         __clear_bit(_MCSF_call_preempted, &mcs->flags);
     }
@@ -342,7 +377,7 @@ unsigned long hypercall_create_continuation(
 
     va_start(args, format);
 
-    if ( test_bit(_MCSF_in_multicall, &mcs->flags) )
+    if ( mcs->flags & MCSF_in_multicall )
     {
         __set_bit(_MCSF_call_preempted, &mcs->flags);
 
@@ -434,13 +469,13 @@ struct domain *alloc_domain_struct(void)
         return NULL;
 
     clear_page(d);
-    d->arch.grant_table_gpfn = xzalloc_array(xen_pfn_t, max_grant_frames);
+    d->arch.grant_table_gfn = xzalloc_array(gfn_t, max_grant_frames);
     return d;
 }
 
 void free_domain_struct(struct domain *d)
 {
-    xfree(d->arch.grant_table_gpfn);
+    xfree(d->arch.grant_table_gfn);
     free_xenheap_page(d);
 }
 
@@ -462,17 +497,6 @@ struct vcpu *alloc_vcpu_struct(void)
 void free_vcpu_struct(struct vcpu *v)
 {
     free_xenheap_page(v);
-}
-
-struct vcpu_guest_context *alloc_vcpu_guest_context(void)
-{
-    return xmalloc(struct vcpu_guest_context);
-
-}
-
-void free_vcpu_guest_context(struct vcpu_guest_context *vgc)
-{
-    xfree(vgc);
 }
 
 int vcpu_initialise(struct vcpu *v)
@@ -528,8 +552,9 @@ void vcpu_destroy(struct vcpu *v)
 int arch_domain_create(struct domain *d, unsigned int domcr_flags,
                        struct xen_arch_domainconfig *config)
 {
-    int rc;
+    int rc, count = 0;
 
+    BUILD_BUG_ON(GUEST_MAX_VCPUS < MAX_VIRT_CPUS);
     d->arch.relmem = RELMEM_not_started;
 
     /* Idle domains do not need this setup */
@@ -537,6 +562,11 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
         return 0;
 
     ASSERT(config != NULL);
+
+    /* p2m_init relies on some value initialized by the IOMMU subsystem */
+    if ( (rc = iommu_domain_init(d)) != 0 )
+        goto fail;
+
     if ( (rc = p2m_init(d)) != 0 )
         goto fail;
 
@@ -550,12 +580,6 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
     clear_page(d->shared_info);
     share_xen_page_with_guest(
         virt_to_page(d->shared_info), d, XENSHARE_writable);
-
-    if ( (rc = domain_io_init(d)) != 0 )
-        goto fail;
-
-    if ( (rc = p2m_alloc_table(d)) != 0 )
-        goto fail;
 
     switch ( config->gic_version )
     {
@@ -590,11 +614,19 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
         goto fail;
     }
 
+    if ( (rc = domain_vgic_register(d, &count)) != 0 )
+        goto fail;
+
+    if ( (rc = domain_io_init(d, count + MAX_IO_HANDLER)) != 0 )
+        goto fail;
+
     if ( (rc = domain_vgic_init(d, config->nr_spis)) != 0 )
         goto fail;
 
     if ( (rc = domain_vtimer_init(d, config)) != 0 )
         goto fail;
+
+    update_domain_wallclock_time(d);
 
     /*
      * The hardware domain will get a PPI later in
@@ -617,9 +649,6 @@ int arch_domain_create(struct domain *d, unsigned int domcr_flags,
     if ( is_hardware_domain(d) && (rc = domain_vuart_init(d)) )
         goto fail;
 
-    if ( (rc = iommu_domain_init(d)) != 0 )
-        goto fail;
-
     return 0;
 
 fail:
@@ -639,6 +668,11 @@ void arch_domain_destroy(struct domain *d)
     domain_vgic_free(d);
     domain_vuart_free(d);
     free_xenheap_page(d->shared_info);
+#ifdef CONFIG_ACPI
+    free_xenheap_pages(d->arch.efi_acpi_table,
+                       get_order_from_bytes(d->arch.efi_acpi_len));
+#endif
+    domain_io_free(d);
 }
 
 void arch_domain_shutdown(struct domain *d)
@@ -651,6 +685,11 @@ void arch_domain_pause(struct domain *d)
 
 void arch_domain_unpause(struct domain *d)
 {
+}
+
+int arch_domain_soft_reset(struct domain *d)
+{
+    return -ENOSYS;
 }
 
 static int is_guest_pv32_psr(uint32_t psr)
@@ -748,6 +787,11 @@ int arch_set_info_guest(
         set_bit(_VPF_down, &v->pause_flags);
 
     return 0;
+}
+
+int arch_initialise_vcpu(struct vcpu *v, XEN_GUEST_HANDLE_PARAM(void) arg)
+{
+    return default_initialise_vcpu(v, arg);
 }
 
 int arch_vcpu_reset(struct vcpu *v)

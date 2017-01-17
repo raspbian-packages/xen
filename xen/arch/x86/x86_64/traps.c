@@ -14,6 +14,7 @@
 #include <xen/nmi.h>
 #include <xen/guest_access.h>
 #include <xen/watchdog.h>
+#include <xen/hypercall.h>
 #include <asm/current.h>
 #include <asm/flushtlb.h>
 #include <asm/traps.h>
@@ -30,7 +31,7 @@ static void print_xen_info(void)
 {
     char taint_str[TAINT_STRING_MAX_LEN];
 
-    printk("----[ Xen-%d.%d%s  x86_64  debug=%c  %s ]----\n",
+    printk("----[ Xen-%d.%d%s  x86_64  debug=%c " gcov_string "  %s ]----\n",
            xen_major_version(), xen_minor_version(), xen_extra_version(),
            debug_build() ? 'y' : 'n', print_tainted(taint_str));
 }
@@ -125,10 +126,10 @@ void show_registers(const struct cpu_user_regs *regs)
         fault_crs[0] = read_cr0();
         fault_crs[3] = read_cr3();
         fault_crs[4] = read_cr4();
-        fault_regs.ds = read_segment_register(ds);
-        fault_regs.es = read_segment_register(es);
-        fault_regs.fs = read_segment_register(fs);
-        fault_regs.gs = read_segment_register(gs);
+        fault_regs.ds = read_sreg(ds);
+        fault_regs.es = read_sreg(es);
+        fault_regs.fs = read_sreg(fs);
+        fault_regs.gs = read_sreg(gs);
     }
 
     print_xen_info();
@@ -242,10 +243,10 @@ void do_double_fault(struct cpu_user_regs *regs)
     crs[2] = read_cr2();
     crs[3] = read_cr3();
     crs[4] = read_cr4();
-    regs->ds = read_segment_register(ds);
-    regs->es = read_segment_register(es);
-    regs->fs = read_segment_register(fs);
-    regs->gs = read_segment_register(gs);
+    regs->ds = read_sreg(ds);
+    regs->es = read_sreg(es);
+    regs->fs = read_sreg(fs);
+    regs->gs = read_sreg(gs);
 
     printk("CPU:    %d\n", cpu);
     _show_registers(regs, crs, CTXT_hypervisor, NULL);
@@ -310,6 +311,9 @@ unsigned long do_iret(void)
         toggle_guest_mode(v);
     }
 
+    if ( VM_ASSIST(v->domain, architectural_iopl) )
+        v->arch.pv_vcpu.iopl = iret_saved.rflags & X86_EFLAGS_IOPL;
+
     regs->rip    = iret_saved.rip;
     regs->cs     = iret_saved.cs | 3; /* force guest privilege */
     regs->rflags = ((iret_saved.rflags & ~(X86_EFLAGS_IOPL|X86_EFLAGS_VM))
@@ -371,7 +375,7 @@ DEFINE_PER_CPU(struct stubs, stubs);
 void lstar_enter(void);
 void cstar_enter(void);
 
-void __devinit subarch_percpu_traps_init(void)
+void subarch_percpu_traps_init(void)
 {
     unsigned long stack_bottom = get_stack_bottom();
     unsigned long stub_va = this_cpu(stubs.addr);
@@ -411,7 +415,7 @@ void __devinit subarch_percpu_traps_init(void)
     unmap_domain_page(stub_page);
 
     /* Common SYSCALL parameters. */
-    wrmsr(MSR_STAR, 0, (FLAT_RING3_CS32<<16) | __HYPERVISOR_CS);
+    wrmsr(MSR_STAR, 0, ((unsigned int)FLAT_RING3_CS32 << 16) | __HYPERVISOR_CS);
     wrmsr(MSR_SYSCALL_MASK, XEN_SYSCALL_MASK, 0U);
 }
 

@@ -20,6 +20,7 @@
 #include <xen/symbols.h>
 #include <xen/lib.h>
 #include <xen/sched.h>
+#include <xen/livepatch.h>
 #include <asm/div64.h>
 #include <asm/page.h>
 
@@ -152,11 +153,11 @@ static char *number(
     static const char large_digits[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
     int i;
 
+    ASSERT(base >= 2 && base <= 36);
+
     digits = (type & LARGE) ? large_digits : small_digits;
     if (type & LEFT)
         type &= ~ZEROPAD;
-    if (base < 2 || base > 36)
-        return NULL;
     c = (type & ZEROPAD) ? '0' : ' ';
     sign = 0;
     if (type & SIGN) {
@@ -275,6 +276,7 @@ static char *pointer(char *str, char *end, const char **fmt_ptr,
     case 'h': /* Raw buffer as hex string. */
     {
         const uint8_t *hex_buffer = arg;
+        char sep = ' '; /* Separator character. */
         unsigned int i;
 
         /* Consumed 'h' from the format string. */
@@ -286,6 +288,28 @@ static char *pointer(char *str, char *end, const char **fmt_ptr,
         if ( field_width > 64 )
             field_width = 64;
 
+        /*
+         * Peek ahead in the format string to see if a recognised separator
+         * modifier is present.
+         */
+        switch ( fmt[2] )
+        {
+        case 'C': /* Colons. */
+            ++*fmt_ptr;
+            sep = ':';
+            break;
+
+        case 'D': /* Dashes. */
+            ++*fmt_ptr;
+            sep = '-';
+            break;
+
+        case 'N': /* No separator. */
+            ++*fmt_ptr;
+            sep = 0;
+            break;
+        }
+
         for ( i = 0; ; )
         {
             /* Each byte: 2 chars, 0-padded, base 16, no hex prefix. */
@@ -294,9 +318,12 @@ static char *pointer(char *str, char *end, const char **fmt_ptr,
             if ( ++i == field_width )
                 return str;
 
-            if ( str < end )
-                *str = ' ';
-            ++str;
+            if ( sep )
+            {
+                if ( str < end )
+                    *str = sep;
+                ++str;
+            }
         }
     }
 
@@ -326,6 +353,17 @@ static char *pointer(char *str, char *end, const char **fmt_ptr,
                 *str = '/';
             ++str;
             str = number(str, end, sym_size, 16, -1, -1, SPECIAL);
+        }
+
+        /*
+         * namebuf contents and s for core hypervisor are same but for Live Patch
+         * payloads they differ (namebuf contains the name of the payload).
+         */
+        if ( namebuf != s )
+        {
+            str = string(str, end, " [", -1, -1, 0);
+            str = string(str, end, namebuf, -1, -1, 0);
+            str = string(str, end, "]", -1, -1, 0);
         }
 
         return str;

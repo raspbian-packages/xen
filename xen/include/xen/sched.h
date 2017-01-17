@@ -4,10 +4,12 @@
 
 #include <xen/types.h>
 #include <xen/spinlock.h>
+#include <xen/rwlock.h>
 #include <xen/shared.h>
 #include <xen/timer.h>
 #include <xen/rangeset.h>
 #include <xen/domain.h>
+#include <xen/iommu.h>
 #include <xen/rcupdate.h>
 #include <xen/cpumask.h>
 #include <xen/nodemask.h>
@@ -37,7 +39,7 @@ DEFINE_XEN_GUEST_HANDLE(vcpu_runstate_info_compat_t);
  * Enable and ease the use of scheduling related performance counters.
  *
  */
-#ifdef PERF_COUNTERS
+#ifdef CONFIG_PERF_COUNTERS
 #define SCHED_STATS
 #endif
 
@@ -110,7 +112,7 @@ struct evtchn
     u8 priority;
     u8 last_priority;
     u16 last_vcpu_id;
-#ifdef XSM_ENABLE
+#ifdef CONFIG_XSM
     union {
 #ifdef XSM_NEED_GENERIC_EVTCHN_SSID
         /*
@@ -119,7 +121,7 @@ struct evtchn
          */
         void *generic;
 #endif
-#ifdef FLASK_ENABLE
+#ifdef CONFIG_FLASK
         /*
          * Inlining the contents of the structure for FLASK avoids unneeded
          * allocations, and on 64-bit platforms with only FLASK enabled,
@@ -260,7 +262,6 @@ struct vcpu
 /* Per-domain lock can be recursively acquired in fault handlers. */
 #define domain_lock(d) spin_lock_recursive(&(d)->domain_lock)
 #define domain_unlock(d) spin_unlock_recursive(&(d)->domain_lock)
-#define domain_is_locked(d) spin_is_locked(&(d)->domain_lock)
 
 /* VM event */
 struct vm_event_domain
@@ -367,7 +368,9 @@ struct domain
 
     int64_t          time_offset_seconds;
 
-#ifdef HAS_PASSTHROUGH
+#ifdef CONFIG_HAS_PASSTHROUGH
+    struct domain_iommu iommu;
+
     /* Does this guest need iommu mappings (-1 meaning "being set up")? */
     s8               need_iommu;
 #endif
@@ -375,12 +378,20 @@ struct domain
     bool_t           auto_node_affinity;
     /* Is this guest fully privileged (aka dom0)? */
     bool_t           is_privileged;
+    /* Is this a xenstore domain (not dom0)? */
+    bool_t           is_xenstore;
     /* Domain's VCPUs are pinned 1:1 to physical CPUs? */
     bool_t           is_pinned;
     /* Non-migratable and non-restoreable? */
     bool_t           disable_migrate;
     /* Is this guest being debugged by dom0? */
     bool_t           debugger_attached;
+    /*
+     * Set to true at the very end of domain creation, when the domain is
+     * unpaused for the first time by the systemcontroller.
+     */
+    bool             creation_finished;
+
     /* Which guest this guest has privileges on */
     struct domain   *target;
 
@@ -399,7 +410,8 @@ struct domain
     spinlock_t       shutdown_lock;
     bool_t           is_shutting_down; /* in process of shutting down? */
     bool_t           is_shut_down;     /* fully shut down? */
-    int              shutdown_code;
+#define SHUTDOWN_CODE_INVALID ~0u
+    unsigned int     shutdown_code;
 
     /* If this is not 0, send suspend notification here instead of
      * raising DOM_EXC */
@@ -462,29 +474,12 @@ struct domain
     /* vNUMA topology accesses are protected by rwlock. */
     rwlock_t vnuma_rwlock;
     struct vnuma_info *vnuma;
-};
 
-struct domain_setup_info
-{
-    /* Initialised by caller. */
-    unsigned long image_addr;
-    unsigned long image_len;
-    /* Initialised by loader: Public. */
-    unsigned long v_start;
-    unsigned long v_end;
-    unsigned long v_kernstart;
-    unsigned long v_kernend;
-    unsigned long v_kernentry;
-#define PAEKERN_no           0
-#define PAEKERN_yes          1
-#define PAEKERN_extended_cr3 2
-#define PAEKERN_bimodal      3
-    unsigned int  pae_kernel;
-    /* Initialised by loader: Private. */
-    unsigned long elf_paddr_offset;
-    unsigned int  load_symtab;
-    unsigned long symtab_addr;
-    unsigned long symtab_len;
+    /* Common monitor options */
+    struct {
+        unsigned int guest_request_enabled       : 1;
+        unsigned int guest_request_sync          : 1;
+    } monitor;
 };
 
 /* Protect updates/reads (resp.) of domain_list and domain_hash. */
@@ -495,7 +490,7 @@ extern struct vcpu *idle_vcpu[NR_CPUS];
 #define is_idle_domain(d) ((d)->domain_id == DOMID_IDLE)
 #define is_idle_vcpu(v)   (is_idle_domain((v)->domain))
 
-#define DOMAIN_DESTROYED (1<<31) /* assumes atomic_t is >= 32 bits */
+#define DOMAIN_DESTROYED (1u << 31) /* assumes atomic_t is >= 32 bits */
 #define put_domain(_d) \
   if ( atomic_dec_and_test(&(_d)->refcnt) ) domain_destroy(_d)
 
@@ -505,16 +500,15 @@ extern struct vcpu *idle_vcpu[NR_CPUS];
  */
 static always_inline int get_domain(struct domain *d)
 {
-    atomic_t old, new, seen = d->refcnt;
+    int old, seen = atomic_read(&d->refcnt);
     do
     {
         old = seen;
-        if ( unlikely(_atomic_read(old) & DOMAIN_DESTROYED) )
+        if ( unlikely(old & DOMAIN_DESTROYED) )
             return 0;
-        _atomic_set(&new, _atomic_read(old) + 1);
-        seen = atomic_compareandswap(old, new, &d->refcnt);
+        seen = atomic_cmpxchg(&d->refcnt, old, old + 1);
     }
-    while ( unlikely(_atomic_read(seen) != _atomic_read(old)) );
+    while ( unlikely(seen != old) );
     return 1;
 }
 
@@ -557,6 +551,9 @@ struct domain *domain_create(domid_t domid, unsigned int domcr_flags,
  /* DOMCRF_pvh: Create PV domain in HVM container. */
 #define _DOMCRF_pvh             5
 #define DOMCRF_pvh              (1U<<_DOMCRF_pvh)
+ /* DOMCRF_xs_domain: xenstore domain */
+#define _DOMCRF_xs_domain       6
+#define DOMCRF_xs_domain        (1U<<_DOMCRF_xs_domain)
 
 /*
  * rcu_lock_domain_by_id() is more efficient than get_domain_by_id().
@@ -610,6 +607,8 @@ void domain_shutdown(struct domain *d, u8 reason);
 void domain_resume(struct domain *d);
 void domain_pause_for_debugger(void);
 
+int domain_soft_reset(struct domain *d);
+
 int vcpu_start_shutdown_deferral(struct vcpu *v);
 void vcpu_end_shutdown_deferral(struct vcpu *v);
 
@@ -645,7 +644,7 @@ void noreturn asm_domain_crash_synchronous(unsigned long addr);
 void scheduler_init(void);
 int  sched_init_vcpu(struct vcpu *v, unsigned int processor);
 void sched_destroy_vcpu(struct vcpu *v);
-int  sched_init_domain(struct domain *d);
+int  sched_init_domain(struct domain *d, int poolid);
 void sched_destroy_domain(struct domain *d);
 int sched_move_domain(struct domain *d, struct cpupool *c);
 long sched_adjust(struct domain *, struct xen_domctl_scheduler_op *);
@@ -822,6 +821,7 @@ int cpu_disable_scheduler(unsigned int cpu);
 int vcpu_set_hard_affinity(struct vcpu *v, const cpumask_t *affinity);
 int vcpu_set_soft_affinity(struct vcpu *v, const cpumask_t *affinity);
 void restore_vcpu_affinity(struct domain *d);
+int vcpu_pin_override(struct vcpu *v, int cpu);
 
 void vcpu_runstate_get(struct vcpu *v, struct vcpu_runstate_info *runstate);
 uint64_t get_cpu_idle_time(unsigned int cpu);
@@ -861,7 +861,7 @@ void watchdog_domain_destroy(struct domain *d);
 #define has_hvm_container_vcpu(v)   (has_hvm_container_domain((v)->domain))
 #define is_pinned_vcpu(v) ((v)->domain->is_pinned || \
                            cpumask_weight((v)->cpu_hard_affinity) == 1)
-#ifdef HAS_PASSTHROUGH
+#ifdef CONFIG_HAS_PASSTHROUGH
 #define need_iommu(d)    ((d)->need_iommu)
 #else
 #define need_iommu(d)    (0)
@@ -891,8 +891,6 @@ int cpupool_move_domain(struct domain *d, struct cpupool *c);
 int cpupool_do_sysctl(struct xen_sysctl_cpupool_op *op);
 void schedule_dump(struct cpupool *c);
 extern void dump_runq(unsigned char key);
-
-#define num_cpupool_cpus(c) cpumask_weight((c)->cpu_valid)
 
 void arch_do_physinfo(xen_sysctl_physinfo_t *pi);
 

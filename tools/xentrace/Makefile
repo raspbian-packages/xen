@@ -3,8 +3,11 @@ include $(XEN_ROOT)/tools/Rules.mk
 
 CFLAGS += -Werror
 
+CFLAGS += $(CFLAGS_libxenevtchn)
 CFLAGS += $(CFLAGS_libxenctrl)
-LDLIBS += $(LDLIBS_libxenctrl) $(ARGP_LDFLAGS)
+LDLIBS += $(LDLIBS_libxenevtchn)
+LDLIBS += $(LDLIBS_libxenctrl)
+LDLIBS += $(ARGP_LDFLAGS)
 LDFLAGS += $(call LDFLAGS_RPATH,../lib)
 
 BIN-$(CONFIG_X86) = xenalyze
@@ -42,7 +45,7 @@ xentrace_setsize: setsize.o
 	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS) $(APPEND_LDFLAGS)
 
 xenalyze: xenalyze.o mread.o
-	$(CC) $(LDFLAGS) -o $@ $^ $(LDLIBS) $(APPEND_LDFLAGS)
+	$(CC) $(LDFLAGS) -o $@ $^ $(ARGP_LDFLAGS) $(APPEND_LDFLAGS)
 
 -include $(DEPS)
 

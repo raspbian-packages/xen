@@ -151,10 +151,12 @@ extern void shadow_audit_tables(struct vcpu *v);
  * Macro for dealing with the naming of the internal names of the
  * shadow code's external entry points.
  */
-#define SHADOW_INTERNAL_NAME_HIDDEN(name, guest_levels) \
-    name ## __guest_ ## guest_levels
+#define SHADOW_INTERNAL_NAME_(name, kind, value)        \
+    name ## __ ## kind ## _ ## value
 #define SHADOW_INTERNAL_NAME(name, guest_levels)        \
-    SHADOW_INTERNAL_NAME_HIDDEN(name, guest_levels)
+    SHADOW_INTERNAL_NAME_(name, guest, guest_levels)
+#define SHADOW_SH_NAME(name, shadow_levels)             \
+    SHADOW_INTERNAL_NAME_(name, sh, shadow_levels)
 
 #define GUEST_LEVELS  2
 #include "multi.h"
@@ -381,10 +383,6 @@ extern int sh_remove_write_access(struct domain *d, mfn_t readonly_mfn,
 void shadow_write_p2m_entry(struct domain *d, unsigned long gfn,
                             l1_pgentry_t *p, l1_pgentry_t new,
                             unsigned int level);
-int shadow_write_guest_entry(struct vcpu *v, intpte_t *p,
-                             intpte_t new, mfn_t gmfn);
-int shadow_cmpxchg_guest_entry(struct vcpu *v, intpte_t *p,
-                               intpte_t *old, intpte_t new, mfn_t gmfn);
 
 /* Update all the things that are derived from the guest's CR0/CR3/CR4.
  * Called to initialize paging structures if the paging mode
@@ -394,6 +392,17 @@ void shadow_update_paging_modes(struct vcpu *v);
 /* Unhook the non-Xen mappings in this top-level shadow mfn.
  * With user_only == 1, unhooks only the user-mode mappings. */
 void shadow_unhook_mappings(struct domain *d, mfn_t smfn, int user_only);
+
+/* Returns a mapped pointer to write to, or one of the following error
+ * indicators. */
+#define MAPPING_UNHANDLEABLE ((void *)(unsigned long)X86EMUL_UNHANDLEABLE)
+#define MAPPING_EXCEPTION    ((void *)(unsigned long)X86EMUL_EXCEPTION)
+#define MAPPING_SILENT_FAIL  ((void *)(unsigned long)X86EMUL_OKAY)
+#define sh_emulate_map_dest_failed(rc) ((unsigned long)(rc) <= 3)
+void *sh_emulate_map_dest(struct vcpu *v, unsigned long vaddr,
+                          unsigned int bytes, struct sh_emulate_ctxt *sh_ctxt);
+void sh_emulate_unmap_dest(struct vcpu *v, void *addr, unsigned int bytes,
+                           struct sh_emulate_ctxt *sh_ctxt);
 
 #if (SHADOW_OPTIMIZATIONS & SHOPT_OUT_OF_SYNC)
 /* Allow a shadowed page to go out of sync */
@@ -718,7 +727,7 @@ struct sh_emulate_ctxt {
     struct segment_register seg_reg[6];
 
     /* MFNs being written to in write/cmpxchg callbacks */
-    mfn_t mfn1, mfn2;
+    mfn_t mfn[2];
 
 #if (SHADOW_OPTIMIZATIONS & SHOPT_SKIP_VERIFY)
     /* Special case for avoiding having to verify writes: remember
@@ -731,8 +740,6 @@ const struct x86_emulate_ops *shadow_init_emulation(
     struct sh_emulate_ctxt *sh_ctxt, struct cpu_user_regs *regs);
 void shadow_continue_emulation(
     struct sh_emulate_ctxt *sh_ctxt, struct cpu_user_regs *regs);
-struct segment_register *hvm_get_seg_reg(
-    enum x86_segment seg, struct sh_emulate_ctxt *sh_ctxt);
 
 #if (SHADOW_OPTIMIZATIONS & SHOPT_VIRTUAL_TLB)
 /**************************************************************************/
@@ -787,7 +794,7 @@ static inline unsigned long vtlb_lookup(struct vcpu *v,
                                         unsigned long va, uint32_t pfec)
 {
     unsigned long page_number = va >> PAGE_SHIFT;
-    unsigned long frame_number = INVALID_GFN;
+    unsigned long frame_number = gfn_x(INVALID_GFN);
     int i = vtlb_hash(page_number);
 
     spin_lock(&v->arch.paging.vtlb_lock);

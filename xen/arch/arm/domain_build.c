@@ -12,6 +12,8 @@
 #include <xen/libfdt/libfdt.h>
 #include <xen/guest_access.h>
 #include <xen/iocap.h>
+#include <xen/acpi.h>
+#include <acpi/actables.h>
 #include <asm/device.h>
 #include <asm/setup.h>
 #include <asm/platform.h>
@@ -40,13 +42,25 @@ static void __init parse_dom0_mem(const char *s)
 }
 custom_param("dom0_mem", parse_dom0_mem);
 
-//#define DEBUG_DT
+struct map_range_data
+{
+    struct domain *d;
+    p2m_type_t p2mt;
+};
 
-#ifdef DEBUG_DT
-# define DPRINT(fmt, args...) printk(XENLOG_DEBUG fmt, ##args)
-#else
-# define DPRINT(fmt, args...) do {} while ( 0 )
-#endif
+static const struct dt_device_match dev_map_attrs[] __initconst =
+{
+    {
+        __DT_MATCH_COMPATIBLE("mmio-sram"),
+        __DT_MATCH_PROP("no-memory-wc"),
+        .data = (void *) (uintptr_t) p2m_mmio_direct_dev,
+    },
+    {
+        __DT_MATCH_COMPATIBLE("mmio-sram"),
+        .data = (void *) (uintptr_t) p2m_mmio_direct_nc,
+    },
+    { /* sentinel */ },
+};
 
 //#define DEBUG_11_ALLOCATION
 #ifdef DEBUG_11_ALLOCATION
@@ -123,7 +137,7 @@ static bool_t insert_11_bank(struct domain *d,
         goto fail;
     }
 
-    res = guest_physmap_add_page(d, spfn, spfn, order);
+    res = guest_physmap_add_page(d, _gfn(spfn), _mfn(spfn), order);
     if ( res )
         panic("Failed map pages to DOM0: %d", res);
 
@@ -241,7 +255,7 @@ fail:
  * (as described above) we allow higher allocations and continue until
  * that runs out (or we have allocated sufficient dom0 memory).
  */
-static void allocate_memory_11(struct domain *d, struct kernel_info *kinfo)
+static void allocate_memory(struct domain *d, struct kernel_info *kinfo)
 {
     const unsigned int min_low_order =
         get_order_from_bytes(min_t(paddr_t, dom0_mem, MB(128)));
@@ -252,6 +266,12 @@ static void allocate_memory_11(struct domain *d, struct kernel_info *kinfo)
 
     bool_t lowmem = is_32bit_domain(d);
     unsigned int bits;
+
+    /*
+     * TODO: Implement memory bank allocation when DOM0 is not direct
+     * mapped
+     */
+    BUG_ON(!dom0_11_mapping);
 
     printk("Allocating 1:1 mappings totalling %ldMB for dom0:\n",
            /* Don't want format this as PRIpaddr (16 digit hex) */
@@ -349,56 +369,6 @@ static void allocate_memory_11(struct domain *d, struct kernel_info *kinfo)
     }
 }
 
-static void allocate_memory(struct domain *d, struct kernel_info *kinfo)
-{
-
-    struct dt_device_node *memory = NULL;
-    const void *reg;
-    u32 reg_len, reg_size;
-    unsigned int bank = 0;
-
-    if ( dom0_11_mapping )
-        return allocate_memory_11(d, kinfo);
-
-    while ( (memory = dt_find_node_by_type(memory, "memory")) )
-    {
-        int l;
-
-        DPRINT("memory node\n");
-
-        reg_size = dt_cells_to_size(dt_n_addr_cells(memory) + dt_n_size_cells(memory));
-
-        reg = dt_get_property(memory, "reg", &reg_len);
-        if ( reg == NULL )
-            panic("Memory node has no reg property");
-
-        for ( l = 0;
-              kinfo->unassigned_mem > 0 && l + reg_size <= reg_len
-                  && kinfo->mem.nr_banks < NR_MEM_BANKS;
-              l += reg_size )
-        {
-            paddr_t start, size;
-
-            if ( dt_device_get_address(memory, bank, &start, &size) )
-                panic("Unable to retrieve the bank %u for %s",
-                      bank, dt_node_full_name(memory));
-
-            if ( size > kinfo->unassigned_mem )
-                size = kinfo->unassigned_mem;
-
-            printk("Populate P2M %#"PRIx64"->%#"PRIx64"\n",
-                   start, start + size);
-            if ( p2m_populate_ram(d, start, start + size) < 0 )
-                panic("Failed to populate P2M");
-            kinfo->mem.bank[kinfo->mem.nr_banks].start = start;
-            kinfo->mem.bank[kinfo->mem.nr_banks].size = size;
-            kinfo->mem.nr_banks++;
-
-            kinfo->unassigned_mem -= size;
-        }
-    }
-}
-
 static int write_properties(struct domain *d, struct kernel_info *kinfo,
                             const struct dt_device_node *node)
 {
@@ -407,15 +377,14 @@ static int write_properties(struct domain *d, struct kernel_info *kinfo,
     int res = 0;
     int had_dom0_bootargs = 0;
 
-    const struct bootmodule *mod = kinfo->kernel_bootmodule;
+    const struct bootmodule *kernel = kinfo->kernel_bootmodule;
 
-    if ( mod && mod->cmdline[0] )
-        bootargs = &mod->cmdline[0];
+    if ( kernel && kernel->cmdline[0] )
+        bootargs = &kernel->cmdline[0];
 
     dt_for_each_property_node (node, prop)
     {
         const void *prop_data = prop->value;
-        void *new_data = NULL;
         u32 prop_len = prop->length;
 
         /*
@@ -471,8 +440,6 @@ static int write_properties(struct domain *d, struct kernel_info *kinfo,
 
         res = fdt_property(kinfo->fdt, prop->name, prop_data, prop_len);
 
-        xfree(new_data);
-
         if ( res )
             return res;
     }
@@ -492,7 +459,7 @@ static int write_properties(struct domain *d, struct kernel_info *kinfo,
 
     if ( dt_node_path_is_equal(node, "/chosen") )
     {
-        const struct bootmodule *mod = kinfo->initrd_bootmodule;
+        const struct bootmodule *initrd = kinfo->initrd_bootmodule;
 
         if ( bootargs )
         {
@@ -506,7 +473,7 @@ static int write_properties(struct domain *d, struct kernel_info *kinfo,
          * If the bootloader provides an initrd, we must create a placeholder
          * for the initrd properties. The values will be replaced later.
          */
-        if ( mod && mod->size )
+        if ( initrd && initrd->size )
         {
             u64 a = 0;
             res = fdt_property(kinfo->fdt, "linux,initrd-start", &a, sizeof(a));
@@ -569,12 +536,13 @@ static int make_memory_node(const struct domain *d,
                             const struct kernel_info *kinfo)
 {
     int res, i;
-    int reg_size = dt_n_addr_cells(parent) + dt_n_size_cells(parent);
+    int reg_size = dt_child_n_addr_cells(parent) + dt_child_n_size_cells(parent);
     int nr_cells = reg_size*kinfo->mem.nr_banks;
     __be32 reg[nr_cells];
     __be32 *cells;
 
-    DPRINT("Create memory node (reg size %d, nr cells %d)\n", reg_size, nr_cells);
+    dt_dprintk("Create memory node (reg size %d, nr cells %d)\n",
+               reg_size, nr_cells);
 
     /* ePAPR 3.4 */
     res = fdt_begin_node(fdt, "memory");
@@ -591,10 +559,10 @@ static int make_memory_node(const struct domain *d,
         u64 start = kinfo->mem.bank[i].start;
         u64 size = kinfo->mem.bank[i].size;
 
-        DPRINT("  Bank %d: %#"PRIx64"->%#"PRIx64"\n",
-                i, start, start + size);
+        dt_dprintk("  Bank %d: %#"PRIx64"->%#"PRIx64"\n",
+                   i, start, start + size);
 
-        dt_set_range(&cells, parent, start, size);
+        dt_child_set_range(&cells, parent, start, size);
     }
 
     res = fdt_property(fdt, "reg", reg, sizeof(reg));
@@ -617,11 +585,11 @@ static int make_hypervisor_node(const struct kernel_info *kinfo,
     __be32 *cells;
     int res;
     /* Convenience alias */
-    int addrcells = dt_n_addr_cells(parent);
-    int sizecells = dt_n_size_cells(parent);
+    int addrcells = dt_child_n_addr_cells(parent);
+    int sizecells = dt_child_n_size_cells(parent);
     void *fdt = kinfo->fdt;
 
-    DPRINT("Create hypervisor node\n");
+    dt_dprintk("Create hypervisor node\n");
 
     /*
      * Sanity-check address sizes, since addresses and sizes which do
@@ -643,7 +611,7 @@ static int make_hypervisor_node(const struct kernel_info *kinfo,
 
     /* reg 0 is grant table space */
     cells = &reg[0];
-    dt_set_range(&cells, parent, kinfo->gnttab_start, kinfo->gnttab_size);
+    dt_child_set_range(&cells, parent, kinfo->gnttab_start, kinfo->gnttab_size);
     res = fdt_property(fdt, "reg", reg,
                        dt_cells_to_size(addrcells + sizecells));
     if ( res )
@@ -653,7 +621,7 @@ static int make_hypervisor_node(const struct kernel_info *kinfo,
      * Placeholder for the event channel interrupt.  The values will be
      * replaced later.
      */
-    set_interrupt_ppi(intr, ~0, 0xf, DT_IRQ_TYPE_INVALID);
+    set_interrupt_ppi(intr, ~0, 0xf, IRQ_TYPE_INVALID);
     res = fdt_property_interrupts(fdt, &intr, 1);
     if ( res )
         return res;
@@ -670,7 +638,7 @@ static int make_psci_node(void *fdt, const struct dt_device_node *parent)
         "arm,psci-0.2""\0"
         "arm,psci";
 
-    DPRINT("Create PSCI node\n");
+    dt_dprintk("Create PSCI node\n");
 
     /* See linux Documentation/devicetree/bindings/arm/psci.txt */
     res = fdt_begin_node(fdt, "psci");
@@ -713,7 +681,7 @@ static int make_cpus_node(const struct domain *d, void *fdt,
     bool_t clock_valid;
     uint64_t mpidr_aff;
 
-    DPRINT("Create cpus node\n");
+    dt_dprintk("Create cpus node\n");
 
     if ( !cpus )
     {
@@ -768,7 +736,8 @@ static int make_cpus_node(const struct domain *d, void *fdt,
          * is enough for the current max vcpu number.
          */
         mpidr_aff = vcpuid_to_vaffinity(cpu);
-        DPRINT("Create cpu@%"PRIx64" (logical CPUID: %d) node\n", mpidr_aff, cpu);
+        dt_dprintk("Create cpu@%"PRIx64" (logical CPUID: %d) node\n",
+                   mpidr_aff, cpu);
 
         snprintf(buf, sizeof(buf), "cpu@%"PRIx64, mpidr_aff);
         res = fdt_begin_node(fdt, buf);
@@ -824,11 +793,11 @@ static int make_gic_node(const struct domain *d, void *fdt,
      */
     if ( node != dt_interrupt_controller )
     {
-        DPRINT("  Skipping (secondary GIC)\n");
+        dt_dprintk("  Skipping (secondary GIC)\n");
         return 0;
     }
 
-    DPRINT("Create gic node\n");
+    dt_dprintk("Create gic node\n");
 
     res = fdt_begin_node(fdt, "interrupt-controller");
     if ( res )
@@ -840,7 +809,7 @@ static int make_gic_node(const struct domain *d, void *fdt,
      */
     if ( gic->phandle )
     {
-        DPRINT("  Set phandle = 0x%x\n", gic->phandle);
+        dt_dprintk("  Set phandle = 0x%x\n", gic->phandle);
         res = fdt_property_cell(fdt, "phandle", gic->phandle);
         if ( res )
             return res;
@@ -897,7 +866,7 @@ static int make_timer_node(const struct domain *d, void *fdt,
     u32 clock_frequency;
     bool_t clock_valid;
 
-    DPRINT("Create timer node\n");
+    dt_dprintk("Create timer node\n");
 
     dev = dt_find_matching_node(NULL, timer_ids);
     if ( !dev )
@@ -925,16 +894,16 @@ static int make_timer_node(const struct domain *d, void *fdt,
      * level-sensitive interrupt */
 
     irq = timer_get_irq(TIMER_PHYS_SECURE_PPI);
-    DPRINT("  Secure interrupt %u\n", irq);
-    set_interrupt_ppi(intrs[0], irq, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
+    dt_dprintk("  Secure interrupt %u\n", irq);
+    set_interrupt_ppi(intrs[0], irq, 0xf, IRQ_TYPE_LEVEL_LOW);
 
     irq = timer_get_irq(TIMER_PHYS_NONSECURE_PPI);
-    DPRINT("  Non secure interrupt %u\n", irq);
-    set_interrupt_ppi(intrs[1], irq, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
+    dt_dprintk("  Non secure interrupt %u\n", irq);
+    set_interrupt_ppi(intrs[1], irq, 0xf, IRQ_TYPE_LEVEL_LOW);
 
     irq = timer_get_irq(TIMER_VIRT_PPI);
-    DPRINT("  Virt interrupt %u\n", irq);
-    set_interrupt_ppi(intrs[2], irq, 0xf, DT_IRQ_TYPE_LEVEL_LOW);
+    dt_dprintk("  Virt interrupt %u\n", irq);
+    set_interrupt_ppi(intrs[2], irq, 0xf, IRQ_TYPE_LEVEL_LOW);
 
     res = fdt_property_interrupts(fdt, intrs, 3);
     if ( res )
@@ -954,11 +923,10 @@ static int make_timer_node(const struct domain *d, void *fdt,
     return res;
 }
 
-static int map_irq_to_domain(const struct dt_device_node *dev,
-                             struct domain *d, unsigned int irq)
+static int map_irq_to_domain(struct domain *d, unsigned int irq,
+                             bool_t need_mapping, const char *devname)
 
 {
-    bool_t need_mapping = !dt_device_for_passthrough(dev);
     int res;
 
     res = irq_permit_access(d, irq);
@@ -978,7 +946,7 @@ static int map_irq_to_domain(const struct dt_device_node *dev,
          */
         vgic_reserve_virq(d, irq);
 
-        res = route_irq_to_guest(d, irq, irq, dt_node_name(dev));
+        res = route_irq_to_guest(d, irq, irq, devname);
         if ( res < 0 )
         {
             printk(XENLOG_ERR "Unable to map IRQ%"PRId32" to dom%d\n",
@@ -987,7 +955,7 @@ static int map_irq_to_domain(const struct dt_device_node *dev,
         }
     }
 
-    DPRINT("  - IRQ: %u\n", irq);
+    dt_dprintk("  - IRQ: %u\n", irq);
     return 0;
 }
 
@@ -998,6 +966,7 @@ static int map_dt_irq_to_domain(const struct dt_device_node *dev,
     struct domain *d = data;
     unsigned int irq = dt_irq->irq;
     int res;
+    bool_t need_mapping = !dt_device_for_passthrough(dev);
 
     if ( irq < NR_LOCAL_IRQS )
     {
@@ -1016,7 +985,7 @@ static int map_dt_irq_to_domain(const struct dt_device_node *dev,
         return res;
     }
 
-    res = map_irq_to_domain(dev, d, irq);
+    res = map_irq_to_domain(d, irq, need_mapping, dt_node_name(dev));
 
     return 0;
 }
@@ -1025,7 +994,8 @@ static int map_range_to_domain(const struct dt_device_node *dev,
                                u64 addr, u64 len,
                                void *data)
 {
-    struct domain *d = data;
+    struct map_range_data *mr_data = data;
+    struct domain *d = mr_data->d;
     bool_t need_mapping = !dt_device_for_passthrough(dev);
     int res;
 
@@ -1042,10 +1012,12 @@ static int map_range_to_domain(const struct dt_device_node *dev,
 
     if ( need_mapping )
     {
-        res = map_mmio_regions(d,
-                               paddr_to_pfn(addr),
+        res = map_regions_p2mt(d,
+                               _gfn(paddr_to_pfn(addr)),
                                DIV_ROUND_UP(len, PAGE_SIZE),
-                               paddr_to_pfn(addr));
+                               _mfn(paddr_to_pfn(addr)),
+                               mr_data->p2mt);
+
         if ( res < 0 )
         {
             printk(XENLOG_ERR "Unable to map 0x%"PRIx64
@@ -1056,7 +1028,8 @@ static int map_range_to_domain(const struct dt_device_node *dev,
         }
     }
 
-    DPRINT("  - MMIO: %010"PRIx64" - %010"PRIx64"\n", addr, addr + len);
+    dt_dprintk("  - MMIO: %010"PRIx64" - %010"PRIx64" P2MType=%x\n",
+               addr, addr + len, mr_data->p2mt);
 
     return 0;
 }
@@ -1067,19 +1040,22 @@ static int map_range_to_domain(const struct dt_device_node *dev,
  * the child resources available to domain 0.
  */
 static int map_device_children(struct domain *d,
-                               const struct dt_device_node *dev)
+                               const struct dt_device_node *dev,
+                               p2m_type_t p2mt)
 {
+    struct map_range_data mr_data = { .d = d, .p2mt = p2mt };
     int ret;
 
     if ( dt_device_type_is_equal(dev, "pci") )
     {
-        DPRINT("Mapping children of %s to guest\n", dt_node_full_name(dev));
+        dt_dprintk("Mapping children of %s to guest\n",
+                   dt_node_full_name(dev));
 
         ret = dt_for_each_irq_map(dev, &map_dt_irq_to_domain, d);
         if ( ret < 0 )
             return ret;
 
-        ret = dt_for_each_range(dev, &map_range_to_domain, d);
+        ret = dt_for_each_range(dev, &map_range_to_domain, &mr_data);
         if ( ret < 0 )
             return ret;
     }
@@ -1095,7 +1071,8 @@ static int map_device_children(struct domain *d,
  *  - Assign the device to the guest if it's protected by an IOMMU
  *  - Map the IRQs and iomem regions to DOM0
  */
-static int handle_device(struct domain *d, struct dt_device_node *dev)
+static int handle_device(struct domain *d, struct dt_device_node *dev,
+                         p2m_type_t p2mt)
 {
     unsigned int nirq;
     unsigned int naddr;
@@ -1108,12 +1085,12 @@ static int handle_device(struct domain *d, struct dt_device_node *dev)
     nirq = dt_number_of_irq(dev);
     naddr = dt_number_of_address(dev);
 
-    DPRINT("%s passthrough = %d nirq = %d naddr = %u\n", dt_node_full_name(dev),
-           need_mapping, nirq, naddr);
+    dt_dprintk("%s passthrough = %d nirq = %d naddr = %u\n",
+               dt_node_full_name(dev), need_mapping, nirq, naddr);
 
     if ( dt_device_is_protected(dev) && need_mapping )
     {
-        DPRINT("%s setup iommu\n", dt_node_full_name(dev));
+        dt_dprintk("%s setup iommu\n", dt_node_full_name(dev));
         res = iommu_assign_dt_device(d, dev);
         if ( res )
         {
@@ -1140,8 +1117,8 @@ static int handle_device(struct domain *d, struct dt_device_node *dev)
          */
         if ( rirq.controller != dt_interrupt_controller )
         {
-            DPRINT("irq %u not connected to primary controller."
-                   "Connected to %s\n", i, dt_node_full_name(rirq.controller));
+            dt_dprintk("irq %u not connected to primary controller. Connected to %s\n",
+                      i, dt_node_full_name(rirq.controller));
             continue;
         }
 
@@ -1153,7 +1130,7 @@ static int handle_device(struct domain *d, struct dt_device_node *dev)
             return res;
         }
 
-        res = map_irq_to_domain(dev, d, res);
+        res = map_irq_to_domain(d, res, need_mapping, dt_node_name(dev));
         if ( res )
             return res;
     }
@@ -1161,6 +1138,7 @@ static int handle_device(struct domain *d, struct dt_device_node *dev)
     /* Give permission and map MMIOs */
     for ( i = 0; i < naddr; i++ )
     {
+        struct map_range_data mr_data = { .d = d, .p2mt = p2mt };
         res = dt_device_get_address(dev, i, &addr, &size);
         if ( res )
         {
@@ -1169,20 +1147,36 @@ static int handle_device(struct domain *d, struct dt_device_node *dev)
             return res;
         }
 
-        res = map_range_to_domain(dev, addr, size, d);
+        res = map_range_to_domain(dev, addr, size, &mr_data);
         if ( res )
             return res;
     }
 
-    res = map_device_children(d, dev);
+    res = map_device_children(d, dev, p2mt);
     if ( res )
         return res;
 
     return 0;
 }
 
+static p2m_type_t lookup_map_attr(struct dt_device_node *node,
+                                  p2m_type_t parent_p2mt)
+{
+    const struct dt_device_match *r;
+
+    /* Search and if nothing matches, use the parent's attributes.  */
+    r = dt_match_node(dev_map_attrs, node);
+
+    /*
+     * If this node does not dictate specific mapping attributes,
+     * it inherits its parent's attributes.
+     */
+    return r ? (uintptr_t) r->data : parent_p2mt;
+}
+
 static int handle_node(struct domain *d, struct kernel_info *kinfo,
-                       struct dt_device_node *node)
+                       struct dt_device_node *node,
+                       p2m_type_t p2mt)
 {
     static const struct dt_device_match skip_matches[] __initconst =
     {
@@ -1191,8 +1185,10 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
         DT_MATCH_COMPATIBLE("multiboot,module"),
         DT_MATCH_COMPATIBLE("arm,psci"),
         DT_MATCH_COMPATIBLE("arm,psci-0.2"),
+        DT_MATCH_COMPATIBLE("arm,psci-1.0"),
         DT_MATCH_COMPATIBLE("arm,cortex-a7-pmu"),
         DT_MATCH_COMPATIBLE("arm,cortex-a15-pmu"),
+        DT_MATCH_COMPATIBLE("arm,cortex-a53-edac"),
         DT_MATCH_COMPATIBLE("arm,armv8-pmuv3"),
         DT_MATCH_PATH("/cpus"),
         DT_MATCH_TYPE("memory"),
@@ -1205,6 +1201,13 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
         DT_MATCH_TIMER,
         { /* sentinel */ },
     };
+    static const struct dt_device_match reserved_matches[] __initconst =
+    {
+        DT_MATCH_PATH("/psci"),
+        DT_MATCH_PATH("/memory"),
+        DT_MATCH_PATH("/hypervisor"),
+        { /* sentinel */ },
+    };
     struct dt_device_node *child;
     int res;
     const char *name;
@@ -1212,22 +1215,24 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
 
     path = dt_node_full_name(node);
 
-    DPRINT("handle %s\n", path);
+    dt_dprintk("handle %s\n", path);
 
     /* Skip theses nodes and the sub-nodes */
     if ( dt_match_node(skip_matches, node) )
     {
-        DPRINT("  Skip it (matched)\n");
+        dt_dprintk("  Skip it (matched)\n");
         return 0;
     }
     if ( platform_device_is_blacklisted(node) )
     {
-        DPRINT("  Skip it (blacklisted)\n");
+        dt_dprintk("  Skip it (blacklisted)\n");
         return 0;
     }
 
-    /* Replace these nodes with our own. Note that the original may be
-     * used_by DOMID_XEN so this check comes first. */
+    /*
+     * Replace these nodes with our own. Note that the original may be
+     * used_by DOMID_XEN so this check comes first.
+     */
     if ( device_get_class(node) == DEVICE_GIC )
         return make_gic_node(d, kinfo->fdt, node);
     if ( dt_match_node(timer_matches, node) )
@@ -1236,20 +1241,31 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
     /* Skip nodes used by Xen */
     if ( dt_device_used_by(node) == DOMID_XEN )
     {
-        DPRINT("  Skip it (used by Xen)\n");
+        dt_dprintk("  Skip it (used by Xen)\n");
         return 0;
     }
 
-    /* Even if the IOMMU device is not used by Xen, it should not be
+    /*
+     * Even if the IOMMU device is not used by Xen, it should not be
      * passthrough to DOM0
      */
     if ( device_get_class(node) == DEVICE_IOMMU )
     {
-        DPRINT(" IOMMU, skip it\n");
+        dt_dprintk(" IOMMU, skip it\n");
         return 0;
     }
 
-    res = handle_device(d, node);
+    /*
+     * Xen is using some path for its own purpose. Warn if a node
+     * already exists with the same path.
+     */
+    if ( dt_match_node(reserved_matches, node) )
+        printk(XENLOG_WARNING
+               "WARNING: Path %s is reserved, skip the node as we may re-use the path.\n",
+               path);
+
+    p2mt = lookup_map_attr(node, p2mt);
+    res = handle_device(d, node, p2mt);
     if ( res)
         return res;
 
@@ -1271,7 +1287,7 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
 
     for ( child = node->child; child != NULL; child = child->sibling )
     {
-        res = handle_node(d, kinfo, child);
+        res = handle_node(d, kinfo, child, p2mt);
         if ( res )
             return res;
     }
@@ -1303,6 +1319,7 @@ static int handle_node(struct domain *d, struct kernel_info *kinfo,
 
 static int prepare_dtb(struct domain *d, struct kernel_info *kinfo)
 {
+    const p2m_type_t default_p2mt = p2m_mmio_direct_dev;
     const void *fdt;
     int new_size;
     int ret;
@@ -1322,7 +1339,7 @@ static int prepare_dtb(struct domain *d, struct kernel_info *kinfo)
 
     fdt_finish_reservemap(kinfo->fdt);
 
-    ret = handle_node(d, kinfo, dt_host);
+    ret = handle_node(d, kinfo, dt_host, default_p2mt);
     if ( ret )
         goto err;
 
@@ -1338,6 +1355,617 @@ static int prepare_dtb(struct domain *d, struct kernel_info *kinfo)
     return -EINVAL;
 }
 
+#ifdef CONFIG_ACPI
+#define ACPI_DOM0_FDT_MIN_SIZE 4096
+
+static int acpi_iomem_deny_access(struct domain *d)
+{
+    acpi_status status;
+    struct acpi_table_spcr *spcr = NULL;
+    unsigned long gfn;
+    int rc;
+
+    /* Firstly permit full MMIO capabilities. */
+    rc = iomem_permit_access(d, 0UL, ~0UL);
+    if ( rc )
+        return rc;
+
+    /* TODO: Deny MMIO access for SMMU, GIC ITS */
+    status = acpi_get_table(ACPI_SIG_SPCR, 0,
+                            (struct acpi_table_header **)&spcr);
+
+    if ( ACPI_FAILURE(status) )
+    {
+        printk("Failed to get SPCR table\n");
+        return -EINVAL;
+    }
+
+    gfn = spcr->serial_port.address >> PAGE_SHIFT;
+    /* Deny MMIO access for UART */
+    rc = iomem_deny_access(d, gfn, gfn + 1);
+    if ( rc )
+        return rc;
+
+    /* Deny MMIO access for GIC regions */
+    return gic_iomem_deny_access(d);
+}
+
+static int acpi_route_spis(struct domain *d)
+{
+    int i, res;
+    struct irq_desc *desc;
+
+    /*
+     * Route the IRQ to hardware domain and permit the access.
+     * The interrupt type will be set by set by the hardware domain.
+     */
+    for( i = NR_LOCAL_IRQS; i < vgic_num_irqs(d); i++ )
+    {
+        /*
+         * TODO: Exclude the SPIs SMMU uses which should not be routed to
+         * the hardware domain.
+         */
+        desc = irq_to_desc(i);
+        if ( desc->action != NULL)
+            continue;
+
+        /* XXX: Shall we use a proper devname? */
+        res = map_irq_to_domain(d, i, true, "ACPI");
+        if ( res )
+            return res;
+    }
+
+    return 0;
+}
+
+static int acpi_make_chosen_node(const struct kernel_info *kinfo)
+{
+    int res;
+    const char *bootargs = NULL;
+    const struct bootmodule *mod = kinfo->kernel_bootmodule;
+    void *fdt = kinfo->fdt;
+
+    dt_dprintk("Create chosen node\n");
+    res = fdt_begin_node(fdt, "chosen");
+    if ( res )
+        return res;
+
+    if ( mod && mod->cmdline[0] )
+    {
+        bootargs = &mod->cmdline[0];
+        res = fdt_property(fdt, "bootargs", bootargs, strlen(bootargs) + 1);
+        if ( res )
+           return res;
+    }
+
+    /*
+     * If the bootloader provides an initrd, we must create a placeholder
+     * for the initrd properties. The values will be replaced later.
+     */
+    if ( mod && mod->size )
+    {
+        u64 a = 0;
+        res = fdt_property(kinfo->fdt, "linux,initrd-start", &a, sizeof(a));
+        if ( res )
+            return res;
+
+        res = fdt_property(kinfo->fdt, "linux,initrd-end", &a, sizeof(a));
+        if ( res )
+            return res;
+    }
+
+    res = fdt_end_node(fdt);
+
+    return res;
+}
+
+static int acpi_make_hypervisor_node(const struct kernel_info *kinfo,
+                                     struct membank tbl_add[])
+{
+    const char compat[] =
+        "xen,xen-"__stringify(XEN_VERSION)"."__stringify(XEN_SUBVERSION)"\0"
+        "xen,xen";
+    int res;
+    /* Convenience alias */
+    void *fdt = kinfo->fdt;
+
+    dt_dprintk("Create hypervisor node\n");
+
+    /* See linux Documentation/devicetree/bindings/arm/xen.txt */
+    res = fdt_begin_node(fdt, "hypervisor");
+    if ( res )
+        return res;
+
+    /* Cannot use fdt_property_string due to embedded nulls */
+    res = fdt_property(fdt, "compatible", compat, sizeof(compat));
+    if ( res )
+        return res;
+
+    res = acpi_make_efi_nodes(fdt, tbl_add);
+    if ( res )
+        return res;
+
+    res = fdt_end_node(fdt);
+
+    return res;
+}
+
+/*
+ * Prepare a minimal DTB for Dom0 which contains bootargs, initrd, memory
+ * information, EFI table.
+ */
+static int create_acpi_dtb(struct kernel_info *kinfo, struct membank tbl_add[])
+{
+    int new_size;
+    int ret;
+
+    dt_dprintk("Prepare a min DTB for DOM0\n");
+
+    /* Allocate min size for DT */
+    new_size = ACPI_DOM0_FDT_MIN_SIZE;
+    kinfo->fdt = xmalloc_bytes(new_size);
+
+    if ( kinfo->fdt == NULL )
+        return -ENOMEM;
+
+    /* Create a new empty DT for DOM0 */
+    ret = fdt_create(kinfo->fdt, new_size);
+    if ( ret < 0 )
+        goto err;
+
+    ret = fdt_finish_reservemap(kinfo->fdt);
+    if ( ret < 0 )
+        goto err;
+
+    ret = fdt_begin_node(kinfo->fdt, "/");
+    if ( ret < 0 )
+        goto err;
+
+    ret = fdt_property_cell(kinfo->fdt, "#address-cells", 2);
+    if ( ret )
+        return ret;
+
+    ret = fdt_property_cell(kinfo->fdt, "#size-cells", 1);
+    if ( ret )
+        return ret;
+
+    /* Create a chosen node for DOM0 */
+    ret = acpi_make_chosen_node(kinfo);
+    if ( ret )
+        goto err;
+
+    ret = acpi_make_hypervisor_node(kinfo, tbl_add);
+    if ( ret )
+        goto err;
+
+    ret = fdt_end_node(kinfo->fdt);
+    if ( ret < 0 )
+        goto err;
+
+    ret = fdt_finish(kinfo->fdt);
+    if ( ret < 0 )
+        goto err;
+
+    return 0;
+
+  err:
+    printk("Device tree generation failed (%d).\n", ret);
+    xfree(kinfo->fdt);
+    return -EINVAL;
+}
+
+static void acpi_map_other_tables(struct domain *d)
+{
+    int i;
+    unsigned long res;
+    u64 addr, size;
+
+    /* Map all ACPI tables to Dom0 using 1:1 mappings. */
+    for( i = 0; i < acpi_gbl_root_table_list.count; i++ )
+    {
+        addr = acpi_gbl_root_table_list.tables[i].address;
+        size = acpi_gbl_root_table_list.tables[i].length;
+        res = map_regions_p2mt(d,
+                               _gfn(paddr_to_pfn(addr)),
+                               DIV_ROUND_UP(size, PAGE_SIZE),
+                               _mfn(paddr_to_pfn(addr)),
+                               p2m_mmio_direct_c);
+        if ( res )
+        {
+             panic(XENLOG_ERR "Unable to map ACPI region 0x%"PRIx64
+                   " - 0x%"PRIx64" in domain \n",
+                   addr & PAGE_MASK, PAGE_ALIGN(addr + size) - 1);
+        }
+    }
+}
+
+static int acpi_create_rsdp(struct domain *d, struct membank tbl_add[])
+{
+
+    struct acpi_table_rsdp *rsdp = NULL;
+    u64 addr;
+    u64 table_size = sizeof(struct acpi_table_rsdp);
+    u8 *base_ptr;
+    u8 checksum;
+
+    addr = acpi_os_get_root_pointer();
+    if ( !addr  )
+    {
+        printk("Unable to get acpi root pointer\n");
+        return -EINVAL;
+    }
+    rsdp = acpi_os_map_memory(addr, table_size);
+    base_ptr = d->arch.efi_acpi_table
+               + acpi_get_table_offset(tbl_add, TBL_RSDP);
+    ACPI_MEMCPY(base_ptr, rsdp, table_size);
+    acpi_os_unmap_memory(rsdp, table_size);
+
+    rsdp = (struct acpi_table_rsdp *)base_ptr;
+    /* Replace xsdt_physical_address */
+    rsdp->xsdt_physical_address = tbl_add[TBL_XSDT].start;
+    checksum = acpi_tb_checksum(ACPI_CAST_PTR(u8, rsdp), table_size);
+    rsdp->checksum = rsdp->checksum - checksum;
+
+    tbl_add[TBL_RSDP].start = d->arch.efi_acpi_gpa
+                              + acpi_get_table_offset(tbl_add, TBL_RSDP);
+    tbl_add[TBL_RSDP].size = table_size;
+
+    return 0;
+}
+
+static void acpi_xsdt_modify_entry(u64 entry[], unsigned long entry_count,
+                                   char *signature, u64 addr)
+{
+    int i;
+    struct acpi_table_header *table;
+    u64 size = sizeof(struct acpi_table_header);
+
+    for( i = 0; i < entry_count; i++ )
+    {
+        table = acpi_os_map_memory(entry[i], size);
+        if ( ACPI_COMPARE_NAME(table->signature, signature) )
+        {
+            entry[i] = addr;
+            acpi_os_unmap_memory(table, size);
+            break;
+        }
+        acpi_os_unmap_memory(table, size);
+    }
+}
+
+static int acpi_create_xsdt(struct domain *d, struct membank tbl_add[])
+{
+    struct acpi_table_header *table = NULL;
+    struct acpi_table_rsdp *rsdp_tbl;
+    struct acpi_table_xsdt *xsdt = NULL;
+    u64 table_size, addr;
+    unsigned long entry_count;
+    u8 *base_ptr;
+    u8 checksum;
+
+    addr = acpi_os_get_root_pointer();
+    if ( !addr )
+    {
+        printk("Unable to get acpi root pointer\n");
+        return -EINVAL;
+    }
+    rsdp_tbl = acpi_os_map_memory(addr, sizeof(struct acpi_table_rsdp));
+    table = acpi_os_map_memory(rsdp_tbl->xsdt_physical_address,
+                               sizeof(struct acpi_table_header));
+
+    /* Add place for STAO table in XSDT table */
+    table_size = table->length + sizeof(u64);
+    entry_count = (table->length - sizeof(struct acpi_table_header))
+                  / sizeof(u64);
+    base_ptr = d->arch.efi_acpi_table
+               + acpi_get_table_offset(tbl_add, TBL_XSDT);
+    ACPI_MEMCPY(base_ptr, table, table->length);
+    acpi_os_unmap_memory(table, sizeof(struct acpi_table_header));
+    acpi_os_unmap_memory(rsdp_tbl, sizeof(struct acpi_table_rsdp));
+
+    xsdt = (struct acpi_table_xsdt *)base_ptr;
+    acpi_xsdt_modify_entry(xsdt->table_offset_entry, entry_count,
+                           ACPI_SIG_FADT, tbl_add[TBL_FADT].start);
+    acpi_xsdt_modify_entry(xsdt->table_offset_entry, entry_count,
+                           ACPI_SIG_MADT, tbl_add[TBL_MADT].start);
+    xsdt->table_offset_entry[entry_count] = tbl_add[TBL_STAO].start;
+
+    xsdt->header.length = table_size;
+    checksum = acpi_tb_checksum(ACPI_CAST_PTR(u8, xsdt), table_size);
+    xsdt->header.checksum -= checksum;
+
+    tbl_add[TBL_XSDT].start = d->arch.efi_acpi_gpa
+                              + acpi_get_table_offset(tbl_add, TBL_XSDT);
+    tbl_add[TBL_XSDT].size = table_size;
+
+    return 0;
+}
+
+static int acpi_create_stao(struct domain *d, struct membank tbl_add[])
+{
+    struct acpi_table_header *table = NULL;
+    struct acpi_table_stao *stao = NULL;
+    u32 table_size = sizeof(struct acpi_table_stao);
+    u32 offset = acpi_get_table_offset(tbl_add, TBL_STAO);
+    acpi_status status;
+    u8 *base_ptr, checksum;
+
+    /* Copy OEM and ASL compiler fields from another table, use MADT */
+    status = acpi_get_table(ACPI_SIG_MADT, 0, &table);
+
+    if ( ACPI_FAILURE(status) )
+    {
+        const char *msg = acpi_format_exception(status);
+
+        printk("STAO: Failed to get MADT table, %s\n", msg);
+        return -EINVAL;
+    }
+
+    base_ptr = d->arch.efi_acpi_table + offset;
+    ACPI_MEMCPY(base_ptr, table, sizeof(struct acpi_table_header));
+
+    stao = (struct acpi_table_stao *)base_ptr;
+    ACPI_MEMCPY(stao->header.signature, ACPI_SIG_STAO, 4);
+    stao->header.revision = 1;
+    stao->header.length = table_size;
+    stao->ignore_uart = 1;
+    checksum = acpi_tb_checksum(ACPI_CAST_PTR(u8, stao), table_size);
+    stao->header.checksum -= checksum;
+
+    tbl_add[TBL_STAO].start = d->arch.efi_acpi_gpa + offset;
+    tbl_add[TBL_STAO].size = table_size;
+
+    return 0;
+}
+
+static int acpi_create_madt(struct domain *d, struct membank tbl_add[])
+{
+    struct acpi_table_header *table = NULL;
+    struct acpi_table_madt *madt = NULL;
+    struct acpi_subtable_header *header;
+    struct acpi_madt_generic_distributor *gicd;
+    u32 table_size = sizeof(struct acpi_table_madt);
+    u32 offset = acpi_get_table_offset(tbl_add, TBL_MADT);
+    int ret;
+    acpi_status status;
+    u8 *base_ptr, checksum;
+
+    status = acpi_get_table(ACPI_SIG_MADT, 0, &table);
+
+    if ( ACPI_FAILURE(status) )
+    {
+        const char *msg = acpi_format_exception(status);
+
+        printk("Failed to get MADT table, %s\n", msg);
+        return -EINVAL;
+    }
+
+    base_ptr = d->arch.efi_acpi_table + offset;
+    ACPI_MEMCPY(base_ptr, table, table_size);
+
+    /* Add Generic Distributor. */
+    header = acpi_table_get_entry_madt(ACPI_MADT_TYPE_GENERIC_DISTRIBUTOR, 0);
+    if ( !header )
+    {
+        printk("Can't get GICD entry\n");
+        return -EINVAL;
+    }
+    gicd = container_of(header, struct acpi_madt_generic_distributor, header);
+    ACPI_MEMCPY(base_ptr + table_size, gicd,
+                sizeof(struct acpi_madt_generic_distributor));
+    table_size += sizeof(struct acpi_madt_generic_distributor);
+
+    /* Add other subtables. */
+    ret = gic_make_hwdom_madt(d, offset + table_size);
+    if ( ret < 0 )
+    {
+        printk("Failed to get other subtables\n");
+        return -EINVAL;
+    }
+    table_size += ret;
+
+    madt = (struct acpi_table_madt *)base_ptr;
+    madt->header.length = table_size;
+    checksum = acpi_tb_checksum(ACPI_CAST_PTR(u8, madt), table_size);
+    madt->header.checksum -= checksum;
+
+    tbl_add[TBL_MADT].start = d->arch.efi_acpi_gpa + offset;
+    tbl_add[TBL_MADT].size = table_size;
+
+    return 0;
+}
+
+static int acpi_create_fadt(struct domain *d, struct membank tbl_add[])
+{
+    struct acpi_table_header *table = NULL;
+    struct acpi_table_fadt *fadt = NULL;
+    u64 table_size;
+    acpi_status status;
+    u8 *base_ptr;
+    u8 checksum;
+
+    status = acpi_get_table(ACPI_SIG_FADT, 0, &table);
+
+    if ( ACPI_FAILURE(status) )
+    {
+        const char *msg = acpi_format_exception(status);
+
+        printk("Failed to get FADT table, %s\n", msg);
+        return -EINVAL;
+    }
+
+    table_size = table->length;
+    base_ptr = d->arch.efi_acpi_table
+               + acpi_get_table_offset(tbl_add, TBL_FADT);
+    ACPI_MEMCPY(base_ptr, table, table_size);
+    fadt = (struct acpi_table_fadt *)base_ptr;
+
+    /* Set PSCI_COMPLIANT and PSCI_USE_HVC */
+    fadt->arm_boot_flags |= (ACPI_FADT_PSCI_COMPLIANT | ACPI_FADT_PSCI_USE_HVC);
+    checksum = acpi_tb_checksum(ACPI_CAST_PTR(u8, fadt), table_size);
+    fadt->header.checksum -= checksum;
+
+    tbl_add[TBL_FADT].start = d->arch.efi_acpi_gpa
+                              + acpi_get_table_offset(tbl_add, TBL_FADT);
+    tbl_add[TBL_FADT].size = table_size;
+
+    return 0;
+}
+
+static int estimate_acpi_efi_size(struct domain *d, struct kernel_info *kinfo)
+{
+    size_t efi_size, acpi_size, madt_size;
+    u64 addr;
+    struct acpi_table_rsdp *rsdp_tbl;
+    struct acpi_table_header *table;
+
+    efi_size = estimate_efi_size(kinfo->mem.nr_banks);
+
+    acpi_size = ROUNDUP(sizeof(struct acpi_table_fadt), 8);
+    acpi_size += ROUNDUP(sizeof(struct acpi_table_stao), 8);
+
+    madt_size = sizeof(struct acpi_table_madt)
+                + sizeof(struct acpi_madt_generic_interrupt) * d->max_vcpus
+                + sizeof(struct acpi_madt_generic_distributor);
+    if ( d->arch.vgic.version == GIC_V3 )
+        madt_size += sizeof(struct acpi_madt_generic_redistributor)
+                     * d->arch.vgic.nr_regions;
+    acpi_size += ROUNDUP(madt_size, 8);
+
+    addr = acpi_os_get_root_pointer();
+    if ( !addr )
+    {
+        printk("Unable to get acpi root pointer\n");
+        return -EINVAL;
+    }
+
+    rsdp_tbl = acpi_os_map_memory(addr, sizeof(struct acpi_table_rsdp));
+    if ( !rsdp_tbl )
+    {
+        printk("Unable to map RSDP table\n");
+        return -EINVAL;
+    }
+
+    table = acpi_os_map_memory(rsdp_tbl->xsdt_physical_address,
+                               sizeof(struct acpi_table_header));
+    acpi_os_unmap_memory(rsdp_tbl, sizeof(struct acpi_table_rsdp));
+    if ( !table )
+    {
+        printk("Unable to map XSDT table\n");
+        return -EINVAL;
+    }
+
+    /* Add place for STAO table in XSDT table */
+    acpi_size += ROUNDUP(table->length + sizeof(u64), 8);
+    acpi_os_unmap_memory(table, sizeof(struct acpi_table_header));
+
+    acpi_size += ROUNDUP(sizeof(struct acpi_table_rsdp), 8);
+    d->arch.efi_acpi_len = PAGE_ALIGN(ROUNDUP(efi_size, 8)
+                                      + ROUNDUP(acpi_size, 8));
+
+    return 0;
+}
+
+static int prepare_acpi(struct domain *d, struct kernel_info *kinfo)
+{
+    int rc = 0;
+    int order;
+    struct membank tbl_add[TBL_MMAX] = {};
+
+    rc = estimate_acpi_efi_size(d, kinfo);
+    if ( rc != 0 )
+        return rc;
+
+    order = get_order_from_bytes(d->arch.efi_acpi_len);
+    d->arch.efi_acpi_table = alloc_xenheap_pages(order, 0);
+    if ( d->arch.efi_acpi_table == NULL )
+    {
+        printk("unable to allocate memory!\n");
+        return -ENOMEM;
+    }
+    memset(d->arch.efi_acpi_table, 0, d->arch.efi_acpi_len);
+
+    /*
+     * For ACPI, Dom0 doesn't use kinfo->gnttab_start to get the grant table
+     * region. So we use it as the ACPI table mapped address. Also it needs to
+     * check if the size of grant table region is enough for those ACPI tables.
+     */
+    d->arch.efi_acpi_gpa = kinfo->gnttab_start;
+    if ( kinfo->gnttab_size < d->arch.efi_acpi_len )
+    {
+        printk("The grant table region is not enough to fit the ACPI tables!\n");
+        return -EINVAL;
+    }
+
+    rc = acpi_create_fadt(d, tbl_add);
+    if ( rc != 0 )
+        return rc;
+
+    rc = acpi_create_madt(d, tbl_add);
+    if ( rc != 0 )
+        return rc;
+
+    rc = acpi_create_stao(d, tbl_add);
+    if ( rc != 0 )
+        return rc;
+
+    rc = acpi_create_xsdt(d, tbl_add);
+    if ( rc != 0 )
+        return rc;
+
+    rc = acpi_create_rsdp(d, tbl_add);
+    if ( rc != 0 )
+        return rc;
+
+    acpi_map_other_tables(d);
+    acpi_create_efi_system_table(d, tbl_add);
+    acpi_create_efi_mmap_table(d, &kinfo->mem, tbl_add);
+
+    /* Map the EFI and ACPI tables to Dom0 */
+    rc = map_regions_p2mt(d,
+                          _gfn(paddr_to_pfn(d->arch.efi_acpi_gpa)),
+                          PFN_UP(d->arch.efi_acpi_len),
+                          _mfn(paddr_to_pfn(virt_to_maddr(d->arch.efi_acpi_table))),
+                          p2m_mmio_direct_c);
+    if ( rc != 0 )
+    {
+        printk(XENLOG_ERR "Unable to map EFI/ACPI table 0x%"PRIx64
+               " - 0x%"PRIx64" in domain %d\n",
+               d->arch.efi_acpi_gpa & PAGE_MASK,
+               PAGE_ALIGN(d->arch.efi_acpi_gpa + d->arch.efi_acpi_len) - 1,
+               d->domain_id);
+        return rc;
+    }
+
+    /*
+     * Flush the cache for this region, otherwise DOM0 may read wrong data when
+     * the cache is disabled.
+     */
+    clean_and_invalidate_dcache_va_range(d->arch.efi_acpi_table,
+                                         d->arch.efi_acpi_len);
+
+    rc = create_acpi_dtb(kinfo, tbl_add);
+    if ( rc != 0 )
+        return rc;
+
+    rc = acpi_route_spis(d);
+    if ( rc != 0 )
+        return rc;
+
+    rc = acpi_iomem_deny_access(d);
+    if ( rc != 0 )
+        return rc;
+
+    return 0;
+}
+#else
+static int prepare_acpi(struct domain *d, struct kernel_info *kinfo)
+{
+    /* Only booting with ACPI will hit here */
+    BUG();
+    return -EINVAL;
+}
+#endif
 static void dtb_load(struct kernel_info *kinfo)
 {
     void * __user dtb_virt = (void * __user)(register_t)kinfo->dtb_paddr;
@@ -1420,6 +2048,7 @@ static void initrd_load(struct kernel_info *kinfo)
 static void evtchn_fixup(struct domain *d, struct kernel_info *kinfo)
 {
     int res, node;
+    u64 val;
     gic_interrupt_t intr;
 
     /*
@@ -1435,6 +2064,22 @@ static void evtchn_fixup(struct domain *d, struct kernel_info *kinfo)
     printk("Allocating PPI %u for event channel interrupt\n",
            d->arch.evtchn_irq);
 
+    /* Set the value of domain param HVM_PARAM_CALLBACK_IRQ */
+    val = MASK_INSR(HVM_PARAM_CALLBACK_TYPE_PPI,
+                    HVM_PARAM_CALLBACK_IRQ_TYPE_MASK);
+    /* Active-low level-sensitive  */
+    val |= MASK_INSR(HVM_PARAM_CALLBACK_TYPE_PPI_FLAG_LOW_LEVEL,
+                     HVM_PARAM_CALLBACK_TYPE_PPI_FLAG_MASK);
+    val |= d->arch.evtchn_irq;
+    d->arch.hvm_domain.params[HVM_PARAM_CALLBACK_IRQ] = val;
+
+    /*
+     * When booting Dom0 using ACPI, Dom0 can only get the event channel
+     * interrupt via hypercall.
+     */
+    if ( !acpi_disabled )
+        return;
+
     /* Fix up "interrupts" in /hypervisor node */
     node = fdt_path_offset(kinfo->fdt, "/hypervisor");
     if ( node < 0 )
@@ -1447,7 +2092,7 @@ static void evtchn_fixup(struct domain *d, struct kernel_info *kinfo)
      *  TODO: Handle properly the cpumask
      */
     set_interrupt_ppi(intr, d->arch.evtchn_irq, 0xf,
-                      DT_IRQ_TYPE_LEVEL_LOW);
+                      IRQ_TYPE_LEVEL_LOW);
     res = fdt_setprop_inplace(kinfo->fdt, node, "interrupts",
                               &intr, sizeof(intr));
     if ( res )
@@ -1524,7 +2169,16 @@ int construct_dom0(struct domain *d)
     allocate_memory(d, &kinfo);
     find_gnttab_region(d, &kinfo);
 
-    rc = prepare_dtb(d, &kinfo);
+    if ( acpi_disabled )
+        rc = prepare_dtb(d, &kinfo);
+    else
+        rc = prepare_acpi(d, &kinfo);
+
+    if ( rc < 0 )
+        return rc;
+
+    /* Map extra GIC MMIO, irqs and other hw stuffs to dom0. */
+    rc = gic_map_hwdom_extra_mappings(d);
     if ( rc < 0 )
         return rc;
 

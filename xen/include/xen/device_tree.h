@@ -17,7 +17,6 @@
 #include <xen/init.h>
 #include <xen/string.h>
 #include <xen/types.h>
-#include <xen/stdbool.h>
 #include <xen/list.h>
 
 #define DEVICE_TREE_MAX_DEPTH 16
@@ -30,13 +29,25 @@ struct dt_device_match {
     const char *type;
     const char *compatible;
     const bool_t not_available;
+    /*
+     * Property name to search for. We only search for the property's
+     * existence.
+     */
+    const char *prop;
     const void *data;
 };
 
-#define DT_MATCH_PATH(p)                { .path = p }
-#define DT_MATCH_TYPE(typ)              { .type = typ }
-#define DT_MATCH_COMPATIBLE(compat)     { .compatible = compat }
-#define DT_MATCH_NOT_AVAILABLE()        { .not_available = 1 }
+#define __DT_MATCH_PATH(p)              .path = p
+#define __DT_MATCH_TYPE(typ)            .type = typ
+#define __DT_MATCH_COMPATIBLE(compat)   .compatible = compat
+#define __DT_MATCH_NOT_AVAILABLE()      .not_available = 1
+#define __DT_MATCH_PROP(p)              .prop = p
+
+#define DT_MATCH_PATH(p)                { __DT_MATCH_PATH(p) }
+#define DT_MATCH_TYPE(typ)              { __DT_MATCH_TYPE(typ) }
+#define DT_MATCH_COMPATIBLE(compat)     { __DT_MATCH_COMPATIBLE(compat) }
+#define DT_MATCH_NOT_AVAILABLE()        { __DT_MATCH_NOT_AVAILABLE() }
+#define DT_MATCH_PROP(p)                { __DT_MATCH_PROP(p) }
 
 typedef u32 dt_phandle;
 
@@ -105,33 +116,33 @@ struct dt_phandle_args {
 /**
  * IRQ line type.
  *
- * DT_IRQ_TYPE_NONE            - default, unspecified type
- * DT_IRQ_TYPE_EDGE_RISING     - rising edge triggered
- * DT_IRQ_TYPE_EDGE_FALLING    - falling edge triggered
- * DT_IRQ_TYPE_EDGE_BOTH       - rising and falling edge triggered
- * DT_IRQ_TYPE_LEVEL_HIGH      - high level triggered
- * DT_IRQ_TYPE_LEVEL_LOW       - low level triggered
- * DT_IRQ_TYPE_LEVEL_MASK      - Mask to filter out the level bits
- * DT_IRQ_TYPE_SENSE_MASK      - Mask for all the above bits
- * DT_IRQ_TYPE_INVALID         - Use to initialize the type
+ * IRQ_TYPE_NONE            - default, unspecified type
+ * IRQ_TYPE_EDGE_RISING     - rising edge triggered
+ * IRQ_TYPE_EDGE_FALLING    - falling edge triggered
+ * IRQ_TYPE_EDGE_BOTH       - rising and falling edge triggered
+ * IRQ_TYPE_LEVEL_HIGH      - high level triggered
+ * IRQ_TYPE_LEVEL_LOW       - low level triggered
+ * IRQ_TYPE_LEVEL_MASK      - Mask to filter out the level bits
+ * IRQ_TYPE_SENSE_MASK      - Mask for all the above bits
+ * IRQ_TYPE_INVALID         - Use to initialize the type
  */
-#define DT_IRQ_TYPE_NONE           0x00000000
-#define DT_IRQ_TYPE_EDGE_RISING    0x00000001
-#define DT_IRQ_TYPE_EDGE_FALLING   0x00000002
-#define DT_IRQ_TYPE_EDGE_BOTH                           \
-    (DT_IRQ_TYPE_EDGE_FALLING | DT_IRQ_TYPE_EDGE_RISING)
-#define DT_IRQ_TYPE_LEVEL_HIGH     0x00000004
-#define DT_IRQ_TYPE_LEVEL_LOW      0x00000008
-#define DT_IRQ_TYPE_LEVEL_MASK                          \
-    (DT_IRQ_TYPE_LEVEL_LOW | DT_IRQ_TYPE_LEVEL_HIGH)
-#define DT_IRQ_TYPE_SENSE_MASK     0x0000000f
+#define IRQ_TYPE_NONE           0x00000000
+#define IRQ_TYPE_EDGE_RISING    0x00000001
+#define IRQ_TYPE_EDGE_FALLING   0x00000002
+#define IRQ_TYPE_EDGE_BOTH                           \
+    (IRQ_TYPE_EDGE_FALLING | IRQ_TYPE_EDGE_RISING)
+#define IRQ_TYPE_LEVEL_HIGH     0x00000004
+#define IRQ_TYPE_LEVEL_LOW      0x00000008
+#define IRQ_TYPE_LEVEL_MASK                          \
+    (IRQ_TYPE_LEVEL_LOW | IRQ_TYPE_LEVEL_HIGH)
+#define IRQ_TYPE_SENSE_MASK     0x0000000f
 
-#define DT_IRQ_TYPE_INVALID        0x00000010
+#define IRQ_TYPE_INVALID        0x00000010
 
 /**
  * dt_irq - describe an IRQ in the device tree
  * @irq: IRQ number
- * @type: IRQ type (see DT_IRQ_TYPE_*)
+ * @type: IRQ type (see IRQ_TYPE_*)
  *
  * This structure is returned when an interrupt is mapped.
  */
@@ -140,12 +151,12 @@ struct dt_irq {
     unsigned int type;
 };
 
-/* If type == DT_IRQ_TYPE_NONE, assume we use level triggered */
+/* If type == IRQ_TYPE_NONE, assume we use level triggered */
 static inline bool_t dt_irq_is_level_triggered(const struct dt_irq *irq)
 {
     unsigned int type = irq->type;
 
-    return (type & DT_IRQ_TYPE_LEVEL_MASK) || (type == DT_IRQ_TYPE_NONE);
+    return (type & IRQ_TYPE_LEVEL_MASK) || (type == IRQ_TYPE_NONE);
 }
 
 /**
@@ -172,6 +183,10 @@ typedef int (*device_tree_node_func)(const void *fdt,
                                      void *data);
 
 extern const void *device_tree_flattened;
+
+int device_tree_for_each_node(const void *fdt,
+                                     device_tree_node_func func,
+                                     void *data);
 
 /**
  * dt_unflatten_host_device_tree - Unflatten the host device tree
@@ -584,6 +599,25 @@ int dt_n_size_cells(const struct dt_device_node *np);
 int dt_n_addr_cells(const struct dt_device_node *np);
 
 /**
+ * dt_child_n_size_cells - Helper to retrieve the number of cell for the size
+ * @parent: parent of the child to get the value
+ *
+ * This function retrieves for a given device-tree node the number of
+ * cell for the size field of there child
+ */
+int dt_child_n_size_cells(const struct dt_device_node *parent);
+
+/**
+ * dt_child_n_addr_cells - Helper to retrieve the number of cell for the
+ * address
+ * @parent: parent of the child to get the value
+ *
+ * This function retrieves for a given device-tree node the number of
+ * cell for the address field of there child
+ */
+int dt_child_n_addr_cells(const struct dt_device_node *parent);
+
+/**
  * dt_device_is_available - Check if a device is available for use
  *
  * @device: Node to check for availability
@@ -655,6 +689,20 @@ void dt_set_range(__be32 **cellp, const struct dt_device_node *np,
                   u64 address, u64 size);
 
 /**
+ * dt_child_set_range - Write range into a series of cells
+ *
+ * @cellp: Pointer to cells
+ * @parent: Parent node which contains the encode for the address and the size
+ * @address: Start of range
+ * @size: Size of the range
+ *
+ * Write a range into a series of cells and update cellp to point to the
+ * cell just after.
+ */
+void dt_child_set_range(__be32 **cellp, const struct dt_device_node *parent,
+                        u64 address, u64 size);
+
+/**
  * dt_get_range - Read a range (address/size) from a series of cells
  *
  * @cellp: Pointer to cells
@@ -715,6 +763,15 @@ int dt_parse_phandle_with_args(const struct dt_device_node *np,
                                const char *list_name,
                                const char *cells_name, int index,
                                struct dt_phandle_args *out_args);
+
+#ifdef CONFIG_DEVICE_TREE_DEBUG
+#define dt_dprintk(fmt, args...)  \
+    printk(XENLOG_DEBUG fmt, ## args)
+#else
+static inline void
+__attribute__ ((__format__ (__printf__, 1, 2)))
+dt_dprintk(const char *fmt, ...) {}
+#endif
 
 #endif /* __XEN_DEVICE_TREE_H */
 

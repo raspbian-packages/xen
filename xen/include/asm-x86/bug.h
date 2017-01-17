@@ -10,6 +10,8 @@
 #define BUGFRAME_bug    2
 #define BUGFRAME_assert 3
 
+#define BUGFRAME_NR     4
+
 #ifndef __ASSEMBLY__
 
 struct bug_frame {
@@ -29,23 +31,31 @@ struct bug_frame {
                       ((1 << BUG_LINE_LO_WIDTH) - 1)))
 #define bug_msg(b) ((const char *)(b) + (b)->msg_disp[1])
 
+#define _ASM_BUGFRAME_TEXT(second_frame)                                     \
+    ".Lbug%=: ud2\n"                                                         \
+    ".pushsection .bug_frames.%c[bf_type], \"a\", @progbits\n"               \
+    ".p2align 2\n"                                                           \
+    ".Lfrm%=:\n"                                                             \
+    ".long (.Lbug%= - .Lfrm%=) + %c[bf_line_hi]\n"                           \
+    ".long (%c[bf_ptr] - .Lfrm%=) + %c[bf_line_lo]\n"                        \
+    ".if " #second_frame "\n"                                                \
+    ".long 0, %c[bf_msg] - .Lfrm%=\n"                                        \
+    ".endif\n"                                                               \
+    ".popsection\n"                                                          \
+
+#define _ASM_BUGFRAME_INFO(type, line, ptr, msg)                             \
+    [bf_type]    "i" (type),                                                 \
+    [bf_ptr]     "i" (ptr),                                                  \
+    [bf_msg]     "i" (msg),                                                  \
+    [bf_line_lo] "i" ((line & ((1 << BUG_LINE_LO_WIDTH) - 1))                \
+                      << BUG_DISP_WIDTH),                                    \
+    [bf_line_hi] "i" (((line) >> BUG_LINE_LO_WIDTH) << BUG_DISP_WIDTH)
+
 #define BUG_FRAME(type, line, ptr, second_frame, msg) do {                   \
     BUILD_BUG_ON((line) >> (BUG_LINE_LO_WIDTH + BUG_LINE_HI_WIDTH));         \
-    asm volatile ( ".Lbug%=: ud2\n"                                          \
-                   ".pushsection .bug_frames.%c0, \"a\", @progbits\n"        \
-                   ".p2align 2\n"                                            \
-                   ".Lfrm%=:\n"                                              \
-                   ".long (.Lbug%= - .Lfrm%=) + %c4\n"                       \
-                   ".long (%c1 - .Lfrm%=) + %c3\n"                           \
-                   ".if " #second_frame "\n"                                 \
-                   ".long 0, %c2 - .Lfrm%=\n"                                \
-                   ".endif\n"                                                \
-                   ".popsection"                                             \
-                   :                                                         \
-                   : "i" (type), "i" (ptr), "i" (msg),                       \
-                     "i" ((line & ((1 << BUG_LINE_LO_WIDTH) - 1))            \
-                          << BUG_DISP_WIDTH),                                \
-                     "i" (((line) >> BUG_LINE_LO_WIDTH) << BUG_DISP_WIDTH)); \
+    BUILD_BUG_ON((type) >= BUGFRAME_NR);                                     \
+    asm volatile ( _ASM_BUGFRAME_TEXT(second_frame)                          \
+                   :: _ASM_BUGFRAME_INFO(type, line, ptr, msg) );            \
 } while (0)
 
 
@@ -76,6 +86,11 @@ extern const struct bug_frame __start_bug_frames[],
  * in .rodata
  */
     .macro BUG_FRAME type, line, file_str, second_frame, msg
+
+    .if \type >= BUGFRAME_NR
+        .error "Invalid BUGFRAME index"
+    .endif
+
     .L\@ud: ud2a
 
     .pushsection .rodata.str1, "aMS", @progbits, 1
@@ -83,6 +98,7 @@ extern const struct bug_frame __start_bug_frames[],
     .popsection
 
     .pushsection .bug_frames.\type, "a", @progbits
+        .p2align 2
         .L\@bf:
         .long (.L\@ud - .L\@bf) + \
                ((\line >> BUG_LINE_LO_WIDTH) << BUG_DISP_WIDTH)

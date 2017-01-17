@@ -27,6 +27,7 @@
 #include <xen/softirq.h>
 #include <xen/list.h>
 #include <xen/device_tree.h>
+#include <xen/acpi.h>
 #include <asm/p2m.h>
 #include <asm/domain.h>
 #include <asm/platform.h>
@@ -34,6 +35,7 @@
 #include <asm/io.h>
 #include <asm/gic.h>
 #include <asm/vgic.h>
+#include <asm/acpi.h>
 
 static void gic_restore_pending_irqs(struct vcpu *v);
 
@@ -94,24 +96,29 @@ void gic_restore_state(struct vcpu *v)
     gic_restore_pending_irqs(v);
 }
 
-/*
- * needs to be called with a valid cpu_mask, ie each cpu in the mask has
- * already called gic_cpu_init
- * - desc.lock must be held
- * - arch.type must be valid (i.e != DT_IRQ_TYPE_INVALID)
- */
-static void gic_set_irq_properties(struct irq_desc *desc,
-                                   const cpumask_t *cpu_mask,
-                                   unsigned int priority)
+/* desc->irq needs to be disabled before calling this function */
+void gic_set_irq_type(struct irq_desc *desc, unsigned int type)
 {
-   gic_hw_ops->set_irq_properties(desc, cpu_mask, priority);
+    /*
+     * IRQ must be disabled before configuring it (see 4.3.13 in ARM IHI
+     * 0048B.b). We rely on the caller to do it.
+     */
+    ASSERT(test_bit(_IRQ_DISABLED, &desc->status));
+    ASSERT(spin_is_locked(&desc->lock));
+    ASSERT(type != IRQ_TYPE_INVALID);
+
+    gic_hw_ops->set_irq_type(desc, type);
+}
+
+static void gic_set_irq_priority(struct irq_desc *desc, unsigned int priority)
+{
+    gic_hw_ops->set_irq_priority(desc, priority);
 }
 
 /* Program the GIC to route an interrupt to the host (i.e. Xen)
  * - needs to be called with desc.lock held
  */
-void gic_route_irq_to_xen(struct irq_desc *desc, const cpumask_t *cpu_mask,
-                          unsigned int priority)
+void gic_route_irq_to_xen(struct irq_desc *desc, unsigned int priority)
 {
     ASSERT(priority <= 0xff);     /* Only 8 bits of priority */
     ASSERT(desc->irq < gic_number_lines());/* Can't route interrupts that don't exist */
@@ -120,7 +127,8 @@ void gic_route_irq_to_xen(struct irq_desc *desc, const cpumask_t *cpu_mask,
 
     desc->handler = gic_hw_ops->gic_host_irq_type;
 
-    gic_set_irq_properties(desc, cpu_mask, priority);
+    gic_set_irq_type(desc, desc->arch.type);
+    gic_set_irq_priority(desc, priority);
 }
 
 /* Program the GIC to route an interrupt to a guest
@@ -152,7 +160,9 @@ int gic_route_irq_to_guest(struct domain *d, unsigned int virq,
     desc->handler = gic_hw_ops->gic_guest_irq_type;
     set_bit(_IRQ_GUEST, &desc->status);
 
-    gic_set_irq_properties(desc, cpumask_of(v_target->processor), priority);
+    if ( !irq_type_set_by_domain(d) )
+        gic_set_irq_type(desc, desc->arch.type);
+    gic_set_irq_priority(desc, priority);
 
     p->desc = desc;
     res = 0;
@@ -223,15 +233,21 @@ int gic_irq_xlate(const u32 *intspec, unsigned int intsize,
         *out_hwirq += 16;
 
     if ( out_type )
-        *out_type = intspec[2] & DT_IRQ_TYPE_SENSE_MASK;
+        *out_type = intspec[2] & IRQ_TYPE_SENSE_MASK;
 
     return 0;
 }
 
-/* Find the interrupt controller and set up the callback to translate
- * device tree IRQ.
- */
-void __init gic_preinit(void)
+/* Map extra GIC MMIO, irqs and other hw stuffs to the hardware domain. */
+int gic_map_hwdom_extra_mappings(struct domain *d)
+{
+    if ( gic_hw_ops->map_hwdom_extra_mappings )
+        return gic_hw_ops->map_hwdom_extra_mappings(d);
+
+    return 0;
+}
+
+static void __init gic_dt_preinit(void)
 {
     int rc;
     struct dt_device_node *node;
@@ -259,6 +275,36 @@ void __init gic_preinit(void)
     /* Set the GIC as the primary interrupt controller */
     dt_interrupt_controller = node;
     dt_device_set_used_by(node, DOMID_XEN);
+}
+
+#ifdef CONFIG_ACPI
+static void __init gic_acpi_preinit(void)
+{
+    struct acpi_subtable_header *header;
+    struct acpi_madt_generic_distributor *dist;
+
+    header = acpi_table_get_entry_madt(ACPI_MADT_TYPE_GENERIC_DISTRIBUTOR, 0);
+    if ( !header )
+        panic("No valid GICD entries exists");
+
+    dist = container_of(header, struct acpi_madt_generic_distributor, header);
+
+    if ( acpi_device_init(DEVICE_GIC, NULL, dist->version) )
+        panic("Unable to find compatible GIC in the ACPI table");
+}
+#else
+static void __init gic_acpi_preinit(void) { }
+#endif
+
+/* Find the interrupt controller and set up the callback to translate
+ * device tree or ACPI IRQ.
+ */
+void __init gic_preinit(void)
+{
+    if ( acpi_disabled )
+        gic_dt_preinit();
+    else
+        gic_acpi_preinit();
 }
 
 /* Set up the GIC */
@@ -305,7 +351,7 @@ void smp_send_state_dump(unsigned int cpu)
 }
 
 /* Set up the per-CPU parts of the GIC for a secondary CPU */
-void __cpuinit gic_init_secondary_cpu(void)
+void gic_init_secondary_cpu(void)
 {
     gic_hw_ops->secondary_init();
     /* Clear LR mask for secondary cpus */
@@ -695,17 +741,29 @@ void gic_dump_info(struct vcpu *v)
     }
 }
 
-void __cpuinit init_maintenance_interrupt(void)
+void init_maintenance_interrupt(void)
 {
     request_irq(gic_hw_ops->info->maintenance_irq, 0, maintenance_interrupt,
                 "irq-maintenance", NULL);
 }
 
 int gic_make_hwdom_dt_node(const struct domain *d,
-                           const struct dt_device_node *node,
+                           const struct dt_device_node *gic,
                            void *fdt)
 {
-    return gic_hw_ops->make_hwdom_dt_node(d, node, fdt);
+    ASSERT(gic == dt_interrupt_controller);
+
+    return gic_hw_ops->make_hwdom_dt_node(d, gic, fdt);
+}
+
+int gic_make_hwdom_madt(const struct domain *d, u32 offset)
+{
+    return gic_hw_ops->make_hwdom_madt(d, offset);
+}
+
+int gic_iomem_deny_access(const struct domain *d)
+{
+    return gic_hw_ops->iomem_deny_access(d);
 }
 
 /*

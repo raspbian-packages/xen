@@ -7,6 +7,7 @@
 #include <xen/libfdt/libfdt.h>
 #include <asm/setup.h>
 #include <asm/smp.h>
+#include "efi-dom0.h"
 
 void noreturn efi_xen_start(void *fdt_ptr, uint32_t fdt_size);
 void __flush_dcache_area(const void *vaddr, unsigned long size);
@@ -129,6 +130,9 @@ static EFI_STATUS __init efi_process_memory_map_bootinfo(EFI_MEMORY_DESCRIPTOR *
 {
     int Index;
     int i = 0;
+#ifdef CONFIG_ACPI
+    int j = 0;
+#endif
     EFI_MEMORY_DESCRIPTOR *desc_ptr = map;
 
     for ( Index = 0; Index < (mmap_size / desc_size); Index++ )
@@ -148,10 +152,27 @@ static EFI_STATUS __init efi_process_memory_map_bootinfo(EFI_MEMORY_DESCRIPTOR *
             bootinfo.mem.bank[i].size = desc_ptr->NumberOfPages * EFI_PAGE_SIZE;
             ++i;
         }
+#ifdef CONFIG_ACPI
+        else if ( desc_ptr->Type == EfiACPIReclaimMemory )
+        {
+            if ( j >= NR_MEM_BANKS )
+            {
+                PrintStr(L"Error: All " __stringify(NR_MEM_BANKS)
+                          " acpi meminfo mem banks exhausted.\r\n");
+                return EFI_LOAD_ERROR;
+            }
+            acpi_mem.bank[j].start = desc_ptr->PhysicalStart;
+            acpi_mem.bank[j].size  = desc_ptr->NumberOfPages * EFI_PAGE_SIZE;
+            ++j;
+        }
+#endif
         desc_ptr = NextMemoryDescriptor(desc_ptr, desc_size);
     }
 
     bootinfo.mem.nr_banks = i;
+#ifdef CONFIG_ACPI
+    acpi_mem.nr_banks = j;
+#endif
     return EFI_SUCCESS;
 }
 

@@ -93,6 +93,11 @@
 #define l3e_get_flags(x)           (get_pte_flags((x).l3))
 #define l4e_get_flags(x)           (get_pte_flags((x).l4))
 
+/* Get pte pkeys (unsigned int). */
+#define l1e_get_pkey(x)           get_pte_pkey((x).l1)
+#define l2e_get_pkey(x)           get_pte_pkey((x).l2)
+#define l3e_get_pkey(x)           get_pte_pkey((x).l3)
+
 /* Construct an empty pte. */
 #define l1e_empty()                ((l1_pgentry_t) { 0 })
 #define l2e_empty()                ((l2_pgentry_t) { 0 })
@@ -157,6 +162,9 @@ static inline l4_pgentry_t l4e_from_paddr(paddr_t pa, unsigned int flags)
 #define l3e_remove_flags(x, flags) ((x).l3 &= ~put_pte_flags(flags))
 #define l4e_remove_flags(x, flags) ((x).l4 &= ~put_pte_flags(flags))
 
+/* Flip flags in an existing L1 PTE. */
+#define l1e_flip_flags(x, flags)    ((x).l1 ^= put_pte_flags(flags))
+
 /* Check if a pte's page mapping or significant access flags have changed. */
 #define l1e_has_changed(x,y,flags) \
     ( !!(((x).l1 ^ (y).l1) & ((PADDR_MASK&PAGE_MASK)|put_pte_flags(flags))) )
@@ -206,13 +214,10 @@ typedef struct { u64 pfn; } pagetable_t;
 #define pagetable_null()        pagetable_from_pfn(0)
 
 void clear_page_sse2(void *);
-#define clear_page(_p)      (cpu_has_xmm2 ?                             \
-                             clear_page_sse2((void *)(_p)) :            \
-                             (void)memset((void *)(_p), 0, PAGE_SIZE))
 void copy_page_sse2(void *, const void *);
-#define copy_page(_t,_f)    (cpu_has_xmm2 ?                             \
-                             copy_page_sse2(_t, _f) :                   \
-                             (void)memcpy(_t, _f, PAGE_SIZE))
+
+#define clear_page(_p)      clear_page_sse2(_p)
+#define copy_page(_t, _f)   copy_page_sse2(_t, _f)
 
 /* Convert between Xen-heap virtual addresses and machine addresses. */
 #define __pa(x)             (virt_to_maddr(x))
@@ -286,8 +291,7 @@ extern l2_pgentry_t l2_xenmap[L2_PAGETABLE_ENTRIES],
     l2_bootmap[L2_PAGETABLE_ENTRIES];
 extern l3_pgentry_t l3_bootmap[L3_PAGETABLE_ENTRIES];
 extern l2_pgentry_t l2_identmap[4*L2_PAGETABLE_ENTRIES];
-extern l1_pgentry_t l1_identmap[L1_PAGETABLE_ENTRIES],
-    l1_fixmap[L1_PAGETABLE_ENTRIES];
+extern l1_pgentry_t l1_fixmap[L1_PAGETABLE_ENTRIES];
 void paging_init(void);
 void efi_update_l4_pgtable(unsigned int l4idx, l4_pgentry_t);
 #endif /* !defined(__ASSEMBLY__) */
@@ -308,6 +312,7 @@ void efi_update_l4_pgtable(unsigned int l4idx, l4_pgentry_t);
 #define _PAGE_AVAIL2   _AC(0x800,U)
 #define _PAGE_AVAIL    _AC(0xE00,U)
 #define _PAGE_PSE_PAT  _AC(0x1000,U)
+#define _PAGE_AVAIL_HIGH (_AC(0x7ff, U) << 12)
 #define _PAGE_NX       (cpu_has_nx ? _PAGE_NX_BIT : 0)
 /* non-architectural flags */
 #define _PAGE_PAGED   0x2000U
@@ -343,11 +348,11 @@ void free_xen_pagetable(void *v);
 l1_pgentry_t *virt_to_xen_l1e(unsigned long v);
 
 /* Convert between PAT/PCD/PWT embedded in PTE flags and 3-bit cacheattr. */
-static inline uint32_t pte_flags_to_cacheattr(uint32_t flags)
+static inline unsigned int pte_flags_to_cacheattr(unsigned int flags)
 {
     return ((flags >> 5) & 4) | ((flags >> 3) & 3);
 }
-static inline uint32_t cacheattr_to_pte_flags(uint32_t cacheattr)
+static inline unsigned int cacheattr_to_pte_flags(unsigned int cacheattr)
 {
     return ((cacheattr & 4) << 5) | ((cacheattr & 3) << 3);
 }

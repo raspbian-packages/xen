@@ -28,6 +28,7 @@
 #include <xsm/xsm.h>
 #include <xen/pmstat.h>
 #include <xen/gcov.h>
+#include <xen/livepatch.h>
 
 long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
 {
@@ -114,13 +115,13 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
     }
     break;
 
-#ifdef PERF_COUNTERS
+#ifdef CONFIG_PERF_COUNTERS
     case XEN_SYSCTL_perfc_op:
         ret = perfc_control(&op->u.perfc_op);
         break;
 #endif
 
-#ifdef LOCK_PROFILE
+#ifdef CONFIG_LOCK_PROFILE
     case XEN_SYSCTL_lockprof_op:
         ret = spinlock_profile_control(&op->u.lockprof_op);
         break;
@@ -171,7 +172,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
         op->u.availheap.avail_bytes <<= PAGE_SHIFT;
         break;
 
-#ifdef HAS_ACPI
+#if defined (CONFIG_ACPI) && defined (CONFIG_HAS_CPUFREQ)
     case XEN_SYSCTL_get_pmstat:
         ret = do_get_pm_info(&op->u.get_pmstat);
         break;
@@ -395,13 +396,13 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
     }
     break;
 
-#ifdef TEST_COVERAGE
+#ifdef CONFIG_GCOV
     case XEN_SYSCTL_coverage_op:
         ret = sysctl_coverage_op(&op->u.coverage_op);
         break;
 #endif
 
-#ifdef HAS_PCI
+#ifdef CONFIG_HAS_PCI
     case XEN_SYSCTL_pcitopoinfo:
     {
         xen_sysctl_pcitopoinfo_t *ti = &op->u.pcitopoinfo;
@@ -426,7 +427,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
                 break;
             }
 
-            spin_lock(&pcidevs_lock);
+            pcidevs_lock();
             pdev = pci_get_pdev(dev.seg, dev.bus, dev.devfn);
             if ( !pdev )
                 node = XEN_INVALID_DEV;
@@ -434,7 +435,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
                 node = XEN_INVALID_NODE_ID;
             else
                 node = pdev->node;
-            spin_unlock(&pcidevs_lock);
+            pcidevs_unlock();
 
             if ( copy_to_guest_offset(ti->nodes, i, &node, 1) )
             {
@@ -458,6 +459,12 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
 
     case XEN_SYSCTL_tmem_op:
         ret = tmem_control(&op->u.tmem_op);
+        break;
+
+    case XEN_SYSCTL_livepatch_op:
+        ret = livepatch_op(&op->u.livepatch);
+        if ( ret != -ENOSYS && ret != -EOPNOTSUPP )
+            copyback = 1;
         break;
 
     default:

@@ -32,7 +32,7 @@
 #error GUEST_PAGING_LEVELS not defined
 #endif
 
-#define VALID_GFN(m) (m != INVALID_GFN)
+#define VALID_GFN(m) (m != gfn_x(INVALID_GFN))
 
 static inline int
 valid_gfn(gfn_t m)
@@ -66,20 +66,20 @@ typedef struct { guest_intpte_t l2; } guest_l2e_t;
 
 #define PRI_gpte "08x"
 
-static inline paddr_t guest_l1e_get_paddr(guest_l1e_t gl1e)
-{ return ((paddr_t) gl1e.l1) & (PADDR_MASK & PAGE_MASK); }
-static inline paddr_t guest_l2e_get_paddr(guest_l2e_t gl2e)
-{ return ((paddr_t) gl2e.l2) & (PADDR_MASK & PAGE_MASK); }
-
 static inline gfn_t guest_l1e_get_gfn(guest_l1e_t gl1e)
-{ return _gfn(guest_l1e_get_paddr(gl1e) >> PAGE_SHIFT); }
+{ return _gfn(gl1e.l1 >> PAGE_SHIFT); }
 static inline gfn_t guest_l2e_get_gfn(guest_l2e_t gl2e)
-{ return _gfn(guest_l2e_get_paddr(gl2e) >> PAGE_SHIFT); }
+{ return _gfn(gl2e.l2 >> PAGE_SHIFT); }
 
 static inline u32 guest_l1e_get_flags(guest_l1e_t gl1e)
 { return gl1e.l1 & 0xfff; }
 static inline u32 guest_l2e_get_flags(guest_l2e_t gl2e)
 { return gl2e.l2 & 0xfff; }
+
+static inline u32 guest_l1e_get_pkey(guest_l1e_t gl1e)
+{ return 0; }
+static inline u32 guest_l2e_get_pkey(guest_l2e_t gl2e)
+{ return 0; }
 
 static inline guest_l1e_t guest_l1e_from_gfn(gfn_t gfn, u32 flags)
 { return (guest_l1e_t) { (gfn_x(gfn) << PAGE_SHIFT) | flags }; }
@@ -121,17 +121,6 @@ typedef intpte_t guest_intpte_t;
 
 #define PRI_gpte "016"PRIx64
 
-static inline paddr_t guest_l1e_get_paddr(guest_l1e_t gl1e)
-{ return l1e_get_paddr(gl1e); }
-static inline paddr_t guest_l2e_get_paddr(guest_l2e_t gl2e)
-{ return l2e_get_paddr(gl2e); }
-static inline paddr_t guest_l3e_get_paddr(guest_l3e_t gl3e)
-{ return l3e_get_paddr(gl3e); }
-#if GUEST_PAGING_LEVELS >= 4
-static inline paddr_t guest_l4e_get_paddr(guest_l4e_t gl4e)
-{ return l4e_get_paddr(gl4e); }
-#endif
-
 static inline gfn_t guest_l1e_get_gfn(guest_l1e_t gl1e)
 { return _gfn(l1e_get_paddr(gl1e) >> PAGE_SHIFT); }
 static inline gfn_t guest_l2e_get_gfn(guest_l2e_t gl2e)
@@ -153,6 +142,13 @@ static inline u32 guest_l3e_get_flags(guest_l3e_t gl3e)
 static inline u32 guest_l4e_get_flags(guest_l4e_t gl4e)
 { return l4e_get_flags(gl4e); }
 #endif
+
+static inline u32 guest_l1e_get_pkey(guest_l1e_t gl1e)
+{ return l1e_get_pkey(gl1e); }
+static inline u32 guest_l2e_get_pkey(guest_l2e_t gl2e)
+{ return l2e_get_pkey(gl2e); }
+static inline u32 guest_l3e_get_pkey(guest_l3e_t gl3e)
+{ return l3e_get_pkey(gl3e); }
 
 static inline guest_l1e_t guest_l1e_from_gfn(gfn_t gfn, u32 flags)
 { return l1e_from_pfn(gfn_x(gfn), flags); }
@@ -210,15 +206,17 @@ guest_supports_nx(struct vcpu *v)
 }
 
 
-/* Some bits are invalid in any pagetable entry. */
-#if GUEST_PAGING_LEVELS == 2
-#define _PAGE_INVALID_BITS (0)
-#elif GUEST_PAGING_LEVELS == 3
+/*
+ * Some bits are invalid in any pagetable entry.
+ * Normal flags values get represented in 24-bit values (see
+ * get_pte_flags() and put_pte_flags()), so set bit 24 in
+ * addition to be able to flag out of range frame numbers.
+ */
+#if GUEST_PAGING_LEVELS == 3
 #define _PAGE_INVALID_BITS \
-    get_pte_flags(((1ull<<63) - 1) & ~((1ull<<paddr_bits) - 1))
-#else /* GUEST_PAGING_LEVELS == 4 */
-#define _PAGE_INVALID_BITS \
-    get_pte_flags(((1ull<<52) - 1) & ~((1ull<<paddr_bits) - 1))
+    (_PAGE_INVALID_BIT | get_pte_flags(((1ull << 63) - 1) & ~(PAGE_SIZE - 1)))
+#else /* 2-level and 4-level */
+#define _PAGE_INVALID_BITS _PAGE_INVALID_BIT
 #endif
 
 
@@ -253,7 +251,7 @@ static inline gfn_t
 guest_walk_to_gfn(walk_t *gw)
 {
     if ( !(guest_l1e_get_flags(gw->l1e) & _PAGE_PRESENT) )
-        return _gfn(INVALID_GFN);
+        return INVALID_GFN;
     return guest_l1e_get_gfn(gw->l1e);
 }
 
@@ -264,7 +262,8 @@ guest_walk_to_gpa(walk_t *gw)
 {
     if ( !(guest_l1e_get_flags(gw->l1e) & _PAGE_PRESENT) )
         return 0;
-    return guest_l1e_get_paddr(gw->l1e) + (gw->va & ~PAGE_MASK);
+    return ((paddr_t)gfn_x(guest_l1e_get_gfn(gw->l1e)) << PAGE_SHIFT) +
+           (gw->va & ~PAGE_MASK);
 }
 
 /* Given a walk_t from a successful walk, return the page-order of the 
@@ -305,10 +304,6 @@ guest_walk_to_page_order(walk_t *gw)
 #define GPT_RENAME2(_n, _l) _n ## _ ## _l ## _levels
 #define GPT_RENAME(_n, _l) GPT_RENAME2(_n, _l)
 #define guest_walk_tables GPT_RENAME(guest_walk_tables, GUEST_PAGING_LEVELS)
-#define map_domain_gfn GPT_RENAME(map_domain_gfn, GUEST_PAGING_LEVELS)
-
-void *map_domain_gfn(struct p2m_domain *p2m, gfn_t gfn, mfn_t *mfn,
-                     p2m_type_t *p2mt, p2m_query_t q, uint32_t *rc);
 
 extern uint32_t 
 guest_walk_tables(struct vcpu *v, struct p2m_domain *p2m, unsigned long va,

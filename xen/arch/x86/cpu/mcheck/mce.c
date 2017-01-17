@@ -20,7 +20,9 @@
 
 #include <asm/processor.h>
 #include <asm/system.h>
+#include <asm/apic.h>
 #include <asm/msr.h>
+#include <asm/p2m.h>
 
 #include "mce.h"
 #include "barrier.h"
@@ -28,8 +30,8 @@
 #include "util.h"
 #include "vmce.h"
 
-bool_t __read_mostly mce_disabled;
-invbool_param("mce", mce_disabled);
+bool_t __read_mostly opt_mce = 1;
+boolean_param("mce", opt_mce);
 bool_t __read_mostly mce_broadcast = 0;
 bool_t is_mc_panic;
 unsigned int __read_mostly nr_mce_banks;
@@ -48,14 +50,15 @@ struct mca_banks *mca_allbanks;
 #define _MC_MSRINJ_F_REQ_HWCR_WREN (1 << 16)
 
 #if 0
-static int x86_mcerr(const char *msg, int err)
-{
-    gdprintk(XENLOG_WARNING, "x86_mcerr: %s, returning %d\n",
-             msg != NULL ? msg : "", err);
-    return err;
-}
+#define x86_mcerr(fmt, err, args...)                                    \
+    ({                                                                  \
+        int _err = (err);                                               \
+        gdprintk(XENLOG_WARNING, "x86_mcerr: " fmt ", returning %d\n",  \
+                 ## args, _err);                                        \
+        _err;                                                           \
+    })
 #else
-#define x86_mcerr(msg, err) (err)
+#define x86_mcerr(fmt, err, args...) (err)
 #endif
 
 int mce_verbosity;
@@ -74,7 +77,7 @@ static void unexpected_machine_check(const struct cpu_user_regs *regs)
 {
     console_force_unlock();
     printk("Unexpected Machine Check Exception\n");
-    fatal_trap(regs);
+    fatal_trap(regs, 1);
 }
 
 
@@ -105,7 +108,7 @@ void x86_mce_callback_register(x86_mce_callback_t cbfunc)
     mc_callback_bank_extended = cbfunc;
 }
 
-/* Machine check recoverable judgement callback handler 
+/* Machine check recoverable judgement callback handler
  * It is used to judge whether an UC error is recoverable by software
  */
 static mce_recoverable_t mc_recoverable_scan = NULL;
@@ -160,9 +163,9 @@ static void mcabank_clear(int banknum)
 }
 
 /* Judging whether to Clear Machine Check error bank callback handler
- * According to Intel latest MCA OS Recovery Writer's Guide, 
+ * According to Intel latest MCA OS Recovery Writer's Guide,
  * whether the error MCA bank needs to be cleared is decided by the mca_source
- * and MCi_status bit value. 
+ * and MCi_status bit value.
  */
 static mce_need_clearbank_t mc_need_clearbank_scan = NULL;
 
@@ -535,7 +538,7 @@ void mcheck_cmn_handler(const struct cpu_user_regs *regs)
         }
         atomic_set(&found_error, 0);
     }
-    mce_barrier_exit(&mce_trap_bar); 
+    mce_barrier_exit(&mce_trap_bar);
 
     /* Clear flags after above fatal check */
     mce_barrier_enter(&mce_trap_bar);
@@ -624,7 +627,7 @@ static void set_poll_bankmask(struct cpuinfo_x86 *c)
     mb = per_cpu(poll_bankmask, cpu);
     BUG_ON(!mb);
 
-    if (cmci_support && !mce_disabled) {
+    if (cmci_support && opt_mce) {
         mb->num = per_cpu(no_cmci_banks, cpu)->num;
         bitmap_copy(mb->bank_map, per_cpu(no_cmci_banks, cpu)->bank_map,
                     nr_mce_banks);
@@ -731,7 +734,7 @@ void mcheck_init(struct cpuinfo_x86 *c, bool_t bsp)
 {
     enum mcheck_type inited = mcheck_none;
 
-    if ( mce_disabled )
+    if ( !opt_mce )
     {
         if ( bsp )
             printk(XENLOG_INFO "MCE support disabled by bootparam\n");
@@ -891,7 +894,7 @@ void x86_mcinfo_dump(struct mc_info *mi)
                "CPU%d: Machine Check Exception: %16"PRIx64"\n",
                mc_global->mc_coreid, mc_global->mc_gstatus);
     } else if (mc_global->mc_flags & MC_FLAG_CMCI) {
-        printk(XENLOG_WARNING "CMCI occurred on CPU %d.\n", 
+        printk(XENLOG_WARNING "CMCI occurred on CPU %d.\n",
                mc_global->mc_coreid);
     } else if (mc_global->mc_flags & MC_FLAG_POLLED) {
         printk(XENLOG_WARNING "POLLED occurred on CPU %d.\n",
@@ -978,7 +981,7 @@ static void do_mc_get_cpu_info(void *v)
         cpuid(1, &junk, &ebx, &junk, &junk);
         xcp->mc_clusterid = (ebx >> 24) & 0xff;
     } else
-        xcp->mc_clusterid = hard_smp_processor_id();
+        xcp->mc_clusterid = get_apic_id();
 }
 
 
@@ -1307,7 +1310,7 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
 
     ret = xsm_do_mca(XSM_PRIV);
     if ( ret )
-        return x86_mcerr(NULL, ret);
+        return x86_mcerr("", ret);
 
     if ( copy_from_guest(op, u_xen_mc, 1) )
         return x86_mcerr("do_mca: failed copyin of xen_mc_t", -EFAULT);
@@ -1421,6 +1424,52 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
 
         if (mc_msrinject->mcinj_count == 0)
             return 0;
+
+        if ( mc_msrinject->mcinj_flags & MC_MSRINJ_F_GPADDR )
+        {
+            domid_t domid;
+            struct domain *d;
+            struct mcinfo_msr *msr;
+            unsigned int i;
+            paddr_t gaddr;
+            unsigned long gfn, mfn;
+            p2m_type_t t;
+
+            domid = (mc_msrinject->mcinj_domid == DOMID_SELF) ?
+                    current->domain->domain_id : mc_msrinject->mcinj_domid;
+            if ( domid >= DOMID_FIRST_RESERVED )
+                return x86_mcerr("do_mca inject: incompatible flag "
+                                 "MC_MSRINJ_F_GPADDR with domain %d",
+                                 -EINVAL, domid);
+
+            d = get_domain_by_id(domid);
+            if ( d == NULL )
+                return x86_mcerr("do_mca inject: bad domain id %d",
+                                 -EINVAL, domid);
+
+            for ( i = 0, msr = &mc_msrinject->mcinj_msr[0];
+                  i < mc_msrinject->mcinj_count;
+                  i++, msr++ )
+            {
+                gaddr = msr->value;
+                gfn = PFN_DOWN(gaddr);
+                mfn = mfn_x(get_gfn(d, gfn, &t));
+
+                if ( mfn == mfn_x(INVALID_MFN) )
+                {
+                    put_gfn(d, gfn);
+                    put_domain(d);
+                    return x86_mcerr("do_mca inject: bad gfn %#lx of domain %d",
+                                     -EINVAL, gfn, domid);
+                }
+
+                msr->value = pfn_to_paddr(mfn) | (gaddr & (PAGE_SIZE - 1));
+
+                put_gfn(d, gfn);
+            }
+
+            put_domain(d);
+        }
 
         if (!x86_mc_msrinject_verify(mc_msrinject))
             return x86_mcerr("do_mca inject: illegal MSR", -EINVAL);

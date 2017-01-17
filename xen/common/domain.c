@@ -70,7 +70,7 @@ integer_param("hardware_dom", hardware_domid);
 
 struct vcpu *idle_vcpu[NR_CPUS] __read_mostly;
 
-static vcpu_info_t dummy_vcpu_info;
+vcpu_info_t dummy_vcpu_info;
 
 static void __domain_finalise_shutdown(struct domain *d)
 {
@@ -110,6 +110,16 @@ static void vcpu_check_shutdown(struct vcpu *v)
     spin_unlock(&d->shutdown_lock);
 }
 
+static void vcpu_info_reset(struct vcpu *v)
+{
+    struct domain *d = v->domain;
+
+    v->vcpu_info = ((v->vcpu_id < XEN_LEGACY_MAX_VCPUS)
+                    ? (vcpu_info_t *)&shared_info(d, vcpu_info[v->vcpu_id])
+                    : &dummy_vcpu_info);
+    v->vcpu_info_mfn = mfn_x(INVALID_MFN);
+}
+
 struct vcpu *alloc_vcpu(
     struct domain *d, unsigned int vcpu_id, unsigned int cpu_id)
 {
@@ -145,10 +155,7 @@ struct vcpu *alloc_vcpu(
         v->runstate.state = RUNSTATE_offline;        
         v->runstate.state_entry_time = NOW();
         set_bit(_VPF_down, &v->pause_flags);
-        v->vcpu_info = ((vcpu_id < XEN_LEGACY_MAX_VCPUS)
-                        ? (vcpu_info_t *)&shared_info(d, vcpu_info[vcpu_id])
-                        : &dummy_vcpu_info);
-        v->vcpu_info_mfn = INVALID_MFN;
+        vcpu_info_reset(v);
         init_waitqueue_vcpu(v);
     }
 
@@ -184,7 +191,8 @@ struct vcpu *alloc_vcpu(
     /* Must be called after making new vcpu visible to for_each_vcpu(). */
     vcpu_check_shutdown(v);
 
-    domain_update_node_affinity(d);
+    if ( !is_idle_domain(d) )
+        domain_update_node_affinity(d);
 
     return v;
 }
@@ -262,6 +270,8 @@ struct domain *domain_create(domid_t domid, unsigned int domcr_flags,
 
     d->domain_id = domid;
 
+    TRACE_1D(TRC_DOM0_DOM_ADD, d->domain_id);
+
     lock_profile_register_struct(LOCKPROF_TYPE_PERDOM, d, domid, "Domain");
 
     if ( (err = xsm_alloc_security_domain(d)) != 0 )
@@ -283,7 +293,7 @@ struct domain *domain_create(domid_t domid, unsigned int domcr_flags,
     d->auto_node_affinity = 1;
 
     spin_lock_init(&d->shutdown_lock);
-    d->shutdown_code = -1;
+    d->shutdown_code = SHUTDOWN_CODE_INVALID;
 
     spin_lock_init(&d->pbuf_lock);
 
@@ -308,6 +318,12 @@ struct domain *domain_create(domid_t domid, unsigned int domcr_flags,
         d->disable_migrate = 1;
         old_hwdom = hardware_domain;
         hardware_domain = d;
+    }
+
+    if ( domcr_flags & DOMCRF_xs_domain )
+    {
+        d->is_xenstore = 1;
+        d->disable_migrate = 1;
     }
 
     rangeset_domain_initialise(d);
@@ -363,10 +379,7 @@ struct domain *domain_create(domid_t domid, unsigned int domcr_flags,
         goto fail;
     init_status |= INIT_arch;
 
-    if ( (err = cpupool_add_domain(d, poolid)) != 0 )
-        goto fail;
-
-    if ( (err = sched_init_domain(d)) != 0 )
+    if ( (err = sched_init_domain(d, poolid)) != 0 )
         goto fail;
 
     if ( (err = late_hwdom_init(d)) != 0 )
@@ -437,7 +450,7 @@ void domain_update_node_affinity(struct domain *d)
         return;
     }
 
-    online = cpupool_online_cpumask(d->cpupool);
+    online = cpupool_domain_cpumask(d);
 
     spin_lock(&d->node_affinity_lock);
 
@@ -682,7 +695,7 @@ void domain_shutdown(struct domain *d, u8 reason)
 
     spin_lock(&d->shutdown_lock);
 
-    if ( d->shutdown_code == -1 )
+    if ( d->shutdown_code == SHUTDOWN_CODE_INVALID )
         d->shutdown_code = reason;
     reason = d->shutdown_code;
 
@@ -729,7 +742,7 @@ void domain_resume(struct domain *d)
     spin_lock(&d->shutdown_lock);
 
     d->is_shutting_down = d->is_shut_down = 0;
-    d->shutdown_code = -1;
+    d->shutdown_code = SHUTDOWN_CODE_INVALID;
 
     for_each_vcpu ( d, v )
     {
@@ -764,7 +777,7 @@ void vcpu_end_shutdown_deferral(struct vcpu *v)
         vcpu_check_shutdown(v);
 }
 
-#ifdef HAS_GDBSX
+#ifdef CONFIG_HAS_GDBSX
 void domain_pause_for_debugger(void)
 {
     struct vcpu *curr = current;
@@ -843,20 +856,16 @@ static void complete_domain_destroy(struct rcu_head *head)
 void domain_destroy(struct domain *d)
 {
     struct domain **pd;
-    atomic_t old = ATOMIC_INIT(0);
-    atomic_t new = ATOMIC_INIT(DOMAIN_DESTROYED);
 
     BUG_ON(!d->is_dying);
 
     /* May be already destroyed, or get_domain() can race us. */
-    old = atomic_compareandswap(old, new, &d->refcnt);
-    if ( _atomic_read(old) != 0 )
+    if ( atomic_cmpxchg(&d->refcnt, 0, DOMAIN_DESTROYED) != 0 )
         return;
 
-    cpupool_rm_domain(d);
+    TRACE_1D(TRC_DOM0_DOM_REM, d->domain_id);
 
     /* Delete from task list and task hashtable. */
-    TRACE_1D(TRC_SCHED_DOM_REM, d->domain_id);
     spin_lock(&domlist_update_lock);
     pd = &domain_list;
     while ( *pd != d ) 
@@ -995,6 +1004,13 @@ int domain_unpause_by_systemcontroller(struct domain *d)
 {
     int old, new, prev = d->controller_pause_count;
 
+    /*
+     * We record this information here for populate_physmap to figure out
+     * that the domain has finished being created. In fact, we're only
+     * allowed to set the MEMF_no_tlbflush flag during VM creation.
+     */
+    d->creation_finished = true;
+
     do
     {
         old = prev;
@@ -1037,6 +1053,41 @@ void domain_unpause_except_self(struct domain *d)
     }
     else
         domain_unpause(d);
+}
+
+int domain_soft_reset(struct domain *d)
+{
+    struct vcpu *v;
+    int rc;
+
+    spin_lock(&d->shutdown_lock);
+    for_each_vcpu ( d, v )
+        if ( !v->paused_for_shutdown )
+        {
+            spin_unlock(&d->shutdown_lock);
+            return -EINVAL;
+        }
+    spin_unlock(&d->shutdown_lock);
+
+    rc = evtchn_reset(d);
+    if ( rc )
+        return rc;
+
+    grant_table_warn_active_grants(d);
+
+    for_each_vcpu ( d, v )
+    {
+        set_xen_guest_handle(runstate_guest(v), NULL);
+        unmap_vcpu_info(v);
+    }
+
+    rc = arch_domain_soft_reset(d);
+    if ( !rc )
+        domain_resume(d);
+    else
+        domain_crash(d);
+
+    return rc;
 }
 
 int vcpu_reset(struct vcpu *v)
@@ -1092,11 +1143,11 @@ int map_vcpu_info(struct vcpu *v, unsigned long gfn, unsigned offset)
     if ( offset > (PAGE_SIZE - sizeof(vcpu_info_t)) )
         return -EINVAL;
 
-    if ( v->vcpu_info_mfn != INVALID_MFN )
+    if ( v->vcpu_info_mfn != mfn_x(INVALID_MFN) )
         return -EINVAL;
 
     /* Run this command on yourself or on other offline VCPUS. */
-    if ( (v != current) && !test_bit(_VPF_down, &v->pause_flags) )
+    if ( (v != current) && !(v->pause_flags & VPF_down) )
         return -EINVAL;
 
     page = get_page_from_gfn(d, gfn, NULL, P2M_ALLOC);
@@ -1150,31 +1201,52 @@ int map_vcpu_info(struct vcpu *v, unsigned long gfn, unsigned offset)
 
 /*
  * Unmap the vcpu info page if the guest decided to place it somewhere
- * else.  This is only used from arch_domain_destroy, so there's no
- * need to do anything clever.
+ * else. This is used from arch_domain_destroy and domain_soft_reset.
  */
 void unmap_vcpu_info(struct vcpu *v)
 {
     unsigned long mfn;
 
-    if ( v->vcpu_info_mfn == INVALID_MFN )
+    if ( v->vcpu_info_mfn == mfn_x(INVALID_MFN) )
         return;
 
     mfn = v->vcpu_info_mfn;
     unmap_domain_page_global((void *)
                              ((unsigned long)v->vcpu_info & PAGE_MASK));
 
-    v->vcpu_info = &dummy_vcpu_info;
-    v->vcpu_info_mfn = INVALID_MFN;
+    vcpu_info_reset(v);
 
     put_page_and_type(mfn_to_page(mfn));
+}
+
+int default_initialise_vcpu(struct vcpu *v, XEN_GUEST_HANDLE_PARAM(void) arg)
+{
+    struct vcpu_guest_context *ctxt;
+    struct domain *d = v->domain;
+    int rc;
+
+    if ( (ctxt = alloc_vcpu_guest_context()) == NULL )
+        return -ENOMEM;
+
+    if ( copy_from_guest(ctxt, arg, 1) )
+    {
+        free_vcpu_guest_context(ctxt);
+        return -EFAULT;
+    }
+
+    domain_lock(d);
+    rc = v->is_initialised ? -EEXIST : arch_set_info_guest(v, ctxt);
+    domain_unlock(d);
+
+    free_vcpu_guest_context(ctxt);
+
+    return rc;
 }
 
 long do_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     struct domain *d = current->domain;
     struct vcpu *v;
-    struct vcpu_guest_context *ctxt;
     long rc = 0;
 
     if ( vcpuid >= d->max_vcpus || (v = d->vcpu[vcpuid]) == NULL )
@@ -1186,21 +1258,7 @@ long do_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) arg)
         if ( v->vcpu_info == &dummy_vcpu_info )
             return -EINVAL;
 
-        if ( (ctxt = alloc_vcpu_guest_context()) == NULL )
-            return -ENOMEM;
-
-        if ( copy_from_guest(ctxt, arg, 1) )
-        {
-            free_vcpu_guest_context(ctxt);
-            return -EFAULT;
-        }
-
-        domain_lock(d);
-        rc = v->is_initialised ? -EEXIST : arch_set_info_guest(v, ctxt);
-        domain_unlock(d);
-
-        free_vcpu_guest_context(ctxt);
-
+        rc = arch_initialise_vcpu(v, arg);
         if ( rc == -ERESTART )
             rc = hypercall_create_continuation(__HYPERVISOR_vcpu_op, "iuh",
                                                cmd, vcpuid, arg);
@@ -1226,7 +1284,7 @@ long do_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) arg)
         break;
 
     case VCPUOP_is_up:
-        rc = !test_bit(_VPF_down, &v->pause_flags);
+        rc = !(v->pause_flags & VPF_down);
         break;
 
     case VCPUOP_get_runstate_info:
@@ -1292,7 +1350,6 @@ long do_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) arg)
 
     case VCPUOP_register_vcpu_info:
     {
-        struct domain *d = v->domain;
         struct vcpu_register_vcpu_info info;
 
         rc = -EFAULT;

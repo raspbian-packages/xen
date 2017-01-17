@@ -36,6 +36,7 @@
 #include <asm/xstate.h>
 #include <asm/debugger.h>
 #include <asm/psr.h>
+#include <asm/cpuid.h>
 
 static int gdbsx_guest_mem_io(domid_t domid, struct xen_domctl_gdbsx_memio *iop)
 {
@@ -45,6 +46,202 @@ static int gdbsx_guest_mem_io(domid_t domid, struct xen_domctl_gdbsx_memio *iop)
                              !!iop->gwr, iop->pgd3val);
 
     return iop->remain ? -EFAULT : 0;
+}
+
+static void update_domain_cpuid_info(struct domain *d,
+                                     const xen_domctl_cpuid_t *ctl)
+{
+    switch ( ctl->input[0] )
+    {
+    case 0: {
+        union {
+            typeof(boot_cpu_data.x86_vendor_id) str;
+            struct {
+                uint32_t ebx, edx, ecx;
+            } reg;
+        } vendor_id = {
+            .reg = {
+                .ebx = ctl->ebx,
+                .edx = ctl->edx,
+                .ecx = ctl->ecx
+            }
+        };
+        int old_vendor = d->arch.x86_vendor;
+
+        d->arch.x86_vendor = get_cpu_vendor(vendor_id.str, gcv_guest);
+
+        if ( is_hvm_domain(d) && (d->arch.x86_vendor != old_vendor) )
+        {
+            struct vcpu *v;
+
+            for_each_vcpu( d, v )
+                hvm_update_guest_vendor(v);
+        }
+
+        break;
+    }
+
+    case 1:
+        d->arch.x86 = (ctl->eax >> 8) & 0xf;
+        if ( d->arch.x86 == 0xf )
+            d->arch.x86 += (ctl->eax >> 20) & 0xff;
+        d->arch.x86_model = (ctl->eax >> 4) & 0xf;
+        if ( d->arch.x86 >= 0x6 )
+            d->arch.x86_model |= (ctl->eax >> 12) & 0xf0;
+
+        if ( is_pv_domain(d) && ((levelling_caps & LCAP_1cd) == LCAP_1cd) )
+        {
+            uint64_t mask = cpuidmask_defaults._1cd;
+            uint32_t ecx = ctl->ecx & pv_featureset[FEATURESET_1c];
+            uint32_t edx = ctl->edx & pv_featureset[FEATURESET_1d];
+
+            /*
+             * Must expose hosts HTT and X2APIC value so a guest using native
+             * CPUID can correctly interpret other leaves which cannot be
+             * masked.
+             */
+            if ( cpu_has_x2apic )
+                ecx |= cpufeat_mask(X86_FEATURE_X2APIC);
+            if ( cpu_has_htt )
+                edx |= cpufeat_mask(X86_FEATURE_HTT);
+
+            switch ( boot_cpu_data.x86_vendor )
+            {
+            case X86_VENDOR_INTEL:
+                /*
+                 * Intel masking MSRs are documented as AND masks.
+                 * Experimentally, they are applied after OSXSAVE and APIC
+                 * are fast-forwarded from real hardware state.
+                 */
+                mask &= ((uint64_t)edx << 32) | ecx;
+
+                if ( ecx & cpufeat_mask(X86_FEATURE_XSAVE) )
+                    ecx = cpufeat_mask(X86_FEATURE_OSXSAVE);
+                else
+                    ecx = 0;
+                edx = cpufeat_mask(X86_FEATURE_APIC);
+
+                mask |= ((uint64_t)edx << 32) | ecx;
+                break;
+
+            case X86_VENDOR_AMD:
+                mask &= ((uint64_t)ecx << 32) | edx;
+
+                /*
+                 * AMD masking MSRs are documented as overrides.
+                 * Experimentally, fast-forwarding of the OSXSAVE and APIC
+                 * bits from real hardware state only occurs if the MSR has
+                 * the respective bits set.
+                 */
+                if ( ecx & cpufeat_mask(X86_FEATURE_XSAVE) )
+                    ecx = cpufeat_mask(X86_FEATURE_OSXSAVE);
+                else
+                    ecx = 0;
+                edx = cpufeat_mask(X86_FEATURE_APIC);
+
+                mask |= ((uint64_t)ecx << 32) | edx;
+                break;
+            }
+
+            d->arch.pv_domain.cpuidmasks->_1cd = mask;
+        }
+        break;
+
+    case 6:
+        if ( is_pv_domain(d) && ((levelling_caps & LCAP_6c) == LCAP_6c) )
+        {
+            uint64_t mask = cpuidmask_defaults._6c;
+
+            if ( boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
+                mask &= (~0ULL << 32) | ctl->ecx;
+
+            d->arch.pv_domain.cpuidmasks->_6c = mask;
+        }
+        break;
+
+    case 7:
+        if ( ctl->input[1] != 0 )
+            break;
+
+        if ( is_pv_domain(d) && ((levelling_caps & LCAP_7ab0) == LCAP_7ab0) )
+        {
+            uint64_t mask = cpuidmask_defaults._7ab0;
+            uint32_t eax = ctl->eax;
+            uint32_t ebx = ctl->ebx & pv_featureset[FEATURESET_7b0];
+
+            if ( boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
+                mask &= ((uint64_t)eax << 32) | ebx;
+
+            d->arch.pv_domain.cpuidmasks->_7ab0 = mask;
+        }
+        break;
+
+    case 0xd:
+        if ( ctl->input[1] != 1 )
+            break;
+
+        if ( is_pv_domain(d) && ((levelling_caps & LCAP_Da1) == LCAP_Da1) )
+        {
+            uint64_t mask = cpuidmask_defaults.Da1;
+            uint32_t eax = ctl->eax & pv_featureset[FEATURESET_Da1];
+
+            if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
+                mask &= (~0ULL << 32) | eax;
+
+            d->arch.pv_domain.cpuidmasks->Da1 = mask;
+        }
+        break;
+
+    case 0x80000001:
+        if ( is_pv_domain(d) && ((levelling_caps & LCAP_e1cd) == LCAP_e1cd) )
+        {
+            uint64_t mask = cpuidmask_defaults.e1cd;
+            uint32_t ecx = ctl->ecx & pv_featureset[FEATURESET_e1c];
+            uint32_t edx = ctl->edx & pv_featureset[FEATURESET_e1d];
+
+            /*
+             * Must expose hosts CMP_LEGACY value so a guest using native
+             * CPUID can correctly interpret other leaves which cannot be
+             * masked.
+             */
+            if ( cpu_has_cmp_legacy )
+                ecx |= cpufeat_mask(X86_FEATURE_CMP_LEGACY);
+
+            /* If not emulating AMD, clear the duplicated features in e1d. */
+            if ( d->arch.x86_vendor != X86_VENDOR_AMD )
+                edx &= ~CPUID_COMMON_1D_FEATURES;
+
+            switch ( boot_cpu_data.x86_vendor )
+            {
+            case X86_VENDOR_INTEL:
+                mask &= ((uint64_t)edx << 32) | ecx;
+                break;
+
+            case X86_VENDOR_AMD:
+                mask &= ((uint64_t)ecx << 32) | edx;
+
+                /*
+                 * Fast-forward bits - Must be set in the masking MSR for
+                 * fast-forwarding to occur in hardware.
+                 */
+                ecx = 0;
+                edx = cpufeat_mask(X86_FEATURE_APIC);
+
+                mask |= ((uint64_t)ecx << 32) | edx;
+                break;
+            }
+
+            d->arch.pv_domain.cpuidmasks->e1cd = mask;
+        }
+        break;
+    }
+}
+
+void arch_get_domain_info(const struct domain *d,
+                          struct xen_domctl_getdomaininfo *info)
+{
+    if ( paging_mode_hap(d) )
+        info->flags |= XEN_DOMINF_hap;
 }
 
 #define MAX_IOPORTS 0x10000
@@ -349,7 +546,8 @@ long arch_do_domctl(
 
     case XEN_DOMCTL_get_address_size:
         domctl->u.address_size.size =
-            is_pv_32bit_domain(d) ? 32 : BITS_PER_LONG;
+            (is_pv_32bit_domain(d) || is_pvh_32bit_domain(d)) ?
+            32 : BITS_PER_LONG;
         copyback = 1;
         break;
 
@@ -427,9 +625,9 @@ long arch_do_domctl(
         ret = -ESRCH;
         if ( iommu_enabled )
         {
-            spin_lock(&pcidevs_lock);
+            pcidevs_lock();
             ret = pt_irq_create_bind(d, bind);
-            spin_unlock(&pcidevs_lock);
+            pcidevs_unlock();
         }
         if ( ret < 0 )
             printk(XENLOG_G_ERR "pt_irq_create_bind failed (%ld) for dom%d\n",
@@ -452,9 +650,9 @@ long arch_do_domctl(
 
         if ( iommu_enabled )
         {
-            spin_lock(&pcidevs_lock);
+            pcidevs_lock();
             ret = pt_irq_destroy_bind(d, bind);
-            spin_unlock(&pcidevs_lock);
+            pcidevs_unlock();
         }
         if ( ret < 0 )
             printk(XENLOG_G_ERR "pt_irq_destroy_bind failed (%ld) for dom%d\n",
@@ -464,7 +662,7 @@ long arch_do_domctl(
 
     case XEN_DOMCTL_ioport_mapping:
     {
-        struct hvm_iommu *hd;
+        struct domain_iommu *hd;
         unsigned int fgp = domctl->u.ioport_mapping.first_gport;
         unsigned int fmp = domctl->u.ioport_mapping.first_mport;
         unsigned int np = domctl->u.ioport_mapping.nr_ports;
@@ -490,7 +688,7 @@ long arch_do_domctl(
         if ( ret )
             break;
 
-        hd = domain_hvm_iommu(d);
+        hd = dom_iommu(d);
         if ( add )
         {
             printk(XENLOG_G_INFO
@@ -669,8 +867,14 @@ long arch_do_domctl(
 
     case XEN_DOMCTL_set_cpuid:
     {
-        xen_domctl_cpuid_t *ctl = &domctl->u.cpuid;
+        const xen_domctl_cpuid_t *ctl = &domctl->u.cpuid;
         cpuid_input_t *cpuid, *unused = NULL;
+
+        if ( d == currd ) /* no domain_pause() */
+        {
+            ret = -EINVAL;
+            break;
+        }
 
         for ( i = 0; i < MAX_CPUID_INPUT; i++ )
         {
@@ -689,7 +893,14 @@ long arch_do_domctl(
                 break;
         }
 
-        if ( i < MAX_CPUID_INPUT )
+        domain_pause(d);
+
+        if ( !(ctl->eax | ctl->ebx | ctl->ecx | ctl->edx) )
+        {
+            if ( i < MAX_CPUID_INPUT )
+                cpuid->input[0] = XEN_CPUID_INPUT_UNUSED;
+        }
+        else if ( i < MAX_CPUID_INPUT )
             *cpuid = *ctl;
         else if ( unused )
             *unused = *ctl;
@@ -697,36 +908,9 @@ long arch_do_domctl(
             ret = -ENOENT;
 
         if ( !ret )
-        {
-            switch ( ctl->input[0] )
-            {
-            case 0: {
-                union {
-                    typeof(boot_cpu_data.x86_vendor_id) str;
-                    struct {
-                        uint32_t ebx, edx, ecx;
-                    } reg;
-                } vendor_id = {
-                    .reg = {
-                        .ebx = ctl->ebx,
-                        .edx = ctl->edx,
-                        .ecx = ctl->ecx
-                    }
-                };
+            update_domain_cpuid_info(d, ctl);
 
-                d->arch.x86_vendor = get_cpu_vendor(vendor_id.str, gcv_guest);
-                break;
-            }
-            case 1:
-                d->arch.x86 = (ctl->eax >> 8) & 0xf;
-                if ( d->arch.x86 == 0xf )
-                    d->arch.x86 += (ctl->eax >> 20) & 0xff;
-                d->arch.x86_model = (ctl->eax >> 4) & 0xf;
-                if ( d->arch.x86 >= 0x6 )
-                    d->arch.x86_model |= (ctl->eax >> 12) & 0xf0;
-                break;
-            }
-        }
+        domain_unpause(d);
         break;
     }
 
@@ -853,7 +1037,8 @@ long arch_do_domctl(
         struct vcpu *v;
         uint32_t offset = 0;
 
-#define PV_XSAVE_SIZE(xcr0) (2 * sizeof(uint64_t) + xstate_ctxt_size(xcr0))
+#define PV_XSAVE_HDR_SIZE (2 * sizeof(uint64_t))
+#define PV_XSAVE_SIZE(xcr0) (PV_XSAVE_HDR_SIZE + xstate_ctxt_size(xcr0))
 
         ret = -ESRCH;
         if ( (evc->vcpu >= d->max_vcpus) ||
@@ -869,19 +1054,25 @@ long arch_do_domctl(
             unsigned int size;
 
             ret = 0;
-            vcpu_pause(v);
 
-            size = PV_XSAVE_SIZE(v->arch.xcr0_accum);
             if ( (!evc->size && !evc->xfeature_mask) ||
                  guest_handle_is_null(evc->buffer) )
             {
+                /*
+                 * A query for the size of buffer to use.  Must return the
+                 * maximum size we ever might hand back to userspace, bearing
+                 * in mind that the vcpu might increase its xcr0_accum between
+                 * this query for size, and the following query for data.
+                 */
                 evc->xfeature_mask = xfeature_mask;
-                evc->size = size;
-                vcpu_unpause(v);
+                evc->size = PV_XSAVE_SIZE(xfeature_mask);
                 goto vcpuextstate_out;
             }
 
-            if ( evc->size != size || evc->xfeature_mask != xfeature_mask )
+            vcpu_pause(v);
+            size = PV_XSAVE_SIZE(v->arch.xcr0_accum);
+
+            if ( evc->size < size || evc->xfeature_mask != xfeature_mask )
                 ret = -EINVAL;
 
             if ( !ret && copy_to_guest_offset(evc->buffer, offset,
@@ -896,12 +1087,33 @@ long arch_do_domctl(
                 ret = -EFAULT;
 
             offset += sizeof(v->arch.xcr0_accum);
-            if ( !ret && copy_to_guest_offset(evc->buffer, offset,
-                                              (void *)v->arch.xsave_area,
-                                              size - 2 * sizeof(uint64_t)) )
-                ret = -EFAULT;
+
+            /* Serialise xsave state, if there is any. */
+            if ( !ret && size > PV_XSAVE_HDR_SIZE )
+            {
+                unsigned int xsave_size = size - PV_XSAVE_HDR_SIZE;
+                void *xsave_area = xmalloc_bytes(xsave_size);
+
+                if ( !xsave_area )
+                {
+                    ret = -ENOMEM;
+                    vcpu_unpause(v);
+                    goto vcpuextstate_out;
+                }
+
+                expand_xsave_states(v, xsave_area, xsave_size);
+
+                if ( copy_to_guest_offset(evc->buffer, offset, xsave_area,
+                                          xsave_size) )
+                     ret = -EFAULT;
+                xfree(xsave_area);
+           }
 
             vcpu_unpause(v);
+
+            /* Specify how much data we actually wrote into the buffer. */
+            if ( !ret )
+                evc->size = size;
         }
         else
         {
@@ -910,9 +1122,8 @@ long arch_do_domctl(
             const struct xsave_struct *_xsave_area;
 
             ret = -EINVAL;
-            if ( evc->size < 2 * sizeof(uint64_t) ||
-                 evc->size > 2 * sizeof(uint64_t) +
-                             xstate_ctxt_size(xfeature_mask) )
+            if ( evc->size < PV_XSAVE_HDR_SIZE ||
+                 evc->size > PV_XSAVE_SIZE(xfeature_mask) )
                 goto vcpuextstate_out;
 
             receive_buf = xmalloc_bytes(evc->size);
@@ -931,13 +1142,13 @@ long arch_do_domctl(
 
             _xcr0 = *(uint64_t *)receive_buf;
             _xcr0_accum = *(uint64_t *)(receive_buf + sizeof(uint64_t));
-            _xsave_area = receive_buf + 2 * sizeof(uint64_t);
+            _xsave_area = receive_buf + PV_XSAVE_HDR_SIZE;
 
             if ( _xcr0_accum )
             {
-                if ( evc->size >= 2 * sizeof(uint64_t) + XSTATE_AREA_MIN_SIZE )
+                if ( evc->size >= PV_XSAVE_HDR_SIZE + XSTATE_AREA_MIN_SIZE )
                     ret = validate_xstate(_xcr0, _xcr0_accum,
-                                          _xsave_area->xsave_hdr.xstate_bv);
+                                          &_xsave_area->xsave_hdr);
             }
             else if ( !_xcr0 )
                 ret = 0;
@@ -947,22 +1158,31 @@ long arch_do_domctl(
                 goto vcpuextstate_out;
             }
 
-            if ( evc->size <= PV_XSAVE_SIZE(_xcr0_accum) )
+            if ( evc->size == PV_XSAVE_HDR_SIZE )
+                ; /* Nothing to restore. */
+            else if ( evc->size < PV_XSAVE_HDR_SIZE + XSTATE_AREA_MIN_SIZE )
+                ret = -EINVAL; /* Can't be legitimate data. */
+            else if ( xsave_area_compressed(_xsave_area) )
+                ret = -EOPNOTSUPP; /* Don't support compressed data. */
+            else if ( evc->size != PV_XSAVE_SIZE(_xcr0_accum) )
+                ret = -EINVAL; /* Not legitimate data. */
+            else
             {
                 vcpu_pause(v);
                 v->arch.xcr0 = _xcr0;
                 v->arch.xcr0_accum = _xcr0_accum;
                 if ( _xcr0_accum & XSTATE_NONLAZY )
                     v->arch.nonlazy_xstate_used = 1;
-                memcpy(v->arch.xsave_area, _xsave_area,
-                       evc->size - 2 * sizeof(uint64_t));
+                compress_xsave_states(v, _xsave_area,
+                                      evc->size - PV_XSAVE_HDR_SIZE);
                 vcpu_unpause(v);
             }
-            else
-                ret = -EINVAL;
 
             xfree(receive_buf);
         }
+
+#undef PV_XSAVE_HDR_SIZE
+#undef PV_XSAVE_SIZE
 
     vcpuextstate_out:
         if ( domctl->cmd == XEN_DOMCTL_getvcpuextstate )
@@ -1167,12 +1387,40 @@ long arch_do_domctl(
         {
         case XEN_DOMCTL_PSR_CAT_OP_SET_L3_CBM:
             ret = psr_set_l3_cbm(d, domctl->u.psr_cat_op.target,
-                                 domctl->u.psr_cat_op.data);
+                                 domctl->u.psr_cat_op.data,
+                                 PSR_CBM_TYPE_L3);
+            break;
+
+        case XEN_DOMCTL_PSR_CAT_OP_SET_L3_CODE:
+            ret = psr_set_l3_cbm(d, domctl->u.psr_cat_op.target,
+                                 domctl->u.psr_cat_op.data,
+                                 PSR_CBM_TYPE_L3_CODE);
+            break;
+
+        case XEN_DOMCTL_PSR_CAT_OP_SET_L3_DATA:
+            ret = psr_set_l3_cbm(d, domctl->u.psr_cat_op.target,
+                                 domctl->u.psr_cat_op.data,
+                                 PSR_CBM_TYPE_L3_DATA);
             break;
 
         case XEN_DOMCTL_PSR_CAT_OP_GET_L3_CBM:
             ret = psr_get_l3_cbm(d, domctl->u.psr_cat_op.target,
-                                 &domctl->u.psr_cat_op.data);
+                                 &domctl->u.psr_cat_op.data,
+                                 PSR_CBM_TYPE_L3);
+            copyback = 1;
+            break;
+
+        case XEN_DOMCTL_PSR_CAT_OP_GET_L3_CODE:
+            ret = psr_get_l3_cbm(d, domctl->u.psr_cat_op.target,
+                                 &domctl->u.psr_cat_op.data,
+                                 PSR_CBM_TYPE_L3_CODE);
+            copyback = 1;
+            break;
+
+        case XEN_DOMCTL_PSR_CAT_OP_GET_L3_DATA:
+            ret = psr_get_l3_cbm(d, domctl->u.psr_cat_op.target,
+                                 &domctl->u.psr_cat_op.data,
+                                 PSR_CBM_TYPE_L3_DATA);
             copyback = 1;
             break;
 
@@ -1203,7 +1451,7 @@ void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
 {
     unsigned int i;
     const struct domain *d = v->domain;
-    bool_t compat = is_pv_32bit_domain(d);
+    bool_t compat = is_pv_32bit_domain(d) || is_pvh_32bit_domain(d);
 #define c(fld) (!compat ? (c.nat->fld) : (c.cmp->fld))
 
     if ( !is_pv_domain(d) )
@@ -1212,7 +1460,7 @@ void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
     c(flags = v->arch.vgc_flags & ~(VGCF_i387_valid|VGCF_in_kernel));
     if ( v->fpu_initialised )
         c(flags |= VGCF_i387_valid);
-    if ( !test_bit(_VPF_down, &v->pause_flags) )
+    if ( !(v->pause_flags & VPF_down) )
         c(flags |= VGCF_online);
     if ( !compat )
     {
@@ -1299,7 +1547,7 @@ void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
 
         /* IOPL privileges are virtualised: merge back into returned eflags. */
         BUG_ON((c(user_regs.eflags) & X86_EFLAGS_IOPL) != 0);
-        c(user_regs.eflags |= v->arch.pv_vcpu.iopl << 12);
+        c(user_regs.eflags |= v->arch.pv_vcpu.iopl);
 
         if ( !compat )
         {

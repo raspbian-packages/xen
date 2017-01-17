@@ -24,13 +24,13 @@
 #include <asm/hvm/hvm.h>
 #include <asm/hvm/support.h>
 #include <asm/processor.h>
+#include <asm/smp.h>
 #include <asm/numa.h>
 #include <xen/nodemask.h>
 #include <xen/cpu.h>
 #include <xsm/xsm.h>
 #include <asm/psr.h>
-
-#define get_xen_guest_handle(val, hnd)  do { val = (hnd).p; } while (0)
+#include <asm/cpuid.h>
 
 struct l3_cache_info {
     int ret;
@@ -178,17 +178,75 @@ long arch_do_sysctl(
         case XEN_SYSCTL_PSR_CAT_get_l3_info:
             ret = psr_get_cat_l3_info(sysctl->u.psr_cat_op.target,
                                       &sysctl->u.psr_cat_op.u.l3_info.cbm_len,
-                                      &sysctl->u.psr_cat_op.u.l3_info.cos_max);
+                                      &sysctl->u.psr_cat_op.u.l3_info.cos_max,
+                                      &sysctl->u.psr_cat_op.u.l3_info.flags);
 
             if ( !ret && __copy_field_to_guest(u_sysctl, sysctl, u.psr_cat_op) )
                 ret = -EFAULT;
-
             break;
+
         default:
             ret = -EOPNOTSUPP;
             break;
         }
         break;
+
+    case XEN_SYSCTL_get_cpu_levelling_caps:
+        sysctl->u.cpu_levelling_caps.caps = levelling_caps;
+        if ( __copy_field_to_guest(u_sysctl, sysctl, u.cpu_levelling_caps.caps) )
+            ret = -EFAULT;
+        break;
+
+    case XEN_SYSCTL_get_cpu_featureset:
+    {
+        static const uint32_t *const featureset_table[] = {
+            [XEN_SYSCTL_cpu_featureset_raw]  = raw_featureset,
+            [XEN_SYSCTL_cpu_featureset_host] = host_featureset,
+            [XEN_SYSCTL_cpu_featureset_pv]   = pv_featureset,
+            [XEN_SYSCTL_cpu_featureset_hvm]  = hvm_featureset,
+        };
+        const uint32_t *featureset = NULL;
+        unsigned int nr;
+
+        /* Request for maximum number of features? */
+        if ( guest_handle_is_null(sysctl->u.cpu_featureset.features) )
+        {
+            sysctl->u.cpu_featureset.nr_features = FSCAPINTS;
+            if ( __copy_field_to_guest(u_sysctl, sysctl,
+                                       u.cpu_featureset.nr_features) )
+                ret = -EFAULT;
+            break;
+        }
+
+        /* Clip the number of entries. */
+        nr = min_t(unsigned int, sysctl->u.cpu_featureset.nr_features,
+                   FSCAPINTS);
+
+        /* Look up requested featureset. */
+        if ( sysctl->u.cpu_featureset.index < ARRAY_SIZE(featureset_table) )
+            featureset = featureset_table[sysctl->u.cpu_featureset.index];
+
+        /* Bad featureset index? */
+        if ( !featureset )
+            ret = -EINVAL;
+
+        /* Copy the requested featureset into place. */
+        if ( !ret && copy_to_guest(sysctl->u.cpu_featureset.features,
+                                   featureset, nr) )
+            ret = -EFAULT;
+
+        /* Inform the caller of how many features we wrote. */
+        sysctl->u.cpu_featureset.nr_features = nr;
+        if ( !ret && __copy_field_to_guest(u_sysctl, sysctl,
+                                           u.cpu_featureset.nr_features) )
+            ret = -EFAULT;
+
+        /* Inform the caller if there was more data to provide. */
+        if ( !ret && nr < FSCAPINTS )
+            ret = -ENOBUFS;
+
+        break;
+    }
 
     default:
         ret = -ENOSYS;

@@ -104,6 +104,29 @@
  * Depending on the contents of the stream, there are likely to be several
  * parallel tasks being managed.  check_all_finished() is used to join all
  * tasks in both success and error cases.
+ *
+ * Failover for remus
+ *  - We buffer all records until a CHECKPOINT_END record is received
+ *  - We will consume the buffered records when a CHECKPOINT_END record
+ *    is received
+ *  - If we find some internal error, then rc or retval is not 0 in
+ *    libxl__xc_domain_restore_done(). In this case, we don't resume the
+ *    guest
+ *  - If we need to do failover from primary, then rc and retval are both
+ *    0 in libxl__xc_domain_restore_done(). In this case, the buffered
+ *    state will be dropped, because we haven't received a CHECKPOINT_END
+ *    record, and therefore the buffered state is inconsistent. In
+ *    libxl__xc_domain_restore_done(), we just complete the stream and
+ *    stream->completion_callback() will be called to resume the guest
+ *
+ * For back channel stream:
+ * - libxl__stream_read_start()
+ *    - Set up the stream to running state
+ *
+ * - libxl__stream_read_continue()
+ *     - Set up reading the next record from a started stream.
+ *       Add some codes to process_record() to handle the record.
+ *       Then call stream->checkpoint_callback() to return.
  */
 
 /* Success/error/cleanup handling. */
@@ -142,6 +165,10 @@ static void write_emulator_blob(libxl__egc *egc,
 static void write_emulator_done(libxl__egc *egc,
                                 libxl__datacopier_state *dc,
                                 int rc, int onwrite, int errnoval);
+
+/* Handlers for checkpoint state mini-loop */
+static void checkpoint_state_done(libxl__egc *egc,
+                                  libxl__stream_read_state *stream, int rc);
 
 /*----- Helpers -----*/
 
@@ -208,7 +235,15 @@ void libxl__stream_read_start(libxl__egc *egc,
     stream->phase   = SRS_PHASE_NORMAL;
 
     if (stream->legacy) {
-        /* Convert the legacy stream. */
+        /*
+         * Convert the legacy stream.
+         *
+         * This results in a fork()/exec() of conversion helper script.  It is
+         * passed the exiting stream->fd as an input, and returns the
+         * transformed stream via a new pipe.  The fd of this new pipe then
+         * replaces stream->fd, to make the rest of the stream read code
+         * agnostic to whether legacy conversion is happening or not.
+         */
         libxl__conversion_helper_state *chs = &stream->chs;
 
         chs->legacy_fd = stream->fd;
@@ -223,6 +258,12 @@ void libxl__stream_read_start(libxl__egc *egc,
             goto err;
         }
 
+        /* There should be no interaction of COLO backchannels and legacy
+         * stream conversion. */
+        assert(!stream->back_channel);
+
+        /* Confirm *dc is still zeroed out, while we shuffle stream->fd. */
+        assert(dc->ao == NULL);
         assert(stream->chs.v2_carefd);
         stream->fd = libxl__carefd_fd(stream->chs.v2_carefd);
         stream->dcs->libxc_fd = stream->fd;
@@ -233,6 +274,9 @@ void libxl__stream_read_start(libxl__egc *egc,
     dc->copywhat = "restore v2 stream";
     dc->readfd   = stream->fd;
     dc->writefd  = -1;
+
+    if (stream->back_channel)
+        return;
 
     /* Start reading the stream header. */
     rc = setup_read(stream, "stream header",
@@ -518,6 +562,7 @@ static bool process_record(libxl__egc *egc,
     STATE_AO_GC(stream->ao);
     libxl__domain_create_state *dcs = stream->dcs;
     libxl__sr_record_buf *rec;
+    libxl_sr_checkpoint_state *srcs;
     bool further_action_needed = false;
     int rc = 0;
 
@@ -539,6 +584,14 @@ static bool process_record(libxl__egc *egc,
         break;
 
     case REC_TYPE_EMULATOR_XENSTORE_DATA:
+        if (dcs->guest_config->b_info.device_model_version ==
+            LIBXL_DEVICE_MODEL_VERSION_NONE) {
+            rc = ERROR_FAIL;
+            LOG(ERROR,
+                "Received a xenstore emulator record when none was expected");
+            goto err;
+        }
+
         if (rec->hdr.length < sizeof(libxl__sr_emulator_hdr)) {
             rc = ERROR_FAIL;
             LOG(ERROR,
@@ -560,6 +613,14 @@ static bool process_record(libxl__egc *egc,
         break;
 
     case REC_TYPE_EMULATOR_CONTEXT:
+        if (dcs->guest_config->b_info.device_model_version ==
+            LIBXL_DEVICE_MODEL_VERSION_NONE) {
+            rc = ERROR_FAIL;
+            LOG(ERROR,
+                "Received an emulator context record when none was expected");
+            goto err;
+        }
+
         write_emulator_blob(egc, stream, rec);
         break;
 
@@ -570,6 +631,17 @@ static bool process_record(libxl__egc *egc,
             goto err;
         }
         checkpoint_done(egc, stream, 0);
+        break;
+
+    case REC_TYPE_CHECKPOINT_STATE:
+        if (!stream->in_checkpoint_state) {
+            LOG(ERROR, "Unexpected CHECKPOINT_STATE record in stream");
+            rc = ERROR_FAIL;
+            goto err;
+        }
+
+        srcs = rec->body;
+        checkpoint_state_done(egc, stream, srcs->id);
         break;
 
     default:
@@ -683,6 +755,21 @@ static void stream_complete(libxl__egc *egc,
         return;
     }
 
+    if (stream->in_checkpoint_state) {
+        assert(rc);
+
+        /*
+         * If an error is encountered while in a checkpoint, pass it
+         * back to libxc.  The failure will come back around to us via
+         * 1. normal stream
+         *    libxl__xc_domain_restore_done()
+         * 2. back_channel stream
+         *    libxl__stream_read_abort()
+         */
+        checkpoint_state_done(egc, stream, rc);
+        return;
+    }
+
     stream_done(egc, stream, rc);
 }
 
@@ -713,6 +800,7 @@ static void stream_done(libxl__egc *egc,
 
     assert(stream->running);
     assert(!stream->in_checkpoint);
+    assert(!stream->in_checkpoint_state);
     stream->running = false;
 
     if (stream->incoming_record)
@@ -732,7 +820,19 @@ static void stream_done(libxl__egc *egc,
     LIBXL_STAILQ_FOREACH_SAFE(rec, &stream->record_queue, entry, trec)
         free_record(rec);
 
-    check_all_finished(egc, stream, rc);
+    if (!stream->back_channel) {
+        /*
+         * 1. In stream_done(), stream->running is set to false, so
+         *    the stream itself is not in use.
+         * 2. Read stream is a back channel stream, this means it is
+         *    only used by primary(save side) to read records sent by
+         *    secondary(restore side), so it doesn't have restore helper.
+         * 3. Back channel stream doesn't support legacy stream, so
+         *    there is no conversion helper.
+         * So we don't need invoke check_all_finished here
+         */
+        check_all_finished(egc, stream, rc);
+    }
 }
 
 void libxl__xc_domain_restore_done(libxl__egc *egc, void *dcs_void,
@@ -741,6 +841,9 @@ void libxl__xc_domain_restore_done(libxl__egc *egc, void *dcs_void,
     libxl__domain_create_state *dcs = dcs_void;
     libxl__stream_read_state *stream = &dcs->srs;
     STATE_AO_GC(dcs->ao);
+
+    /* convenience aliases */
+    const int checkpointed_stream = dcs->restore_params.checkpointed_stream;
 
     if (rc)
         goto err;
@@ -761,11 +864,35 @@ void libxl__xc_domain_restore_done(libxl__egc *egc, void *dcs_void,
      * If the stream is not still alive, we must not continue any work.
      */
     if (libxl__stream_read_inuse(stream)) {
-        /*
-         * Libxc has indicated that it is done with the stream.  Resume reading
-         * libxl records from it.
-         */
-        stream_continue(egc, stream);
+        switch (checkpointed_stream) {
+        case LIBXL_CHECKPOINTED_STREAM_COLO:
+            if (stream->completion_callback) {
+                /*
+                 * restore, just build the secondary vm, don't close
+                 * the stream
+                 */
+                stream->completion_callback(egc, stream, 0);
+            } else {
+                /* failover, just close the stream */
+                stream_complete(egc, stream, 0);
+            }
+            break;
+        case LIBXL_CHECKPOINTED_STREAM_REMUS:
+            /*
+             * Failover from primary. Domain state is currently at a
+             * consistent checkpoint, complete the stream, and call
+             * stream->completion_callback() to resume the guest.
+             */
+            stream_complete(egc, stream, 0);
+            break;
+        case LIBXL_CHECKPOINTED_STREAM_NONE:
+            /*
+             * Libxc has indicated that it is done with the stream.
+             * Resume reading libxl records from it.
+             */
+            stream_continue(egc, stream);
+            break;
+        }
     }
 }
 
@@ -817,7 +944,30 @@ static void check_all_finished(libxl__egc *egc,
         libxl__conversion_helper_inuse(&stream->chs))
         return;
 
-    stream->completion_callback(egc, stream, stream->rc);
+    if (stream->completion_callback)
+        /* back channel stream doesn't have completion_callback() */
+        stream->completion_callback(egc, stream, stream->rc);
+}
+
+/*----- Checkpoint state handlers -----*/
+
+void libxl__stream_read_checkpoint_state(libxl__egc *egc,
+                                         libxl__stream_read_state *stream)
+{
+    assert(stream->running);
+    assert(!stream->in_checkpoint);
+    assert(!stream->in_checkpoint_state);
+    stream->in_checkpoint_state = true;
+
+    setup_read_record(egc, stream);
+}
+
+static void checkpoint_state_done(libxl__egc *egc,
+                                  libxl__stream_read_state *stream, int rc)
+{
+    assert(stream->in_checkpoint_state);
+    stream->in_checkpoint_state = false;
+    stream->checkpoint_callback(egc, stream, rc);
 }
 
 /*

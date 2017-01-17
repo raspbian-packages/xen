@@ -1,17 +1,14 @@
-From 6d0ff0f7897f89ce62bb17e3bb7148d824ce2155 Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:50 +0200
+X-Dgit-Generated: 4.8.0-1 22015d652df3325f847789b2b4a0021e48455fd9
 Subject: tools-xenstat-abiname.diff
 
 Patch-Name: tools-xenstat-abiname.diff
----
- tools/xenstat/libxenstat/Makefile | 22 +++++-----------------
- 1 file changed, 5 insertions(+), 17 deletions(-)
 
-diff --git a/tools/xenstat/libxenstat/Makefile b/tools/xenstat/libxenstat/Makefile
-index 850d24a..7c13c06 100644
---- a/tools/xenstat/libxenstat/Makefile
-+++ b/tools/xenstat/libxenstat/Makefile
+---
+
+--- xen-4.8.0.orig/tools/xenstat/libxenstat/Makefile
++++ xen-4.8.0/tools/xenstat/libxenstat/Makefile
 @@ -18,18 +18,14 @@ include $(XEN_ROOT)/tools/Rules.mk
  LDCONFIG=ldconfig
  MAKE_LINK=ln -sf
@@ -34,16 +31,16 @@ index 850d24a..7c13c06 100644
  
  CFLAGS+=-fPIC
  CFLAGS+=-Isrc $(CFLAGS_libxenctrl) $(CFLAGS_libxenstore) $(CFLAGS_xeninclude) -include $(XEN_ROOT)/tools/config.h
-@@ -38,7 +34,7 @@ LDLIBS-y = $(LDLIBS_libxenstore) $(LDLIBS_libxenctrl)
+@@ -38,7 +34,7 @@ LDLIBS-y = $(LDLIBS_libxenstore) $(LDLIB
  LDLIBS-$(CONFIG_SunOS) += -lkstat
  
  .PHONY: all
 -all: $(LIB) $(SHLIB) $(SHLIB_LINKS)
 +all: $(LIB) $(SHLIB)
  
- $(LIB): $(OBJECTS-y)
- 	$(AR) rc $@ $^
-@@ -48,19 +44,11 @@ $(SHLIB): $(OBJECTS-y)
+ $(OBJECTS-y): src/_paths.h
+ 
+@@ -50,19 +46,11 @@ $(SHLIB): $(OBJECTS-y)
  	$(CC) $(LDFLAGS) $(SONAME_FLAGS) $(SHLIB_LDFLAGS) -o $@ \
  	    $(OBJECTS-y) $(LDLIBS-y) $(APPEND_LDFLAGS)
  

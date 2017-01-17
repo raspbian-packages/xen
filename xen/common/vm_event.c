@@ -26,6 +26,7 @@
 #include <xen/vm_event.h>
 #include <xen/mem_access.h>
 #include <asm/p2m.h>
+#include <asm/monitor.h>
 #include <asm/vm_event.h>
 #include <xsm/xsm.h>
 
@@ -254,7 +255,7 @@ static inline void vm_event_release_slot(struct domain *d,
 
 /*
  * vm_event_mark_and_pause() tags vcpu and put it to sleep.
- * The vcpu will resume execution in vm_event_wake_waiters().
+ * The vcpu will resume execution in vm_event_wake_blocked().
  */
 void vm_event_mark_and_pause(struct vcpu *v, struct vm_event_domain *ved)
 {
@@ -387,40 +388,53 @@ void vm_event_resume(struct domain *d, struct vm_event_domain *ved)
         v = d->vcpu[rsp.vcpu_id];
 
         /*
+         * Make sure the vCPU state has been synchronized for the custom
+         * handlers.
+         */
+        if ( atomic_read(&v->vm_event_pause_count) )
+            sync_vcpu_execstate(v);
+
+        /*
          * In some cases the response type needs extra handling, so here
          * we call the appropriate handlers.
          */
-        switch ( rsp.reason )
+
+        /* Check flags which apply only when the vCPU is paused */
+        if ( atomic_read(&v->vm_event_pause_count) )
         {
-        case VM_EVENT_REASON_MOV_TO_MSR:
-        case VM_EVENT_REASON_WRITE_CTRLREG:
+#ifdef CONFIG_HAS_MEM_PAGING
+            if ( rsp.reason == VM_EVENT_REASON_MEM_PAGING )
+                p2m_mem_paging_resume(d, &rsp);
+#endif
+
+            /*
+             * Check emulation flags in the arch-specific handler only, as it
+             * has to set arch-specific flags when supported, and to avoid
+             * bitmask overhead when it isn't supported.
+             */
+            vm_event_emulate_check(v, &rsp);
+
+            /*
+             * Check in arch-specific handler to avoid bitmask overhead when
+             * not supported.
+             */
             vm_event_register_write_resume(v, &rsp);
-            break;
 
-#ifdef HAS_MEM_ACCESS
-        case VM_EVENT_REASON_MEM_ACCESS:
-            mem_access_resume(v, &rsp);
-            break;
-#endif
+            /*
+             * Check in arch-specific handler to avoid bitmask overhead when
+             * not supported.
+             */
+            vm_event_toggle_singlestep(d, v, &rsp);
 
-#ifdef HAS_MEM_PAGING
-        case VM_EVENT_REASON_MEM_PAGING:
-            p2m_mem_paging_resume(d, &rsp);
-            break;
-#endif
+            /* Check for altp2m switch */
+            if ( rsp.flags & VM_EVENT_FLAG_ALTERNATE_P2M )
+                p2m_altp2m_check(v, rsp.altp2m_idx);
 
-        };
+            if ( rsp.flags & VM_EVENT_FLAG_SET_REGISTERS )
+                vm_event_set_registers(v, &rsp);
 
-        /* Check for altp2m switch */
-        if ( rsp.flags & VM_EVENT_FLAG_ALTERNATE_P2M )
-            p2m_altp2m_check(v, rsp.altp2m_idx);
-
-        if ( rsp.flags & VM_EVENT_FLAG_VCPU_PAUSED )
-        {
-            if ( rsp.flags & VM_EVENT_FLAG_TOGGLE_SINGLESTEP )
-                vm_event_toggle_singlestep(d, v);
-
-            vm_event_vcpu_unpause(v);
+            if ( rsp.flags & VM_EVENT_FLAG_VCPU_PAUSED )
+                vm_event_vcpu_unpause(v);
         }
     }
 }
@@ -499,7 +513,7 @@ int __vm_event_claim_slot(struct domain *d, struct vm_event_domain *ved,
         return vm_event_grab_slot(ved, (current->domain != d));
 }
 
-#ifdef HAS_MEM_PAGING
+#ifdef CONFIG_HAS_MEM_PAGING
 /* Registered with Xen-bound event channel for incoming notifications. */
 static void mem_paging_notification(struct vcpu *v, unsigned int port)
 {
@@ -515,7 +529,7 @@ static void monitor_notification(struct vcpu *v, unsigned int port)
         vm_event_resume(v->domain, &v->domain->vm_event->monitor);
 }
 
-#ifdef HAS_MEM_SHARING
+#ifdef CONFIG_HAS_MEM_SHARING
 /* Registered with Xen-bound event channel for incoming notifications. */
 static void mem_sharing_notification(struct vcpu *v, unsigned int port)
 {
@@ -527,7 +541,7 @@ static void mem_sharing_notification(struct vcpu *v, unsigned int port)
 /* Clean up on domain destruction */
 void vm_event_cleanup(struct domain *d)
 {
-#ifdef HAS_MEM_PAGING
+#ifdef CONFIG_HAS_MEM_PAGING
     if ( d->vm_event->paging.ring_page )
     {
         /* Destroying the wait queue head means waking up all
@@ -546,7 +560,7 @@ void vm_event_cleanup(struct domain *d)
         destroy_waitqueue_head(&d->vm_event->monitor.wq);
         (void)vm_event_disable(d, &d->vm_event->monitor);
     }
-#ifdef HAS_MEM_SHARING
+#ifdef CONFIG_HAS_MEM_SHARING
     if ( d->vm_event->share.ring_page )
     {
         destroy_waitqueue_head(&d->vm_event->share.wq);
@@ -564,7 +578,7 @@ int vm_event_domctl(struct domain *d, xen_domctl_vm_event_op_t *vec,
     if ( rc )
         return rc;
 
-    if ( unlikely(d == current->domain) )
+    if ( unlikely(d == current->domain) ) /* no domain_pause() */
     {
         gdprintk(XENLOG_INFO, "Tried to do a memory event op on itself.\n");
         return -EINVAL;
@@ -589,7 +603,7 @@ int vm_event_domctl(struct domain *d, xen_domctl_vm_event_op_t *vec,
 
     switch ( vec->mode )
     {
-#ifdef HAS_MEM_PAGING
+#ifdef CONFIG_HAS_MEM_PAGING
     case XEN_DOMCTL_VM_EVENT_OP_PAGING:
     {
         struct vm_event_domain *ved = &d->vm_event->paging;
@@ -621,6 +635,7 @@ int vm_event_domctl(struct domain *d, xen_domctl_vm_event_op_t *vec,
             if ( p2m->pod.entry_count )
                 break;
 
+            /* domain_pause() not required here, see XSA-99 */
             rc = vm_event_enable(d, vec, ved, _VPF_mem_paging,
                                  HVM_PARAM_PAGING_RING_PFN,
                                  mem_paging_notification);
@@ -629,7 +644,11 @@ int vm_event_domctl(struct domain *d, xen_domctl_vm_event_op_t *vec,
 
         case XEN_VM_EVENT_DISABLE:
             if ( ved->ring_page )
+            {
+                domain_pause(d);
                 rc = vm_event_disable(d, ved);
+                domain_unpause(d);
+            }
             break;
 
         case XEN_VM_EVENT_RESUME:
@@ -655,6 +674,10 @@ int vm_event_domctl(struct domain *d, xen_domctl_vm_event_op_t *vec,
         switch( vec->op )
         {
         case XEN_VM_EVENT_ENABLE:
+            /* domain_pause() not required here, see XSA-99 */
+            rc = arch_monitor_init_domain(d);
+            if ( rc )
+                break;
             rc = vm_event_enable(d, vec, ved, _VPF_mem_access,
                                  HVM_PARAM_MONITOR_RING_PFN,
                                  monitor_notification);
@@ -662,7 +685,12 @@ int vm_event_domctl(struct domain *d, xen_domctl_vm_event_op_t *vec,
 
         case XEN_VM_EVENT_DISABLE:
             if ( ved->ring_page )
+            {
+                domain_pause(d);
                 rc = vm_event_disable(d, ved);
+                arch_monitor_cleanup_domain(d);
+                domain_unpause(d);
+            }
             break;
 
         case XEN_VM_EVENT_RESUME:
@@ -679,7 +707,7 @@ int vm_event_domctl(struct domain *d, xen_domctl_vm_event_op_t *vec,
     }
     break;
 
-#ifdef HAS_MEM_SHARING
+#ifdef CONFIG_HAS_MEM_SHARING
     case XEN_DOMCTL_VM_EVENT_OP_SHARING:
     {
         struct vm_event_domain *ved = &d->vm_event->share;
@@ -698,6 +726,7 @@ int vm_event_domctl(struct domain *d, xen_domctl_vm_event_op_t *vec,
             if ( !hap_enabled(d) )
                 break;
 
+            /* domain_pause() not required here, see XSA-99 */
             rc = vm_event_enable(d, vec, ved, _VPF_mem_sharing,
                                  HVM_PARAM_SHARING_RING_PFN,
                                  mem_sharing_notification);
@@ -705,7 +734,11 @@ int vm_event_domctl(struct domain *d, xen_domctl_vm_event_op_t *vec,
 
         case XEN_VM_EVENT_DISABLE:
             if ( ved->ring_page )
+            {
+                domain_pause(d);
                 rc = vm_event_disable(d, ved);
+                domain_unpause(d);
+            }
             break;
 
         case XEN_VM_EVENT_RESUME:
@@ -742,8 +775,10 @@ void vm_event_vcpu_unpause(struct vcpu *v)
 {
     int old, new, prev = v->vm_event_pause_count.counter;
 
-    /* All unpause requests as a result of toolstack responses.  Prevent
-     * underflow of the vcpu pause count. */
+    /*
+     * All unpause requests as a result of toolstack responses.
+     * Prevent underflow of the vcpu pause count.
+     */
     do
     {
         old = prev;

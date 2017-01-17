@@ -34,6 +34,8 @@
 #include "xg_private.h"
 #include "xc_dom_decompress.h"
 
+#include <xen-tools/libs.h>
+
 #ifndef __MINIOS__
 
 #if defined(HAVE_BZLIB)
@@ -418,7 +420,7 @@ static int xc_try_lzo1x_decode(
      * lzo_uint should match size_t. Check that this is the case to be
      * sure we won't overflow various lzo_uint fields.
      */
-    XC_BUILD_BUG_ON(sizeof(lzo_uint) != sizeof(size_t));
+    BUILD_BUG_ON(sizeof(lzo_uint) != sizeof(size_t));
 
     ret = lzo_init();
     if ( ret != LZO_E_OK )
@@ -482,7 +484,7 @@ static int xc_try_lzo1x_decode(
         if ( !dst_len )
         {
             msg = "Error registering stream output";
-            if ( xc_dom_register_external(dom, out_buf, out_len) )
+            if ( xc_dom_register_external(dom, out_buf, *size) )
                 break;
 
             return 0;

@@ -26,7 +26,6 @@
 #include <asm/hvm/vlapic.h>
 #include <asm/hvm/vioapic.h>
 #include <asm/hvm/io.h>
-#include <xen/hvm/iommu.h>
 #include <asm/hvm/viridian.h>
 #include <asm/hvm/vmx/vmcs.h>
 #include <asm/hvm/svm/vmcb.h>
@@ -91,7 +90,7 @@ struct hvm_domain {
     /* Cached CF8 for guest PCI config cycles */
     uint32_t                pci_cf8;
 
-    struct pl_time         pl_time;
+    struct pl_time         *pl_time;
 
     struct hvm_io_handler *io_handler;
     unsigned int          io_handler_count;
@@ -123,12 +122,8 @@ struct hvm_domain {
     spinlock_t             uc_lock;
     bool_t                 is_in_uc_mode;
 
-    /* Pass-through */
-    struct hvm_iommu       hvm_iommu;
-
     /* hypervisor intercepted msix table */
     struct list_head       msixtbl_list;
-    spinlock_t             msixtbl_list_lock;
 
     struct viridian_domain viridian;
 
@@ -143,7 +138,15 @@ struct hvm_domain {
      */
     uint64_t sync_tsc;
 
+    uint64_t tsc_scaling_ratio;
+
     unsigned long *io_bitmap;
+
+    /* List of permanently write-mapped pages. */
+    struct {
+        spinlock_t lock;
+        struct list_head list;
+    } write_map;
 
     union {
         struct vmx_domain vmx;

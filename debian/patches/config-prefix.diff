@@ -1,19 +1,15 @@
-From a8f7ae30f31b8332e7a802c3b26f520e2a465ece Mon Sep 17 00:00:00 2001
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:45 +0200
+X-Dgit-Generated: 4.8.0-1 b0e794e71f5860aa45c034890bbbe7dbaf7dbe41
 Subject: config-prefix.diff
 
 Patch-Name: config-prefix.diff
----
- Config.mk          | 2 +-
- config/Paths.mk.in | 9 +++++++--
- 2 files changed, 8 insertions(+), 3 deletions(-)
 
-diff --git a/Config.mk b/Config.mk
-index 54fbb9d..675bc18 100644
---- a/Config.mk
-+++ b/Config.mk
-@@ -75,7 +75,7 @@ EXTRA_LIB += $(EXTRA_PREFIX)/lib
+---
+
+--- xen-4.8.0.orig/Config.mk
++++ xen-4.8.0/Config.mk
+@@ -82,7 +82,7 @@ EXTRA_LIB += $(EXTRA_PREFIX)/lib
  endif
  
  PYTHON      ?= python
@@ -22,10 +18,8 @@ index 54fbb9d..675bc18 100644
  # The above requires that prefix contains *no spaces*. This variable is here
  # to permit the user to set PYTHON_PREFIX_ARG to '' to workaround this bug:
  #  https://bugs.launchpad.net/ubuntu/+bug/362570
-diff --git a/config/Paths.mk.in b/config/Paths.mk.in
-index d36504f..c3b043f 100644
---- a/config/Paths.mk.in
-+++ b/config/Paths.mk.in
+--- xen-4.8.0.orig/config/Paths.mk.in
++++ xen-4.8.0/config/Paths.mk.in
 @@ -13,6 +13,7 @@
  # http://wiki.xen.org/wiki/Category:Host_Configuration#System_wide_xen_configuration
  
@@ -34,18 +28,3 @@ index d36504f..c3b043f 100644
  prefix                   := @prefix@
  bindir                   := @bindir@
  sbindir                  := @sbindir@
-@@ -29,8 +30,12 @@ includedir               := @includedir@
- localstatedir            := @localstatedir@
- sysconfdir               := @sysconfdir@
- 
--LIBEXEC                  := $(libexecdir)/$(PACKAGE_TARNAME)
--LIBEXEC_BIN              := @LIBEXEC_BIN@
-+PREFIX                   := $(prefix)
-+
-+SBINDIR                  := $(sbindir)
-+BINDIR                   := $(bindir)
-+LIBEXEC                  := $(libexecdir)/$(PACKAGE_TARNAME)-$(PACKAGE_VERSION)
-+LIBEXEC_BIN              := $(LIBEXEC)/bin
- LIBEXEC_LIB              := $(LIBEXEC)/lib
- LIBEXEC_INC              := $(LIBEXEC)/include
- 

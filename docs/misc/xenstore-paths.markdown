@@ -37,6 +37,8 @@ before regexp expansion:
   the "other" domain. i.e. ~ refers to the domain providing a service
   while $DOMID is the consumer of that service.
 * $UUID -- a UUID in the form xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
+* $INDEX -- an integer used as part of a path when listing a set of
+            values. Typically these integers are contiguous.
 
 VALUES are strings and can take the following forms:
 
@@ -51,6 +53,37 @@ VALUES are strings and can take the following forms:
 * (VALUE | VALUE | ... ) -- a set of alternatives. Alternatives are
   separated by a "|" and all the alternatives are enclosed in "(" and
   ")".
+* DISTRIBUTION -- information about a software distribution, comprised
+                  of 3 or 4 space separated UTF-8 strings as follows:
+
+                  VENDOR -- Commonly used vendor short name,
+                            e.g "Citrix" rather than "Citrix Systems
+                            Inc."
+
+                  PRODUCT -- Commonly used product (e.g. driver) name
+                             without version information.
+
+                  If the toolstack needs to match on either of the above
+                  values it should support Unix glob style matching.
+
+                  VERSION -- A version number that will sort properly
+                             under coreutils version sorting (sort -V)
+                             rules.
+
+                  ATTRIBUTES -- Optional human readable text to denote
+                                attributes of the software, e.g. "debug".
+                                This text is freeform and no meaning
+                                should be inferred. It is intended for
+                                display purposes only.
+
+* MAC_ADDRESS -- 6 integers, in hexadecimal form, separated by ':',
+                 specifying an IEEE 802.3 ethernet MAC address.
+* IPV4_ADDRESS -- 4 integers, in decimal form, separated by '.',
+                  specifying an IP version 4 address as described
+                  IETF RFC 791.
+* IPV6_ADDRESS -- Up to 8 integers, in hexadecimal form, separated
+                  by ':', specifying an IP version 6 address as
+                  described in IETF RFC 4291.
 
 Additional TAGS may follow as a comma separated set of the following
 tags enclosed in square brackets.
@@ -178,9 +211,9 @@ will not relocate guest memory.
 
 The BIOS used by this domain.
 
-#### ~/platform/* [HVM,INTERNAL]
+#### ~/platform/* = ("0"|"1") [HVM,INTERNAL]
 
-Various platform properties.
+Various boolean platform properties.
 
 * acpi -- is ACPI enabled for this domain
 * acpi_s3 -- is ACPI S3 support enabled for this domain
@@ -232,6 +265,16 @@ A virtual keyboard device frontend. Described by
 A virtual network device frontend. Described by
 [xen/include/public/io/netif.h][NETIF]
 
+#### ~/device/vscsi/$DEVID/* []
+
+A virtual scsi device frontend. Described by
+[xen/include/public/io/vscsiif.h][SCSIIF]
+
+#### ~/device/vusb/$DEVID/* []
+
+A virtual usb device frontend. Described by
+[xen/include/public/io/usbif.h][USBIF]
+
 #### ~/console/* []
 
 The primary PV console device. Described in [console.txt](console.txt)
@@ -240,7 +283,7 @@ The primary PV console device. Described in [console.txt](console.txt)
 
 A secondary PV console device. Described in [console.txt](console.txt)
 
-#### ~/device/serial/$DEVID/* [HVM]
+#### ~/serial/$DEVID/* [HVM]
 
 An emulated serial device. Described in [console.txt](console.txt)
 
@@ -302,9 +345,25 @@ A virtual keyboard device backend. Described by
 A virtual network device backend. Described by
 [xen/include/public/io/netif.h][NETIF]
 
+#### ~/backend/vscsi/$DOMID/$DEVID/* []
+
+A PV SCSI backend.
+
+#### ~/backend/vusb/$DOMID/$DEVID/* []
+
+A PV USB backend. Described by
+[xen/include/public/io/usbif.h][USBIF]
+
 #### ~/backend/console/$DOMID/$DEVID/* []
 
 A PV console backend. Described in [console.txt](console.txt)
+
+#### ~/backend/qusb/$DOMID/$DEVID/* []
+
+A PV USB device backend. Described by
+[xen/include/public/io/usbif.h][USBIF]
+
+Uses the qemu based USB backend.
 
 #### ~/device-model/$DOMID/* [INTERNAL]
 
@@ -327,6 +386,41 @@ string back to the command node.
 
 The precise protocol is not yet documented.
 
+#### ~/control/feature-poweroff = (""|"0"|"1") [w]
+#### ~/control/feature-reboot = (""|"0"|"1") [w]
+#### ~/control/feature-suspend = (""|"0"|"1") [w]
+
+These may be initialized to "" by the toolstack and may then be set
+to 0 or 1 by a guest to indicate whether it is capable or incapable,
+respectively, of responding to the corresponding command when written
+to ~/control/shutdown.
+A toolstack may then sample the feature- value at the point of issuing
+a PV control command and respond accordingly:
+
+"0" -> the frontend should not be expected to respond, so fail the
+       control operation
+"1" -> the frontend should be expected to respond, so wait for it to
+       do so and maybe fail the control operation after some reasonable
+       timeout.
+""  -> the frontend may or may not respond, so wait for it to do so and
+       then maybe try an alternative control mechanism after some
+       reasonable timeout.
+
+Since a toolstack may not initialize these paths, and the parent
+~/control path is read-only to a guest, a guest should not expect a
+write to succeed. If it fails the guest may log the failure but should
+continue to process the corresponding command when written to
+~/control/shutdown regardless.
+
+#### ~/control/feature-s3 = (""|"0"|"1") [w,HVM]
+#### ~/control/feature-s4 = (""|"0"|"1") [w,HVM]
+
+These purpose of these feature flags is identical to feature-poweroff,
+feature-reboot and feature-suspend above but concern triggering the
+S3 or S4 power states of HVM guests.
+A toolstack may create these values, but should not sample them unless
+the corresponding acpi_ feature flag is set in ~/platform.
+
 #### ~/control/platform-feature-multiprocessor-suspend = (0|1) []
 
 Indicates to the guest that this platform supports the multiprocessor
@@ -345,11 +439,62 @@ protocol definition.
 
 A domain writable path. Available for arbitrary domain use.
 
+#### ~/drivers/$INDEX = DISTRIBUTION [w]
+
+A domain may write information about installed PV drivers using
+paths of this form.
+
+#### ~/feature/hotplug/vif = ("0"|"1") [w]
+#### ~/feature/hotplug/vbd = ("0"|"1") [w]
+
+By setting these paths to "1" a guest can indicate to a toolstack
+that it is capable of responding immediately to instantiation of,
+respectively, new vif by bringing online a new PV network device or
+a new vbd by bringing online a new PV block device.
+If the guest sets this path to "0" then it is indicating that it is
+definitely unable to respond immediately and hence the toolstack should
+defer instantiaton to the next VM start. However, if the path is absent
+then the toolstack may attempt the operation.
+
+#### ~/attr/vif/$DEVID/name = STRING [w]
+
+A domain may write its internal 'friendly' name for a network device
+using this path using UTF-8 encoding. A toolstack or UI may use this
+for display purposes. No particular meaning should be inferred from the
+name.
+
+#### ~/attr/vif/$DEVID/mac/$INDEX = MAC_ADDRESS [w]
+
+Paths of this form may be written by the guest to indicate MAC addresses
+it is currently using. These may be multicast or unicast addresses. For
+any of the paths the value of $INDEX is arbitrary.
+The values written are primarily for display purposes and must not be used
+for packet filtering or routing purposes.
+
+#### ~/attr/vif/$DEVID/ipv4/$INDEX = IPV4_ADDRESS [w]
+#### ~/attr/vif/$DEVID/ipv6/$INDEX = IPV6_ADDRESS [w]
+
+Paths of this form may be written by the guest to indicate IP addresses
+in use by the stack bound to the network frontend. For any of the paths
+the value of $INDEX is arbitrary.
+The values written are primarily for display purposes and must not be used
+for packet filtering or routing purposes. A toolstack may attempt to use an
+address written in one of these paths to, for example, establish a VNC
+session to the guest (although clearly some level of trust is placed
+in the value supplied by the guest in this case).
+
 ### Paths private to the toolstack
 
 #### ~/device-model/$DOMID/state [w]
 
 Contains the status of the device models running on the domain.
+
+#### ~/device-model/$DOMID/backends/* [w]
+
+Backend types the device model is supporting. Each entry below backends
+is a directory which may contain further nodes specific to the backend
+type. The name of each backend directory is the same as the backend type
+(e.g. "qdisk").
 
 #### ~/libxl/$DOMID/qdisk-backend-pid [w]
 
@@ -389,6 +534,25 @@ The guest's virtual time offset from UTC in seconds.
 
 ### libxl Specific Paths
 
+#### /libxl/$DOMID/device/$KIND/$DEVID
+
+Created by libxl for every frontend/backend pair created for $DOMID.
+Used by libxl for enumeration and management of the device.
+
+#### /libxl/$DOMID/device/$KIND/$DEVID/frontend
+
+Path in xenstore to the frontend, normally
+/local/domain/$DOMID/device/$KIND/$DEVID
+
+#### /libxl/$DOMID/device/$KIND/$DEVID/backend
+
+Path in xenstore to the backend, normally
+/local/domain/$BACKEND_DOMID/backend/$KIND/$DOMID/$DEVID
+
+#### /libxl/$DOMID/device/$KIND/$DEVID/$NODE
+
+Trustworthy copy of /local/domain/$DOMID/backend/$KIND/$DEVID/$NODE.
+
 #### /libxl/$DOMID/dm-version ("qemu\_xen"|"qemu\_xen\_traditional") = [n,INTERNAL]
 
 The device model version for a domain.
@@ -397,12 +561,24 @@ The device model version for a domain.
 
 ifb device used by Remus to buffer network output from the associated vif.
 
-[BLKIF]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,io,blkif.h.html
-[FBIF]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,io,fbif.h.html
-[HVMPARAMS]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,hvm,params.h.html
-[KBDIF]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,io,kbdif.h.html
+### xenstored specific paths
+
+The /tool/xenstored namespace is created by the xenstore daemon or domain
+for the toolstack to obtain e.g. the domain id of a xenstore domain.
+
+#### /tool/xenstored/domid = INTEGER [n,INTERNAL]
+
+Domain Id of the xenstore domain in case xenstore is provided via a
+domain instead of a daemon in dom0.
+
+[BLKIF]: http://xenbits.xen.org/docs/unstable/hypercall/x86_64/include,public,io,blkif.h.html
+[FBIF]: http://xenbits.xen.org/docs/unstable/hypercall/x86_64/include,public,io,fbif.h.html
+[HVMPARAMS]: http://xenbits.xen.org/docs/unstable/hypercall/x86_64/include,public,hvm,params.h.html
+[KBDIF]: http://xenbits.xen.org/docs/unstable/hypercall/x86_64/include,public,io,kbdif.h.html
 [LIBXLMEM]: http://xenbits.xen.org/docs/unstable/misc/libxl_memory.txt
-[NETIF]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,io,netif.h.html
-[SI]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,xen.h.html#Struct_start_info
-[VCPU]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,vcpu.h.html
-[XSWIRE]: http://xenbits.xen.org/docs/unstable/hypercall/include,public,io,xs_wire.h.html
+[NETIF]: http://xenbits.xen.org/docs/unstable/hypercall/x86_64/include,public,io,netif.h.html
+[SCSIIF]: http://xenbits.xen.org/docs/unstable/hypercall/x86_64/include,public,io,vscsiif.h.html
+[SI]: http://xenbits.xen.org/docs/unstable/hypercall/x86_64/include,public,xen.h.html#Struct_start_info
+[USBIF]: http://xenbits.xen.org/docs/unstable/hypercall/x86_64/include,public,io,usbif.h.html
+[VCPU]: http://xenbits.xen.org/docs/unstable/hypercall/x86_64/include,public,vcpu.h.html
+[XSWIRE]: http://xenbits.xen.org/docs/unstable/hypercall/x86_64/include,public,io,xs_wire.h.html

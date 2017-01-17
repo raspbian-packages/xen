@@ -56,6 +56,9 @@
 ?       grant_entry_header              grant_table.h
 ?	grant_entry_v2			grant_table.h
 ?	gnttab_swap_grant_ref		grant_table.h
+?	vcpu_hvm_context		hvm/hvm_vcpu.h
+?	vcpu_hvm_x86_32			hvm/hvm_vcpu.h
+?	vcpu_hvm_x86_64			hvm/hvm_vcpu.h
 ?	kexec_exec			kexec.h
 !	kexec_image			kexec.h
 !	kexec_range			kexec.h
@@ -65,7 +68,7 @@
 !	memory_exchange			memory.h
 !	memory_map			memory.h
 !	memory_reservation		memory.h
-?	mem_access_op			memory.h
+!	mem_access_op			memory.h
 !	pod_target			memory.h
 !	remove_from_physmap		memory.h
 !	reserved_device_memory_map	memory.h
@@ -101,6 +104,7 @@
 ?	pmu_data			pmu.h
 ?	pmu_params			pmu.h
 !	sched_poll			sched.h
+?	sched_pin_override		sched.h
 ?	sched_remote_shutdown		sched.h
 ?	sched_shutdown			sched.h
 ?	tmem_oid			tmem.h
@@ -125,4 +129,3 @@
 ?	flask_setenforce		xsm/flask_op.h
 !	flask_sid_context		xsm/flask_op.h
 ?	flask_transition		xsm/flask_op.h
-!	flask_userlist			xsm/flask_op.h

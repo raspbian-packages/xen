@@ -198,6 +198,14 @@ Permit Xen to use Address Space Identifiers.  This is an optimisation which
 tags the TLB entries with an ID per vcpu.  This allows for guest TLB flushes
 to be performed without the overhead of a complete TLB flush.
 
+### async-show-all
+> `= <boolean>`
+
+> Default: `false`
+
+Forces all CPUs' full state to be logged upon certain fatal asynchronous
+exceptions (watchdog NMIs and unexpected MCEs).
+
 ### ats
 > `= <boolean>`
 
@@ -256,9 +264,15 @@ minimum of 32M, subject to a suitably aligned and sized contiguous
 region of memory being available.
 
 ### clocksource
-> `= pit | hpet | acpi`
+> `= pit | hpet | acpi | tsc`
 
 If set, override Xen's default choice for the platform timer.
+Having TSC as platform timer requires being explicitly set. This is because
+TSC can only be safely used if CPU hotplug isn't performed on the system. On
+some platforms, the "maxcpus" option may need to be used to further adjust
+the number of allowed CPUs.  When running on platforms that can guarantee a
+monotonic TSC across sockets you may want to adjust the "tsc" command line
+parameter to "stable:socket".
 
 ### cmci-threshold
 > `= <integer>`
@@ -277,13 +291,14 @@ Flag to indicate whether to probe for a CMOS Real Time Clock irrespective of
 ACPI indicating none to be there.
 
 ### com1,com2
-> `= <baud>[/<clock_hz>][,[DPS][,[<io-base>|pci|amt][,[<irq>][,[<port-bdf>][,[<bridge-bdf>]]]]]]`
+> `= <baud>[/<base-baud>][,[DPS][,[<io-base>|pci|amt][,[<irq>][,[<port-bdf>][,[<bridge-bdf>]]]]]]`
 
 Both option `com1` and `com2` follow the same format.
 
 * `<baud>` may be either an integer baud rate, or the string `auto` if
   the bootloader or other earlier firmware has already set it up.
-* Optionally, a clock speed measured in hz can be specified.
+* Optionally, the base baud rate (usually the highest baud rate the
+  device can communicate at) can be specified.
 * `DPS` represents the number of data bits, the parity, and the number
   of stop bits.
   * `D` is an integer between 5 and 8 for the number of data bits.
@@ -391,11 +406,12 @@ If set, force use of the performance counters for oprofile, rather than detectin
 available support.
 
 ### cpufreq
-> `= dom0-kernel | none | xen[,[powersave|performance|ondemand|userspace][,<maxfreq>][,[<minfreq>][,[verbose]]]]`
+> `= none | {{ <boolean> | xen } [:[powersave|performance|ondemand|userspace][,<maxfreq>][,[<minfreq>][,[verbose]]]]} | dom0-kernel`
 
 > Default: `xen`
 
-Indicate where the responsibility for driving power states lies.
+Indicate where the responsibility for driving power states lies.  Note that the
+choice of `dom0-kernel` is deprecated and not supported by all Dom0 kernels.
 
 * Default governor policy is ondemand.
 * `<maxfreq>` and `<minfreq>` are integers which represent max and min processor frequencies
@@ -456,7 +472,18 @@ Specify the maximum address to allocate certain structures, if used in
 combination with the `low_crashinfo` command line option.
 
 ### crashkernel
-> `= <ramsize-range>:<size>[,...][@<offset>]`
+> `= <ramsize-range>:<size>[,...][{@,<}<offset>]`
+> `= <size>[{@,<}<offset>]`
+
+Specify sizes and optionally placement of the crash kernel reservation
+area.  The `<ramsize-range>:<size>` pairs indicate how much memory to
+set aside for a crash kernel (`<size>`) for a given range of installed
+RAM (`<ramsize-range>`).  Each `<ramsize-range>` is of the form
+`<start>-[<end>]`.
+
+A trailing `@<offset>` specifies the exact address this area should be
+placed at, whereas `<` in place of `@` just specifies an upper bound of
+the address range the area should fall into.
 
 ### credit2\_balance\_over
 > `= <integer>`
@@ -464,8 +491,57 @@ combination with the `low_crashinfo` command line option.
 ### credit2\_balance\_under
 > `= <integer>`
 
+### credit2\_load\_precision\_shift
+> `= <integer>`
+
+> Default: `18`
+
+Specify the number of bits to use for the fractional part of the
+values involved in Credit2 load tracking and load balancing math.
+
 ### credit2\_load\_window\_shift
 > `= <integer>`
+
+> Default: `30`
+
+Specify the number of bits to use to represent the length of the
+window (in nanoseconds) we use for load tracking inside Credit2.
+This means that, with the default value (30), we use
+2^30 nsec ~= 1 sec long window.
+
+Load tracking is done by means of a variation of exponentially
+weighted moving average (EWMA). The window length defined here
+is what tells for how long we give value to previous history
+of the load itself. In fact, after a full window has passed,
+what happens is that we discard all previous history entirely.
+
+A short window will make the load balancer quick at reacting
+to load changes, but also short-sighted about previous history
+(and hence, e.g., long term load trends). A long window will
+make the load balancer thoughtful of previous history (and
+hence capable of capturing, e.g., long term load trends), but
+also slow in responding to load changes.
+
+The default value of `1 sec` is rather long.
+
+### credit2\_runqueue
+> `= core | socket | node | all`
+
+> Default: `socket`
+
+Specify how host CPUs are arranged in runqueues. Runqueues are kept
+balanced with respect to the load generated by the vCPUs running on
+them. Smaller runqueues (as in with `core`) means more accurate load
+balancing (for instance, it will deal better with hyperthreading),
+but also more overhead.
+
+Available alternatives, with their meaning, are:
+* `core`: one runqueue per each physical core of the host;
+* `socket`: one runqueue per each physical socket (which often,
+            but not always, matches a NUMA node) of the host;
+* `node`: one runqueue per each NUMA node of the host;
+* `all`: just one runqueue shared by all the logical pCPUs of
+         the host
 
 ### dbgp
 > `= ehci[ <integer> | @pci<bus>:<slot>.<func> ]`
@@ -660,23 +736,27 @@ to use the default.
 ### flask
 > `= permissive | enforcing | late | disabled`
 
-> Default: `permissive`
+> Default: `enforcing`
 
 Specify how the FLASK security server should be configured.  This option is only
-available if the hypervisor was compiled with XSM support (which can be enabled
-by setting XSM\_ENABLE = y in .config).
+available if the hypervisor was compiled with FLASK support.  This can be
+enabled by running either:
+- make -C xen config and enabling XSM and FLASK.
+- make -C xen menuconfig and enabling 'FLux Advanced Security Kernel support' and 'Xen Security Modules support'
 
 * `permissive`: This is intended for development and is not suitable for use
   with untrusted guests.  If a policy is provided by the bootloader, it will be
   loaded; errors will be reported to the ring buffer but will not prevent
   booting.  The policy can be changed to enforcing mode using "xl setenforce".
-* `enforcing`: This requires a security policy to be provided by the bootloader
-  and will enter enforcing mode prior to the creation of domain 0.  If a valid
-  policy is not provided, the hypervisor will not continue booting.
-* `late`: This disables loading of the security policy from the bootloader.
-  FLASK will be enabled but will not enforce access controls until a policy is
-  loaded by a domain using "xl loadpolicy".  Once a policy is loaded, FLASK will
-  run in enforcing mode unless "xl setenforce" has changed that setting.
+* `enforcing`: This will cause the security server to enter enforcing mode prior
+  to the creation of domain 0.  If an valid policy is not provided by the
+  bootloader and no built-in policy is present, the hypervisor will not continue
+  booting.
+* `late`: This disables loading of the built-in security policy or the policy
+  provided by the bootloader.  FLASK will be enabled but will not enforce access
+  controls until a policy is loaded by a domain using "xl loadpolicy".  Once a
+  policy is loaded, FLASK will run in enforcing mode unless "xl setenforce" has
+  changed that setting.
 * `disabled`: This causes the XSM framework to revert to the dummy module.  The
   dummy module provides the same security policy as is used when compiling the
   hypervisor without support for XSM.  The xsm\_op hypercall can also be used to
@@ -713,7 +793,7 @@ Controls EPT related features.
 
 > `pml`
 
-> Default: `false`
+> Default: `true`
 
 >> PML is a new hardware feature in Intel's Broadwell Server and further
 >> platforms which reduces hypervisor overhead of log-dirty mechanism by
@@ -729,20 +809,27 @@ Controls EPT related features.
 >> Have hardware keep accessed/dirty (A/D) bits updated.
 
 ### gdb
-> `= <baud>[/<clock_hz>][,DPS[,<io-base>[,<irq>[,<port-bdf>[,<bridge-bdf>]]]] | pci | amt ] `
+> `= com1[H,L] | com2[H,L] | dbgp`
 
-Specify the serial parameters for the GDB stub.
+> Default: ``
+
+Specify which console gdbstub should use. See **console**.
 
 ### gnttab\_max\_frames
 > `= <integer>`
 
-Specify the maximum number of frames per grant table operation.
+> Default: `32`
+
+Specify the maximum number of frames which any domain may use as part
+of its grant table.
 
 ### gnttab\_max\_maptrack\_frames
 > `= <integer>`
 
-Specify the maximum number of maptrack frames domain.
-The default value is 8 times **gnttab\_max\_frames**.
+> Default: `8 * gnttab_max_frames`
+
+Specify the maximum number of frames to use as part of a domains
+maptrack array.
 
 ### gnttab\_max\_nr\_frames
 > `= <integer>`
@@ -796,7 +883,7 @@ Paging (HAP).
 Enable late hardware domain creation using the specified domain ID.  This is
 intended to be used when domain 0 is a stub domain which builds a disaggregated
 system including a hardware domain with the specified domain ID.  This option is
-supported only when compiled with XSM\_ENABLE=y on x86.
+supported only when compiled with XSM on x86.
 
 ### hest\_disable
 > ` = <boolean>`
@@ -837,8 +924,12 @@ Recognized in debug builds of the hypervisor only.
 Allow use of the Forced Emulation Prefix in HVM guests, to allow emulation of
 arbitrary instructions.
 
-This option is intended for development purposes, and is only available in
-debug builds of the hypervisor.
+This option is intended for development and testing purposes.
+
+*Warning*
+As this feature opens up the instruction emulator to arbitrary
+instruction from an HVM guest, don't use this in production system. No
+security support is provided when this flag is set.
 
 ### hvm\_port80
 > `= <boolean>`
@@ -864,7 +955,7 @@ debug hypervisor only).
 > Default: `new` unless directed-EOI is supported
 
 ### iommu
-> `= List of [ <boolean> | force | required | intremap | qinval | snoop | sharept | dom0-passthrough | dom0-strict | amd-iommu-perdev-intremap | workaround_bios_bug | igfx | verbose | debug ]`
+> `= List of [ <boolean> | force | required | intremap | intpost | qinval | snoop | sharept | dom0-passthrough | dom0-strict | amd-iommu-perdev-intremap | workaround_bios_bug | igfx | verbose | debug ]`
 
 > Sub-options:
 
@@ -890,6 +981,13 @@ debug hypervisor only).
 
 >> Control the use of interrupt remapping (DMA remapping will always be enabled
 >> if IOMMU functionality is enabled).
+
+> `intpost`
+
+> Default: `false`
+
+>> Control the use of interrupt posting, which depends on the availability of
+>> interrupt remapping.
 
 > `qinval` (VT-d)
 
@@ -958,6 +1056,15 @@ debug hypervisor only).
 > Default: `false`
 
 >> Enable IOMMU debugging code (implies `verbose`).
+
+### iommu\_dev\_iotlb\_timeout
+> `= <integer>`
+
+> Default: `1000`
+
+Specify the timeout of the device IOTLB invalidation in milliseconds.
+By default, the timeout is 1000 ms. When you see error 'Queue invalidate
+wait descriptor timed out', try increasing this value.
 
 ### iommu\_inclusive\_mapping (VT-d)
 > `= <boolean>`
@@ -1028,6 +1135,17 @@ with **crashinfo_maxaddr**.
 Specify the threshold below which Xen will inform dom0 that the quantity of
 free memory is getting low.  Specifying `0` will disable this notification.
 
+### memop-max-order
+> `= [<domU>][,[<ctldom>][,[<hwdom>][,<ptdom>]]]`
+
+> x86 default: `9,18,12,12`
+> ARM default: `9,18,10,10`
+
+Change the maximum order permitted for allocation (or allocation-like)
+requests issued by the various kinds of domains (in this order:
+ordinary DomU, control domain, hardware domain, and - when supported
+by the platform - DomU with pass-through device assigned).
+
 ### max\_cstate
 > `= <integer>`
 
@@ -1063,6 +1181,15 @@ limit is ignored by Xen.
 > Default: `1`
 
 Specify if the MMConfig space should be enabled.
+
+### mmio-relax
+> `= <boolean> | all`
+
+> Default: `false`
+
+By default, domains may not create cached mappings to MMIO regions.
+This option relaxes the check for Domain 0 (or when using `all`, all PV
+domains), to permit the use of cacheable MMIO mappings.
 
 ### msi
 > `= <boolean>`
@@ -1173,10 +1300,20 @@ This option can be specified more than once (up to 8 times at present).
 ### ple\_window
 > `= <integer>`
 
-### psr (Intel)
-> `= List of ( cmt:<boolean> | rmid_max:<integer> | cat:<boolean> | cos_max:<integer> )`
+### pku
+> `= <boolean>`
 
-> Default: `psr=cmt:0,rmid_max:255,cat:0,cos_max:255`
+> Default: `true`
+
+Flag to enable Memory Protection Keys.
+
+The protection-key feature provides an additional mechanism by which IA-32e
+paging controls access to usermode addresses.
+
+### psr (Intel)
+> `= List of ( cmt:<boolean> | rmid_max:<integer> | cat:<boolean> | cos_max:<integer> | cdp:<boolean> )`
+
+> Default: `psr=cmt:0,rmid_max:255,cat:0,cos_max:255,cdp:0`
 
 Platform Shared Resource(PSR) Services.  Intel Haswell and later server
 platforms offer information about the sharing of resources.
@@ -1206,6 +1343,13 @@ The following resources are available:
   the cache allocation.
   * `cat` instructs Xen to enable/disable Cache Allocation Technology.
   * `cos_max` indicates the max value for COS ID.
+* Code and Data Prioritization Technology (Broadwell and later). Information
+  regarding the code cache and the data cache allocation. CDP is based on CAT.
+  * `cdp` instructs Xen to enable/disable Code and Data Prioritization. Note
+    that `cos_max` of CDP is a little different from `cos_max` of CAT. With
+    CDP, one COS will corespond two CBMs other than one with CAT, due to the
+    sum of CBMs is fixed, that means actual `cos_max` in use will automatically
+    reduce to half when CDP is enabled.
 
 ### reboot
 > `= t[riple] | k[bd] | a[cpi] | p[ci] | P[ower] | e[fi] | n[o] [, [w]arm | [c]old]`
@@ -1289,19 +1433,21 @@ enabling more sockets and cores to go into deeper sleep states.
 
 Set the serial transmit buffer size.
 
-### smep
-> `= <boolean>`
-
-> Default: `true`
-
-Flag to enable Supervisor Mode Execution Protection
-
 ### smap
-> `= <boolean>`
+> `= <boolean> | hvm`
 
 > Default: `true`
 
 Flag to enable Supervisor Mode Access Prevention
+Use `smap=hvm` to allow SMAP use by HVM guests only.
+
+### smep
+> `= <boolean> | hvm`
+
+> Default: `true`
+
+Flag to enable Supervisor Mode Execution Protection
+Use `smep=hvm` to allow SMEP use by HVM guests only.
 
 ### snb\_igd\_quirk
 > `= <boolean> | cap | <integer>`
@@ -1356,17 +1502,11 @@ pages) must also be specified via the tbuf\_size parameter.
 ### tmem\_compress
 > `= <boolean>`
 
-### tmem\_dedup
-> `= <boolean>`
-
 ### tmem\_shared\_auth
 > `= <boolean>`
 
-### tmem\_tze
-> `= <integer>`
-
 ### tsc
-> `= unstable | skewed`
+> `= unstable | skewed | stable:socket`
 
 ### ucode
 > `= [<integer> | scan]`
@@ -1444,7 +1584,7 @@ Use Virtual Processor ID support if available.  This prevents the need for TLB
 flushes on VM entry and exit, increasing performance.
 
 ### vpmu
-> `= ( bts )`
+> `= ( <boolean> | { bts | ipc | arch [, ...] } )`
 
 > Default: `off`
 
@@ -1460,11 +1600,24 @@ wrong behaviour (see handle\_pmc\_quirk()).
 If 'vpmu=bts' is specified the virtualisation of the Branch Trace Store (BTS)
 feature is switched on on Intel processors supporting this feature.
 
+vpmu=ipc enables performance monitoring, but restricts the counters to the
+most minimum set possible: instructions, cycles, and reference cycles. These
+can be used to calculate instructions per cycle (IPC).
+
+vpmu=arch enables performance monitoring, but restricts the counters to the
+pre-defined architectural events only. These are exposed by cpuid, and listed
+in the Pre-Defined Architectural Performance Events table from the Intel 64
+and IA-32 Architectures Software Developer's Manual, Volume 3B, System
+Programming Guide, Part 2.
+
+If a boolean is not used, combinations of flags are allowed, comma separated.
+For example, vpmu=arch,bts.
+
 Note that if **watchdog** option is also specified vpmu will be turned off.
 
 *Warning:*
-As the BTS virtualisation is not 100% safe and because of the nehalem quirk
-don't use the vpmu flag on production systems with Intel cpus!
+As the virtualisation is not 100% safe, don't use the vpmu flag on
+production systems (see http://xenbits.xen.org/xsa/advisory-163.html)!
 
 ### watchdog
 > `= force | <boolean>`

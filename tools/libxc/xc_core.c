@@ -808,13 +808,13 @@ xc_domain_dumpcore_via_callback(xc_interface *xch,
                         gmfn = p2m[i];
                     else
                         gmfn = ((uint64_t *)p2m)[i];
-                    if ( gmfn == INVALID_P2M_ENTRY )
+                    if ( gmfn == INVALID_PFN )
                         continue;
                 }
                 else
                 {
                     gmfn = ((uint32_t *)p2m)[i];
-                    if ( gmfn == (uint32_t)INVALID_P2M_ENTRY )
+                    if ( gmfn == (uint32_t)INVALID_PFN )
                        continue;
                 }
 
@@ -859,7 +859,7 @@ copy_done:
         /* When live dump-mode (-L option) is specified,
          * guest domain may reduce memory. pad with zero pages.
          */
-        IPRINTF("j (%ld) != nr_pages (%ld)", j, nr_pages);
+        DPRINTF("j (%ld) != nr_pages (%ld)", j, nr_pages);
         memset(dump_mem_start, 0, PAGE_SIZE);
         for (; j < nr_pages; j++) {
             sts = dump_rtn(xch, args, dump_mem_start, PAGE_SIZE);

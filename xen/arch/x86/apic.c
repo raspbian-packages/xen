@@ -521,7 +521,7 @@ out:
         free_ioapic_entries(ioapic_entries);
 }
 
-void __devinit setup_local_APIC(void)
+void setup_local_APIC(void)
 {
     unsigned long oldvalue, value, ver, maxlvt;
     int i, j;
@@ -571,7 +571,7 @@ void __devinit setup_local_APIC(void)
     for (i = APIC_ISR_NR - 1; i >= 0; i--) {
         value = apic_read(APIC_ISR + i*0x10);
         for (j = 31; j >= 0; j--) {
-            if (value & (1<<j))
+            if (value & (1u << j))
                 ack_APIC_irq();
         }
     }
@@ -814,25 +814,14 @@ custom_param("apic_verbosity", apic_set_verbosity);
 static int __init detect_init_APIC (void)
 {
     uint64_t msr_content;
-    u32 features;
 
     /* Disabled by kernel option? */
     if (enable_local_apic < 0)
         return -1;
 
-    switch (boot_cpu_data.x86_vendor) {
-    case X86_VENDOR_AMD:
-        if ((boot_cpu_data.x86 == 6 && boot_cpu_data.x86_model > 1) ||
-            (boot_cpu_data.x86 >= 0xf && boot_cpu_data.x86 <= 0x17))
-            break;
-        goto no_apic;
-    case X86_VENDOR_INTEL:
-        if (boot_cpu_data.x86 == 6 || boot_cpu_data.x86 == 15 ||
-            (boot_cpu_data.x86 == 5 && cpu_has_apic))
-            break;
-        goto no_apic;
-    default:
-        goto no_apic;
+    if (rdmsr_safe(MSR_IA32_APICBASE, msr_content)) {
+        printk("No local APIC present\n");
+        return -1;
     }
 
     if (!cpu_has_apic) {
@@ -851,14 +840,11 @@ static int __init detect_init_APIC (void)
          * software for Intel P6 or later and AMD K7
          * (Model > 1) or later.
          */
-        rdmsrl(MSR_IA32_APICBASE, msr_content);
         if (!(msr_content & MSR_IA32_APICBASE_ENABLE)) {
             printk("Local APIC disabled by BIOS -- reenabling.\n");
             msr_content &= ~MSR_IA32_APICBASE_BASE;
             msr_content |= MSR_IA32_APICBASE_ENABLE | APIC_DEFAULT_PHYS_BASE;
-            wrmsrl(MSR_IA32_APICBASE,
-                msr_content | MSR_IA32_APICBASE_ENABLE
-                | APIC_DEFAULT_PHYS_BASE);
+            wrmsrl(MSR_IA32_APICBASE, msr_content);
             enabled_via_apicbase = 1;
         }
     }
@@ -866,17 +852,15 @@ static int __init detect_init_APIC (void)
      * The APIC feature bit should now be enabled
      * in `cpuid'
      */
-    features = cpuid_edx(1);
-    if (!(features & (1 << X86_FEATURE_APIC))) {
+    if (!(cpuid_edx(1) & cpufeat_mask(X86_FEATURE_APIC))) {
         printk("Could not enable APIC!\n");
         return -1;
     }
 
-    set_bit(X86_FEATURE_APIC, boot_cpu_data.x86_capability);
+    __set_bit(X86_FEATURE_APIC, boot_cpu_data.x86_capability);
     mp_lapic_addr = APIC_DEFAULT_PHYS_BASE;
 
     /* The BIOS may have set up the APIC at some other address */
-    rdmsrl(MSR_IA32_APICBASE, msr_content);
     if (msr_content & MSR_IA32_APICBASE_ENABLE)
         mp_lapic_addr = msr_content & MSR_IA32_APICBASE_BASE;
 
@@ -888,10 +872,6 @@ static int __init detect_init_APIC (void)
     apic_pm_activate();
 
     return 0;
-
-no_apic:
-    printk("No local APIC present or hardware disabled\n");
-    return -1;
 }
 
 void x2apic_ap_setup(void)
@@ -943,8 +923,18 @@ void __init x2apic_bsp_setup(void)
     mask_8259A();
     mask_IO_APIC_setup(ioapic_entries);
 
-    if ( iommu_enable_x2apic_IR() )
+    switch ( iommu_enable_x2apic_IR() )
     {
+    case 0:
+        break;
+    case -ENXIO: /* ACPI_DMAR_X2APIC_OPT_OUT set */
+        if ( !x2apic_enabled )
+        {
+            printk("Not enabling x2APIC (upon firmware request)\n");
+            goto restore_out;
+        }
+        /* fall through */
+    default:
         if ( x2apic_enabled )
             panic("Interrupt remapping could not be enabled while "
                   "x2APIC is already enabled by BIOS");
@@ -1097,7 +1087,7 @@ static void __setup_APIC_LVTT(unsigned int clocks)
     apic_write_around(APIC_TMICT, clocks/APIC_DIVISOR);
 }
 
-static void __devinit setup_APIC_timer(void)
+static void setup_APIC_timer(void)
 {
     unsigned long flags;
     local_irq_save(flags);
@@ -1120,7 +1110,7 @@ static void __devinit setup_APIC_timer(void)
 
 static int __init calibrate_APIC_clock(void)
 {
-    unsigned long long t1 = 0, t2 = 0;
+    unsigned long long t1, t2;
     long tt1, tt2;
     long result;
     int i;
@@ -1147,8 +1137,7 @@ static int __init calibrate_APIC_clock(void)
     /*
      * We wrapped around just now. Let's start:
      */
-    if (cpu_has_tsc)
-        t1 = rdtsc();
+    t1 = rdtsc_ordered();
     tt1 = apic_read(APIC_TMCCT);
 
     /*
@@ -1158,8 +1147,7 @@ static int __init calibrate_APIC_clock(void)
         wait_8254_wraparound();
 
     tt2 = apic_read(APIC_TMCCT);
-    if (cpu_has_tsc)
-        t2 = rdtsc();
+    t2 = rdtsc_ordered();
 
     /*
      * The APIC bus clock counter is 32 bits only, it
@@ -1171,16 +1159,12 @@ static int __init calibrate_APIC_clock(void)
 
     result = (tt1-tt2)*APIC_DIVISOR/LOOPS;
 
-    if (cpu_has_tsc)
-        apic_printk(APIC_VERBOSE, "..... CPU clock speed is "
-                    "%ld.%04ld MHz.\n",
-                    ((long)(t2-t1)/LOOPS)/(1000000/HZ),
-                    ((long)(t2-t1)/LOOPS)%(1000000/HZ));
+    apic_printk(APIC_VERBOSE, "..... CPU clock speed is %ld.%04ld MHz.\n",
+                ((long)(t2 - t1) / LOOPS) / (1000000 / HZ),
+                ((long)(t2 - t1) / LOOPS) % (1000000 / HZ));
 
-    apic_printk(APIC_VERBOSE, "..... host bus clock speed is "
-                "%ld.%04ld MHz.\n",
-                result/(1000000/HZ),
-                result%(1000000/HZ));
+    apic_printk(APIC_VERBOSE, "..... host bus clock speed is %ld.%04ld MHz.\n",
+                result / (1000000 / HZ), result % (1000000 / HZ));
 
     /* set up multipliers for accurate timer code */
     bus_freq   = result*HZ;
@@ -1215,7 +1199,7 @@ void __init setup_boot_APIC_clock(void)
     local_irq_restore(flags);
 }
 
-void __devinit setup_secondary_APIC_clock(void)
+void setup_secondary_APIC_clock(void)
 {
     setup_APIC_timer();
 }
@@ -1365,7 +1349,7 @@ void pmu_apic_interrupt(struct cpu_user_regs *regs)
 int __init APIC_init_uniprocessor (void)
 {
     if (enable_local_apic < 0)
-        clear_bit(X86_FEATURE_APIC, boot_cpu_data.x86_capability);
+        setup_clear_cpu_cap(X86_FEATURE_APIC);
 
     if (!smp_found_config && !cpu_has_apic) {
         skip_ioapic_setup = 1;
@@ -1378,7 +1362,6 @@ int __init APIC_init_uniprocessor (void)
     if (!cpu_has_apic && APIC_INTEGRATED(apic_version[boot_cpu_physical_apicid])) {
         printk(KERN_ERR "BIOS bug, local APIC #%d not detected!...\n",
                boot_cpu_physical_apicid);
-        clear_bit(X86_FEATURE_APIC, boot_cpu_data.x86_capability);
         skip_ioapic_setup = 1;
         return -1;
     }

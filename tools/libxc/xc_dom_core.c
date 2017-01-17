@@ -33,13 +33,14 @@
 
 #include "xg_private.h"
 #include "xc_dom.h"
+#include "_paths.h"
 
 /* ------------------------------------------------------------------------ */
 /* debugging                                                                */
 
 
 
-static const char *default_logfile = "/var/log/xen/domain-builder-ng.log";
+static const char *default_logfile = XEN_LOG_DIR "/domain-builder-ng.log";
 
 int xc_dom_loginit(xc_interface *xch) {
     if (xch->dombuild_logger) return 0;
@@ -203,16 +204,16 @@ void *xc_dom_malloc_filemap(struct xc_dom_image *dom,
     fd = open(filename, O_RDONLY);
     if ( fd == -1 ) {
         xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
-                     "failed to open file: %s",
-                     strerror(errno));
+                     "failed to open file '%s': %s",
+                     filename, strerror(errno));
         goto err;
     }
 
     if ( (lseek(fd, 0, SEEK_SET) == -1) ||
          ((offset = lseek(fd, 0, SEEK_END)) == -1) ) {
         xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
-                     "failed to seek on file: %s",
-                     strerror(errno));
+                     "failed to seek on file '%s': %s",
+                     filename, strerror(errno));
         goto err;
     }
 
@@ -239,8 +240,8 @@ void *xc_dom_malloc_filemap(struct xc_dom_image *dom,
                            MAP_SHARED, fd, 0);
     if ( block->ptr == MAP_FAILED ) {
         xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
-                     "failed to mmap file: %s",
-                     strerror(errno));
+                     "failed to mmap file '%s': %s",
+                     filename, strerror(errno));
         goto err;
     }
 
@@ -535,56 +536,75 @@ void *xc_dom_pfn_to_ptr_retcount(struct xc_dom_image *dom, xen_pfn_t pfn,
     return phys->ptr;
 }
 
+static int xc_dom_chk_alloc_pages(struct xc_dom_image *dom, char *name,
+                                  xen_pfn_t pages)
+{
+    unsigned int page_size = XC_DOM_PAGE_SIZE(dom);
+
+    if ( pages > dom->total_pages || /* multiple test avoids overflow probs */
+         dom->pfn_alloc_end - dom->rambase_pfn > dom->total_pages ||
+         pages > dom->total_pages - dom->pfn_alloc_end + dom->rambase_pfn )
+    {
+        xc_dom_panic(dom->xch, XC_OUT_OF_MEMORY,
+                     "%s: segment %s too large (0x%"PRIpfn" > "
+                     "0x%"PRIpfn" - 0x%"PRIpfn" pages)", __FUNCTION__, name,
+                     pages, dom->total_pages,
+                     dom->pfn_alloc_end - dom->rambase_pfn);
+        return -1;
+    }
+
+    dom->pfn_alloc_end += pages;
+    dom->virt_alloc_end += pages * page_size;
+
+    if ( dom->allocate )
+        dom->allocate(dom);
+
+    return 0;
+}
+
+static int xc_dom_alloc_pad(struct xc_dom_image *dom, xen_vaddr_t boundary)
+{
+    unsigned int page_size = XC_DOM_PAGE_SIZE(dom);
+    xen_pfn_t pages;
+
+    if ( boundary & (page_size - 1) )
+    {
+        xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
+                     "%s: segment boundary isn't page aligned (0x%" PRIx64 ")",
+                     __FUNCTION__, boundary);
+        return -1;
+    }
+    if ( boundary < dom->virt_alloc_end )
+    {
+        xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
+                     "%s: segment boundary too low (0x%" PRIx64 " < 0x%" PRIx64
+                     ")", __FUNCTION__, boundary, dom->virt_alloc_end);
+        return -1;
+    }
+    pages = (boundary - dom->virt_alloc_end) / page_size;
+
+    return xc_dom_chk_alloc_pages(dom, "padding", pages);
+}
+
 int xc_dom_alloc_segment(struct xc_dom_image *dom,
                          struct xc_dom_seg *seg, char *name,
                          xen_vaddr_t start, xen_vaddr_t size)
 {
     unsigned int page_size = XC_DOM_PAGE_SIZE(dom);
-    xen_pfn_t pages = (size + page_size - 1) / page_size;
-    xen_pfn_t pfn;
+    xen_pfn_t pages;
     void *ptr;
 
-    if ( start == 0 )
-        start = dom->virt_alloc_end;
-
-    if ( start & (page_size - 1) )
-    {
-        xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
-                     "%s: segment start isn't page aligned (0x%" PRIx64 ")",
-                     __FUNCTION__, start);
+    if ( start && xc_dom_alloc_pad(dom, start) )
         return -1;
-    }
-    if ( start < dom->virt_alloc_end )
-    {
-        xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
-                     "%s: segment start too low (0x%" PRIx64 " < 0x%" PRIx64
-                     ")", __FUNCTION__, start, dom->virt_alloc_end);
+
+    pages = (size + page_size - 1) / page_size;
+    start = dom->virt_alloc_end;
+
+    seg->pfn = dom->pfn_alloc_end;
+    seg->pages = pages;
+
+    if ( xc_dom_chk_alloc_pages(dom, name, pages) )
         return -1;
-    }
-
-    seg->vstart = start;
-    pfn = (seg->vstart - dom->parms.virt_base) / page_size;
-    seg->pfn = pfn + dom->rambase_pfn;
-
-    if ( pages > dom->total_pages || /* multiple test avoids overflow probs */
-         pfn > dom->total_pages ||
-         pages > dom->total_pages - pfn)
-    {
-        xc_dom_panic(dom->xch, XC_OUT_OF_MEMORY,
-                     "%s: segment %s too large (0x%"PRIpfn" > "
-                     "0x%"PRIpfn" - 0x%"PRIpfn" pages)",
-                     __FUNCTION__, name, pages, dom->total_pages, pfn);
-        return -1;
-    }
-
-    seg->vend = start + pages * page_size;
-    dom->virt_alloc_end = seg->vend;
-    if (dom->allocate)
-        dom->allocate(dom, dom->virt_alloc_end);
-
-    DOMPRINTF("%-20s:   %-12s : 0x%" PRIx64 " -> 0x%" PRIx64
-              "  (pfn 0x%" PRIpfn " + 0x%" PRIpfn " pages)",
-              __FUNCTION__, name, seg->vstart, seg->vend, seg->pfn, pages);
 
     /* map and clear pages */
     ptr = xc_dom_seg_to_ptr(dom, seg);
@@ -592,20 +612,26 @@ int xc_dom_alloc_segment(struct xc_dom_image *dom,
         return -1;
     memset(ptr, 0, pages * page_size);
 
+    seg->vstart = start;
+    seg->vend = dom->virt_alloc_end;
+
+    DOMPRINTF("%-20s:   %-12s : 0x%" PRIx64 " -> 0x%" PRIx64
+              "  (pfn 0x%" PRIpfn " + 0x%" PRIpfn " pages)",
+              __FUNCTION__, name, seg->vstart, seg->vend, seg->pfn, pages);
+
     return 0;
 }
 
-int xc_dom_alloc_page(struct xc_dom_image *dom, char *name)
+xen_pfn_t xc_dom_alloc_page(struct xc_dom_image *dom, char *name)
 {
-    unsigned int page_size = XC_DOM_PAGE_SIZE(dom);
     xen_vaddr_t start;
     xen_pfn_t pfn;
 
     start = dom->virt_alloc_end;
-    dom->virt_alloc_end += page_size;
-    if (dom->allocate)
-        dom->allocate(dom, dom->virt_alloc_end);
-    pfn = (start - dom->parms.virt_base) / page_size;
+    pfn = dom->pfn_alloc_end - dom->rambase_pfn;
+
+    if ( xc_dom_chk_alloc_pages(dom, name, 1) )
+        return INVALID_PFN;
 
     DOMPRINTF("%-20s:   %-12s : 0x%" PRIx64 " (pfn 0x%" PRIpfn ")",
               __FUNCTION__, name, start, pfn);
@@ -683,19 +709,30 @@ void xc_dom_register_arch_hooks(struct xc_dom_arch *hooks)
     first_hook = hooks;
 }
 
-struct xc_dom_arch *xc_dom_find_arch_hooks(xc_interface *xch, char *guest_type)
+int xc_dom_set_arch_hooks(struct xc_dom_image *dom)
 {
     struct xc_dom_arch *hooks = first_hook;
 
     while (  hooks != NULL )
     {
-        if ( !strcmp(hooks->guest_type, guest_type))
-            return hooks;
+        if ( !strcmp(hooks->guest_type, dom->guest_type) )
+        {
+            if ( hooks->arch_private_size )
+            {
+                dom->arch_private = malloc(hooks->arch_private_size);
+                if ( dom->arch_private == NULL )
+                    return -1;
+                memset(dom->arch_private, 0, hooks->arch_private_size);
+                dom->alloc_malloc += hooks->arch_private_size;
+            }
+            dom->arch_hooks = hooks;
+            return 0;
+        }
         hooks = hooks->next;
     }
-    xc_dom_panic(xch, XC_INVALID_KERNEL,
-                 "%s: not found (type %s)", __FUNCTION__, guest_type);
-    return NULL;
+    xc_dom_panic(dom->xch, XC_INVALID_KERNEL,
+                 "%s: not found (type %s)", __FUNCTION__, dom->guest_type);
+    return -1;
 }
 
 /* ------------------------------------------------------------------------ */
@@ -707,6 +744,7 @@ void xc_dom_release(struct xc_dom_image *dom)
     if ( dom->phys_pages )
         xc_dom_unmap_all(dom);
     xc_dom_free_all(dom);
+    free(dom->arch_private);
     free(dom);
 }
 
@@ -738,6 +776,9 @@ struct xc_dom_image *xc_dom_allocate(xc_interface *xch,
     dom->parms.virt_hypercall = UNSET_ADDR;
     dom->parms.virt_hv_start_low = UNSET_ADDR;
     dom->parms.elf_paddr_offset = UNSET_ADDR;
+    dom->parms.p2m_base = UNSET_ADDR;
+
+    dom->flags = SIF_VIRT_P2M_4TOOLS;
 
     dom->alloc_malloc += sizeof(*dom);
     return dom;
@@ -886,6 +927,7 @@ int xc_dom_parse_image(struct xc_dom_image *dom)
 int xc_dom_rambase_init(struct xc_dom_image *dom, uint64_t rambase)
 {
     dom->rambase_pfn = rambase >> XC_PAGE_SHIFT;
+    dom->pfn_alloc_end = dom->rambase_pfn;
     DOMPRINTF("%s: RAM starts at %"PRI_xen_pfn,
               __FUNCTION__, dom->rambase_pfn);
     return 0;
@@ -896,8 +938,7 @@ int xc_dom_mem_init(struct xc_dom_image *dom, unsigned int mem_mb)
     unsigned int page_shift;
     xen_pfn_t nr_pages;
 
-    dom->arch_hooks = xc_dom_find_arch_hooks(dom->xch, dom->guest_type);
-    if ( dom->arch_hooks == NULL )
+    if ( xc_dom_set_arch_hooks(dom) )
     {
         xc_dom_panic(dom->xch, XC_INTERNAL_ERROR, "%s: arch hooks not set",
                      __FUNCTION__);
@@ -933,7 +974,7 @@ int xc_dom_update_guest_p2m(struct xc_dom_image *dom)
                   __FUNCTION__, dom->p2m_size);
         p2m_32 = dom->p2m_guest;
         for ( i = 0; i < dom->p2m_size; i++ )
-            if ( dom->p2m_host[i] != INVALID_P2M_ENTRY )
+            if ( dom->p2m_host[i] != INVALID_PFN )
                 p2m_32[i] = dom->p2m_host[i];
             else
                 p2m_32[i] = (uint32_t) - 1;
@@ -943,7 +984,7 @@ int xc_dom_update_guest_p2m(struct xc_dom_image *dom)
                   __FUNCTION__, dom->p2m_size);
         p2m_64 = dom->p2m_guest;
         for ( i = 0; i < dom->p2m_size; i++ )
-            if ( dom->p2m_host[i] != INVALID_P2M_ENTRY )
+            if ( dom->p2m_host[i] != INVALID_PFN )
                 p2m_64[i] = dom->p2m_host[i];
             else
                 p2m_64[i] = (uint64_t) - 1;
@@ -957,9 +998,147 @@ int xc_dom_update_guest_p2m(struct xc_dom_image *dom)
     return 0;
 }
 
+static int xc_dom_build_ramdisk(struct xc_dom_image *dom)
+{
+    size_t unziplen, ramdisklen;
+    void *ramdiskmap;
+
+    if ( !dom->ramdisk_seg.vstart )
+    {
+        unziplen = xc_dom_check_gzip(dom->xch,
+                                     dom->ramdisk_blob, dom->ramdisk_size);
+        if ( xc_dom_ramdisk_check_size(dom, unziplen) != 0 )
+            unziplen = 0;
+    }
+    else
+        unziplen = 0;
+
+    ramdisklen = unziplen ? unziplen : dom->ramdisk_size;
+
+    if ( xc_dom_alloc_segment(dom, &dom->ramdisk_seg, "ramdisk",
+                              dom->ramdisk_seg.vstart, ramdisklen) != 0 )
+        goto err;
+    ramdiskmap = xc_dom_seg_to_ptr(dom, &dom->ramdisk_seg);
+    if ( ramdiskmap == NULL )
+    {
+        DOMPRINTF("%s: xc_dom_seg_to_ptr(dom, &dom->ramdisk_seg) => NULL",
+                  __FUNCTION__);
+        goto err;
+    }
+    if ( unziplen )
+    {
+        if ( xc_dom_do_gunzip(dom->xch, dom->ramdisk_blob, dom->ramdisk_size,
+                              ramdiskmap, ramdisklen) == -1 )
+            goto err;
+    }
+    else
+        memcpy(ramdiskmap, dom->ramdisk_blob, dom->ramdisk_size);
+
+    return 0;
+
+ err:
+    return -1;
+}
+
+static int populate_acpi_pages(struct xc_dom_image *dom,
+                               xen_pfn_t *extents,
+                               unsigned int num_pages)
+{
+    int rc;
+    xc_interface *xch = dom->xch;
+    uint32_t domid = dom->guest_domid;
+    unsigned long idx;
+    unsigned long first_high_idx = 4UL << (30 - PAGE_SHIFT); /* 4GB */
+
+    for ( ; num_pages; num_pages--, extents++ )
+    {
+
+        if ( xc_domain_populate_physmap(xch, domid, 1, 0, 0, extents) == 1 )
+            continue;
+
+        if ( dom->highmem_end )
+        {
+            idx = --dom->highmem_end;
+            if ( idx == first_high_idx )
+                dom->highmem_end = 0;
+        }
+        else
+        {
+            idx = --dom->lowmem_end;
+        }
+
+        rc = xc_domain_add_to_physmap(xch, domid,
+                                      XENMAPSPACE_gmfn,
+                                      idx, *extents);
+        if ( rc )
+            return rc;
+    }
+
+    return 0;
+}
+
+static int xc_dom_load_acpi(struct xc_dom_image *dom)
+{
+    int j, i = 0;
+    unsigned num_pages;
+    xen_pfn_t *extents, base;
+    void *ptr;
+
+    while ( (i < MAX_ACPI_MODULES) && dom->acpi_modules[i].length )
+    {
+        DOMPRINTF("%s: %d bytes at address %" PRIx64 "\n", __FUNCTION__,
+                  dom->acpi_modules[i].length,
+                  dom->acpi_modules[i].guest_addr_out);
+
+        num_pages = (dom->acpi_modules[i].length +
+                     (dom->acpi_modules[i].guest_addr_out & ~XC_PAGE_MASK) +
+                     (XC_PAGE_SIZE - 1)) >> XC_PAGE_SHIFT;
+        extents = malloc(num_pages * sizeof(*extents));
+        if ( !extents )
+        {
+            DOMPRINTF("%s: Out of memory", __FUNCTION__);
+            goto err;
+        }
+
+        base = dom->acpi_modules[i].guest_addr_out >> XC_PAGE_SHIFT;
+        for ( j = 0; j < num_pages; j++ )
+            extents[j] = base + j;
+        if ( populate_acpi_pages(dom, extents, num_pages) )
+        {
+            DOMPRINTF("%s: Can populate ACPI pages", __FUNCTION__);
+            goto err;
+        }
+
+        ptr = xc_map_foreign_range(dom->xch, dom->guest_domid,
+                                   XC_PAGE_SIZE * num_pages,
+                                   PROT_READ | PROT_WRITE, base);
+        if ( !ptr )
+        {
+            DOMPRINTF("%s: Can't map %d pages at 0x%"PRI_xen_pfn,
+                      __FUNCTION__, num_pages, base);
+            goto err;
+        }
+
+        memcpy((uint8_t *)ptr +
+               (dom->acpi_modules[i].guest_addr_out & ~XC_PAGE_MASK),
+               dom->acpi_modules[i].data, dom->acpi_modules[i].length);
+        munmap(ptr, XC_PAGE_SIZE * num_pages);
+
+        free(extents);
+        i++;
+    }
+
+    return 0;
+
+err:
+    free(extents);
+    return -1;
+}
+
 int xc_dom_build_image(struct xc_dom_image *dom)
 {
     unsigned int page_size;
+    bool unmapped_initrd;
 
     DOMPRINTF_CALLED(dom->xch);
 
@@ -971,6 +1150,8 @@ int xc_dom_build_image(struct xc_dom_image *dom)
         goto err;
     }
     page_size = XC_DOM_PAGE_SIZE(dom);
+    if ( dom->parms.virt_base != UNSET_ADDR )
+        dom->virt_alloc_end = dom->parms.virt_base;
 
     /* load kernel */
     if ( xc_dom_alloc_segment(dom, &dom->kernel_seg, "kernel",
@@ -981,44 +1162,15 @@ int xc_dom_build_image(struct xc_dom_image *dom)
     if ( dom->kernel_loader->loader(dom) != 0 )
         goto err;
 
-    /* load ramdisk */
-    if ( dom->ramdisk_blob )
+    /* Don't load ramdisk now if no initial mapping required. */
+    unmapped_initrd = dom->parms.unmapped_initrd && !dom->ramdisk_seg.vstart;
+
+    if ( dom->ramdisk_blob && !unmapped_initrd )
     {
-        size_t unziplen, ramdisklen;
-        void *ramdiskmap;
-
-        if ( !dom->ramdisk_seg.vstart )
-        {
-            unziplen = xc_dom_check_gzip(dom->xch,
-                                         dom->ramdisk_blob, dom->ramdisk_size);
-            if ( xc_dom_ramdisk_check_size(dom, unziplen) != 0 )
-                unziplen = 0;
-        }
-        else
-            unziplen = 0;
-
-        ramdisklen = unziplen ? unziplen : dom->ramdisk_size;
-
-        if ( xc_dom_alloc_segment(dom, &dom->ramdisk_seg, "ramdisk",
-                                  dom->ramdisk_seg.vstart,
-                                  ramdisklen) != 0 )
+        if ( xc_dom_build_ramdisk(dom) != 0 )
             goto err;
-        ramdiskmap = xc_dom_seg_to_ptr(dom, &dom->ramdisk_seg);
-        if ( ramdiskmap == NULL )
-        {
-            DOMPRINTF("%s: xc_dom_seg_to_ptr(dom, &dom->ramdisk_seg) => NULL",
-                      __FUNCTION__);
-            goto err;
-        }
-        if ( unziplen )
-        {
-            if ( xc_dom_do_gunzip(dom->xch,
-                                  dom->ramdisk_blob, dom->ramdisk_size,
-                                  ramdiskmap, ramdisklen) == -1 )
-                goto err;
-        }
-        else
-            memcpy(ramdiskmap, dom->ramdisk_blob, dom->ramdisk_size);
+        dom->initrd_start = dom->ramdisk_seg.vstart;
+        dom->initrd_len = dom->ramdisk_seg.vend - dom->ramdisk_seg.vstart;
     }
 
     /* load devicetree */
@@ -1040,24 +1192,56 @@ int xc_dom_build_image(struct xc_dom_image *dom)
         memcpy(devicetreemap, dom->devicetree_blob, dom->devicetree_size);
     }
 
+    /* load ACPI tables */
+    if ( xc_dom_load_acpi(dom) != 0 )
+        goto err;
+
     /* allocate other pages */
+    if ( !dom->arch_hooks->p2m_base_supported ||
+         dom->parms.p2m_base >= dom->parms.virt_base ||
+         (dom->parms.p2m_base & (XC_DOM_PAGE_SIZE(dom) - 1)) )
+        dom->parms.p2m_base = UNSET_ADDR;
+    if ( dom->arch_hooks->alloc_p2m_list && dom->parms.p2m_base == UNSET_ADDR &&
+         dom->arch_hooks->alloc_p2m_list(dom) != 0 )
+        goto err;
     if ( dom->arch_hooks->alloc_magic_pages(dom) != 0 )
         goto err;
-    if ( dom->arch_hooks->count_pgtables )
-    {
-        if ( dom->arch_hooks->count_pgtables(dom) != 0 )
-            goto err;
-        if ( (dom->pgtables > 0) &&
-             (xc_dom_alloc_segment(dom, &dom->pgtables_seg, "page tables", 0,
-                                   dom->pgtables * page_size) != 0) )
-                goto err;
-    }
+    if ( dom->arch_hooks->alloc_pgtables(dom) != 0 )
+        goto err;
     if ( dom->alloc_bootstack )
+    {
         dom->bootstack_pfn = xc_dom_alloc_page(dom, "boot stack");
+        if ( dom->bootstack_pfn == INVALID_PFN )
+            goto err;
+    }
+
     DOMPRINTF("%-20s: virt_alloc_end : 0x%" PRIx64 "",
               __FUNCTION__, dom->virt_alloc_end);
     DOMPRINTF("%-20s: virt_pgtab_end : 0x%" PRIx64 "",
               __FUNCTION__, dom->virt_pgtab_end);
+
+    /* Make sure all memory mapped by initial page tables is available */
+    if ( dom->virt_pgtab_end && xc_dom_alloc_pad(dom, dom->virt_pgtab_end) )
+        return -1;
+
+    /* Load ramdisk if no initial mapping required. */
+    if ( dom->ramdisk_blob && unmapped_initrd )
+    {
+        if ( xc_dom_build_ramdisk(dom) != 0 )
+            goto err;
+        dom->flags |= SIF_MOD_START_PFN;
+        dom->initrd_start = dom->ramdisk_seg.pfn;
+        dom->initrd_len = page_size * dom->ramdisk_seg.pages;
+    }
+
+    /* Allocate p2m list if outside of initial kernel mapping. */
+    if ( dom->arch_hooks->alloc_p2m_list && dom->parms.p2m_base != UNSET_ADDR )
+    {
+        if ( dom->arch_hooks->alloc_p2m_list(dom) != 0 )
+            goto err;
+        dom->p2m_seg.vstart = dom->parms.p2m_base;
+    }
+
     return 0;
 
  err:

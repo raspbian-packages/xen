@@ -215,13 +215,15 @@ int compat_update_va_mapping_otherdomain(unsigned long va, u32 lo, u32 hi,
 
 DEFINE_XEN_GUEST_HANDLE(mmuext_op_compat_t);
 
-int compat_mmuext_op(XEN_GUEST_HANDLE_PARAM(mmuext_op_compat_t) cmp_uops,
+int compat_mmuext_op(XEN_GUEST_HANDLE_PARAM(void) arg,
                      unsigned int count,
                      XEN_GUEST_HANDLE_PARAM(uint) pdone,
                      unsigned int foreigndom)
 {
     unsigned int i, preempt_mask;
     int rc = 0;
+    XEN_GUEST_HANDLE_PARAM(mmuext_op_compat_t) cmp_uops =
+        guest_handle_cast(arg, mmuext_op_compat_t);
     XEN_GUEST_HANDLE_PARAM(mmuext_op_t) nat_ops;
 
     if ( unlikely(count == MMU_UPDATE_PREEMPTED) &&
@@ -324,7 +326,7 @@ int compat_mmuext_op(XEN_GUEST_HANDLE_PARAM(mmuext_op_compat_t) cmp_uops,
             {
                 struct cpu_user_regs *regs = guest_cpu_user_regs();
                 struct mc_state *mcs = &current->mc_state;
-                unsigned int arg1 = !test_bit(_MCSF_in_multicall, &mcs->flags)
+                unsigned int arg1 = !(mcs->flags & MCSF_in_multicall)
                                     ? regs->ecx
                                     : mcs->call.args[1];
                 unsigned int left = arg1 & ~MMU_UPDATE_PREEMPTED;
@@ -338,7 +340,7 @@ int compat_mmuext_op(XEN_GUEST_HANDLE_PARAM(mmuext_op_compat_t) cmp_uops,
                 {
                     BUG_ON(!hypercall_xlat_continuation(&left, 4, 0x01, nat_ops,
                                                         cmp_uops));
-                    if ( !test_bit(_MCSF_in_multicall, &mcs->flags) )
+                    if ( !(mcs->flags & MCSF_in_multicall) )
                         regs->_ecx += count - i;
                     else
                         mcs->compat_call.args[1] += count - i;

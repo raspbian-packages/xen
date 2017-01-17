@@ -5,9 +5,8 @@
  */
 
 #include <Python.h>
+#define XC_WANT_COMPAT_MAP_FOREIGN_API
 #include <xenctrl.h>
-#include <xenguest.h>
-#include <zlib.h>
 #include <fcntl.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
@@ -17,7 +16,6 @@
 #include <netdb.h>
 #include <arpa/inet.h>
 
-#include "xenctrl.h"
 #include <xen/elfnote.h>
 #include <xen/tmem.h>
 #include "xc_dom.h"
@@ -136,7 +134,7 @@ static PyObject *pyxc_domain_create(XcObject *self,
     }
 
     if ( (ret = xc_domain_create(self->xc_handle, ssidref,
-                                 handle, flags, &dom)) < 0 )
+                                 handle, flags, &dom, NULL)) < 0 )
         return pyxc_error_to_exception(self->xc_handle);
 
     if ( target )
@@ -432,118 +430,6 @@ static PyObject *pyxc_vcpu_getinfo(XcObject *self,
     Py_DECREF(cpulist);
     free(cpumap);
     return info_dict;
-}
-
-static PyObject *pyxc_getBitSize(XcObject *self,
-                                    PyObject *args,
-                                    PyObject *kwds)
-{
-    PyObject *info_type;
-    char *image = NULL, *cmdline = "", *features = NULL;
-    int type = 0;
-    static char *kwd_list[] = { "image", "cmdline", "features", NULL };
-    if ( !PyArg_ParseTupleAndKeywords(args, kwds, "sss", kwd_list,
-                                      &image, &cmdline, &features) )
-        return NULL;
-
-    xc_get_bit_size(self->xc_handle, image, cmdline, features, &type);
-    if (type < 0)
-        return pyxc_error_to_exception(self->xc_handle);
-    info_type = Py_BuildValue("{s:i}",
-                              "type", type);
-    return info_type;
-}
-
-static PyObject *pyxc_linux_build(XcObject *self,
-                                  PyObject *args,
-                                  PyObject *kwds)
-{
-    uint32_t domid;
-    struct xc_dom_image *dom;
-    char *image, *ramdisk = NULL, *cmdline = "", *features = NULL;
-    int flags = 0;
-    int store_evtchn, console_evtchn;
-    int vhpt = 0;
-    int superpages = 0;
-    unsigned int mem_mb;
-    unsigned long store_mfn = 0;
-    unsigned long console_mfn = 0;
-    PyObject* elfnote_dict;
-    PyObject* elfnote = NULL;
-    PyObject* ret;
-    int i;
-
-    static char *kwd_list[] = { "domid", "store_evtchn", "memsize",
-                                "console_evtchn", "image",
-                                /* optional */
-                                "ramdisk", "cmdline", "flags",
-                                "features", "vhpt", "superpages", NULL };
-
-    if ( !PyArg_ParseTupleAndKeywords(args, kwds, "iiiis|ssisii", kwd_list,
-                                      &domid, &store_evtchn, &mem_mb,
-                                      &console_evtchn, &image,
-                                      /* optional */
-                                      &ramdisk, &cmdline, &flags,
-                                      &features, &vhpt, &superpages) )
-        return NULL;
-
-    xc_dom_loginit(self->xc_handle);
-    if (!(dom = xc_dom_allocate(self->xc_handle, cmdline, features)))
-        return pyxc_error_to_exception(self->xc_handle);
-
-    /* for IA64 */
-    dom->vhpt_size_log2 = vhpt;
-
-    dom->superpages = superpages;
-
-    if ( xc_dom_linux_build(self->xc_handle, dom, domid, mem_mb, image,
-                            ramdisk, flags, store_evtchn, &store_mfn,
-                            console_evtchn, &console_mfn) != 0 ) {
-        goto out;
-    }
-
-    if ( !(elfnote_dict = PyDict_New()) )
-        goto out;
-    
-    for ( i = 0; i < ARRAY_SIZE(dom->parms.elf_notes); i++ )
-    {
-        switch ( dom->parms.elf_notes[i].type )
-        {
-        case XEN_ENT_NONE:
-            continue;
-        case XEN_ENT_LONG:
-            elfnote = Py_BuildValue("k", dom->parms.elf_notes[i].data.num);
-            break;
-        case XEN_ENT_STR:
-            elfnote = Py_BuildValue("s", dom->parms.elf_notes[i].data.str);
-            break;
-        }
-        PyDict_SetItemString(elfnote_dict,
-                             dom->parms.elf_notes[i].name,
-                             elfnote);
-        Py_DECREF(elfnote);
-    }
-
-    ret = Py_BuildValue("{s:i,s:i,s:N}",
-                        "store_mfn", store_mfn,
-                        "console_mfn", console_mfn,
-                        "notes", elfnote_dict);
-
-    if ( dom->arch_hooks->native_protocol )
-    {
-        PyObject *native_protocol =
-            Py_BuildValue("s", dom->arch_hooks->native_protocol);
-        PyDict_SetItemString(ret, "native_protocol", native_protocol);
-        Py_DECREF(native_protocol);
-    }
-
-    xc_dom_release(dom);
-
-    return ret;
-
-  out:
-    xc_dom_release(dom);
-    return pyxc_error_to_exception(self->xc_handle);
 }
 
 static PyObject *pyxc_hvm_param_get(XcObject *self,
@@ -845,7 +731,7 @@ static PyObject *pyxc_dom_set_policy_cpuid(XcObject *self,
     if ( !PyArg_ParseTuple(args, "i", &domid) )
         return NULL;
 
-    if ( xc_cpuid_apply_policy(self->xc_handle, domid) )
+    if ( xc_cpuid_apply_policy(self->xc_handle, domid, NULL, 0) )
         return pyxc_error_to_exception(self->xc_handle);
 
     Py_INCREF(zero);
@@ -909,77 +795,6 @@ static PyObject *pyxc_dom_suppress_spurious_page_faults(XcObject *self,
     return zero;
 }
 #endif /* __i386__ || __x86_64__ */
-
-static PyObject *pyxc_hvm_build(XcObject *self,
-                                PyObject *args,
-                                PyObject *kwds)
-{
-    uint32_t dom;
-    struct hvm_info_table *va_hvm;
-    uint8_t *va_map, sum;
-    int i;
-    char *image;
-    int memsize, target=-1, vcpus = 1, acpi = 0, apic = 1;
-    PyObject *vcpu_avail_handle = NULL;
-    uint8_t vcpu_avail[(HVM_MAX_VCPUS + 7)/8];
-
-    static char *kwd_list[] = { "domid",
-                                "memsize", "image", "target", "vcpus", 
-                                "vcpu_avail", "acpi", "apic", NULL };
-    if ( !PyArg_ParseTupleAndKeywords(args, kwds, "iis|iiOii", kwd_list,
-                                      &dom, &memsize, &image, &target, &vcpus,
-                                      &vcpu_avail_handle, &acpi, &apic) )
-        return NULL;
-
-    memset(vcpu_avail, 0, sizeof(vcpu_avail));
-    vcpu_avail[0] = 1;
-    if ( vcpu_avail_handle != NULL )
-    {
-        if ( PyInt_Check(vcpu_avail_handle) )
-        {
-            unsigned long v = PyInt_AsLong(vcpu_avail_handle);
-            for ( i = 0; i < sizeof(long); i++ )
-                vcpu_avail[i] = (uint8_t)(v>>(i*8));
-        }
-        else if ( PyLong_Check(vcpu_avail_handle) )
-        {
-            if ( _PyLong_AsByteArray((PyLongObject *)vcpu_avail_handle,
-                                     (unsigned char *)vcpu_avail,
-                                     sizeof(vcpu_avail), 1, 0) )
-                return NULL;
-        }
-        else
-        {
-            errno = EINVAL;
-            PyErr_SetFromErrno(xc_error_obj);
-            return NULL;
-        }
-    }
-
-    if ( target == -1 )
-        target = memsize;
-
-    if ( xc_hvm_build_target_mem(self->xc_handle, dom, memsize,
-                                 target, image) != 0 )
-        return pyxc_error_to_exception(self->xc_handle);
-
-    /* Fix up the HVM info table. */
-    va_map = xc_map_foreign_range(self->xc_handle, dom, XC_PAGE_SIZE,
-                                  PROT_READ | PROT_WRITE,
-                                  HVM_INFO_PFN);
-    if ( va_map == NULL )
-        return PyErr_SetFromErrno(xc_error_obj);
-    va_hvm = (struct hvm_info_table *)(va_map + HVM_INFO_OFFSET);
-    va_hvm->apic_mode    = apic;
-    va_hvm->nr_vcpus     = vcpus;
-    memcpy(va_hvm->vcpu_online, vcpu_avail, sizeof(vcpu_avail));
-    for ( i = 0, sum = 0; i < va_hvm->length; i++ )
-        sum += ((uint8_t *)va_hvm)[i];
-    va_hvm->checksum -= sum;
-    munmap(va_map, XC_PAGE_SIZE);
-
-    return Py_BuildValue("{}");
-}
 
 static PyObject *pyxc_gnttab_hvm_seed(XcObject *self,
 				      PyObject *args,
@@ -1797,22 +1612,22 @@ static PyObject *pyxc_tmem_control(XcObject *self,
     int32_t pool_id;
     uint32_t subop;
     uint32_t cli_id;
-    uint32_t arg1;
-    uint32_t arg2;
+    uint32_t len;
+    uint32_t arg;
     char *buf;
     char _buffer[32768], *buffer = _buffer;
     int rc;
 
     static char *kwd_list[] = { "pool_id", "subop", "cli_id", "arg1", "arg2", "buf", NULL };
 
-    if ( !PyArg_ParseTupleAndKeywords(args, kwds, "iiiiiis", kwd_list,
-                        &pool_id, &subop, &cli_id, &arg1, &arg2, &buf) )
+    if ( !PyArg_ParseTupleAndKeywords(args, kwds, "iiiiis", kwd_list,
+                        &pool_id, &subop, &cli_id, &len, &arg, &buf) )
         return NULL;
 
-    if ( (subop == XEN_SYSCTL_TMEM_OP_LIST) && (arg1 > 32768) )
-        arg1 = 32768;
+    if ( (subop == XEN_SYSCTL_TMEM_OP_LIST) && (len > 32768) )
+        len = 32768;
 
-    if ( (rc = xc_tmem_control(self->xc_handle, pool_id, subop, cli_id, arg1, arg2, buffer)) < 0 )
+    if ( (rc = xc_tmem_control(self->xc_handle, pool_id, subop, cli_id, len, arg, buffer)) < 0 )
         return Py_BuildValue("i", rc);
 
     switch (subop) {
@@ -1825,9 +1640,6 @@ static PyObject *pyxc_tmem_control(XcObject *self,
         case XEN_SYSCTL_TMEM_OP_THAW:
         case XEN_SYSCTL_TMEM_OP_FREEZE:
         case XEN_SYSCTL_TMEM_OP_DESTROY:
-        case XEN_SYSCTL_TMEM_OP_SET_WEIGHT:
-        case XEN_SYSCTL_TMEM_OP_SET_CAP:
-        case XEN_SYSCTL_TMEM_OP_SET_COMPRESS:
         default:
             break;
     }
@@ -2348,34 +2160,6 @@ static PyMethodDef pyxc_methods[] = {
       " cpumap   [int]:  Bitmap of CPUs this VCPU can run on\n"
       " cpu      [int]:  CPU that this VCPU is currently bound to\n" },
 
-    { "linux_build", 
-      (PyCFunction)pyxc_linux_build, 
-      METH_VARARGS | METH_KEYWORDS, "\n"
-      "Build a new Linux guest OS.\n"
-      " dom     [int]:      Identifier of domain to build into.\n"
-      " image   [str]:      Name of kernel image file. May be gzipped.\n"
-      " ramdisk [str, n/a]: Name of ramdisk file, if any.\n"
-      " cmdline [str, n/a]: Kernel parameters, if any.\n\n"
-      " vcpus   [int, 1]:   Number of Virtual CPUS in domain.\n\n"
-      "Returns: [int] 0 on success; -1 on error.\n" },
-
-    {"getBitSize",
-      (PyCFunction)pyxc_getBitSize,
-      METH_VARARGS | METH_KEYWORDS, "\n"
-      "Get the bitsize of a guest OS.\n"
-      " image   [str]:      Name of kernel image file. May be gzipped.\n"
-      " cmdline [str, n/a]: Kernel parameters, if any.\n\n"},
-
-    { "hvm_build", 
-      (PyCFunction)pyxc_hvm_build, 
-      METH_VARARGS | METH_KEYWORDS, "\n"
-      "Build a new HVM guest OS.\n"
-      " dom     [int]:      Identifier of domain to build into.\n"
-      " image   [str]:      Name of HVM loader image file.\n"
-      " vcpus   [int, 1]:   Number of Virtual CPUS in domain.\n\n"
-      " vcpu_avail [long, 1]: Which Virtual CPUS available.\n\n"
-      "Returns: [int] 0 on success; -1 on error.\n" },
-
     { "gnttab_hvm_seed",
       (PyCFunction)pyxc_gnttab_hvm_seed,
       METH_KEYWORDS, "\n"
@@ -2722,8 +2506,8 @@ static PyMethodDef pyxc_methods[] = {
       " pool_id [int]: Identifier of the tmem pool (-1 == all).\n"
       " subop [int]: Supplementary Operation.\n"
       " cli_id [int]: Client identifier (-1 == all).\n"
-      " arg1 [int]: Argument.\n"
-      " arg2 [int]: Argument.\n"
+      " len [int]: Length of 'buf'.\n"
+      " arg [int]: Argument.\n"
       " buf [str]: Buffer.\n\n"
       "Returns: [int] 0 or [str] tmem info on success; exception on error.\n" },
 

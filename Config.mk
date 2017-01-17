@@ -16,12 +16,10 @@ or       = $(if $(strip $(1)),$(1),$(if $(strip $(2)),$(2),$(if $(strip $(3)),$(
 
 -include $(XEN_ROOT)/.config
 
-# A debug build of Xen and tools?
+# A debug build of tools?
+# Hypervisor debug build is controlled by Kconfig.
 debug ?= n
 debug_symbols ?= $(debug)
-
-# Test coverage support
-coverage ?= n
 
 XEN_COMPILE_ARCH    ?= $(shell uname -m | sed -e s/i.86/x86_32/ \
                          -e s/i86pc/x86_32/ -e s/amd64/x86_64/ \
@@ -36,7 +34,6 @@ CONFIG_$(XEN_OS) := y
 SHELL     ?= /bin/sh
 
 # Tools to run on system hosting the build
-HOSTCC      = gcc
 HOSTCFLAGS  = -Wall -Werror -Wstrict-prototypes -O2 -fomit-frame-pointer
 HOSTCFLAGS += -fno-strict-aliasing
 
@@ -46,12 +43,22 @@ DESTDIR     ?= /
 # Allow phony attribute to be listed as dependency rather than fake target
 .PHONY: .phony
 
+# If we are not cross-compiling, default HOSTC{C/XX} to C{C/XX}
+ifeq ($(XEN_TARGET_ARCH), $(XEN_COMPILE_ARCH))
+HOSTCC ?= $(CC)
+HOSTCXX ?= $(CXX)
+endif
+
 # Use Clang/LLVM instead of GCC?
 clang ?= n
 ifeq ($(clang),n)
 gcc := y
+HOSTCC ?= gcc
+HOSTCXX ?= g++
 else
 gcc := n
+HOSTCC ?= clang
+HOSTCXX ?= clang++
 endif
 
 
@@ -126,10 +133,29 @@ endef
 check-$(gcc) = $(call cc-ver-check,CC,0x040100,"Xen requires at least gcc-4.1")
 $(eval $(check-y))
 
+ld-ver-build-id = $(shell $(1) --build-id 2>&1 | \
+					grep -q build-id && echo n || echo y)
+
+export XEN_HAS_BUILD_ID ?= n
+ifeq ($(call ld-ver-build-id,$(LD)),n)
+build_id_linker :=
+else
+CFLAGS += -DBUILD_ID
+export XEN_HAS_BUILD_ID=y
+build_id_linker := --build-id=sha1
+endif
+
+ifndef XEN_HAS_CHECKPOLICY
+    CHECKPOLICY ?= checkpolicy
+    XEN_HAS_CHECKPOLICY := $(shell $(CHECKPOLICY) -h 2>&1 | grep -q xen && echo y || echo n)
+    export XEN_HAS_CHECKPOLICY
+endif
+
 # as-insn: Check whether assembler supports an instruction.
 # Usage: cflags-y += $(call as-insn "insn",option-yes,option-no)
 as-insn = $(if $(shell echo 'void _(void) { asm volatile ( $(2) ); }' \
-                       | $(1) -c -x c -o /dev/null - 2>&1),$(4),$(3))
+                       | $(1) $(filter-out -M% %.d -include %/include/xen/config.h,$(AFLAGS)) \
+                              -c -x c -o /dev/null - 2>&1),$(4),$(3))
 
 # as-insn-check: Add an option to compilation flags, but only if insn is
 #                supported by assembler.
@@ -159,7 +185,8 @@ endef
 
 BUILD_MAKE_VARS := sbindir bindir LIBEXEC LIBEXEC_BIN libdir SHAREDIR \
                    XENFIRMWAREDIR XEN_CONFIG_DIR XEN_SCRIPT_DIR XEN_LOCK_DIR \
-                   XEN_RUN_DIR XEN_PAGING_DIR XEN_DUMP_DIR
+                   XEN_RUN_DIR XEN_PAGING_DIR XEN_DUMP_DIR XEN_LOG_DIR \
+                   XEN_LIB_DIR XEN_RUN_STORED
 
 buildmakevars2file = $(eval $(call buildmakevars2file-closure,$(1)))
 define buildmakevars2file-closure
@@ -212,10 +239,6 @@ APPEND_CFLAGS += $(foreach i, $(APPEND_INCLUDES), -I$(i))
 EMBEDDED_EXTRA_CFLAGS := -nopie -fno-stack-protector -fno-stack-protector-all
 EMBEDDED_EXTRA_CFLAGS += -fno-exceptions
 
-# Enable XSM security module (by default, Flask).
-XSM_ENABLE ?= n
-FLASK_ENABLE ?= $(XSM_ENABLE)
-
 XEN_EXTFILES_URL ?= http://xenbits.xen.org/xen-extfiles
 # All the files at that location were downloaded from elsewhere on
 # the internet.  The original download URL is preserved as a comment
@@ -242,33 +265,31 @@ endif
 
 ifeq ($(GIT_HTTP),y)
 OVMF_UPSTREAM_URL ?= http://xenbits.xen.org/git-http/ovmf.git
-QEMU_UPSTREAM_URL ?= http://xenbits.xen.org/git-http/qemu-upstream-4.6-testing.git
-QEMU_TRADITIONAL_URL ?= http://xenbits.xen.org/git-http/qemu-xen-4.6-testing.git
+QEMU_UPSTREAM_URL ?= http://xenbits.xen.org/git-http/qemu-xen.git
+QEMU_TRADITIONAL_URL ?= http://xenbits.xen.org/git-http/qemu-xen-traditional.git
 SEABIOS_UPSTREAM_URL ?= http://xenbits.xen.org/git-http/seabios.git
 MINIOS_UPSTREAM_URL ?= http://xenbits.xen.org/git-http/mini-os.git
 else
 OVMF_UPSTREAM_URL ?= git://xenbits.xen.org/ovmf.git
-QEMU_UPSTREAM_URL ?= git://xenbits.xen.org/qemu-upstream-4.6-testing.git
-QEMU_TRADITIONAL_URL ?= git://xenbits.xen.org/qemu-xen-4.6-testing.git
+QEMU_UPSTREAM_URL ?= git://xenbits.xen.org/qemu-xen.git
+QEMU_TRADITIONAL_URL ?= git://xenbits.xen.org/qemu-xen-traditional.git
 SEABIOS_UPSTREAM_URL ?= git://xenbits.xen.org/seabios.git
 MINIOS_UPSTREAM_URL ?= git://xenbits.xen.org/mini-os.git
 endif
-OVMF_UPSTREAM_REVISION ?= cb9a7ebabcd6b8a49dc0854b2f9592d732b5afbd
-QEMU_UPSTREAM_REVISION ?= qemu-xen-4.6.0
-MINIOS_UPSTREAM_REVISION ?= xen-RELEASE-4.6.0
-# Fri Jun 26 11:58:40 2015 +0100
-# Correct printf formatting for tpm_tis message.
+OVMF_UPSTREAM_REVISION ?= bc54e50e0fe03c570014f363b547426913e92449
+QEMU_UPSTREAM_REVISION ?= qemu-xen-4.8.0
+MINIOS_UPSTREAM_REVISION ?= xen-RELEASE-4.8.0
+# Wed Sep 28 11:50:04 2016 +0200
+# minios: fix build issue with xen_*mb defines
 
-SEABIOS_UPSTREAM_REVISION ?= rel-1.8.2
-# Tue Mar 17 10:52:16 2015 -0400
-# vgabios: On bda_save_restore() the saved vbe_mode also has flags in it
+SEABIOS_UPSTREAM_REVISION ?= rel-1.10.0
+# Wed Jun 22 14:53:24 2016 +0800
+# fw/msr_feature_control: add support to set MSR_IA32_FEATURE_CONTROL
 
 ETHERBOOT_NICS ?= rtl8139 8086100e
 
 
-QEMU_TRADITIONAL_REVISION ?= xen-4.6.0
-# Tue Sep 8 15:41:20 2015 +0100
-# Fix build after "ui/vnc: limit client_cut_text msg payload size"
+QEMU_TRADITIONAL_REVISION ?= xen-4.8.0
 
 # Specify which qemu-dm to use. This may be `ioemu' to use the old
 # Mercurial in-tree version, or a local directory, or a git URL.

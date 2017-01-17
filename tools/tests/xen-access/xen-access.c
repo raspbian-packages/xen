@@ -39,6 +39,7 @@
 #include <sys/poll.h>
 
 #include <xenctrl.h>
+#include <xenevtchn.h>
 #include <xen/vm_event.h>
 
 #if defined(__arm__) || defined(__aarch64__)
@@ -52,9 +53,13 @@
 #define ERROR(a, b...) fprintf(stderr, a "\n", ## b)
 #define PERROR(a, b...) fprintf(stderr, a ": %s\n", ## b, strerror(errno))
 
+/* From xen/include/asm-x86/processor.h */
+#define X86_TRAP_DEBUG  1
+#define X86_TRAP_INT3   3
+
 typedef struct vm_event {
     domid_t domain_id;
-    xc_evtchn *xce_handle;
+    xenevtchn_handle *xce_handle;
     int port;
     vm_event_back_ring_t back_ring;
     uint32_t evtchn_port;
@@ -77,9 +82,9 @@ static void close_handler(int sig)
     interrupted = sig;
 }
 
-int xc_wait_for_event_or_timeout(xc_interface *xch, xc_evtchn *xce, unsigned long ms)
+int xc_wait_for_event_or_timeout(xc_interface *xch, xenevtchn_handle *xce, unsigned long ms)
 {
-    struct pollfd fd = { .fd = xc_evtchn_fd(xce), .events = POLLIN | POLLERR };
+    struct pollfd fd = { .fd = xenevtchn_fd(xce), .events = POLLIN | POLLERR };
     int port;
     int rc;
 
@@ -95,14 +100,14 @@ int xc_wait_for_event_or_timeout(xc_interface *xch, xc_evtchn *xce, unsigned lon
 
     if ( rc == 1 )
     {
-        port = xc_evtchn_pending(xce);
+        port = xenevtchn_pending(xce);
         if ( port == -1 )
         {
             ERROR("Failed to read port from event channel");
             goto err;
         }
 
-        rc = xc_evtchn_unmask(xce, port);
+        rc = xenevtchn_unmask(xce, port);
         if ( rc != 0 )
         {
             ERROR("Failed to unmask event channel port");
@@ -143,7 +148,7 @@ int xenaccess_teardown(xc_interface *xch, xenaccess_t *xenaccess)
     /* Unbind VIRQ */
     if ( evtchn_bind )
     {
-        rc = xc_evtchn_unbind(xenaccess->vm_event.xce_handle,
+        rc = xenevtchn_unbind(xenaccess->vm_event.xce_handle,
                               xenaccess->vm_event.port);
         if ( rc != 0 )
         {
@@ -155,7 +160,7 @@ int xenaccess_teardown(xc_interface *xch, xenaccess_t *xenaccess)
     /* Close event channel */
     if ( evtchn_open )
     {
-        rc = xc_evtchn_close(xenaccess->vm_event.xce_handle);
+        rc = xenevtchn_close(xenaccess->vm_event.xce_handle);
         if ( rc != 0 )
         {
             ERROR("Error closing event channel");
@@ -223,7 +228,7 @@ xenaccess_t *xenaccess_init(xc_interface **xch_r, domid_t domain_id)
     mem_access_enable = 1;
 
     /* Open event channel */
-    xenaccess->vm_event.xce_handle = xc_evtchn_open(NULL, 0);
+    xenaccess->vm_event.xce_handle = xenevtchn_open(NULL, 0);
     if ( xenaccess->vm_event.xce_handle == NULL )
     {
         ERROR("Failed to open event channel");
@@ -232,7 +237,7 @@ xenaccess_t *xenaccess_init(xc_interface **xch_r, domid_t domain_id)
     evtchn_open = 1;
 
     /* Bind event notification */
-    rc = xc_evtchn_bind_interdomain(xenaccess->vm_event.xce_handle,
+    rc = xenevtchn_bind_interdomain(xenaccess->vm_event.xce_handle,
                                     xenaccess->vm_event.domain_id,
                                     xenaccess->vm_event.evtchn_port);
     if ( rc < 0 )
@@ -332,7 +337,9 @@ void usage(char* progname)
 {
     fprintf(stderr, "Usage: %s [-m] <domain_id> write|exec", progname);
 #if defined(__i386__) || defined(__x86_64__)
-            fprintf(stderr, "|breakpoint|altp2m_write|altp2m_exec");
+            fprintf(stderr, "|breakpoint|altp2m_write|altp2m_exec|debug|cpuid");
+#elif defined(__arm__) || defined(__aarch64__)
+            fprintf(stderr, "|privcall");
 #endif
             fprintf(stderr,
             "\n"
@@ -353,10 +360,14 @@ int main(int argc, char *argv[])
     xc_interface *xch;
     xenmem_access_t default_access = XENMEM_access_rwx;
     xenmem_access_t after_first_access = XENMEM_access_rwx;
+    int memaccess = 0;
     int required = 0;
     int breakpoint = 0;
     int shutting_down = 0;
+    int privcall = 0;
     int altp2m = 0;
+    int debug = 0;
+    int cpuid = 0;
     uint16_t altp2m_view_id = 0;
 
     char* progname = argv[0];
@@ -390,11 +401,13 @@ int main(int argc, char *argv[])
     {
         default_access = XENMEM_access_rx;
         after_first_access = XENMEM_access_rwx;
+        memaccess = 1;
     }
     else if ( !strcmp(argv[0], "exec") )
     {
         default_access = XENMEM_access_rw;
         after_first_access = XENMEM_access_rwx;
+        memaccess = 1;
     }
 #if defined(__i386__) || defined(__x86_64__)
     else if ( !strcmp(argv[0], "breakpoint") )
@@ -405,11 +418,26 @@ int main(int argc, char *argv[])
     {
         default_access = XENMEM_access_rx;
         altp2m = 1;
+        memaccess = 1;
     }
     else if ( !strcmp(argv[0], "altp2m_exec") )
     {
         default_access = XENMEM_access_rw;
         altp2m = 1;
+        memaccess = 1;
+    }
+    else if ( !strcmp(argv[0], "debug") )
+    {
+        debug = 1;
+    }
+    else if ( !strcmp(argv[0], "cpuid") )
+    {
+        cpuid = 1;
+    }
+#elif defined(__arm__) || defined(__aarch64__)
+    else if ( !strcmp(argv[0], "privcall") )
+    {
+        privcall = 1;
     }
 #endif
     else
@@ -445,7 +473,7 @@ int main(int argc, char *argv[])
     }
 
     /* With altp2m we just create a new, restricted view of the memory */
-    if ( altp2m )
+    if ( memaccess && altp2m )
     {
         xen_pfn_t gfn = 0;
         unsigned long perm_set = 0;
@@ -492,7 +520,7 @@ int main(int argc, char *argv[])
         }
     }
 
-    if ( !altp2m )
+    if ( memaccess && !altp2m )
     {
         /* Set the default access type and convert all pages to it */
         rc = xc_set_mem_access(xch, domain_id, default_access, ~0ull, 0);
@@ -523,6 +551,36 @@ int main(int argc, char *argv[])
         }
     }
 
+    if ( debug )
+    {
+        rc = xc_monitor_debug_exceptions(xch, domain_id, 1, 1);
+        if ( rc < 0 )
+        {
+            ERROR("Error %d setting debug exception listener with vm_event\n", rc);
+            goto exit;
+        }
+    }
+
+    if ( cpuid )
+    {
+        rc = xc_monitor_cpuid(xch, domain_id, 1);
+        if ( rc < 0 )
+        {
+            ERROR("Error %d setting cpuid listener with vm_event\n", rc);
+            goto exit;
+        }
+    }
+
+    if ( privcall )
+    {
+        rc = xc_monitor_privileged_call(xch, domain_id, 1);
+        if ( rc < 0 )
+        {
+            ERROR("Error %d setting privileged call trapping with vm_event\n", rc);
+            goto exit;
+        }
+    }
+
     /* Wait for access */
     for (;;)
     {
@@ -533,19 +591,20 @@ int main(int argc, char *argv[])
 
             if ( breakpoint )
                 rc = xc_monitor_software_breakpoint(xch, domain_id, 0);
+            if ( debug )
+                rc = xc_monitor_debug_exceptions(xch, domain_id, 0, 0);
+            if ( cpuid )
+                rc = xc_monitor_cpuid(xch, domain_id, 0);
+
+            if ( privcall )
+                rc = xc_monitor_privileged_call(xch, domain_id, 0);
 
             if ( altp2m )
             {
-                uint32_t vcpu_id;
-
                 rc = xc_altp2m_switch_to_view( xch, domain_id, 0 );
                 rc = xc_altp2m_destroy_view(xch, domain_id, altp2m_view_id);
                 rc = xc_altp2m_set_domain_state(xch, domain_id, 0);
                 rc = xc_monitor_singlestep(xch, domain_id, 0);
-
-                for ( vcpu_id = 0; vcpu_id<XEN_LEGACY_MAX_VCPUS; vcpu_id++)
-                    rc = control_singlestep(xch, domain_id, vcpu_id, 0);
-
             } else {
                 rc = xc_set_mem_access(xch, domain_id, XENMEM_access_rwx, ~0ull, 0);
                 rc = xc_set_mem_access(xch, domain_id, XENMEM_access_rwx, START_PFN,
@@ -569,8 +628,6 @@ int main(int argc, char *argv[])
 
         while ( RING_HAS_UNCONSUMED_REQUESTS(&xenaccess->vm_event.back_ring) )
         {
-            xenmem_access_t access;
-
             get_request(&xenaccess->vm_event, &req);
 
             if ( req.version != VM_EVENT_INTERFACE_VERSION )
@@ -583,20 +640,29 @@ int main(int argc, char *argv[])
             memset( &rsp, 0, sizeof (rsp) );
             rsp.version = VM_EVENT_INTERFACE_VERSION;
             rsp.vcpu_id = req.vcpu_id;
-            rsp.flags = req.flags;
+            rsp.flags = (req.flags & VM_EVENT_FLAG_VCPU_PAUSED);
+            rsp.reason = req.reason;
 
             switch (req.reason) {
             case VM_EVENT_REASON_MEM_ACCESS:
-                rc = xc_get_mem_access(xch, domain_id, req.u.mem_access.gfn, &access);
-                if (rc < 0)
+                if ( !shutting_down )
                 {
-                    ERROR("Error %d getting mem_access event\n", rc);
-                    interrupted = -1;
-                    continue;
+                    /*
+                     * This serves no other purpose here then demonstrating the use of the API.
+                     * At shutdown we have already reset all the permissions so really no use getting it again.
+                     */
+                    xenmem_access_t access;
+                    rc = xc_get_mem_access(xch, domain_id, req.u.mem_access.gfn, &access);
+                    if (rc < 0)
+                    {
+                        ERROR("Error %d getting mem_access event\n", rc);
+                        interrupted = -1;
+                        continue;
+                    }
                 }
 
                 printf("PAGE ACCESS: %c%c%c for GFN %"PRIx64" (offset %06"
-                       PRIx64") gla %016"PRIx64" (valid: %c; fault in gpt: %c; fault with gla: %c) (vcpu %u, altp2m view %u)\n",
+                       PRIx64") gla %016"PRIx64" (valid: %c; fault in gpt: %c; fault with gla: %c) (vcpu %u [%c], altp2m view %u)\n",
                        (req.u.mem_access.flags & MEM_ACCESS_R) ? 'r' : '-',
                        (req.u.mem_access.flags & MEM_ACCESS_W) ? 'w' : '-',
                        (req.u.mem_access.flags & MEM_ACCESS_X) ? 'x' : '-',
@@ -607,17 +673,15 @@ int main(int argc, char *argv[])
                        (req.u.mem_access.flags & MEM_ACCESS_FAULT_IN_GPT) ? 'y' : 'n',
                        (req.u.mem_access.flags & MEM_ACCESS_FAULT_WITH_GLA) ? 'y': 'n',
                        req.vcpu_id,
+                       (req.flags & VM_EVENT_FLAG_VCPU_PAUSED) ? 'p' : 'r',
                        req.altp2m_idx);
 
                 if ( altp2m && req.flags & VM_EVENT_FLAG_ALTERNATE_P2M)
                 {
                     DPRINTF("\tSwitching back to default view!\n");
 
-                    rsp.reason = req.reason;
-                    rsp.flags = req.flags;
+                    rsp.flags |= (VM_EVENT_FLAG_ALTERNATE_P2M | VM_EVENT_FLAG_TOGGLE_SINGLESTEP);
                     rsp.altp2m_idx = 0;
-
-                    control_singlestep(xch, domain_id, rsp.vcpu_id, 1);
                 }
                 else if ( default_access != after_first_access )
                 {
@@ -632,7 +696,7 @@ int main(int argc, char *argv[])
                     }
                 }
 
-                rsp.u.mem_access.gfn = req.u.mem_access.gfn;
+                rsp.u.mem_access = req.u.mem_access;
                 break;
             case VM_EVENT_REASON_SOFTWARE_BREAKPOINT:
                 printf("Breakpoint: rip=%016"PRIx64", gfn=%"PRIx64" (vcpu %d)\n",
@@ -641,9 +705,56 @@ int main(int argc, char *argv[])
                        req.vcpu_id);
 
                 /* Reinject */
-                rc = xc_hvm_inject_trap(
-                    xch, domain_id, req.vcpu_id, 3,
-                    HVMOP_TRAP_sw_exc, -1, 0, 0);
+                rc = xc_hvm_inject_trap(xch, domain_id, req.vcpu_id,
+                                        X86_TRAP_INT3,
+                                        req.u.software_breakpoint.type, -1,
+                                        req.u.software_breakpoint.insn_length, 0);
+                if (rc < 0)
+                {
+                    ERROR("Error %d injecting breakpoint\n", rc);
+                    interrupted = -1;
+                    continue;
+                }
+                break;
+            case VM_EVENT_REASON_PRIVILEGED_CALL:
+                printf("Privileged call: pc=%"PRIx64" (vcpu %d)\n",
+                       req.data.regs.arm.pc,
+                       req.vcpu_id);
+
+                rsp.data.regs.arm = req.data.regs.arm;
+                rsp.data.regs.arm.pc += 4;
+                rsp.flags |= VM_EVENT_FLAG_SET_REGISTERS;
+                break;
+            case VM_EVENT_REASON_SINGLESTEP:
+                printf("Singlestep: rip=%016"PRIx64", vcpu %d, altp2m %u\n",
+                       req.data.regs.x86.rip,
+                       req.vcpu_id,
+                       req.altp2m_idx);
+
+                if ( altp2m )
+                {
+                    printf("\tSwitching altp2m to view %u!\n", altp2m_view_id);
+
+                    rsp.flags |= VM_EVENT_FLAG_ALTERNATE_P2M;
+                    rsp.altp2m_idx = altp2m_view_id;
+                }
+
+                rsp.flags |= VM_EVENT_FLAG_TOGGLE_SINGLESTEP;
+
+                break;
+            case VM_EVENT_REASON_DEBUG_EXCEPTION:
+                printf("Debug exception: rip=%016"PRIx64", vcpu %d. Type: %u. Length: %u\n",
+                       req.data.regs.x86.rip,
+                       req.vcpu_id,
+                       req.u.debug_exception.type,
+                       req.u.debug_exception.insn_length);
+
+                /* Reinject */
+                rc = xc_hvm_inject_trap(xch, domain_id, req.vcpu_id,
+                                        X86_TRAP_DEBUG,
+                                        req.u.debug_exception.type, -1,
+                                        req.u.debug_exception.insn_length,
+                                        req.data.regs.x86.cr2);
                 if (rc < 0)
                 {
                     ERROR("Error %d injecting breakpoint\n", rc);
@@ -652,22 +763,21 @@ int main(int argc, char *argv[])
                 }
 
                 break;
-            case VM_EVENT_REASON_SINGLESTEP:
-                printf("Singlestep: rip=%016"PRIx64", vcpu %d\n",
+            case VM_EVENT_REASON_CPUID:
+                printf("CPUID executed: rip=%016"PRIx64", vcpu %d. Insn length: %"PRIu32" " \
+                       "0x%"PRIx32" 0x%"PRIx32": EAX=0x%"PRIx64" EBX=0x%"PRIx64" ECX=0x%"PRIx64" EDX=0x%"PRIx64"\n",
                        req.data.regs.x86.rip,
-                       req.vcpu_id);
-
-                if ( altp2m )
-                {
-                    printf("\tSwitching altp2m to view %u!\n", altp2m_view_id);
-
-                    rsp.reason = req.reason;
-                    rsp.flags |= VM_EVENT_FLAG_ALTERNATE_P2M;
-                    rsp.altp2m_idx = altp2m_view_id;
-                }
-
-                control_singlestep(xch, domain_id, req.vcpu_id, 0);
-
+                       req.vcpu_id,
+                       req.u.cpuid.insn_length,
+                       req.u.cpuid.leaf,
+                       req.u.cpuid.subleaf,
+                       req.data.regs.x86.rax,
+                       req.data.regs.x86.rbx,
+                       req.data.regs.x86.rcx,
+                       req.data.regs.x86.rdx);
+                rsp.flags |= VM_EVENT_FLAG_SET_REGISTERS;
+                rsp.data = req.data;
+                rsp.data.regs.x86.rip += req.u.cpuid.insn_length;
                 break;
             default:
                 fprintf(stderr, "UNKNOWN REASON CODE %d\n", req.reason);
@@ -678,7 +788,7 @@ int main(int argc, char *argv[])
         }
 
         /* Tell Xen page is ready */
-        rc = xc_evtchn_notify(xenaccess->vm_event.xce_handle,
+        rc = xenevtchn_notify(xenaccess->vm_event.xce_handle,
                               xenaccess->vm_event.port);
 
         if ( rc != 0 )
@@ -693,6 +803,13 @@ int main(int argc, char *argv[])
     DPRINTF("xenaccess shut down on signal %d\n", interrupted);
 
 exit:
+    if ( altp2m )
+    {
+        uint32_t vcpu_id;
+        for ( vcpu_id = 0; vcpu_id<XEN_LEGACY_MAX_VCPUS; vcpu_id++)
+            rc = control_singlestep(xch, domain_id, vcpu_id, 0);
+    }
+
     /* Tear down domain xenaccess */
     rc1 = xenaccess_teardown(xch, xenaccess);
     if ( rc1 != 0 )

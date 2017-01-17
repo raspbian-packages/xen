@@ -83,15 +83,7 @@ typedef uintptr_t elf_ptrval;
 #define ELF_HANDLE_DECL(structname)          structname##_handle
   /* Provides a type declaration for a HANDLE. */
 
-#ifdef __XEN__
-# define ELF_PRPTRVAL "lx"
-  /*
-   * PRIxPTR is misdefined in xen/include/xen/inttypes.h, on 32-bit,
-   * to "x", when in fact uintptr_t is an unsigned long.
-   */
-#else
-# define ELF_PRPTRVAL PRIxPTR
-#endif
+#define ELF_PRPTRVAL PRIxPTR
   /* printf format a la PRId... for a PTRVAL */
 
 #define ELF_DEFINE_HANDLE(structname)                                   \
@@ -210,13 +202,11 @@ struct elf_binary {
     uint64_t bsd_symtab_pend;
 
     /*
-     * caller's other acceptable destination
-     *
-     * Again, these are trusted and must be valid (or 0) so long
-     * as the struct elf_binary is in use.
+     * caller's other acceptable destination.
+     * Set by elf_set_xdest.  Do not set these directly.
      */
-    void *caller_xdest_base;
-    uint64_t caller_xdest_size;
+    void *xdest_base;
+    uint64_t xdest_size;
 
 #ifndef __XEN__
     /* misc */
@@ -386,11 +376,19 @@ elf_errorstatus elf_reloc(struct elf_binary *elf);
 /* xc_libelf_dominfo.c                                                      */
 
 #define UNSET_ADDR          ((uint64_t)-1)
+#define UNSET_ADDR32        ((uint32_t)-1)
 
 enum xen_elfnote_type {
     XEN_ENT_NONE = 0,
     XEN_ENT_LONG = 1,
     XEN_ENT_STR  = 2
+};
+
+enum xen_pae_type {
+    XEN_PAE_NO      = 0,
+    XEN_PAE_YES     = 1,
+    XEN_PAE_EXTCR3  = 2,
+    XEN_PAE_BIMODAL = 3
 };
 
 struct xen_elfnote {
@@ -414,8 +412,9 @@ struct elf_dom_parms {
     char guest_ver[16];
     char xen_ver[16];
     char loader[16];
-    int pae; /* some kind of enum apparently */
+    enum xen_pae_type pae;
     bool bsd_symtab;
+    bool unmapped_initrd;
     uint64_t virt_base;
     uint64_t virt_entry;
     uint64_t virt_hypercall;
@@ -424,9 +423,9 @@ struct elf_dom_parms {
     uint64_t elf_paddr_offset;
     uint32_t f_supported[XENFEAT_NR_SUBMAPS];
     uint32_t f_required[XENFEAT_NR_SUBMAPS];
+    uint32_t phys_entry;
 
     /* calculated */
-    uint64_t virt_offset;
     uint64_t virt_kstart;
     uint64_t virt_kend;
 };
@@ -484,5 +483,10 @@ static inline void ELF_ADVANCE_DEST(struct elf_binary *elf, uint64_t amount)
     }
 }
 
+/* Specify a (single) additional destination, to which the image may
+ * cause writes.  As with dest_base and dest_size, the values provided
+ * are trusted and must be valid so long as the struct elf_binary
+ * is in use or until elf_set_xdest(,0,0) is called. */
+void elf_set_xdest(struct elf_binary *elf, void *addr, uint64_t size);
 
 #endif /* __XEN_LIBELF_H__ */

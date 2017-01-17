@@ -22,6 +22,19 @@
 #include <xen/mm.h>
 #include <xen/smp.h>
 #include <asm/psci.h>
+#include <asm/acpi.h>
+
+/*
+ * While a 64-bit OS can make calls with SMC32 calling conventions, for
+ * some calls it is necessary to use SMC64 to pass or return 64-bit values.
+ * For such calls PSCI_0_2_FN_NATIVE(x) will choose the appropriate
+ * (native-width) function ID.
+ */
+#ifdef CONFIG_ARM_64
+#define PSCI_0_2_FN_NATIVE(name)	PSCI_0_2_FN64_##name
+#else
+#define PSCI_0_2_FN_NATIVE(name)	PSCI_0_2_FN_##name
+#endif
 
 uint32_t psci_ver;
 
@@ -34,13 +47,13 @@ int call_psci_cpu_on(int cpu)
 
 void call_psci_system_off(void)
 {
-    if ( psci_ver > XEN_PSCI_V_0_1 )
+    if ( psci_ver > PSCI_VERSION(0, 1) )
         call_smc(PSCI_0_2_FN_SYSTEM_OFF, 0, 0, 0);
 }
 
 void call_psci_system_reset(void)
 {
-    if ( psci_ver > XEN_PSCI_V_0_1 )
+    if ( psci_ver > PSCI_VERSION(0, 1) )
         call_smc(PSCI_0_2_FN_SYSTEM_RESET, 0, 0, 0);
 }
 
@@ -74,6 +87,12 @@ int __init psci_init_0_1(void)
     int ret;
     const struct dt_device_node *psci;
 
+    if ( !acpi_disabled )
+    {
+        printk("PSCI 0.1 is not supported when using ACPI\n");
+        return -EINVAL;
+    }
+
     psci = dt_find_compatible_node(NULL, NULL, "arm,psci");
     if ( !psci )
         return -EOPNOTSUPP;
@@ -88,7 +107,7 @@ int __init psci_init_0_1(void)
         return -ENOENT;
     }
 
-    psci_ver = XEN_PSCI_V_0_1;
+    psci_ver = PSCI_VERSION(0, 1);
 
     printk(XENLOG_INFO "Using PSCI-0.1 for SMP bringup\n");
 
@@ -97,28 +116,48 @@ int __init psci_init_0_1(void)
 
 int __init psci_init_0_2(void)
 {
+    static const struct dt_device_match psci_ids[] __initconst =
+    {
+        DT_MATCH_COMPATIBLE("arm,psci-0.2"),
+        DT_MATCH_COMPATIBLE("arm,psci-1.0"),
+        { /* sentinel */ },
+    };
     int ret;
-    const struct dt_device_node *psci;
 
-    psci = dt_find_compatible_node(NULL, NULL, "arm,psci-0.2");
-    if ( !psci )
-        return -EOPNOTSUPP;
+    if ( acpi_disabled )
+    {
+        const struct dt_device_node *psci;
 
-    ret = psci_is_smc_method(psci);
-    if ( ret )
-        return -EINVAL;
+        psci = dt_find_matching_node(NULL, psci_ids);
+        if ( !psci )
+            return -EOPNOTSUPP;
+
+        ret = psci_is_smc_method(psci);
+        if ( ret )
+            return -EINVAL;
+    }
+    else
+    {
+        if ( acpi_psci_hvc_present() ) {
+            printk("PSCI conduit must be SMC, but is HVC\n");
+            return -EINVAL;
+        }
+    }
 
     psci_ver = call_smc(PSCI_0_2_FN_PSCI_VERSION, 0, 0, 0);
 
-    if ( psci_ver != XEN_PSCI_V_0_2 )
+    /* For the moment, we only support PSCI 0.2 and PSCI 1.x */
+    if ( psci_ver != PSCI_VERSION(0, 2) && PSCI_VERSION_MAJOR(psci_ver != 1) )
     {
-        printk("Error: PSCI version %#x is not supported.\n", psci_ver);
+        printk("Error: Unrecognized PSCI version %u.%u\n",
+               PSCI_VERSION_MAJOR(psci_ver), PSCI_VERSION_MINOR(psci_ver));
         return -EOPNOTSUPP;
     }
 
-    psci_cpu_on_nr = PSCI_0_2_FN_CPU_ON;
+    psci_cpu_on_nr = PSCI_0_2_FN_NATIVE(CPU_ON);
 
-    printk(XENLOG_INFO "Using PSCI-0.2 for SMP bringup\n");
+    printk(XENLOG_INFO "Using PSCI-%u.%u for SMP bringup\n",
+           PSCI_VERSION_MAJOR(psci_ver), PSCI_VERSION_MINOR(psci_ver));
 
     return 0;
 }
@@ -126,6 +165,9 @@ int __init psci_init_0_2(void)
 int __init psci_init(void)
 {
     int ret;
+
+    if ( !acpi_disabled && !acpi_psci_present() )
+        return -EOPNOTSUPP;
 
     ret = psci_init_0_2();
     if ( ret )
