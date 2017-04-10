@@ -26,6 +26,7 @@
 
 #define XS_OPEN_READONLY	1UL<<0
 #define XS_OPEN_SOCKETONLY      1UL<<1
+#define XS_OPEN_DOMAINONLY      1UL<<2
 
 struct xs_handle;
 typedef uint32_t xs_transaction_t;
