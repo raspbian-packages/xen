@@ -77,6 +77,12 @@
 #define PCI_MSI_FLAGS_MASK_BIT  0x0100
 #endif
 
+#ifndef PCI_MSI_MASK_32
+/* interrupt masking register */
+#define PCI_MSI_MASK_32     12
+#define PCI_MSI_MASK_64     16
+#endif
+
 #ifndef PCI_EXP_TYPE_PCIE_BRIDGE
 /* PCI/PCI-X to PCIE Bridge */
 #define PCI_EXP_TYPE_PCIE_BRIDGE 0x8
