@@ -29,10 +29,6 @@
 #include "xen_backend.h"
 #include "qemu-xen.h"
 
-#ifndef CONFIG_STUBDOM
-#include <hw/xen_blktap.h>
-#endif
-
 uint32_t xen_domid;
 enum xen_mode xen_mode = XEN_EMULATE;
 
@@ -46,11 +42,6 @@ static void xen_init_pv(ram_addr_t ram_size, int vga_ram_size,
 {
     CPUState *env;
     uint32_t domid_target;
-
-#ifndef CONFIG_STUBDOM
-    /* Initialize tapdisk client */
-    init_blktap();
-#endif
 
     /* Initialize a dummy CPU */
     if (cpu_model == NULL) {
