@@ -20,7 +20,7 @@ CFLAGS += $(CMDLINE_CFLAGS)
 LIBS += -L$(XEN_ROOT)/tools/libxc -lxenctrl -lxenguest
 LIBS += -L$(XEN_ROOT)/tools/xenstore -lxenstore
 
-LDFLAGS := $(CFLAGS) $(LDFLAGS)
+LDFLAGS := $(CFLAGS) $(LDFLAGS) -Wl,-rpath,'$${ORIGIN}/../lib'
 
 OBJS += piix4acpi.o
 OBJS += xenstore.o
@@ -77,7 +77,6 @@ OBJS := $(filter-out $(BAD_OBJS), $(OBJS))
 
 EXESUF=-xen
 
-datadir := $(subst qemu,xen/qemu,$(datadir))
 docdir :=  $(subst qemu,xen/qemu,$(docdir))
 mandir :=  $(subst share/man,share/xen/man,$(mandir))
 
