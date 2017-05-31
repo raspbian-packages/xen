@@ -3,6 +3,7 @@ XEN_ROOT=$(TOPLEVEL)/../..
 include $(TOPLEVEL)/common.make
 
 OCAMLINCLUDE += -I ../xb/
+OCAMLOPTFLAGS += -for-pack Xenstore
 
 .NOTPARALLEL:
 # Ocaml is such a PITA!
@@ -12,7 +13,7 @@ PREOBJS = queueop xsraw xst
 PRELIBS = $(foreach obj, $(PREOBJS),$(obj).cmo) $(foreach obj,$(PREOJBS),$(obj).cmx)
 OBJS = queueop xsraw xst xs
 INTF = xsraw.cmi xst.cmi xs.cmi
-LIBS = xs.cma xs.cmxa
+LIBS = xenstore.cma xenstore.cmxa
 
 all: $(PREINTF) $(PRELIBS) $(INTF) $(LIBS) $(PROGRAMS)
 
@@ -20,26 +21,26 @@ bins: $(PROGRAMS)
 
 libs: $(LIBS)
 
-xs_OBJS = $(OBJS)
-OCAML_NOC_LIBRARY = xs
+xenstore_OBJS = xenstore
+OCAML_NOC_LIBRARY = xenstore
 
-#xs.cmxa: $(foreach obj,$(OBJS),$(obj).cmx)
-#	$(E) " MLLIB     $@"
-#	$(Q)$(OCAMLOPT) $(OCAMLOPTFLAGS) -a -o $@ $(foreach obj,$(OBJS),$(obj).cmx)
-#
-#xs.cma: $(foreach obj,$(OBJS),$(obj).cmo)
-#	$(E) " MLLIB     $@"
-#	$(Q)$(OCAMLC) -a -o $@ $(foreach obj,$(OBJS),$(obj).cmo)
+xenstore.cmx : $(foreach obj, $(OBJS), $(obj).cmx)
+	$(E) " CMX       $@"
+	$(Q)$(OCAMLOPT) -pack -o $@ $^
+
+xenstore.cmo : $(foreach obj, $(OBJS), $(obj).cmo)
+	$(E) " CMO       $@"
+	$(Q)$(OCAMLC) -pack -o $@ $^
 
 .PHONY: install
 install: $(LIBS) META
 	mkdir -p $(OCAMLDESTDIR)
-	ocamlfind remove -destdir $(OCAMLDESTDIR) xs
-	ocamlfind install -destdir $(OCAMLDESTDIR) -ldconf ignore xs META $(INTF) xs.mli xst.mli xsraw.mli $(LIBS) *.a *.cmx
+	ocamlfind remove -destdir $(OCAMLDESTDIR) xenstore
+	ocamlfind install -destdir $(OCAMLDESTDIR) -ldconf ignore xenstore META $(LIBS) xenstore.cmx xenstore.cmi *.a 
 
 .PHONY: uninstall
 uninstall:
-	ocamlfind remove -destdir $(OCAMLDESTDIR) xs
+	ocamlfind remove -destdir $(OCAMLDESTDIR) xenstore
 
 include $(TOPLEVEL)/Makefile.rules
 
