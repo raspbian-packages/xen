@@ -1,0 +1,179 @@
+From: Jan Beulich <jbeulich@suse.com>
+Subject: multicall: deal with early exit conditions
+
+In particular changes to guest privilege level require the multicall
+sequence to be aborted, as hypercalls are permitted from kernel mode
+only. While likely not very useful in a multicall, also properly handle
+the return value in the HYPERVISOR_iret case (which should be the guest
+specified value).
+
+This is XSA-213.
+
+Reported-by: Jann Horn <jannh@google.com>
+Signed-off-by: Jan Beulich <jbeulich@suse.com>
+Reviewed-by: Andrew Cooper <andrew.cooper3@citrix.com>
+Acked-by: Julien Grall <julien.grall@arm.com>
+
+adapted to xen-4.1 llts by peter.dreuw@credativ.de
+
+
+--- a/xen/common/multicall.c
++++ b/xen/common/multicall.c
+@@ -25,6 +25,9 @@ do_multicall(
+ {
+     struct mc_state *mcs = &current->mc_state;
+     unsigned int     i;
++    int              rc = 0;
++    enum mc_disposition disp = mc_continue;
++
+ 
+     if ( unlikely(__test_and_set_bit(_MCSF_in_multicall, &mcs->flags)) )
+     {
+@@ -33,17 +36,22 @@ do_multicall(
+     }
+ 
+     if ( unlikely(!guest_handle_okay(call_list, nr_calls)) )
+-        goto fault;
++         rc = -EFAULT;
+ 
+-    for ( i = 0; i < nr_calls; i++ )
++    for ( i = 0; !rc && disp == mc_continue && i < nr_calls; i++ )
+     {
+         if ( hypercall_preempt_check() )
+             goto preempted;
+ 
+         if ( unlikely(__copy_from_guest(&mcs->call, call_list, 1)) )
+-            goto fault;
++            {
++                rc = -EFAULT;
++                break;
++            }
++
++        /* trace_multicall_call(&mcs->call);  disabled for 4.1 LTS */
+ 
+-        do_multicall_call(&mcs->call);
++        disp = do_multicall_call(&mcs->call);
+ 
+ #ifndef NDEBUG
+         {
+@@ -56,32 +64,36 @@ do_multicall(
+             (void)__copy_to_guest(call_list, &corrupt, 1);
+         }
+ #endif
+-
+-        if ( unlikely(__copy_field_to_guest(call_list, &mcs->call, result)) )
+-            goto fault;
+-
+-        if ( test_bit(_MCSF_call_preempted, &mcs->flags) )
++        if ( unlikely( disp == mc_exit) )
++            {
++                if ( __copy_field_to_guest(call_list, &mcs->call, result) )
++                    /* nothing, best effort only */;
++                rc = mcs->call.result;
++            }
++        else if ( unlikely(__copy_field_to_guest(call_list, &mcs->call,
++                                                 result)) )
++            rc = -EFAULT;
++        else if ( test_bit(_MCSF_call_preempted, &mcs->flags) )
+         {
+             /* Translate sub-call continuation to guest layout */
+             xlat_multicall_entry(mcs);
+ 
+             /* Copy the sub-call continuation. */
+-            (void)__copy_to_guest(call_list, &mcs->call, 1);
+-            goto preempted;
++            if (likely(!__copy_to_guest(call_list, &mcs->call, 1)) )
++                goto preempted;
++            rc = -EFAULT;
+         }
+-
+-        guest_handle_add_offset(call_list, 1);
++        else
++            guest_handle_add_offset(call_list, 1);
+     }
+ 
+-    perfc_incr(calls_to_multicall);
+-    perfc_add(calls_from_multicall, nr_calls);
+-    mcs->flags = 0;
+-    return 0;
++    if ( unlikely(disp == mc_preempt) && i < nr_calls )
++        goto preempted;
+ 
+- fault:
+     perfc_incr(calls_to_multicall);
++    perfc_add(calls_from_multicall, i);
+     mcs->flags = 0;
+-    return -EFAULT;
++    return rc;
+ 
+  preempted:
+     perfc_add(calls_from_multicall, i);
+
+
+--- a/xen/include/asm-x86/multicall.h
++++ b/xen/include/asm-x86/multicall.h
+@@ -7,10 +7,23 @@
+ 
+ #include <xen/errno.h>
+ 
++enum mc_disposition {
++    mc_continue,
++    mc_exit,
++    mc_preempt,
++};
++
++#define multicall_ret(call)                                  \
++    (unlikely((call)->op == __HYPERVISOR_iret)               \
++     ? mc_exit                                               \
++       : likely(guest_kernel_mode(current,                   \
++                                  guest_cpu_user_regs()))    \
++         ? mc_continue : mc_preempt)
++
+ #ifdef __x86_64__
+ 
+ #define do_multicall_call(_call)                             \
+-    do {                                                     \
++    ({                                                       \
+         __asm__ __volatile__ (                               \
+             "    movq  %c1(%0),%%rax; "                      \
+             "    leaq  hypercall_table(%%rip),%%rdi; "       \
+@@ -38,9 +51,11 @@
+               /* all the caller-saves registers */           \
+             : "rax", "rcx", "rdx", "rsi", "rdi",             \
+               "r8",  "r9",  "r10", "r11" );                  \
+-    } while ( 0 )
++        multicall_ret(_call);                                \
++    })
+ 
+ #define compat_multicall_call(_call)                         \
++    ({                                                       \
+         __asm__ __volatile__ (                               \
+             "    movl  %c1(%0),%%eax; "                      \
+             "    leaq  compat_hypercall_table(%%rip),%%rdi; "\
+@@ -67,11 +82,14 @@
+               "i" (offsetof(__typeof__(*_call), result))     \
+               /* all the caller-saves registers */           \
+             : "rax", "rcx", "rdx", "rsi", "rdi",             \
+-              "r8",  "r9",  "r10", "r11" )                   \
++              "r8",  "r9",  "r10", "r11" );                  \
++        multicall_ret(_call);                                \
++    })
+ 
+ #else
+ 
+ #define do_multicall_call(_call)                             \
++  ({                                                         \
+         __asm__ __volatile__ (                               \
+             "    movl  %c1(%0),%%eax; "                      \
+             "    pushl %c2+5*%c3(%0); "                      \
+@@ -96,7 +114,9 @@
+               "i" (sizeof(*(_call)->args)),                  \
+               "i" (offsetof(__typeof__(*_call), result))     \
+               /* all the caller-saves registers */           \
+-            : "eax", "ecx", "edx" )                          \
++            : "eax", "ecx", "edx" );                         \
++        multicall_ret(_call);                                \
++    })
+ 
+ #endif
+ 
