@@ -231,6 +231,7 @@ int guest_remove_page(struct domain *d, unsigned long gmfn)
     p2m_type_t p2mt;
 #endif
     unsigned long mfn;
+    int rc;
 
 #ifdef CONFIG_X86
     mfn = mfn_x(get_gfn_query(d, gmfn, &p2mt)); 
@@ -248,7 +249,8 @@ int guest_remove_page(struct domain *d, unsigned long gmfn)
                 put_page(page);
         }
         p2m_mem_paging_drop_page(d, gmfn, p2mt);
-        return 1;
+
+        return 0;
     }
 #else
     mfn = gmfn_to_mfn(d, gmfn);
@@ -258,21 +260,25 @@ int guest_remove_page(struct domain *d, unsigned long gmfn)
         put_gfn(d, gmfn);
         gdprintk(XENLOG_INFO, "Domain %u page number %lx invalid\n",
                 d->domain_id, gmfn);
-        return 0;
+
+        return -EINVAL;
     }
             
 #ifdef CONFIG_X86
     if ( p2m_is_shared(p2mt) )
     {
-        /* Unshare the page, bail out on error. We unshare because 
-         * we might be the only one using this shared page, and we
-         * need to trigger proper cleanup. Once done, this is 
-         * like any other page. */
-        if ( mem_sharing_unshare_page(d, gmfn, 0) )
+        /*
+         * Unshare the page, bail out on error. We unshare because we
+         * might be the only one using this shared page, and we need to
+         * trigger proper cleanup. Once done, this is like any other page.
+         */
+        rc = mem_sharing_unshare_page(d, gmfn, 0);
+        if ( rc )
         {
             put_gfn(d, gmfn);
             (void)mem_sharing_notify_enomem(d, gmfn, 0);
-            return 0;
+
+            return rc;
         }
         /* Maybe the mfn changed */
         mfn = mfn_x(get_gfn_query_unlocked(d, gmfn, &p2mt));
@@ -285,7 +291,8 @@ int guest_remove_page(struct domain *d, unsigned long gmfn)
     {
         put_gfn(d, gmfn);
         gdprintk(XENLOG_INFO, "Bad page free for domain %u\n", d->domain_id);
-        return 0;
+
+        return -ENXIO;
     }
 
     if ( test_and_clear_bit(_PGT_pinned, &page->u.inuse.type_info) )
@@ -299,7 +306,7 @@ int guest_remove_page(struct domain *d, unsigned long gmfn)
     put_page(page);
     put_gfn(d, gmfn);
 
-    return 1;
+    return 0;
 }
 
 static void decrease_reservation(struct memop_args *a)
@@ -350,7 +357,7 @@ static void decrease_reservation(struct memop_args *a)
             continue;
 
         for ( j = 0; j < (1 << a->extent_order); j++ )
-            if ( !guest_remove_page(a->domain, gmfn + j) )
+            if ( guest_remove_page(a->domain, gmfn + j) )
                 goto out;
     }
 
