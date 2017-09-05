@@ -1,0 +1,53 @@
+From: Jan Beulich <jbeulich@suse.com>
+Date: Tue, 5 Sep 2017 18:34:34 +0100
+X-Dgit-Generated: 4.4.1-9+deb8u10 72ae038a0d563bffe1aef0f3d69cf81b1d1a1bc9
+Subject: arm/mm: release grant lock on xenmem_add_to_physmap_one() error paths
+
+Commit 55021ff9ab ("xen/arm: add_to_physmap_one: Avoid to map mfn 0 if
+an error occurs") introduced error paths not releasing the grant table
+lock. Replace them by a suitable check after the lock was dropped.
+
+This is XSA-235.
+
+Reported-by: Wei Liu <wei.liu2@citrix.com>
+Signed-off-by: Jan Beulich <jbeulich@suse.com>
+Reviewed-by: Julien Grall <julien.grall@arm.com>
+
+---
+
+--- xen-4.4.1.orig/xen/arch/arm/mm.c
++++ xen-4.4.1/xen/arch/arm/mm.c
+@@ -1010,7 +1010,7 @@ int xenmem_add_to_physmap_one(
+             if ( idx < nr_status_frames(d->grant_table) )
+                 mfn = virt_to_mfn(d->grant_table->status[idx]);
+             else
+-                return -EINVAL;
++                mfn = INVALID_MFN;
+         }
+         else
+         {
+@@ -1021,14 +1021,21 @@ int xenmem_add_to_physmap_one(
+             if ( idx < nr_grant_frames(d->grant_table) )
+                 mfn = virt_to_mfn(d->grant_table->shared_raw[idx]);
+             else
+-                return -EINVAL;
++                mfn = INVALID_MFN;
+         }
+         
+-        d->arch.grant_table_gpfn[idx] = gpfn;
++        if ( mfn != INVALID_MFN )
++        {
++            d->arch.grant_table_gpfn[idx] = gpfn;
+ 
+-        t = p2m_ram_rw;
++            t = p2m_ram_rw;
++        }
+ 
+         spin_unlock(&d->grant_table->lock);
++
++        if ( mfn == INVALID_MFN )
++            return -EINVAL;
++
+         break;
+     case XENMAPSPACE_shared_info:
+         if ( idx != 0 )

@@ -1,0 +1,100 @@
+From: David Vrabel <david.vrabel@citrix.com>
+Date: Tue, 15 Dec 2015 15:55:23 +0100
+X-Dgit-Generated: 4.4.1-9+deb8u10 86f3346bcbea194e9f816dbbeefacc420ac2cc1a
+Subject: evtchn: don't reuse ports that are still "busy"
+
+When using the FIFO ABI a guest may close an event channel that is
+still LINKED.  If this port is reused, subsequent events may be lost
+because they may become pending on the wrong queue.
+
+This could be fixed by requiring guests to only close event channels
+that are not linked.  This is difficult since: a) irq cleanup in the
+guest may be done in a context that cannot wait for the event to be
+unlinked; b) the guest may attempt to rebind a PIRQ whose previous
+close is still pending; and c) existing guests already have the
+problematic behaviour.
+
+Instead, simply check a port is not "busy" (i.e., it's not linked)
+before reusing it.
+
+Guests should still drain any queues for VCPUs that are being
+offlined, or the port will become unusable until the VCPU is onlined
+and starts processing events again.
+
+Signed-off-by: David Vrabel <david.vrabel@citrix.com>
+Reviewed-by: Jan Beulich <jbeulich@suse.com>
+master commit: 78e24c269b0a4a8b864ece725e6d4209ed95dfa7
+master date: 2015-12-02 15:21:46 +0100
+
+(cherry picked from commit c3049fad2b01e85e944d928763f2b012eebf080e)
+
+---
+
+--- xen-4.4.1.orig/xen/common/event_channel.c
++++ xen-4.4.1/xen/common/event_channel.c
+@@ -171,7 +171,8 @@ static int get_free_port(struct domain *
+     {
+         if ( port > d->max_evtchn_port )
+             return -ENOSPC;
+-        if ( evtchn_from_port(d, port)->state == ECS_FREE )
++        if ( evtchn_from_port(d, port)->state == ECS_FREE
++             && !evtchn_port_is_busy(d, port) )
+             return port;
+     }
+ 
+--- xen-4.4.1.orig/xen/common/event_fifo.c
++++ xen-4.4.1/xen/common/event_fifo.c
+@@ -313,6 +313,17 @@ static bool_t evtchn_fifo_is_masked(stru
+     return test_bit(EVTCHN_FIFO_MASKED, word);
+ }
+ 
++static bool_t evtchn_fifo_is_busy(struct domain *d, evtchn_port_t port)
++{
++    event_word_t *word;
++
++    word = evtchn_fifo_word_from_port(d, port);
++    if ( unlikely(!word) )
++        return 0;
++
++    return test_bit(EVTCHN_FIFO_LINKED, word);
++}
++
+ static int evtchn_fifo_set_priority(struct domain *d, struct evtchn *evtchn,
+                                     unsigned int priority)
+ {
+@@ -352,6 +363,7 @@ static const struct evtchn_port_ops evtc
+     .unmask        = evtchn_fifo_unmask,
+     .is_pending    = evtchn_fifo_is_pending,
+     .is_masked     = evtchn_fifo_is_masked,
++    .is_busy       = evtchn_fifo_is_busy,
+     .set_priority  = evtchn_fifo_set_priority,
+     .print_state   = evtchn_fifo_print_state,
+ };
+--- xen-4.4.1.orig/xen/include/xen/event.h
++++ xen-4.4.1/xen/include/xen/event.h
+@@ -138,6 +138,11 @@ struct evtchn_port_ops {
+     void (*unmask)(struct domain *d, struct evtchn *evtchn);
+     bool_t (*is_pending)(struct domain *d, const struct evtchn *evtchn);
+     bool_t (*is_masked)(struct domain *d, const struct evtchn *evtchn);
++    /*
++     * Is the port unavailable because it's still being cleaned up
++     * after being closed?
++     */
++    bool_t (*is_busy)(struct domain *d, evtchn_port_t port);
+     int (*set_priority)(struct domain *d, struct evtchn *evtchn,
+                         unsigned int priority);
+     void (*print_state)(struct domain *d, const struct evtchn *evtchn);
+@@ -179,6 +184,13 @@ static inline bool_t evtchn_port_is_mask
+     return d->evtchn_port_ops->is_masked(d, evtchn);
+ }
+ 
++static inline bool_t evtchn_port_is_busy(struct domain *d, evtchn_port_t port)
++{
++    if ( d->evtchn_port_ops->is_busy )
++        return d->evtchn_port_ops->is_busy(d, port);
++    return 0;
++}
++
+ static inline int evtchn_port_set_priority(struct domain *d,
+                                            struct evtchn *evtchn,
+                                            unsigned int priority)
