@@ -1,0 +1,35 @@
+From: Jan Beulich <jbeulich@suse.com>
+Date: Fri, 2 Jun 2017 15:21:27 +0100
+X-Dgit-Generated: 4.4.1-9+deb8u10 34b4a685d6c8f790e98cd1a7b89843b0b7d19e1d
+Subject: gnttab: never create host mapping unless asked to
+
+We shouldn't create a host mapping unless asked to even in the case of
+mapping a granted MMIO page. In particular the mapping wouldn't be torn
+down when processing the matching unmap request.
+
+This is part of XSA-224.
+
+Signed-off-by: Jan Beulich <jbeulich@suse.com>
+
+---
+
+--- xen-4.4.1.orig/xen/common/grant_table.c
++++ xen-4.4.1/xen/common/grant_table.c
+@@ -677,10 +677,13 @@ __gnttab_map_grant_ref(
+             goto undo_out;
+         }
+ 
+-        rc = create_grant_host_mapping(
+-            op->host_addr, frame, op->flags, cache_flags);
+-        if ( rc != GNTST_okay )
+-            goto undo_out;
++        if ( op->flags & GNTMAP_host_map )
++        {
++            rc = create_grant_host_mapping(op->host_addr, frame, op->flags,
++                                           cache_flags);
++            if ( rc != GNTST_okay )
++                goto undo_out;
++        }
+     }
+     else if ( owner == rd || owner == dom_cow )
+     {

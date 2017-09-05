@@ -1,0 +1,28 @@
+From: Jan Beulich <jbeulich@suse.com>
+Date: Thu, 15 Jun 2017 12:05:29 +0100
+X-Dgit-Generated: 4.4.1-9+deb8u10 a121812be63ed44cc29b24b3860068697c23c678
+Subject: gnttab: correct maptrack table accesses
+
+In order to observe a consistent (limit,pointer-table) pair, the reader
+needs to either hold the maptrack lock (in line with documentation) or
+both sides need to order their accesses suitably. At the same time add
+read barriers to lockless readers.
+
+This is part of XSA-218.
+
+Signed-off-by: Jan Beulich <jbeulich@suse.com>
+
+---
+
+--- xen-4.4.1.orig/xen/common/grant_table.c
++++ xen-4.4.1/xen/common/grant_table.c
+@@ -851,7 +851,9 @@ __gnttab_unmap_common(
+         return;
+     }
+ 
++    smp_rmb();
+     map = &maptrack_entry(lgt, op->handle);
++
+     spin_lock(&lgt->lock);
+ 
+     if ( unlikely(!map->flags) )
