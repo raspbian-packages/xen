@@ -3965,6 +3965,9 @@ static int create_grant_pte_mapping(
     l1_pgentry_t ol1e;
     struct domain *d = v->domain;
 
+    if ( !IS_ALIGNED(pte_addr, sizeof(nl1e)) )
+        return GNTST_general_error;
+
     adjust_guest_l1e(nl1e, d);
 
     gmfn = pte_addr >> PAGE_SHIFT;
@@ -4021,6 +4024,16 @@ static int destroy_grant_pte_mapping(
     unsigned long gmfn, mfn;
     struct page_info *page;
     l1_pgentry_t ol1e;
+
+    /*
+     * addr comes from Xen's active_entry tracking so isn't guest controlled,
+     * but it had still better be PTE-aligned.
+     */
+    if ( !IS_ALIGNED(addr, sizeof(ol1e)) )
+    {
+        ASSERT_UNREACHABLE();
+        return GNTST_general_error;
+    }
 
     gmfn = addr >> PAGE_SHIFT;
     page = get_page_from_gfn(d, gmfn, NULL, P2M_ALLOC);
@@ -4276,7 +4289,11 @@ static int replace_grant_p2m_mapping(
                 type, mfn_x(old_mfn), frame);
         return GNTST_general_error;
     }
-    guest_physmap_remove_page(d, _gfn(gfn), _mfn(frame), PAGE_ORDER_4K);
+    if ( guest_physmap_remove_page(d, _gfn(gfn), _mfn(frame), PAGE_ORDER_4K) )
+    {
+        put_gfn(d, gfn);
+        return GNTST_general_error;
+    }
 
     put_gfn(d, gfn);
     return GNTST_okay;
@@ -4404,6 +4421,9 @@ int steal_page(
     unsigned long x, y;
     bool_t drop_dom_ref = 0;
     const struct domain *owner = dom_xen;
+
+    if ( paging_mode_external(d) )
+        return -1;
 
     spin_lock(&d->page_alloc_lock);
 
@@ -4798,7 +4818,7 @@ int xenmem_add_to_physmap_one(
     struct page_info *page = NULL;
     unsigned long gfn = 0; /* gcc ... */
     unsigned long prev_mfn, mfn = 0, old_gpfn;
-    int rc;
+    int rc = 0;
     p2m_type_t p2mt;
 
     switch ( space )
@@ -4872,13 +4892,16 @@ int xenmem_add_to_physmap_one(
     {
         if ( is_xen_heap_mfn(prev_mfn) )
             /* Xen heap frames are simply unhooked from this phys slot. */
-            guest_physmap_remove_page(d, gpfn, _mfn(prev_mfn), PAGE_ORDER_4K);
+            rc = guest_physmap_remove_page(d, gpfn, _mfn(prev_mfn), PAGE_ORDER_4K);
         else
             /* Normal domain memory is freed, to avoid leaking memory. */
-            guest_remove_page(d, gfn_x(gpfn));
+            rc = guest_remove_page(d, gfn_x(gpfn));
     }
     /* In the XENMAPSPACE_gmfn case we still hold a ref on the old page. */
     put_gfn(d, gfn_x(gpfn));
+
+    if ( rc )
+        goto put_both;
 
     /* Unmap from old location, if any. */
     old_gpfn = get_gpfn_from_mfn(mfn);
@@ -4886,11 +4909,13 @@ int xenmem_add_to_physmap_one(
     if ( space == XENMAPSPACE_gmfn || space == XENMAPSPACE_gmfn_range )
         ASSERT( old_gpfn == gfn );
     if ( old_gpfn != INVALID_M2P_ENTRY )
-        guest_physmap_remove_page(d, _gfn(old_gpfn), _mfn(mfn), PAGE_ORDER_4K);
+        rc = guest_physmap_remove_page(d, _gfn(old_gpfn), _mfn(mfn), PAGE_ORDER_4K);
 
     /* Map at new location. */
-    rc = guest_physmap_add_page(d, gpfn, _mfn(mfn), PAGE_ORDER_4K);
+    if ( !rc )
+        rc = guest_physmap_add_page(d, gpfn, _mfn(mfn), PAGE_ORDER_4K);
 
+ put_both:
     /* In the XENMAPSPACE_gmfn, we took a ref of the gfn at the top */
     if ( space == XENMAPSPACE_gmfn || space == XENMAPSPACE_gmfn_range )
         put_gfn(d, gfn);

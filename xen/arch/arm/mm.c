@@ -1112,7 +1112,7 @@ int xenmem_add_to_physmap_one(
             if ( idx < nr_status_frames(d->grant_table) )
                 mfn = virt_to_mfn(d->grant_table->status[idx]);
             else
-                return -EINVAL;
+                mfn = mfn_x(INVALID_MFN);
         }
         else
         {
@@ -1123,14 +1123,21 @@ int xenmem_add_to_physmap_one(
             if ( idx < nr_grant_frames(d->grant_table) )
                 mfn = virt_to_mfn(d->grant_table->shared_raw[idx]);
             else
-                return -EINVAL;
+                mfn = mfn_x(INVALID_MFN);
         }
 
-        d->arch.grant_table_gfn[idx] = gfn;
+        if ( mfn != mfn_x(INVALID_MFN) )
+        {
+            d->arch.grant_table_gfn[idx] = gfn;
 
-        t = p2m_ram_rw;
+            t = p2m_ram_rw;
+        }
 
         grant_write_unlock(d->grant_table);
+
+        if ( mfn == mfn_x(INVALID_MFN) )
+            return -EINVAL;
+
         break;
     case XENMAPSPACE_shared_info:
         if ( idx != 0 )
@@ -1340,13 +1347,14 @@ int replace_grant_host_mapping(unsigned long addr, unsigned long mfn,
 {
     gfn_t gfn = _gfn(addr >> PAGE_SHIFT);
     struct domain *d = current->domain;
+    int rc;
 
     if ( new_addr != 0 || (flags & GNTMAP_contains_pte) )
         return GNTST_general_error;
 
-    guest_physmap_remove_page(d, gfn, _mfn(mfn), 0);
+    rc = guest_physmap_remove_page(d, gfn, _mfn(mfn), 0);
 
-    return GNTST_okay;
+    return rc ? GNTST_general_error : GNTST_okay;
 }
 
 int is_iomem_page(unsigned long mfn)

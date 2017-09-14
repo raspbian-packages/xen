@@ -1,4 +1,4 @@
-xen (4.8.1-1+rpi1+deb9u1) stretch-staging; urgency=medium
+xen (4.8.1-1+rpi1+deb9u3) stretch-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,7 +9,30 @@ xen (4.8.1-1+rpi1+deb9u1) stretch-staging; urgency=medium
   [changes introduced in 4.8.0-1+rpi1 by Peter Micheal Green]
   * Add build-depends on ghostscript.
 
- -- Raspbian forward porter <root@raspbian.org>  Thu, 04 May 2017 21:08:45 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Thu, 14 Sep 2017 17:51:21 +0000
+
+xen (4.8.1-1+deb9u3) stretch-security; urgency=high
+
+  * Security fixes for
+      XSA-226 CVE-2017-12135
+      XSA-227 CVE-2017-12137
+      XSA-228 CVE-2017-12136
+      XSA-230 CVE-2017-12855
+      XSA-235 (no CVE yet)
+  * Adjust changelog entry for 4.8.1-1+deb9u2 to record
+    that XSA-225 fix was indeed included.
+  * Security fix for XSA-229 not included as that bug is in Linux, not Xen.
+  * Security fixes for XSA-231..234 inc. not inclued as still embargoed.
+
+ -- Ian Jackson <ian.jackson@eu.citrix.com>  Thu, 07 Sep 2017 19:17:58 +0100
+
+xen (4.8.1-1+deb9u2) stretch-security; urgency=high
+
+  * Security fixes for
+      XSA-216 XSA-217 XSA-218 XSA-219 XSA-220
+      XSA-221 XSA-222 XSA-223 XSA-224 XSA-225
+
+ -- Ian Jackson <ian.jackson@eu.citrix.com>  Tue, 20 Jun 2017 14:06:34 +0100
 
 xen (4.8.1-1+deb9u1) unstable; urgency=medium
 
