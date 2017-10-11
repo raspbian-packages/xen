@@ -185,9 +185,11 @@ bluez="yes"
 kvm="yes"
 kerneldir=""
 aix="no"
-blobs="yes"
+blobs="no"
 fdt="yes"
 sdl_x11="no"
+sdl="no"
+brlapi="no"
 
 # OS specific
 if check_define __linux__ ; then
