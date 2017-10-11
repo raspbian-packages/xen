@@ -1,0 +1,64 @@
+From c88e5cfa5aa99d02a5c3ae152ced1abc6cd4431e Mon Sep 17 00:00:00 2001
+From: Andrew Cooper <andrew.cooper3@citrix.com>
+Date: Thu, 14 Sep 2017 13:26:59 +0200
+Subject: [PATCH 06/16] xen/memory: Fix return value handing of
+ guest_remove_page()
+
+Despite the description in mm.h, guest_remove_page() previously returned 0 for
+paging errors.
+
+Switch guest_remove_page() to having regular 0/-error semantics, and propagate
+the return values from clear_mmio_p2m_entry() and mem_sharing_unshare_page()
+to the callers (although decrease_reservation() is the only caller which
+currently cares).
+
+This is part of XSA-222.
+
+Reported-by: Julien Grall <julien.grall@arm.com>
+Signed-off-by: Andrew Cooper <andrew.cooper3@citrix.com>
+Reviewed-by: Jan Beulich <jbeulich@suse.com>
+
+adapted to xen 4.1 by Peter Dreuw <peter.dreuw@credativ.de>
+Signed-off-by: Peter Dreuw <peter.dreuw@credativ.de>
+---
+ xen/common/memory.c  | 4 ++--
+ xen/include/xen/mm.h | 1 +
+ 2 files changed, 3 insertions(+), 2 deletions(-)
+
+diff --git a/xen/common/memory.c b/xen/common/memory.c
+index bd8307fee..40b392b57 100644
+--- a/xen/common/memory.c
++++ b/xen/common/memory.c
+@@ -178,7 +178,7 @@ int guest_remove_page(struct domain *d, unsigned long gmfn)
+     {
+         gdprintk(XENLOG_INFO, "Domain %u page number %lx invalid\n",
+                 d->domain_id, gmfn);
+-        return 1;
++        return -EINVAL;
+     }
+             
+     page = mfn_to_page(mfn);
+@@ -196,7 +196,7 @@ int guest_remove_page(struct domain *d, unsigned long gmfn)
+     if ( unlikely(!get_page(page, d)) )
+     {
+         gdprintk(XENLOG_INFO, "Bad page free for domain %u\n", d->domain_id);
+-        return 1;
++        return -ENXIO;
+     }
+ 
+     if ( test_and_clear_bit(_PGT_pinned, &page->u.inuse.type_info) )
+diff --git a/xen/include/xen/mm.h b/xen/include/xen/mm.h
+index b075eece2..b74e70cbd 100644
+--- a/xen/include/xen/mm.h
++++ b/xen/include/xen/mm.h
+@@ -325,6 +325,7 @@ page_list_splice(struct page_list_head *list, struct page_list_head *head)
+ 
+ void scrub_one_page(struct page_info *);
+ 
++/* Returns 0 on success, or negative on error. */
+ int guest_remove_page(struct domain *d, unsigned long gmfn);
+ 
+ #define RAM_TYPE_CONVENTIONAL 0x00000001
+-- 
+2.14.1
+
