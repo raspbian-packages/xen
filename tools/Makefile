@@ -19,9 +19,7 @@ SUBDIRS-y += xenmon
 SUBDIRS-$(VTPM_TOOLS) += vtpm_manager
 SUBDIRS-$(VTPM_TOOLS) += vtpm
 SUBDIRS-y += xenstat
-SUBDIRS-$(CONFIG_Linux) += libaio
 SUBDIRS-$(CONFIG_Linux) += memshr 
-SUBDIRS-$(CONFIG_Linux) += blktap
 SUBDIRS-$(CONFIG_Linux) += blktap2
 SUBDIRS-$(CONFIG_NetBSD) += libaio
 SUBDIRS-$(CONFIG_NetBSD) += blktap2
@@ -31,7 +29,10 @@ SUBDIRS-$(LIBXENAPI_BINDINGS) += libxen
 
 # do not recurse in to a dir we are about to delete
 ifneq "$(MAKECMDGOALS)" "distclean"
+CONFIG_QEMU = $(CURDIR)/../qemu
+ifneq ($(wildcard $(CONFIG_QEMU)),)
 SUBDIRS-$(CONFIG_IOEMU) += ioemu-dir
+endif
 endif
 
 SUBDIRS-y += xenpmd
