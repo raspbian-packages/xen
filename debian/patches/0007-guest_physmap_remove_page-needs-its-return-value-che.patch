@@ -1,0 +1,131 @@
+From aa24f86c1c5dffef3ecb9d8b2da08e8d06754d85 Mon Sep 17 00:00:00 2001
+From: Jan Beulich <jbeulich@suse.com>
+Date: Thu, 14 Sep 2017 13:37:17 +0200
+Subject: [PATCH 07/16] guest_physmap_remove_page() needs its return value
+ checked
+
+Callers, namely such subsequently freeing the page, must not blindly
+assume success - the function may namely fail when needing to shatter a
+super page, but there not being memory available for the then needed
+intermediate page table.
+
+As it happens, guest_remove_page() callers now also all check the
+return value.
+
+Furthermore a missed put_gfn() on an error path in gnttab_transfer() is
+also being taken care of.
+
+This is part of XSA-222.
+
+Reported-by: Julien Grall <julien.grall@arm.com>
+Signed-off-by: Jan Beulich <jbeulich@suse.com>
+Signed-off-by: Julien Grall <julien.grall@arm.com>
+Reviewed-by: Andrew Cooper <andrew.cooper3@citrix.com>
+
+adapted to xen 4.1 by Peter Dreuw <peter.dreuw@credativ.de>
+Signed-off-by: Peter Dreuw <peter.dreuw@credativ.de>
+---
+ xen/arch/x86/mm.c   | 28 +++++++++++++---------------
+ xen/common/memory.c |  9 ++++++---
+ 2 files changed, 19 insertions(+), 18 deletions(-)
+
+diff --git a/xen/arch/x86/mm.c b/xen/arch/x86/mm.c
+index e13e50449..56b89aa2b 100644
+--- a/xen/arch/x86/mm.c
++++ b/xen/arch/x86/mm.c
+@@ -4368,10 +4368,11 @@ static int replace_grant_p2m_mapping(
+                  type, mfn_x(old_mfn), frame);
+         return GNTST_general_error;
+     }
+-    rc = guest_physmap_remove_page(d, gfn, frame, 0);
+-
+-    if (rc)
+-        return rc;
++    if ( guest_physmap_remove_page(d, gfn, frame, 0) )
++    {
++        put_gfn(d, gfn);
++        return GNTST_general_error;
++    }
+     
+     return GNTST_okay;
+ }
+@@ -4915,7 +4916,7 @@ static int handle_iomem_range(unsigned long s, unsigned long e, void *p)
+ long arch_memory_op(int op, XEN_GUEST_HANDLE(void) arg)
+ {
+     struct page_info *page = NULL;
+-    int rc;
++    int rc = 0;
+ 
+     switch ( op )
+     {
+@@ -5009,31 +5010,28 @@ long arch_memory_op(int op, XEN_GUEST_HANDLE(void) arg)
+         if ( mfn_valid(prev_mfn) )
+         {
+             if ( is_xen_heap_mfn(prev_mfn) )
+-            {
+                 /* Xen heap frames are simply unhooked from this phys slot. */
+                 rc = guest_physmap_remove_page(d, xatp.gpfn, prev_mfn, 0);
+-                if (rc)
+-                    goto out;
+-            }
+             else
+                 /* Normal domain memory is freed, to avoid leaking memory. */
+-                guest_remove_page(d, xatp.gpfn);
++                rc = guest_remove_page(d, xatp.gpfn);
+         }
+ 
++        if (rc)
++            goto put_both;
++        
+         /* Unmap from old location, if any. */
+         gpfn = get_gpfn_from_mfn(mfn);
+         ASSERT( gpfn != SHARED_M2P_ENTRY );
+         if ( gpfn != INVALID_M2P_ENTRY )
+-        {
+             rc = guest_physmap_remove_page(d, gpfn, mfn, 0);
+-            if (rc)
+-                goto out;
+-        }
+ 
+         /* Map at new location. */
+         rc = guest_physmap_add_page(d, xatp.gpfn, mfn, 0);
++        if (!rc)
++            rc = guest_physmap_add_page(d, xatp.gpfn, mfn, 0);
+ 
+-    out:
++    put_both:
+         domain_unlock(d);
+ 
+         rcu_unlock_domain(d);
+diff --git a/xen/common/memory.c b/xen/common/memory.c
+index 40b392b57..0c831ddb6 100644
+--- a/xen/common/memory.c
++++ b/xen/common/memory.c
+@@ -199,10 +199,12 @@ int guest_remove_page(struct domain *d, unsigned long gmfn)
+         return -ENXIO;
+     }
+ 
+-    if ( test_and_clear_bit(_PGT_pinned, &page->u.inuse.type_info) )
++    rc = guest_physmap_remove_page(d, gmfn, mfn, 0);
++    
++    if ( !rc && test_and_clear_bit(_PGT_pinned, &page->u.inuse.type_info) )
+         put_page_and_type(page);
+             
+-    if ( test_and_clear_bit(_PGC_allocated, &page->count_info) )
++    if ( !rc && test_and_clear_bit(_PGC_allocated, &page->count_info) )
+         put_page(page);
+ 
+     rc = guest_physmap_remove_page(d, gmfn, mfn, 0);
+@@ -434,7 +436,8 @@ static long memory_exchange(XEN_GUEST_HANDLE(xen_memory_exchange_t) arg)
+             gfn = mfn_to_gmfn(d, mfn);
+             /* Pages were unshared above */
+             BUG_ON(SHARED_M2P(gfn));
+-            rc = guest_physmap_remove_page(d, gfn, mfn, 0);
++            if ( guest_physmap_remove_page(d, gfn, mfn, 0) )
++                domain_crash(d);
+             put_page(page);
+         }
+ 
+-- 
+2.14.1
+

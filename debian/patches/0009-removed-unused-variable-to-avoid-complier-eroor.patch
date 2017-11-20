@@ -1,0 +1,24 @@
+From 03da674635f1c34af2d89a5b9b8066886881c69b Mon Sep 17 00:00:00 2001
+From: Peter Dreuw <peter.dreuw@credativ.de>
+Date: Thu, 14 Sep 2017 13:52:37 +0200
+Subject: [PATCH 09/16] removed unused variable to avoid complier eroor
+
+---
+ xen/arch/x86/mm.c | 1 -
+ 1 file changed, 1 deletion(-)
+
+diff --git a/xen/arch/x86/mm.c b/xen/arch/x86/mm.c
+index 56b89aa2b..0a00a95b6 100644
+--- a/xen/arch/x86/mm.c
++++ b/xen/arch/x86/mm.c
+@@ -4355,7 +4355,6 @@ static int replace_grant_p2m_mapping(
+     p2m_type_t type;
+     mfn_t old_mfn;
+     struct domain *d = current->domain;
+-    int rc;
+ 
+     if ( new_addr != 0 || (flags & GNTMAP_contains_pte) )
+         return GNTST_general_error;
+-- 
+2.14.1
+

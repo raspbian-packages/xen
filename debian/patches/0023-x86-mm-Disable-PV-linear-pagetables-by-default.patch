@@ -1,0 +1,53 @@
+From 62f0beec6bf07c68e69a3a9ac0dda1ce314b232b Mon Sep 17 00:00:00 2001
+From: George Dunlap <george.dunlap@citrix.com>
+Date: Fri, 22 Sep 2017 11:46:55 +0100
+Subject: [PATCH 23/26] x86/mm: Disable PV linear pagetables by default
+
+Allowing pagetables to point to other pagetables of the same level
+(often called 'linear pagetables') has been included in Xen since its
+inception.  But it is not used by the most common PV guests (Linux,
+NetBSD, minios), and has been the source of a number of subtle
+reference-counting bugs.
+
+Add a command-line option to control whether PV linear pagetables are
+allowed (disabled by default).
+
+Reported-by: Jann Horn <jannh@google.com>
+Original Signed off by: George Dunlap <george.dunlap@citrix.com>
+Original Reviewed by: Andrew Cooper <andrew.cooper3@citrix.com>
+
+Adapted to Xen 4.1 by Peter Dreuw <peter.dreuw@credativ.de>
+---
+ xen/arch/x86/mm.c | 9 +++++++++
+ 1 file changed, 9 insertions(+)
+
+diff --git a/xen/arch/x86/mm.c b/xen/arch/x86/mm.c
+index 84c3d66ed..a8169c6d3 100644
+--- a/xen/arch/x86/mm.c
++++ b/xen/arch/x86/mm.c
+@@ -779,6 +779,9 @@ static void dec_linear_uses(struct page_info *pg)
+  *     frame if it is mapped by a different root table. This is sufficient and
+  *     also necessary to allow validation of a root table mapping itself.
+  */
++static bool_t __read_mostly pv_linear_pt_enable = 0;
++boolean_param("pv-linear-pt", pv_linear_pt_enable);
++
+ #define define_get_linear_pagetable(level)                                  \
+ static int                                                                  \
+ get_##level##_linear_pagetable(                                             \
+@@ -788,6 +791,12 @@ get_##level##_linear_pagetable(                                             \
+     struct page_info *page;                                                 \
+     unsigned long pfn;                                                      \
+                                                                             \
++    if ( !pv_linear_pt_enable )                                             \
++    {                                                                       \
++        MEM_LOG("Attempt to create linear p.t. (feature disabled)");        \
++        return 0;                                                           \
++    }                                                                       \
++                                                                            \
+     if ( (level##e_get_flags(pde) & _PAGE_RW) )                             \
+     {                                                                       \
+         MEM_LOG("Attempt to create linear p.t. with write perms");          \
+-- 
+2.14.2
+

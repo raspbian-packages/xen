@@ -1,0 +1,75 @@
+From fc6c351e53c82cc27b2c5a9801db43f3aa10ef25 Mon Sep 17 00:00:00 2001
+From: Jan Beulich <jbeulich@suse.com>
+Date: Mon, 16 Oct 2017 08:23:34 +0200
+Subject: [PATCH 21/26] x86/HVM: prefill partially used variable on emulation
+ paths
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Certain handlers ignore the access size (vioapic_write() being the
+example this was found with), perhaps leading to subsequent reads
+seeing data that wasn't actually written by the guest. For
+consistency and extra safety also do this on the read path of
+hvm_process_io_intercept(), even if this doesn't directly affect what
+guests get to see, as we've supposedly already dealt with read handlers
+leaving data completely unitialized.
+
+This is XSA-239.
+
+Reported-by: Roger Pau Monné <roger.pau@citrix.com>
+Original Signed off by: Jan Beulich <jbeulich@suse.com>
+
+Adapted to Xen 4.2 by Peter Dreuw <peter.dreuw@credativ.de>
+---
+ xen/arch/x86/hvm/intercept.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/xen/arch/x86/hvm/intercept.c b/xen/arch/x86/hvm/intercept.c
+index 023dcadb4..236bb58fd 100644
+--- a/xen/arch/x86/hvm/intercept.c
++++ b/xen/arch/x86/hvm/intercept.c
+@@ -60,6 +60,7 @@ static int hvm_mmio_access(struct vcpu *v,
+     {
+         if ( p->dir == IOREQ_READ )
+         {
++            data = 0;
+             rc = read_handler(v, p->addr, p->size, &data);
+             p->data = data;
+         }
+@@ -73,7 +74,7 @@ static int hvm_mmio_access(struct vcpu *v,
+         for ( i = 0; i < p->count; i++ )
+         {
+             int ret;
+-
++            data = 0;
+             rc = read_handler(v, p->addr + (sign * i * p->size), p->size,
+                               &data);
+             if ( rc != X86EMUL_OKAY )
+@@ -93,6 +94,7 @@ static int hvm_mmio_access(struct vcpu *v,
+     {
+         for ( i = 0; i < p->count; i++ )
+         {
++            data = 0;
+             switch ( hvm_copy_from_guest_phys(&data,
+                                               p->data + sign * i * p->size,
+                                               p->size) )
+@@ -168,6 +170,7 @@ static int process_portio_intercept(portio_action_t action, ioreq_t *p)
+     {
+         if ( p->dir == IOREQ_READ )
+         {
++            data = 0;
+             rc = action(IOREQ_READ, p->addr, p->size, &data);
+             p->data = data;
+         }
+@@ -183,6 +186,7 @@ static int process_portio_intercept(portio_action_t action, ioreq_t *p)
+     {
+         for ( i = 0; i < p->count; i++ )
+         {
++            data = 0;
+             rc = action(IOREQ_READ, p->addr, p->size, &data);
+             if ( rc != X86EMUL_OKAY )
+                 break;
+-- 
+2.14.2
+
