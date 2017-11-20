@@ -333,6 +333,10 @@ static void cpu_ioreq_pio(CPUState *env, ioreq_t *req)
 
     sign = req->df ? -1 : 1;
 
+    if (req->size > sizeof(uint32_t)) {
+        hw_error("PIO: bad size (%u)", req->size);
+    }
+
     if (req->dir == IOREQ_READ) {
         if (!req->data_is_ptr) {
             req->data = do_inp(env, req->addr, req->size);
@@ -367,6 +371,10 @@ static void cpu_ioreq_move(CPUState *env, ioreq_t *req)
     int i, sign;
 
     sign = req->df ? -1 : 1;
+
+    if (req->size > sizeof(req->data)) {
+        hw_error("MMIO: bad size (%u)", req->size);
+    }
 
     if (!req->data_is_ptr) {
         if (req->dir == IOREQ_READ) {
@@ -481,11 +489,13 @@ static void __handle_buffered_iopage(CPUState *env)
         req.df = 1;
         req.type = buf_req->type;
         req.data_is_ptr = 0;
+        xen_rmb();
         qw = (req.size == 8);
         if (qw) {
             buf_req = &buffered_io_page->buf_ioreq[
                 (buffered_io_page->read_pointer+1) % IOREQ_BUFFER_SLOT_NUM];
             req.data |= ((uint64_t)buf_req->data) << 32;
+            xen_rmb();
         }
 
         __handle_ioreq(env, &req);
@@ -512,7 +522,11 @@ static void cpu_handle_ioreq(void *opaque)
 
     __handle_buffered_iopage(env);
     if (req) {
-        __handle_ioreq(env, req);
+        ioreq_t copy = *req;
+
+        xen_rmb();
+        __handle_ioreq(env, &copy);
+        req->data = copy.data;
 
         if (req->state != STATE_IOREQ_INPROCESS) {
             fprintf(logfile, "Badness in I/O request ... not in service?!: "
