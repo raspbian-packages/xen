@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:57 +0200
-X-Dgit-Generated: 4.8.1-1 0c590f711182ecc6c0aaee5fc0bf89f384c98fce
+X-Dgit-Generated: 4.8.2+xsa243-0+deb9u1~iwj a06a5bb0d6c5a1790dc47c0e7e25d13f1f523bff
 Subject: tools-libxl-prefix.diff
 
 Patch-Name: tools-libxl-prefix.diff
 
 ---
 
---- xen-4.8.1.orig/tools/libxl/Makefile
-+++ xen-4.8.1/tools/libxl/Makefile
+--- xen-4.8.2+xsa243.orig/tools/libxl/Makefile
++++ xen-4.8.2+xsa243/tools/libxl/Makefile
 @@ -12,6 +12,8 @@ CFLAGS += -I. -fPIC
  ifeq ($(CONFIG_Linux),y)
  LIBUUID_LIBS += -luuid

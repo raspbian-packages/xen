@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:59 +0200
-X-Dgit-Generated: 4.8.1-1 92bd9e6a61c01d45b42463d3097f87935167e731
+X-Dgit-Generated: 4.8.2+xsa243-0+deb9u1~iwj c65090baf860b994cc95248543eec351bdcf4752
 Subject: tools-misc-prefix.diff
 
 Patch-Name: tools-misc-prefix.diff
 
 ---
 
---- xen-4.8.1.orig/tools/misc/Makefile
-+++ xen-4.8.1/tools/misc/Makefile
+--- xen-4.8.2+xsa243.orig/tools/misc/Makefile
++++ xen-4.8.2+xsa243/tools/misc/Makefile
 @@ -54,12 +54,8 @@ all build: $(TARGETS_BUILD)
  
  .PHONY: install

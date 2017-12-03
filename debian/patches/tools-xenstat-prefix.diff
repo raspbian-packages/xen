@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:47:09 +0200
-X-Dgit-Generated: 4.8.1-1 fa062a38ebfa9a8d1e52ee698c72aff4cb39e969
+X-Dgit-Generated: 4.8.2+xsa243-0+deb9u1~iwj 4f4c54df5da5d353d3d11ba73c5eb3bbdadbe4e2
 Subject: tools-xenstat-prefix.diff
 
 Patch-Name: tools-xenstat-prefix.diff
 
 ---
 
---- xen-4.8.1.orig/tools/xenstat/libxenstat/Makefile
-+++ xen-4.8.1/tools/xenstat/libxenstat/Makefile
+--- xen-4.8.2+xsa243.orig/tools/xenstat/libxenstat/Makefile
++++ xen-4.8.2+xsa243/tools/xenstat/libxenstat/Makefile
 @@ -20,7 +20,7 @@ MAKE_LINK=ln -sf
  
  LIB=src/libxenstat.a
@@ -31,8 +31,8 @@ Patch-Name: tools-xenstat-prefix.diff
  
  PYLIB=bindings/swig/python/_xenstat.so
  PYMOD=bindings/swig/python/xenstat.py
---- xen-4.8.1.orig/tools/xenstat/xentop/Makefile
-+++ xen-4.8.1/tools/xenstat/xentop/Makefile
+--- xen-4.8.2+xsa243.orig/tools/xenstat/xentop/Makefile
++++ xen-4.8.2+xsa243/tools/xenstat/xentop/Makefile
 @@ -19,7 +19,9 @@ all install xentop:
  else
  

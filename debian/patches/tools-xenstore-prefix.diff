@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:47:12 +0200
-X-Dgit-Generated: 4.8.1-1 dda6e65fe8f36391534f781ebdf0bc9f9e58192a
+X-Dgit-Generated: 4.8.2+xsa243-0+deb9u1~iwj 38cbba1595aacd084f3c066720860197cf515a7a
 Subject: tools-xenstore-prefix.diff
 
 Patch-Name: tools-xenstore-prefix.diff
 
 ---
 
---- xen-4.8.1.orig/tools/helpers/Makefile
-+++ xen-4.8.1/tools/helpers/Makefile
+--- xen-4.8.2+xsa243.orig/tools/helpers/Makefile
++++ xen-4.8.2+xsa243/tools/helpers/Makefile
 @@ -31,7 +31,7 @@ xen-init-dom0: $(XEN_INIT_DOM0_OBJS)
  $(INIT_XENSTORE_DOMAIN_OBJS): _paths.h
  
@@ -18,8 +18,8 @@ Patch-Name: tools-xenstore-prefix.diff
  
  .PHONY: install
  install: all
---- xen-4.8.1.orig/tools/xenstore/Makefile
-+++ xen-4.8.1/tools/xenstore/Makefile
+--- xen-4.8.2+xsa243.orig/tools/xenstore/Makefile
++++ xen-4.8.2+xsa243/tools/xenstore/Makefile
 @@ -20,6 +20,8 @@ LDFLAGS-$(CONFIG_SYSTEMD) += $(SYSTEMD_L
  CFLAGS  += $(CFLAGS-y)
  LDFLAGS += $(LDFLAGS-y)

@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:47:30 +0200
-X-Dgit-Generated: 4.8.1-1 732acd91e545566bca164b886afa82027df7c463
+X-Dgit-Generated: 4.8.2+xsa243-0+deb9u1~iwj eae2c48fd40d1cdc627726980dc7bf44f3cdd7fc
 Subject: tools-include-install.diff
 
 Patch-Name: tools-include-install.diff
 
 ---
 
---- xen-4.8.1.orig/tools/include/Makefile
-+++ xen-4.8.1/tools/include/Makefile
+--- xen-4.8.2+xsa243.orig/tools/include/Makefile
++++ xen-4.8.2+xsa243/tools/include/Makefile
 @@ -14,7 +14,6 @@ xen-foreign:
  xen/.dir:
  	@rm -rf xen

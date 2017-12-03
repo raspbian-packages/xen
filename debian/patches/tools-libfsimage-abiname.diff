@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:47 +0200
-X-Dgit-Generated: 4.8.1-1 2a020aa59aec69c1d00f3fb8c86b188873e802ea
+X-Dgit-Generated: 4.8.2+xsa243-0+deb9u1~iwj c0e55db822c15e5be68954bfefc6a5c2950fdacc
 Subject: tools-libfsimage-abiname.diff
 
 Patch-Name: tools-libfsimage-abiname.diff
 
 ---
 
---- xen-4.8.1.orig/tools/libfsimage/common/Makefile
-+++ xen-4.8.1/tools/libfsimage/common/Makefile
+--- xen-4.8.2+xsa243.orig/tools/libfsimage/common/Makefile
++++ xen-4.8.2+xsa243/tools/libfsimage/common/Makefile
 @@ -1,9 +1,6 @@
  XEN_ROOT = $(CURDIR)/../../..
  include $(XEN_ROOT)/tools/libfsimage/Rules.mk

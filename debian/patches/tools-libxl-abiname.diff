@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:49 +0200
-X-Dgit-Generated: 4.8.1-1 b6860f8b5e4980eedd3e75e5e81be73343d92558
+X-Dgit-Generated: 4.8.2+xsa243-0+deb9u1~iwj 7cf3bd06e0657cb8bd4b2f0d83222077d7c6ab6a
 Subject: tools-libxl-abiname.diff
 
 Patch-Name: tools-libxl-abiname.diff
 
 ---
 
---- xen-4.8.1.orig/tools/libxl/Makefile
-+++ xen-4.8.1/tools/libxl/Makefile
+--- xen-4.8.2+xsa243.orig/tools/libxl/Makefile
++++ xen-4.8.2+xsa243/tools/libxl/Makefile
 @@ -5,12 +5,6 @@
  XEN_ROOT = $(CURDIR)/../..
  include $(XEN_ROOT)/tools/Rules.mk

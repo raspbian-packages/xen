@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:47:36 +0200
-X-Dgit-Generated: 4.8.1-1 e0deca5e873be2aeb99ad58aed95eaa9c7c8ce35
+X-Dgit-Generated: 4.8.2+xsa243-0+deb9u1~iwj 45541c516337b27ba321a2a6a53c7a31eea96930
 Subject: tools-xenstore-compatibility.diff
 
 Patch-Name: tools-xenstore-compatibility.diff
 
 ---
 
---- xen-4.8.1.orig/tools/xenstore/include/xenstore.h
-+++ xen-4.8.1/tools/xenstore/include/xenstore.h
+--- xen-4.8.2+xsa243.orig/tools/xenstore/include/xenstore.h
++++ xen-4.8.2+xsa243/tools/xenstore/include/xenstore.h
 @@ -25,6 +25,7 @@
  
  #define XS_OPEN_READONLY	1UL<<0
@@ -17,8 +17,8 @@ Patch-Name: tools-xenstore-compatibility.diff
  
  /*
   * Setting XS_UNWATCH_FILTER arranges that after xs_unwatch, no
---- xen-4.8.1.orig/tools/xenstore/xenstore_client.c
-+++ xen-4.8.1/tools/xenstore/xenstore_client.c
+--- xen-4.8.2+xsa243.orig/tools/xenstore/xenstore_client.c
++++ xen-4.8.2+xsa243/tools/xenstore/xenstore_client.c
 @@ -636,7 +636,7 @@ main(int argc, char **argv)
  	    max_width = ws.ws_col - 2;
      }
@@ -28,8 +28,8 @@ Patch-Name: tools-xenstore-compatibility.diff
      if (xsh == NULL) err(1, "xs_open");
  
  again:
---- xen-4.8.1.orig/tools/xenstore/xs.c
-+++ xen-4.8.1/tools/xenstore/xs.c
+--- xen-4.8.2+xsa243.orig/tools/xenstore/xs.c
++++ xen-4.8.2+xsa243/tools/xenstore/xs.c
 @@ -281,17 +281,19 @@ struct xs_handle *xs_daemon_open_readonl
  
  struct xs_handle *xs_domain_open(void)

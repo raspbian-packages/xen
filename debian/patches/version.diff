@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:43 +0200
-X-Dgit-Generated: 4.8.1-1 adc50830f6c334569f54255310fc489d139d542f
+X-Dgit-Generated: 4.8.2+xsa243-0+deb9u1~iwj 381425d4a30a914aee4a87c26676f643571e5415
 Subject: version
 
 Patch-Name: version.diff
 
 ---
 
---- xen-4.8.1.orig/xen/Makefile
-+++ xen-4.8.1/xen/Makefile
+--- xen-4.8.2+xsa243.orig/xen/Makefile
++++ xen-4.8.2+xsa243/xen/Makefile
 @@ -160,7 +160,7 @@ delete-unfresh-files:
  	@mv -f $@.tmp $@
  
@@ -32,8 +32,8 @@ Patch-Name: version.diff
  	@mv -f $@.new $@
  
  include/asm-$(TARGET_ARCH)/asm-offsets.h: arch/$(TARGET_ARCH)/asm-offsets.s
---- xen-4.8.1.orig/xen/common/kernel.c
-+++ xen-4.8.1/xen/common/kernel.c
+--- xen-4.8.2+xsa243.orig/xen/common/kernel.c
++++ xen-4.8.2+xsa243/xen/common/kernel.c
 @@ -252,8 +252,8 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDL
  
          memset(&info, 0, sizeof(info));
@@ -45,8 +45,8 @@ Patch-Name: version.diff
          safe_strcpy(info.compile_date,   deny ? xen_deny() : xen_compile_date());
          if ( copy_to_guest(arg, &info, 1) )
              return -EFAULT;
---- xen-4.8.1.orig/xen/common/version.c
-+++ xen-4.8.1/xen/common/version.c
+--- xen-4.8.2+xsa243.orig/xen/common/version.c
++++ xen-4.8.2+xsa243/xen/common/version.c
 @@ -20,19 +20,24 @@ const char *xen_compile_time(void)
      return XEN_COMPILE_TIME;
  }
@@ -90,8 +90,8 @@ Patch-Name: version.diff
  const char *xen_deny(void)
  {
      return "<denied>";
---- xen-4.8.1.orig/xen/drivers/char/console.c
-+++ xen-4.8.1/xen/drivers/char/console.c
+--- xen-4.8.2+xsa243.orig/xen/drivers/char/console.c
++++ xen-4.8.2+xsa243/xen/drivers/char/console.c
 @@ -732,14 +732,11 @@ void __init console_init_preirq(void)
      serial_set_rx_handler(sercon_handle, serial_rx);
  
@@ -110,8 +110,8 @@ Patch-Name: version.diff
  
      if ( opt_sync_console )
      {
---- xen-4.8.1.orig/xen/include/xen/compile.h.in
-+++ xen-4.8.1/xen/include/xen/compile.h.in
+--- xen-4.8.2+xsa243.orig/xen/include/xen/compile.h.in
++++ xen-4.8.2+xsa243/xen/include/xen/compile.h.in
 @@ -1,8 +1,9 @@
  #define XEN_COMPILE_DATE	"@@date@@"
  #define XEN_COMPILE_TIME	"@@time@@"
@@ -130,8 +130,8 @@ Patch-Name: version.diff
  
  #define XEN_CHANGESET		"@@changeset@@"
 -#define XEN_BANNER		\
---- xen-4.8.1.orig/xen/include/xen/version.h
-+++ xen-4.8.1/xen/include/xen/version.h
+--- xen-4.8.2+xsa243.orig/xen/include/xen/version.h
++++ xen-4.8.2+xsa243/xen/include/xen/version.h
 @@ -6,9 +6,10 @@
  
  const char *xen_compile_date(void);
