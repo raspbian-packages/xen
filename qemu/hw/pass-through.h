@@ -98,6 +98,14 @@
 #define PCI_EXP_TYPE_ROOT_EC     0xa
 #endif
 
+#ifndef PCI_VPD_ADDR
+/* Vital Product Data */
+#define PCI_VPD_ADDR		2	/* Address to access (15 bits!) */
+#define  PCI_VPD_ADDR_MASK	0x7fff	/* Address mask */
+#define  PCI_VPD_ADDR_F		0x8000	/* Write 0, 1 indicates completion */
+#define PCI_VPD_DATA		4	/* 32-bits of data returned here */
+#endif
+
 #ifndef PCI_ERR_UNCOR_MASK
 /* Uncorrectable Error Mask */
 #define PCI_ERR_UNCOR_MASK      8
