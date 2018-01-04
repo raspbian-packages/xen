@@ -62,7 +62,7 @@ BUILD_16_IRQS(0xc) BUILD_16_IRQS(0xd) BUILD_16_IRQS(0xe) BUILD_16_IRQS(0xf)
     IRQ(x,8), IRQ(x,9), IRQ(x,a), IRQ(x,b), \
     IRQ(x,c), IRQ(x,d), IRQ(x,e), IRQ(x,f)
 
-    static void (*interrupt[])(void) = {
+    static void (*asmlinkage interrupt[])(void) = {
         IRQLIST_16(0x0), IRQLIST_16(0x1), IRQLIST_16(0x2), IRQLIST_16(0x3),
         IRQLIST_16(0x4), IRQLIST_16(0x5), IRQLIST_16(0x6), IRQLIST_16(0x7),
         IRQLIST_16(0x8), IRQLIST_16(0x9), IRQLIST_16(0xa), IRQLIST_16(0xb),
