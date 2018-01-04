@@ -35,6 +35,7 @@ endif
 ifeq ($(LIBXL_BLKTAP),y)
 CFLAGS_libblktapctl = -I$(XEN_BLKTAP2)/control -I$(XEN_BLKTAP2)/include $(CFLAGS_include)
 LDLIBS_libblktapctl = -L$(XEN_BLKTAP2)/control -lblktapctl
+LDRPATH_libblktapctl = -Wl,-rpath-link,$(XEN_BLKTAP2)/control
 else
 CFLAGS_libblktapctl =
 LDLIBS_libblktapctl =
