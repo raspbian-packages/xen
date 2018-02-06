@@ -1,0 +1,92 @@
+References: bnc#860163 XSA-84
+
+flask: restrict allocations done by hypercall interface
+
+Other than in 4.2 and newer, we're not having an overflow issue here,
+but uncontrolled exposure of the operations opens the host to be driven
+out of memory by an arbitrary guest. Since all operations other than
+FLASK_LOAD simply deal with ASCII strings, limiting the allocations
+(and incoming buffer sizes) to a page worth of memory seems like the
+best thing we can do.
+
+Consequently, in order to not expose the larger allocation to arbitrary
+guests, the permission check for FLASK_LOAD needs to be pulled ahead of
+the allocation (and it's perhaps worth noting that - afaict - it was
+pointlessly done with the sel_sem spin lock held).
+
+Note that this breaks FLASK_AVC_CACHESTATS on systems with sufficiently
+many CPUs (as requiring a buffer bigger than PAGE_SIZE there). No
+attempt is made to address this here, as it would needlessly complicate
+this fix with rather little gain.
+
+This is XSA-84.
+
+Reported-by: Matthew Daley <mattd@bugfuzz.com>
+Signed-off-by: Jan Beulich <jbeulich@suse.com>
+
+The index of boolean variables in FLASK_{GET,SET}BOOL was not always
+checked against the bounds of the array.
+
+Reported-by: John McDermott <john.mcdermott@nrl.navy.mil>
+Signed-off-by: Daniel De Graaf <dgdegra@tycho.nsa.gov>
+
+--- a/xen/xsm/flask/flask_op.c
++++ b/xen/xsm/flask/flask_op.c
+@@ -573,7 +573,7 @@ static int flask_security_setavc_thresho
+ static int flask_security_set_bool(char *buf, uint32_t count)
+ {
+     int length = -EFAULT;
+-    int i, new_value;
++    unsigned int i, new_value;
+ 
+     spin_lock(&sel_sem);
+ 
+@@ -585,6 +585,9 @@ static int flask_security_set_bool(char 
+     if ( sscanf(buf, "%d %d", &i, &new_value) != 2 )
+         goto out;
+ 
++    if ( i >= bool_num )
++        goto out;
++
+     if ( new_value )
+     {
+         new_value = 1;
+@@ -734,10 +737,6 @@ static int flask_security_load(char *buf
+ 
+     spin_lock(&sel_sem);
+ 
+-    length = domain_has_security(current->domain, SECURITY__LOAD_POLICY);
+-    if ( length )
+-        goto out;
+-
+     length = security_load_policy(buf, count);
+     if ( length )
+         goto out;
+@@ -853,7 +852,15 @@ long do_flask_op(XEN_GUEST_HANDLE(xsm_op
+     if ( op->cmd > FLASK_LAST)
+         return -EINVAL;
+ 
+-    if ( op->size > MAX_POLICY_SIZE )
++    if ( op->cmd == FLASK_LOAD )
++    {
++        rc = domain_has_security(current->domain, SECURITY__LOAD_POLICY);
++        if ( rc )
++            return rc;
++        if ( op->size > MAX_POLICY_SIZE )
++            return -EINVAL;
++    }
++    else if ( op->size >= PAGE_SIZE )
+         return -EINVAL;
+ 
+     if ( (op->buf == NULL && op->size != 0) || 
+--- a/xen/xsm/flask/ss/services.c
++++ b/xen/xsm/flask/ss/services.c
+@@ -1991,7 +1991,7 @@ int security_get_bool_value(int bool)
+     POLICY_RDLOCK;
+ 
+     len = policydb.p_bools.nprim;
+-    if ( bool >= len )
++    if ( bool >= len || bool < 0 )
+     {
+         rc = -EFAULT;
+         goto out;
