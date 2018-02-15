@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:54 +0200
-X-Dgit-Generated: 4.8.2+xsa243-0+deb9u1~iwj 4c7cc00207cb2cac7ef786652df95d85a923703b
+X-Dgit-Generated: 4.8.3+comet2+shim4.10.0+comet3-1+deb9u4 f290494eb1b347e68c9a04e16a27136a6f4e4c44
 Subject: tools-console-prefix.diff
 
 Patch-Name: tools-console-prefix.diff
 
 ---
 
---- xen-4.8.2+xsa243.orig/tools/console/Makefile
-+++ xen-4.8.2+xsa243/tools/console/Makefile
+--- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/console/Makefile
++++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/console/Makefile
 @@ -8,6 +8,7 @@ CFLAGS  += $(CFLAGS_libxenstore)
  LDLIBS += $(LDLIBS_libxenctrl)
  LDLIBS += $(LDLIBS_libxenstore)

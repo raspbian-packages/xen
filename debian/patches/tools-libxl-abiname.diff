@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:49 +0200
-X-Dgit-Generated: 4.8.2+xsa243-0+deb9u1~iwj 7cf3bd06e0657cb8bd4b2f0d83222077d7c6ab6a
+X-Dgit-Generated: 4.8.3+comet2+shim4.10.0+comet3-1+deb9u4 a62bf1de909ebfb71122147009a530ecf7bff9b3
 Subject: tools-libxl-abiname.diff
 
 Patch-Name: tools-libxl-abiname.diff
 
 ---
 
---- xen-4.8.2+xsa243.orig/tools/libxl/Makefile
-+++ xen-4.8.2+xsa243/tools/libxl/Makefile
+--- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/libxl/Makefile
++++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/libxl/Makefile
 @@ -5,12 +5,6 @@
  XEN_ROOT = $(CURDIR)/../..
  include $(XEN_ROOT)/tools/Rules.mk
@@ -22,9 +22,9 @@ Patch-Name: tools-libxl-abiname.diff
  CFLAGS += -Werror -Wno-format-zero-length -Wmissing-declarations \
  	-Wno-declaration-after-statement -Wformat-nonliteral
  CFLAGS += -I. -fPIC
-@@ -258,29 +252,23 @@ _libxl_type%.h _libxl_type%_json.h _libx
- 	$(call move-if-changed,__libxl_type$*_json.h,_libxl_type$*_json.h)
- 	$(call move-if-changed,__libxl_type$*.c,_libxl_type$*.c)
+@@ -259,29 +253,23 @@ _libxl_type%.h _libxl_type%_json.h _libx
+ 	$(call move-if-changed,__libxl_type$(stem)_json.h,_libxl_type$(stem)_json.h)
+ 	$(call move-if-changed,__libxl_type$(stem).c,_libxl_type$(stem).c)
  
 -libxenlight.so: libxenlight.so.$(MAJOR)
 -	$(SYMLINK_SHLIB) $< $@
@@ -59,7 +59,7 @@ Patch-Name: tools-libxl-abiname.diff
  
  libxlutil.a: $(LIBXLU_OBJS)
  	$(AR) rcs libxlutil.a $^
-@@ -298,7 +286,7 @@ testidl: testidl.o libxlutil.so libxenli
+@@ -299,7 +287,7 @@ testidl: testidl.o libxlutil.so libxenli
  	$(CC) $(LDFLAGS) -o $@ testidl.o libxlutil.so $(LDLIBS_libxenlight) $(LDLIBS_libxentoollog) $(APPEND_LDFLAGS)
  
  $(PKG_CONFIG): % : %.in Makefile
@@ -68,7 +68,7 @@ Patch-Name: tools-libxl-abiname.diff
  	@mv -f $@.new $@
  
  .PHONY: install
-@@ -311,13 +299,11 @@ install: all
+@@ -312,13 +300,11 @@ install: all
  	$(INSTALL_DIR) $(DESTDIR)$(PKG_INSTALLDIR)
  	$(INSTALL_PROG) xl $(DESTDIR)$(sbindir)
  	$(INSTALL_PROG) libxl-save-helper $(DESTDIR)$(LIBEXEC_BIN)

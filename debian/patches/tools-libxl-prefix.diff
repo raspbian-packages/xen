@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:57 +0200
-X-Dgit-Generated: 4.8.2+xsa243-0+deb9u1~iwj a06a5bb0d6c5a1790dc47c0e7e25d13f1f523bff
+X-Dgit-Generated: 4.8.3+comet2+shim4.10.0+comet3-1+deb9u4 cd2944baae7fcc8e033020fc2650d782b43d9865
 Subject: tools-libxl-prefix.diff
 
 Patch-Name: tools-libxl-prefix.diff
 
 ---
 
---- xen-4.8.2+xsa243.orig/tools/libxl/Makefile
-+++ xen-4.8.2+xsa243/tools/libxl/Makefile
+--- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/libxl/Makefile
++++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/libxl/Makefile
 @@ -12,6 +12,8 @@ CFLAGS += -I. -fPIC
  ifeq ($(CONFIG_Linux),y)
  LIBUUID_LIBS += -luuid
@@ -18,7 +18,7 @@ Patch-Name: tools-libxl-prefix.diff
  
  LIBXL_LIBS =
  LIBXL_LIBS = $(LDLIBS_libxentoollog) $(LDLIBS_libxenevtchn) $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest) $(LDLIBS_libxenstore) $(LDLIBS_libblktapctl) $(PTYFUNCS_LIBS) $(LIBUUID_LIBS)
-@@ -256,7 +258,7 @@ libxenlight.so: libxenlight-$(PACKAGE_VE
+@@ -257,7 +259,7 @@ libxenlight.so: libxenlight-$(PACKAGE_VE
  	$(SYMLINK_SHLIB) $< $@
  
  libxenlight-$(PACKAGE_VERSION).so: $(LIBXL_OBJS)
@@ -27,7 +27,7 @@ Patch-Name: tools-libxl-prefix.diff
  
  libxenlight_test.so: $(LIBXL_OBJS) $(LIBXL_TEST_OBJS)
  	$(CC) $(LDFLAGS) -Wl,$(SONAME_LDFLAG),$@ $(SHLIB_LDFLAGS) -o $@ $^ $(LIBXL_LIBS) $(APPEND_LDFLAGS)
-@@ -274,7 +276,7 @@ libxlutil.a: $(LIBXLU_OBJS)
+@@ -275,7 +277,7 @@ libxlutil.a: $(LIBXLU_OBJS)
  	$(AR) rcs libxlutil.a $^
  
  xl: $(XL_OBJS) libxlutil.so libxenlight.so
@@ -36,7 +36,7 @@ Patch-Name: tools-libxl-prefix.diff
  
  test_%: test_%.o test_common.o libxlutil.so libxenlight_test.so
  	$(CC) $(LDFLAGS) -o $@ $^ $(filter-out %libxenlight.so, $(LDLIBS_libxenlight)) $(LDLIBS_libxentoollog) -lyajl $(APPEND_LDFLAGS)
-@@ -291,13 +293,12 @@ $(PKG_CONFIG): % : %.in Makefile
+@@ -292,13 +294,12 @@ $(PKG_CONFIG): % : %.in Makefile
  
  .PHONY: install
  install: all

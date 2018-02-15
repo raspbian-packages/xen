@@ -1,13 +1,13 @@
 From: Ubuntu Developers <ubuntu-devel-discuss@lists.ubuntu.com>
 Date: Thu, 6 Oct 2016 14:24:46 +0100
-X-Dgit-Generated: 4.8.2+xsa243-0+deb9u1~iwj 416185d489495a218cbe78388fbd8a6aea76b62a
+X-Dgit-Generated: 4.8.3+comet2+shim4.10.0+comet3-1+deb9u4 c1b6a690a0ebf0e6b88a5410b1f43ad73aa6e77b
 Subject: ubuntu-tools-libs-abiname
 
 
 ---
 
---- xen-4.8.2+xsa243.orig/tools/libs/call/Makefile
-+++ xen-4.8.2+xsa243/tools/libs/call/Makefile
+--- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/libs/call/Makefile
++++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/libs/call/Makefile
 @@ -39,22 +39,22 @@ headers.chk: $(wildcard include/*.h)
  libxencall.a: $(LIB_OBJS)
  	$(AR) rc $@ $^
@@ -47,8 +47,8 @@ Subject: ubuntu-tools-libs-abiname
  	rm -f headers.chk
  
  .PHONY: distclean
---- xen-4.8.2+xsa243.orig/tools/libs/evtchn/Makefile
-+++ xen-4.8.2+xsa243/tools/libs/evtchn/Makefile
+--- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/libs/evtchn/Makefile
++++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/libs/evtchn/Makefile
 @@ -39,22 +39,22 @@ headers.chk: $(wildcard include/*.h)
  libxenevtchn.a: $(LIB_OBJS)
  	$(AR) rc $@ $^
@@ -88,8 +88,8 @@ Subject: ubuntu-tools-libs-abiname
  	rm -f headers.chk
  
  .PHONY: distclean
---- xen-4.8.2+xsa243.orig/tools/libs/foreignmemory/Makefile
-+++ xen-4.8.2+xsa243/tools/libs/foreignmemory/Makefile
+--- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/libs/foreignmemory/Makefile
++++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/libs/foreignmemory/Makefile
 @@ -39,22 +39,22 @@ headers.chk: $(wildcard include/*.h)
  libxenforeignmemory.a: $(LIB_OBJS)
  	$(AR) rc $@ $^
@@ -129,8 +129,8 @@ Subject: ubuntu-tools-libs-abiname
  	rm -f headers.chk
  
  .PHONY: distclean
---- xen-4.8.2+xsa243.orig/tools/libs/gnttab/Makefile
-+++ xen-4.8.2+xsa243/tools/libs/gnttab/Makefile
+--- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/libs/gnttab/Makefile
++++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/libs/gnttab/Makefile
 @@ -41,22 +41,22 @@ headers.chk: $(wildcard include/*.h)
  libxengnttab.a: $(LIB_OBJS)
  	$(AR) rc $@ $^
@@ -170,8 +170,8 @@ Subject: ubuntu-tools-libs-abiname
  	rm -f headers.chk
  
  .PHONY: distclean
---- xen-4.8.2+xsa243.orig/tools/libs/toollog/Makefile
-+++ xen-4.8.2+xsa243/tools/libs/toollog/Makefile
+--- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/libs/toollog/Makefile
++++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/libs/toollog/Makefile
 @@ -34,22 +34,22 @@ headers.chk: $(wildcard include/*.h)
  libxentoollog.a: $(LIB_OBJS)
  	$(AR) rc $@ $^

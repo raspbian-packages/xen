@@ -26,7 +26,6 @@ tools-xenmon-install.diff
 tools-xenstore-compatibility.diff
 ubuntu-tools-libs-abiname.diff
 toolstestsx86_emulator-pass--no-pie--fno.patch
-x86pod-prevent-infinite-loop-when-shatte.patch
-p2m-always-check-to-see-if-removing-a-p2.patch
-p2m-check-return-value-of-p2m_set_entry-.patch
+copy-readme.pti-and-readme.comet-from-th.patch
+tools-fix-arm-build-after-bdf693ee61b48.patch
 armv6.diff

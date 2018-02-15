@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:47:01 +0200
-X-Dgit-Generated: 4.8.2+xsa243-0+deb9u1~iwj be2729d17fb2b9d9651f1841ef0797506e96fb14
+X-Dgit-Generated: 4.8.3+comet2+shim4.10.0+comet3-1+deb9u4 e962110664f32b4e9fcb73aabe204ae2e74f14ec
 Subject: tools-pygrub-prefix.diff
 
 Patch-Name: tools-pygrub-prefix.diff
 
 ---
 
---- xen-4.8.2+xsa243.orig/tools/pygrub/Makefile
-+++ xen-4.8.2+xsa243/tools/pygrub/Makefile
+--- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/pygrub/Makefile
++++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/pygrub/Makefile
 @@ -16,11 +16,6 @@ install: all
  	CC="$(CC)" CFLAGS="$(PY_CFLAGS)" LDFLAGS="$(PY_LDFLAGS)" $(PYTHON) \
  		setup.py install $(PYTHON_PREFIX_ARG) --root="$(DESTDIR)"  \
@@ -21,8 +21,8 @@ Patch-Name: tools-pygrub-prefix.diff
  
  .PHONY: clean
  clean:
---- xen-4.8.2+xsa243.orig/tools/pygrub/setup.py
-+++ xen-4.8.2+xsa243/tools/pygrub/setup.py
+--- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/pygrub/setup.py
++++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/pygrub/setup.py
 @@ -4,11 +4,13 @@ import os
  import sys
  
@@ -37,8 +37,8 @@ Patch-Name: tools-pygrub-prefix.diff
      include_dirs = [ XEN_ROOT + "/tools/libfsimage/common/" ],
      library_dirs = [ XEN_ROOT + "/tools/libfsimage/common/" ],
      libraries = ["fsimage"],
---- xen-4.8.2+xsa243.orig/tools/pygrub/src/pygrub
-+++ xen-4.8.2+xsa243/tools/pygrub/src/pygrub
+--- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/pygrub/src/pygrub
++++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/pygrub/src/pygrub
 @@ -21,6 +21,8 @@ import xen.lowlevel.xc
  import curses, _curses, curses.wrapper, curses.textpad, curses.ascii
  import getopt
