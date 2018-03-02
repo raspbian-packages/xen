@@ -1,0 +1,31 @@
+#!/bin/sh -e
+
+error() {
+    echo "ERROR: " "$@" >&2
+    exit 1
+}
+
+if [ -e "/sys/hypervisor/type" ]; then
+    type="$(cat /sys/hypervisor/type)"
+    if [ "$type" = xen ]; then
+        DIR=/sys/hypervisor/version
+        VERSION_EXTRA="$(cat $DIR/extra)"
+        if [ "$VERSION_EXTRA" = "-unstable" ]; then
+            # Old xen-unstable
+            VERSION=unstable
+        elif [ "$VERSION_EXTRA" != "${VERSION_EXTRA#-}" ]; then
+            # ABI for Lenny and smaller
+            VERSION="$(cat $DIR/major).$(cat $DIR/minor)$VERSION_EXTRA"
+        else
+            VERSION="$(cat $DIR/major).$(cat $DIR/minor)"
+        fi
+    elif [ -z "$type" ]; then
+        error "Can't read hypervisor type from sysfs!"
+    else
+        error "Hypervisor is not xen but '$type'!"
+    fi
+else
+    error "Can't find hypervisor information in sysfs!"
+fi
+
+echo "$VERSION"

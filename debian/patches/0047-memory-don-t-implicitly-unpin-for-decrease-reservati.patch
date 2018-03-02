@@ -1,0 +1,37 @@
+From a8c6336b65f947345fef2cd0ec8c10dd7e71312a Mon Sep 17 00:00:00 2001
+From: Jan Beulich <jbeulich@suse.com>
+Date: Fri, 2 Mar 2018 14:11:53 +0100
+Subject: [PATCH 47/47] memory: don't implicitly unpin for decrease-reservation
+
+It very likely was a mistake (copy-and-paste from domain cleanup code)
+to implicitly unpin here: The caller should really unpin itself before
+(or after, if they so wish) requesting the page to be removed.
+
+This is XSA-252.
+
+Reported-by: Jann Horn <jannh@google.com>
+Signed-off-by: Jan Beulich <jbeulich@suse.com>
+Reviewed-by: Andrew Cooper <andrew.cooper3@citrix.com>
+
+Backported-by: Felix Geyer <felix.geyer@credativ.de>
+---
+ xen/common/memory.c | 3 ---
+ 1 file changed, 3 deletions(-)
+
+diff --git a/xen/common/memory.c b/xen/common/memory.c
+index 1c55169e5..0d268cf2e 100644
+--- a/xen/common/memory.c
++++ b/xen/common/memory.c
+@@ -200,9 +200,6 @@ int guest_remove_page(struct domain *d, unsigned long gmfn)
+     }
+ 
+     rc = guest_physmap_remove_page(d, gmfn, mfn, 0);
+-    
+-    if ( !rc && test_and_clear_bit(_PGT_pinned, &page->u.inuse.type_info) )
+-        put_page_and_type(page);
+             
+     if ( !rc && test_and_clear_bit(_PGC_allocated, &page->count_info) )
+         put_page(page);
+-- 
+2.16.1
+
