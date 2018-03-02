@@ -367,7 +367,7 @@ static void printf_info(int domid,
         printf("\t\t\t(apic %d)\n", dm_info->apic);
         printf("\t\t)\n");
     } else {
-        printf("\t\t(linux %d)\n", b_info->hvm);
+        printf("\t\t(linux\n");
         printf("\t\t\t(kernel %s)\n", b_info->kernel.path);
         printf("\t\t\t(cmdline %s)\n", b_info->u.pv.cmdline);
         printf("\t\t\t(ramdisk %s)\n", b_info->u.pv.ramdisk.path);
