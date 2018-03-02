@@ -1,0 +1,27 @@
+From 7f0f03fde89abbda2c2239649b6827ec6371219c Mon Sep 17 00:00:00 2001
+From: Felix Geyer <felix.geyer@credativ.de>
+Date: Fri, 2 Mar 2018 14:11:53 +0100
+Subject: [PATCH 45/47] Fixup mtrr.h includes
+
+Follow up to f429c668b289ecb2d9da19047ba10a823efb8a0d
+---
+ xen/include/asm-x86/mtrr.h | 3 +--
+ 1 file changed, 1 insertion(+), 2 deletions(-)
+
+diff --git a/xen/include/asm-x86/mtrr.h b/xen/include/asm-x86/mtrr.h
+index 469cdb511..a8b136029 100644
+--- a/xen/include/asm-x86/mtrr.h
++++ b/xen/include/asm-x86/mtrr.h
+@@ -1,8 +1,7 @@
+ #ifndef __ASM_X86_MTRR_H__
+ #define __ASM_X86_MTRR_H__
+ 
+-#include <xen/config.h>
+-#include <asm/mm.h>
++#include <xen/mm.h>
+ 
+ /* These are the region types. They match the architectural specification. */
+ #define MTRR_TYPE_UNCACHABLE 0
+-- 
+2.16.1
+
