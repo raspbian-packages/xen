@@ -1,4 +1,4 @@
-xen (4.8.3+comet2+shim4.10.0+comet3-1+deb9u4.1+rpi1) stretch-staging; urgency=medium
+xen (4.8.3+comet2+shim4.10.0+comet3-1+deb9u5+rpi1) stretch-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,7 +9,22 @@ xen (4.8.3+comet2+shim4.10.0+comet3-1+deb9u4.1+rpi1) stretch-staging; urgency=me
   [changes introduced in 4.8.0-1+rpi1 by Peter Micheal Green]
   * Add build-depends on ghostscript.
 
- -- Raspbian forward porter <root@raspbian.org>  Thu, 15 Feb 2018 00:15:16 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Mon, 12 Mar 2018 14:09:24 +0000
+
+xen (4.8.3+comet2+shim4.10.0+comet3-1+deb9u5) stretch-security; urgency=high
+
+  * Security fixes from upstream XSAs:
+       XSA-252 CVE-2018-7540
+       XSA-255 CVE-2018-7541
+       XSA-256 CVE-2018-7542
+    The upstream BTI changes from XSA-254 (Spectre v2 mitigation)
+    are *not* included.  They are currently failing in upstream CI.
+  * init scripts: Do not kill per-domain qemu processes.  Closes:#879751.
+  * Install Meltdown READMEs on all architectures.  Closes:#890488.
+  * Ship xen-diag (by cherry-picking the appropriate commits from
+    upstream).  This can help with diagnosis of #880554.
+
+ -- Ian Jackson <ijackson@chiark.greenend.org.uk>  Fri, 02 Mar 2018 16:07:18 +0000
 
 xen (4.8.3+comet2+shim4.10.0+comet3-1+deb9u4.1) stretch-security; urgency=high
 
