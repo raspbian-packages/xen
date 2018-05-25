@@ -5,6 +5,7 @@ import os
 XEN_ROOT = "../.."
 
 extra_compile_args  = [ "-fno-strict-aliasing", "-Werror" ]
+extra_link_args = [ "-Wl,-rpath,${ORIGIN}/../../.." ]
 
 include_dirs = [ XEN_ROOT + "/tools/libxc",
                  XEN_ROOT + "/tools/xenstore",
@@ -37,6 +38,7 @@ else:
 
 xc = Extension("xc",
                extra_compile_args = extra_compile_args,
+               extra_link_args    = extra_link_args,
                include_dirs       = include_dirs + [ "xen/lowlevel/xc" ],
                library_dirs       = library_dirs,
                libraries          = libraries,
@@ -45,6 +47,7 @@ xc = Extension("xc",
 
 xs = Extension("xs",
                extra_compile_args = extra_compile_args,
+               extra_link_args    = extra_link_args,
                include_dirs       = include_dirs + [ "xen/lowlevel/xs" ],
                library_dirs       = library_dirs,
                libraries          = libraries,
@@ -53,6 +56,7 @@ xs = Extension("xs",
 
 scf = Extension("scf",
                extra_compile_args = extra_compile_args,
+               extra_link_args    = extra_link_args,
                include_dirs       = include_dirs + [ "xen/lowlevel/scf" ],
                library_dirs       = library_dirs,
                libraries          = libraries,
@@ -69,6 +73,7 @@ process = Extension("process",
 
 acm = Extension("acm",
                extra_compile_args = extra_compile_args,
+               extra_link_args    = extra_link_args,
                include_dirs       = include_dirs + [ "xen/lowlevel/acm" ],
                library_dirs       = library_dirs,
                libraries          = libraries,
@@ -77,6 +82,7 @@ acm = Extension("acm",
 
 flask = Extension("flask",
                extra_compile_args = extra_compile_args,
+               extra_link_args    = extra_link_args,
                include_dirs       = include_dirs + [ "xen/lowlevel/flask" ] + 
                                         [ "../flask/libflask/include" ],
                library_dirs       = library_dirs + [ "../flask/libflask" ],
@@ -86,6 +92,7 @@ flask = Extension("flask",
 
 ptsname = Extension("ptsname",
                extra_compile_args = extra_compile_args,
+               extra_link_args    = extra_link_args,
                include_dirs       = include_dirs + [ "ptsname" ],
                library_dirs       = library_dirs,
                libraries          = libraries,
@@ -94,6 +101,7 @@ ptsname = Extension("ptsname",
 
 checkpoint = Extension("checkpoint",
                        extra_compile_args = extra_compile_args,
+                       extra_link_args    = extra_link_args,
                        include_dirs       = include_dirs,
                        library_dirs       = library_dirs,
                        libraries          = libraries + [ "rt" ],
@@ -103,6 +111,7 @@ checkpoint = Extension("checkpoint",
 
 netlink = Extension("netlink",
                     extra_compile_args = extra_compile_args,
+                    extra_link_args    = extra_link_args,
                     include_dirs       = include_dirs,
                     library_dirs       = library_dirs,
                     libraries          = libraries,
@@ -112,6 +121,7 @@ netlink = Extension("netlink",
 
 xl = Extension("xl",
                extra_compile_args = extra_compile_args,
+               extra_link_args    = extra_link_args,
                include_dirs       = include_dirs + [ "xen/lowlevel/xl" ],
                library_dirs       = library_dirs,
                libraries          = libraries + ["xenlight" ] + blktap_ctl_libs + uuid_libs,
