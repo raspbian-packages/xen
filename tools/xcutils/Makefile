@@ -16,7 +16,7 @@ CFLAGS += $(CFLAGS_libxenctrl) $(CFLAGS_libxenguest) $(CFLAGS_libxenstore)
 
 PROGRAMS = xc_restore xc_save readnotes lsevtchn
 
-LDLIBS   = $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest) $(LDLIBS_libxenstore)
+LDLIBS   = $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest) $(LDLIBS_libxenstore) $(call LDFLAGS_RPATH,../lib)
 
 .PHONY: all
 all: build
