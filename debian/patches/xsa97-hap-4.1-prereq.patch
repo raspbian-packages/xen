@@ -1,0 +1,1719 @@
+From: Stefan Bader <stefan.bader@canonical.com>
+Date: Thu, 02 Apr 2015 19:30:22 +0200
+Subject: Combine hap/shadow and log_dirty_log
+
+This is a pre-requisite for XSA-97. The changes are roughly a combination
+of:
+
+ * commit 301493fb027648db6808b66d1ccf849f524b8422
+   x86/mm: dedup the various copies of the shadow lock functions
+ * commit eca988de7381e5efe58792dc166611e4523d33b3
+   x86/mm: merge the shadow, hap and log-dirty locks into a single paging lock.
+
+The original patches are on git://xenbits.xen.org/xen.git. For now
+this only makes use of the common locking code for the combined paging
+lock. So this does not get the benefit of being able to detect locking
+order violations but keeps the churn minimal.
+
+Positive side-effect of this might be that the change for XSA-104 now makes
+a bit more sense...
+
+Signed-off-by: Stefan Bader <stefan.bader@canonical.com>
+
+
+--- a/xen/arch/x86/mm/hap/hap.c
++++ b/xen/arch/x86/mm/hap/hap.c
+@@ -64,9 +64,9 @@ static int hap_enable_vram_tracking(stru
+         return -EINVAL;
+ 
+     /* turn on PG_log_dirty bit in paging mode */
+-    hap_lock(d);
++    paging_lock(d);
+     d->arch.paging.mode |= PG_log_dirty;
+-    hap_unlock(d);
++    paging_unlock(d);
+ 
+     /* set l1e entries of P2M table to be read-only. */
+     for (i = dirty_vram->begin_pfn; i < dirty_vram->end_pfn; i++)
+@@ -84,9 +84,9 @@ static int hap_disable_vram_tracking(str
+     if ( !dirty_vram )
+         return -EINVAL;
+ 
+-    hap_lock(d);
++    paging_lock(d);
+     d->arch.paging.mode &= ~PG_log_dirty;
+-    hap_unlock(d);
++    paging_unlock(d);
+ 
+     /* set l1e entries of P2M table with normal mode */
+     for (i = dirty_vram->begin_pfn; i < dirty_vram->end_pfn; i++)
+@@ -195,9 +195,9 @@ param_fail:
+ static int hap_enable_log_dirty(struct domain *d)
+ {
+     /* turn on PG_log_dirty bit in paging mode */
+-    hap_lock(d);
++    paging_lock(d);
+     d->arch.paging.mode |= PG_log_dirty;
+-    hap_unlock(d);
++    paging_unlock(d);
+ 
+     /* set l1e entries of P2M table to be read-only. */
+     p2m_change_entry_type_global(p2m_get_hostp2m(d),
+@@ -208,9 +208,9 @@ static int hap_enable_log_dirty(struct d
+ 
+ static int hap_disable_log_dirty(struct domain *d)
+ {
+-    hap_lock(d);
++    paging_lock(d);
+     d->arch.paging.mode &= ~PG_log_dirty;
+-    hap_unlock(d);
++    paging_unlock(d);
+ 
+     /* set l1e entries of P2M table with normal mode */
+     p2m_change_entry_type_global(p2m_get_hostp2m(d),
+@@ -250,7 +250,7 @@ static struct page_info *hap_alloc(struc
+     struct page_info *pg = NULL;
+     void *p;
+ 
+-    ASSERT(hap_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+ 
+     pg = page_list_remove_head(&d->arch.paging.hap.freelist);
+     if ( unlikely(!pg) )
+@@ -270,7 +270,7 @@ static void hap_free(struct domain *d, m
+ {
+     struct page_info *pg = mfn_to_page(mfn);
+ 
+-    ASSERT(hap_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+ 
+     d->arch.paging.hap.free_pages++;
+     page_list_add_tail(pg, &d->arch.paging.hap.freelist);
+@@ -281,11 +281,11 @@ static struct page_info *hap_alloc_p2m_p
+     struct page_info *pg;
+     int do_locking;
+ 
+-    /* This is called both from the p2m code (which never holds the 
+-     * hap lock) and the log-dirty code (which sometimes does). */
+-    do_locking = !hap_locked_by_me(d);
++    /* This is called both from the p2m code (which never holds the
++     * paging lock) and the log-dirty code (which sometimes does). */
++    do_locking = !paging_locked_by_me(d);
+     if ( do_locking )
+-        hap_lock(d);
++        paging_lock(d);
+     pg = hap_alloc(d);
+ 
+ #if CONFIG_PAGING_LEVELS == 3
+@@ -317,7 +317,7 @@ static struct page_info *hap_alloc_p2m_p
+     }
+ 
+     if ( do_locking )
+-        hap_unlock(d);
++        paging_unlock(d);
+     return pg;
+ }
+ 
+@@ -325,11 +325,11 @@ static void hap_free_p2m_page(struct dom
+ {
+     int do_locking;
+ 
+-    /* This is called both from the p2m code (which never holds the 
+-     * hap lock) and the log-dirty code (which sometimes does). */
+-    do_locking = !hap_locked_by_me(d);
++    /* This is called both from the p2m code (which never holds the
++     * paging lock) and the log-dirty code (which sometimes does). */
++    do_locking = !paging_locked_by_me(d);
+     if ( do_locking )
+-        hap_lock(d);
++        paging_lock(d);
+ 
+     ASSERT(page_get_owner(pg) == d);
+     /* Should have just the one ref we gave it in alloc_p2m_page() */
+@@ -348,7 +348,7 @@ static void hap_free_p2m_page(struct dom
+     ASSERT(d->arch.paging.hap.p2m_pages >= 0);
+ 
+     if ( do_locking )
+-        hap_unlock(d);
++        paging_unlock(d);
+ }
+ 
+ /* Return the size of the pool, rounded up to the nearest MB */
+@@ -369,7 +369,7 @@ hap_set_allocation(struct domain *d, uns
+ {
+     struct page_info *pg;
+ 
+-    ASSERT(hap_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+ 
+     if ( pages < d->arch.paging.hap.p2m_pages )
+         pages = 0;
+@@ -574,7 +574,6 @@ static void hap_destroy_monitor_table(st
+ /************************************************/
+ void hap_domain_init(struct domain *d)
+ {
+-    hap_lock_init(d);
+     INIT_PAGE_LIST_HEAD(&d->arch.paging.hap.freelist);
+ }
+ 
+@@ -597,9 +596,9 @@ int hap_enable(struct domain *d, u32 mod
+     if ( old_pages == 0 )
+     {
+         unsigned int r;
+-        hap_lock(d);
++        paging_lock(d);
+         r = hap_set_allocation(d, 256, NULL);
+-        hap_unlock(d);
++        paging_unlock(d);
+         if ( r != 0 )
+         {
+             hap_set_allocation(d, 0, NULL);
+@@ -635,10 +634,10 @@ void hap_final_teardown(struct domain *d
+ 
+     p2m_teardown(p2m_get_hostp2m(d));
+     /* Free any memory that the p2m teardown released */
+-    hap_lock(d);
++    paging_lock(d);
+     hap_set_allocation(d, 0, NULL);
+     ASSERT(d->arch.paging.hap.p2m_pages == 0);
+-    hap_unlock(d);
++    paging_unlock(d);
+ }
+ 
+ void hap_teardown(struct domain *d)
+@@ -649,8 +648,8 @@ void hap_teardown(struct domain *d)
+     ASSERT(d->is_dying);
+     ASSERT(d != current->domain);
+ 
+-    if ( !hap_locked_by_me(d) )
+-        hap_lock(d); /* Keep various asserts happy */
++    if ( !paging_locked_by_me(d) )
++        paging_lock(d); /* Keep various asserts happy */
+ 
+     if ( paging_mode_enabled(d) )
+     {
+@@ -689,7 +688,7 @@ void hap_teardown(struct domain *d)
+     xfree(d->arch.hvm_domain.dirty_vram);
+     d->arch.hvm_domain.dirty_vram = NULL;
+ 
+-    hap_unlock(d);
++    paging_unlock(d);
+ }
+ 
+ int hap_domctl(struct domain *d, xen_domctl_shadow_op_t *sc,
+@@ -700,9 +699,9 @@ int hap_domctl(struct domain *d, xen_dom
+     switch ( sc->op )
+     {
+     case XEN_DOMCTL_SHADOW_OP_SET_ALLOCATION:
+-        hap_lock(d);
++        paging_lock(d);
+         rc = hap_set_allocation(d, sc->mb << (20 - PAGE_SHIFT), &preempted);
+-        hap_unlock(d);
++        paging_unlock(d);
+         if ( preempted )
+             /* Not finished.  Set up to re-run the call. */
+             rc = hypercall_create_continuation(__HYPERVISOR_domctl, "h",
+@@ -772,7 +771,7 @@ static void hap_update_paging_modes(stru
+ {
+     struct domain *d = v->domain;
+ 
+-    hap_lock(d);
++    paging_lock(d);
+ 
+     v->arch.paging.mode =
+         !hvm_paging_enabled(v)   ? &hap_paging_real_mode :
+@@ -791,7 +790,7 @@ static void hap_update_paging_modes(stru
+     /* CR3 is effectively updated by a mode change. Flush ASIDs, etc. */
+     hap_update_cr3(v, 0);
+ 
+-    hap_unlock(d);
++    paging_unlock(d);
+ }
+ 
+ #if CONFIG_PAGING_LEVELS == 3
+@@ -841,7 +840,7 @@ hap_write_p2m_entry(struct vcpu *v, unsi
+ {
+     uint32_t old_flags;
+ 
+-    hap_lock(v->domain);
++    paging_lock(v->domain);
+ 
+     old_flags = l1e_get_flags(*p);
+     safe_write_pte(p, new);
+@@ -857,7 +856,7 @@ hap_write_p2m_entry(struct vcpu *v, unsi
+         p2m_install_entry_in_monitors(v->domain, (l3_pgentry_t *)p);
+ #endif
+ 
+-    hap_unlock(v->domain);
++    paging_unlock(v->domain);
+ }
+ 
+ static unsigned long hap_gva_to_gfn_real_mode(
+--- /dev/null
++++ b/xen/arch/x86/mm/mm-locks.h
+@@ -0,0 +1,111 @@
++/******************************************************************************
++ * arch/x86/mm/mm-locks.h
++ *
++ * Spinlocks used by the code in arch/x86/mm.
++ *
++ * Copyright (c) 2011 Citrix Systems, inc.
++ * Copyright (c) 2007 Advanced Micro Devices (Wei Huang)
++ * Copyright (c) 2006-2007 XenSource Inc.
++ * Copyright (c) 2006 Michael A Fetterman
++ *
++ * This program is free software; you can redistribute it and/or modify
++ * it under the terms of the GNU General Public License as published by
++ * the Free Software Foundation; either version 2 of the License, or
++ * (at your option) any later version.
++ *
++ * This program is distributed in the hope that it will be useful,
++ * but WITHOUT ANY WARRANTY; without even the implied warranty of
++ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++ * GNU General Public License for more details.
++ *
++ * You should have received a copy of the GNU General Public License
++ * along with this program; if not, write to the Free Software
++ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
++ */
++
++#ifndef _MM_LOCKS_H
++#define _MM_LOCKS_H
++
++/*
++ * Note: backported partially to allow XSA-97 to get fixed. But only used
++ * for the combined hap/shadow/log_dirty -> paging lock.
++ */
++
++/* Per-CPU variable for enforcing the lock ordering */
++DECLARE_PER_CPU(int, mm_lock_level);
++
++static inline void mm_lock_init(mm_lock_t *l)
++{
++    spin_lock_init(&l->lock);
++    l->locker = -1;
++    l->locker_function = "nobody";
++    l->unlock_level = 0;
++}
++
++static inline void _mm_lock(mm_lock_t *l, const char *func, int level)
++{
++    if ( unlikely(l->locker == current->processor) )
++        panic("mm lock held by %s\n", l->locker_function);
++    /* If you see this crash, the numbers printed are lines in this file
++     * where the offending locks are declared. */
++    if ( unlikely(this_cpu(mm_lock_level) >= level) )
++        panic("mm locking order violation: %i >= %i\n",
++              this_cpu(mm_lock_level), level);
++    spin_lock(&l->lock);
++    ASSERT(l->locker == -1);
++    l->locker = current->processor;
++    l->locker_function = func;
++    l->unlock_level = this_cpu(mm_lock_level);
++    this_cpu(mm_lock_level) = level;
++}
++
++/* This wrapper uses the line number to express the locking order below */
++#define declare_mm_lock(name)                                             \
++  static inline void mm_lock_##name(mm_lock_t *l, const char *func)       \
++  { _mm_lock(l, func, __LINE__); }
++/* This one captures the name of the calling function */
++#define mm_lock(name, l) mm_lock_##name(l, __func__)
++
++static inline void mm_unlock(mm_lock_t *l)
++{
++    ASSERT(l->locker == current->processor);
++    l->locker = -1;
++    l->locker_function = "nobody";
++    this_cpu(mm_lock_level) = l->unlock_level;
++    l->unlock_level = -1;
++    spin_unlock(&l->lock);
++}
++
++static inline int mm_locked_by_me(mm_lock_t *l)
++{
++    return (current->processor == l->locker);
++}
++
++/************************************************************************
++ *                                                                      *
++ * To avoid deadlocks, these locks _MUST_ be taken in the order they're *
++ * declared in this file.  The locking functions will enforce this.     *
++ *                                                                      *
++ ************************************************************************/
++
++/* Paging lock (per-domain)
++ *
++ * For shadow pagetables, this lock protects
++ *    - all changes to shadow page table pages
++ *    - the shadow hash table
++ *    - the shadow page allocator
++ *    - all changes to guest page table pages
++ *    - all changes to the page_info->tlbflush_timestamp
++ *    - the page_info->count fields on shadow pages
++ *
++ * For HAP, it protects the NPT/EPT tables and mode changes.
++ *
++ * It also protects the log-dirty bitmap from concurrent accesses (and
++ * teardowns, etc).
++ */
++declare_mm_lock(paging)
++#define paging_lock(d)         mm_lock(paging, &(d)->arch.paging.lock)
++#define paging_unlock(d)       mm_unlock(&(d)->arch.paging.lock)
++#define paging_locked_by_me(d) mm_locked_by_me(&(d)->arch.paging.lock)
++
++#endif /* _MM_LOCKS_H */
+--- a/xen/arch/x86/mm/paging.c
++++ b/xen/arch/x86/mm/paging.c
+@@ -29,6 +29,8 @@
+ #include <xen/numa.h>
+ #include <xsm/xsm.h>
+ 
++#include "mm-locks.h"
++
+ /* Printouts */
+ #define PAGING_PRINTK(_f, _a...)                                     \
+     debugtrace_printk("pg: %s(): " _f, __func__, ##_a)
+@@ -40,9 +42,9 @@
+             debugtrace_printk("pgdebug: %s(): " _f, __func__, ##_a); \
+     } while (0)
+ 
+-/************************************************/
+-/*              LOG DIRTY SUPPORT               */
+-/************************************************/
++/* Per-CPU variable for enforcing the lock ordering */
++DEFINE_PER_CPU(int, mm_lock_level);
++
+ /* Override macros from asm/page.h to make them work with mfn_t */
+ #undef mfn_to_page
+ #define mfn_to_page(_m) __mfn_to_page(mfn_x(_m))
+@@ -51,49 +53,9 @@
+ #undef page_to_mfn
+ #define page_to_mfn(_pg) _mfn(__page_to_mfn(_pg))
+ 
+-/* The log-dirty lock.  This protects the log-dirty bitmap from
+- * concurrent accesses (and teardowns, etc).
+- *
+- * Locking discipline: always acquire shadow or HAP lock before this one.
+- *
+- * Because mark_dirty is called from a lot of places, the log-dirty lock
+- * may be acquired with the shadow or HAP locks already held.  When the
+- * log-dirty code makes callbacks into HAP or shadow code to reset
+- * various traps that will trigger the mark_dirty calls, it must *not*
+- * have the log-dirty lock held, or it risks deadlock.  Because the only
+- * purpose of those calls is to make sure that *guest* actions will
+- * cause mark_dirty to be called (hypervisor actions explictly call it
+- * anyway), it is safe to release the log-dirty lock before the callback
+- * as long as the domain is paused for the entire operation. */
+-
+-#define log_dirty_lock_init(_d)                                   \
+-    do {                                                          \
+-        spin_lock_init(&(_d)->arch.paging.log_dirty.lock);        \
+-        (_d)->arch.paging.log_dirty.locker = -1;                  \
+-        (_d)->arch.paging.log_dirty.locker_function = "nobody";   \
+-    } while (0)
+-
+-#define log_dirty_lock(_d)                                                   \
+-    do {                                                                     \
+-        if (unlikely((_d)->arch.paging.log_dirty.locker==current->processor))\
+-        {                                                                    \
+-            printk("Error: paging log dirty lock held by %s\n",              \
+-                   (_d)->arch.paging.log_dirty.locker_function);             \
+-            BUG();                                                           \
+-        }                                                                    \
+-        spin_lock(&(_d)->arch.paging.log_dirty.lock);                        \
+-        ASSERT((_d)->arch.paging.log_dirty.locker == -1);                    \
+-        (_d)->arch.paging.log_dirty.locker = current->processor;             \
+-        (_d)->arch.paging.log_dirty.locker_function = __func__;              \
+-    } while (0)
+-
+-#define log_dirty_unlock(_d)                                              \
+-    do {                                                                  \
+-        ASSERT((_d)->arch.paging.log_dirty.locker == current->processor); \
+-        (_d)->arch.paging.log_dirty.locker = -1;                          \
+-        (_d)->arch.paging.log_dirty.locker_function = "nobody";           \
+-        spin_unlock(&(_d)->arch.paging.log_dirty.lock);                   \
+-    } while (0)
++/************************************************/
++/*              LOG DIRTY SUPPORT               */
++/************************************************/
+ 
+ static mfn_t paging_new_log_dirty_page(struct domain *d)
+ {
+@@ -216,10 +178,10 @@ int paging_log_dirty_disable(struct doma
+     domain_pause(d);
+     /* Safe because the domain is paused. */
+     ret = d->arch.paging.log_dirty.disable_log_dirty(d);
+-    log_dirty_lock(d);
++    paging_lock(d);
+     if ( !paging_mode_log_dirty(d) )
+         paging_free_log_dirty_bitmap(d);
+-    log_dirty_unlock(d);
++    paging_unlock(d);
+     domain_unpause(d);
+ 
+     return ret;
+@@ -266,7 +228,7 @@ void paging_mark_dirty(struct domain *d,
+     new_mfn = _mfn(INVALID_MFN);
+ 
+ again:
+-    log_dirty_lock(d);
++    paging_lock(d);
+ 
+     l4 = paging_map_log_dirty_bitmap(d);
+     if ( unlikely(!l4) )
+@@ -327,13 +289,13 @@ again:
+         d->arch.paging.log_dirty.dirty_count++;
+     }
+ 
+-    log_dirty_unlock(d);
++    paging_unlock(d);
+     if ( mfn_valid(new_mfn) )
+         paging_free_log_dirty_page(d, new_mfn);
+     return;
+ 
+ oom:
+-    log_dirty_unlock(d);
++    paging_unlock(d);
+     new_mfn = paging_new_log_dirty_page(d);
+     if ( !mfn_valid(new_mfn) )
+         /* we've already recorded the failed allocation */
+@@ -350,7 +312,7 @@ int paging_mfn_is_dirty(struct domain *d
+     unsigned long *l1;
+     int rv = 0;
+ 
+-    log_dirty_lock(d);
++    paging_lock(d);
+     ASSERT(paging_mode_log_dirty(d));
+ 
+     /* We /really/ mean PFN here, even for non-translated guests. */
+@@ -386,7 +348,7 @@ int paging_mfn_is_dirty(struct domain *d
+     unmap_domain_page(l1);
+ 
+ out:
+-    log_dirty_unlock(d);
++    paging_unlock(d);
+     return rv;
+ }
+ 
+@@ -402,7 +364,7 @@ int paging_log_dirty_op(struct domain *d
+     int i4, i3, i2;
+ 
+     domain_pause(d);
+-    log_dirty_lock(d);
++    paging_lock(d);
+ 
+     clean = (sc->op == XEN_DOMCTL_SHADOW_OP_CLEAN);
+ 
+@@ -483,7 +445,7 @@ int paging_log_dirty_op(struct domain *d
+     if ( pages < sc->pages )
+         sc->pages = pages;
+ 
+-    log_dirty_unlock(d);
++    paging_unlock(d);
+ 
+     if ( clean )
+     {
+@@ -495,7 +457,7 @@ int paging_log_dirty_op(struct domain *d
+     return rv;
+ 
+  out:
+-    log_dirty_unlock(d);
++    paging_unlock(d);
+     domain_unpause(d);
+     return rv;
+ }
+@@ -513,7 +475,7 @@ int paging_log_dirty_range(struct domain
+     int i2, i3, i4;
+ 
+     d->arch.paging.log_dirty.clean_dirty_bitmap(d);
+-    log_dirty_lock(d);
++    paging_lock(d);
+ 
+     PAGING_DEBUG(LOGDIRTY, "log-dirty-range: dom %u faults=%u dirty=%u\n",
+                  d->domain_id,
+@@ -644,12 +606,12 @@ int paging_log_dirty_range(struct domain
+     if ( l4 )
+         unmap_domain_page(l4);
+ 
+-    log_dirty_unlock(d);
++    paging_unlock(d);
+ 
+     return rv;
+ 
+  out:
+-    log_dirty_unlock(d);
++    paging_unlock(d);
+     return rv;
+ }
+ 
+@@ -665,9 +627,6 @@ void paging_log_dirty_init(struct domain
+                            int    (*disable_log_dirty)(struct domain *d),
+                            void   (*clean_dirty_bitmap)(struct domain *d))
+ {
+-    /* We initialize log dirty lock first */
+-    log_dirty_lock_init(d);
+-
+     d->arch.paging.log_dirty.enable_log_dirty = enable_log_dirty;
+     d->arch.paging.log_dirty.disable_log_dirty = disable_log_dirty;
+     d->arch.paging.log_dirty.clean_dirty_bitmap = clean_dirty_bitmap;
+@@ -676,9 +635,9 @@ void paging_log_dirty_init(struct domain
+ /* This function fress log dirty bitmap resources. */
+ static void paging_log_dirty_teardown(struct domain*d)
+ {
+-    log_dirty_lock(d);
++    paging_lock(d);
+     paging_free_log_dirty_bitmap(d);
+-    log_dirty_unlock(d);
++    paging_unlock(d);
+ }
+ /************************************************/
+ /*           CODE FOR PAGING SUPPORT            */
+@@ -696,6 +655,8 @@ int paging_domain_init(struct domain *d,
+      * don't want to leak any active log-dirty bitmaps */
+     d->arch.paging.log_dirty.top = _mfn(INVALID_MFN);
+ 
++    mm_lock_init(&d->arch.paging.lock);
++
+     /* The order of the *_init calls below is important, as the later
+      * ones may rewrite some common fields.  Shadow pagetables are the
+      * default... */
+--- a/xen/arch/x86/mm/shadow/common.c
++++ b/xen/arch/x86/mm/shadow/common.c
+@@ -45,7 +45,6 @@ DEFINE_PER_CPU(uint32_t,trace_shadow_pat
+  * Called for every domain from arch_domain_create() */
+ void shadow_domain_init(struct domain *d, unsigned int domcr_flags)
+ {
+-    shadow_lock_init(d);
+     INIT_PAGE_LIST_HEAD(&d->arch.paging.shadow.freelist);
+     INIT_PAGE_LIST_HEAD(&d->arch.paging.shadow.pinned_shadows);
+ 
+@@ -469,7 +468,7 @@ void shadow_continue_emulation(struct sh
+  * 
+  * 2. All shadow operations on a guest page require the page to be brought
+  *    back into sync before proceeding.  This must be done under the
+- *    shadow lock so that the page is guaranteed to remain synced until
++ *    paging lock so that the page is guaranteed to remain synced until
+  *    the operation completes.
+  *
+  *    Exceptions to this rule: the pagefault and invlpg handlers may 
+@@ -478,7 +477,7 @@ void shadow_continue_emulation(struct sh
+  * 3. Operations on shadows that do not start from a guest page need to
+  *    be aware that they may be handling an out-of-sync shadow.
+  *
+- * 4. Operations that do not normally take the shadow lock (fast-path 
++ * 4. Operations that do not normally take the paging lock (fast-path 
+  *    #PF handler, INVLPG) must fall back to a locking, syncing version 
+  *    if they see an out-of-sync table. 
+  *
+@@ -725,7 +724,7 @@ static void _sh_resync(struct vcpu *v, m
+ {
+     struct page_info *pg = mfn_to_page(gmfn);
+ 
+-    ASSERT(shadow_locked_by_me(v->domain));
++    ASSERT(paging_locked_by_me(v->domain));
+     ASSERT(mfn_is_out_of_sync(gmfn));
+     /* Guest page must be shadowed *only* as L1 when out of sync. */
+     ASSERT(!(mfn_to_page(gmfn)->shadow_flags & SHF_page_type_mask 
+@@ -916,13 +915,13 @@ void sh_resync_all(struct vcpu *v, int s
+ 
+     SHADOW_PRINTK("d=%d, v=%d\n", v->domain->domain_id, v->vcpu_id);
+ 
+-    ASSERT(do_locking || shadow_locked_by_me(v->domain));
++    ASSERT(do_locking || paging_locked_by_me(v->domain));
+ 
+     if ( !this )
+         goto resync_others;
+ 
+     if ( do_locking )
+-        shadow_lock(v->domain);
++        paging_lock(v->domain);
+ 
+     /* First: resync all of this vcpu's oos pages */
+     for ( idx = 0; idx < SHADOW_OOS_PAGES; idx++ ) 
+@@ -934,7 +933,7 @@ void sh_resync_all(struct vcpu *v, int s
+         }
+ 
+     if ( do_locking )
+-        shadow_unlock(v->domain);
++        paging_unlock(v->domain);
+ 
+  resync_others:
+     if ( !others )
+@@ -947,7 +946,7 @@ void sh_resync_all(struct vcpu *v, int s
+             continue;
+ 
+         if ( do_locking )
+-            shadow_lock(v->domain);
++            paging_lock(v->domain);
+ 
+         oos = other->arch.paging.shadow.oos;
+         oos_fixup = other->arch.paging.shadow.oos_fixup;
+@@ -975,7 +974,7 @@ void sh_resync_all(struct vcpu *v, int s
+         }
+         
+         if ( do_locking )
+-            shadow_unlock(v->domain);
++            paging_unlock(v->domain);
+     }
+ }
+ 
+@@ -985,7 +984,7 @@ int sh_unsync(struct vcpu *v, mfn_t gmfn
+ {
+     struct page_info *pg;
+     
+-    ASSERT(shadow_locked_by_me(v->domain));
++    ASSERT(paging_locked_by_me(v->domain));
+ 
+     SHADOW_PRINTK("d=%d, v=%d, gmfn=%05lx\n",
+                   v->domain->domain_id, v->vcpu_id, mfn_x(gmfn));
+@@ -1149,7 +1148,7 @@ sh_validate_guest_pt_write(struct vcpu *
+     struct domain *d = v->domain;
+     int rc;
+ 
+-    ASSERT(shadow_locked_by_me(v->domain));
++    ASSERT(paging_locked_by_me(v->domain));
+     rc = sh_validate_guest_entry(v, gmfn, entry, size);
+     if ( rc & SHADOW_SET_FLUSH )
+         /* Need to flush TLBs to pick up shadow PT changes */
+@@ -1171,11 +1170,11 @@ int shadow_write_guest_entry(struct vcpu
+  * appropriately.  Returns 0 if we page-faulted, 1 for success. */
+ {
+     int failed;
+-    shadow_lock(v->domain);
++    paging_lock(v->domain);
+     failed = __copy_to_user(p, &new, sizeof(new));
+     if ( failed != sizeof(new) )
+         sh_validate_guest_entry(v, gmfn, p, sizeof(new));
+-    shadow_unlock(v->domain);
++    paging_unlock(v->domain);
+     return (failed == 0);
+ }
+ 
+@@ -1188,12 +1187,12 @@ int shadow_cmpxchg_guest_entry(struct vc
+ {
+     int failed;
+     intpte_t t = *old;
+-    shadow_lock(v->domain);
++    paging_lock(v->domain);
+     failed = cmpxchg_user(p, t, new);
+     if ( t == *old )
+         sh_validate_guest_entry(v, gmfn, p, sizeof(new));
+     *old = t;
+-    shadow_unlock(v->domain);
++    paging_unlock(v->domain);
+     return (failed == 0);
+ }
+ 
+@@ -1428,9 +1427,9 @@ static void shadow_blow_tables(struct do
+ void shadow_blow_tables_per_domain(struct domain *d)
+ {
+     if ( shadow_mode_enabled(d) && d->vcpu != NULL && d->vcpu[0] != NULL ) {
+-        shadow_lock(d);
++        paging_lock(d);
+         shadow_blow_tables(d);
+-        shadow_unlock(d);
++        paging_unlock(d);
+     }
+ }
+ 
+@@ -1447,9 +1446,9 @@ static void shadow_blow_all_tables(unsig
+     {
+         if ( shadow_mode_enabled(d) && d->vcpu != NULL && d->vcpu[0] != NULL )
+         {
+-            shadow_lock(d);
++            paging_lock(d);
+             shadow_blow_tables(d);
+-            shadow_unlock(d);
++            paging_unlock(d);
+         }
+     }
+     rcu_read_unlock(&domlist_read_lock);
+@@ -1496,7 +1495,7 @@ mfn_t shadow_alloc(struct domain *d,
+     void *p;
+     int i;
+ 
+-    ASSERT(shadow_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+     ASSERT(shadow_type != SH_type_none);
+     perfc_incr(shadow_alloc);
+ 
+@@ -1572,7 +1571,7 @@ void shadow_free(struct domain *d, mfn_t
+     u32 shadow_type;
+     int i;
+ 
+-    ASSERT(shadow_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+     perfc_incr(shadow_free);
+ 
+     shadow_type = sp->u.sh.type;
+@@ -1626,16 +1625,16 @@ shadow_alloc_p2m_page(struct domain *d)
+     int do_locking;
+ 
+     /* This is called both from the p2m code (which never holds the 
+-     * shadow lock) and the log-dirty code (which sometimes does). */
+-    do_locking = !shadow_locked_by_me(d);
++     * paging lock) and the log-dirty code (which sometimes does). */
++    do_locking = !paging_locked_by_me(d);
+     if ( do_locking )
+-        shadow_lock(d);
++        paging_lock(d);
+ 
+     if ( d->arch.paging.shadow.total_pages 
+          < shadow_min_acceptable_pages(d) + 1 )
+     {
+         if ( do_locking )
+-            shadow_unlock(d);
++            paging_unlock(d);
+         return NULL;
+     }
+  
+@@ -1645,7 +1644,7 @@ shadow_alloc_p2m_page(struct domain *d)
+     d->arch.paging.shadow.total_pages--;
+ 
+     if ( do_locking )
+-        shadow_unlock(d);
++        paging_unlock(d);
+ 
+     /* Unlike shadow pages, mark p2m pages as owned by the domain.
+      * Marking the domain as the owner would normally allow the guest to
+@@ -1674,17 +1673,17 @@ shadow_free_p2m_page(struct domain *d, s
+     page_set_owner(pg, NULL); 
+ 
+     /* This is called both from the p2m code (which never holds the 
+-     * shadow lock) and the log-dirty code (which sometimes does). */
+-    do_locking = !shadow_locked_by_me(d);
++     * paging lock) and the log-dirty code (which sometimes does). */
++    do_locking = !paging_locked_by_me(d);
+     if ( do_locking )
+-        shadow_lock(d);
++        paging_lock(d);
+ 
+     shadow_free(d, page_to_mfn(pg));
+     d->arch.paging.shadow.p2m_pages--;
+     d->arch.paging.shadow.total_pages++;
+ 
+     if ( do_locking )
+-        shadow_unlock(d);
++        paging_unlock(d);
+ }
+ 
+ #if CONFIG_PAGING_LEVELS == 3
+@@ -1743,7 +1742,7 @@ static unsigned int sh_set_allocation(st
+     struct page_info *sp;
+     unsigned int lower_bound;
+ 
+-    ASSERT(shadow_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+ 
+     if ( pages > 0 )
+     {
+@@ -1942,7 +1941,7 @@ static int shadow_hash_alloc(struct doma
+ {
+     struct page_info **table;
+ 
+-    ASSERT(shadow_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+     ASSERT(!d->arch.paging.shadow.hash_table);
+ 
+     table = xmalloc_array(struct page_info *, SHADOW_HASH_BUCKETS);
+@@ -1957,7 +1956,7 @@ static int shadow_hash_alloc(struct doma
+  * This function does not care whether the table is populated. */
+ static void shadow_hash_teardown(struct domain *d)
+ {
+-    ASSERT(shadow_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+     ASSERT(d->arch.paging.shadow.hash_table);
+ 
+     xfree(d->arch.paging.shadow.hash_table);
+@@ -1973,7 +1972,7 @@ mfn_t shadow_hash_lookup(struct vcpu *v,
+     struct page_info *sp, *prev;
+     key_t key;
+ 
+-    ASSERT(shadow_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+     ASSERT(d->arch.paging.shadow.hash_table);
+     ASSERT(t);
+ 
+@@ -2027,7 +2026,7 @@ void shadow_hash_insert(struct vcpu *v,
+     struct page_info *sp;
+     key_t key;
+     
+-    ASSERT(shadow_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+     ASSERT(d->arch.paging.shadow.hash_table);
+     ASSERT(t);
+ 
+@@ -2053,7 +2052,7 @@ void shadow_hash_delete(struct vcpu *v,
+     struct page_info *sp, *x;
+     key_t key;
+ 
+-    ASSERT(shadow_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+     ASSERT(d->arch.paging.shadow.hash_table);
+     ASSERT(t);
+ 
+@@ -2107,7 +2106,7 @@ static void hash_foreach(struct vcpu *v,
+     struct domain *d = v->domain;
+     struct page_info *x;
+ 
+-    ASSERT(shadow_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+ 
+     /* Can be called via p2m code &c after shadow teardown. */
+     if ( unlikely(!d->arch.paging.shadow.hash_table) )
+@@ -2264,7 +2263,7 @@ int sh_remove_write_access(struct vcpu *
+         ;
+     struct page_info *pg = mfn_to_page(gmfn);
+ 
+-    ASSERT(shadow_locked_by_me(v->domain));
++    ASSERT(paging_locked_by_me(v->domain));
+ 
+     /* Only remove writable mappings if we are doing shadow refcounts.
+      * In guest refcounting, we trust Xen to already be restricting
+@@ -2530,11 +2529,11 @@ int sh_remove_all_mappings(struct vcpu *
+         return 0;
+ 
+     /* Although this is an externally visible function, we do not know
+-     * whether the shadow lock will be held when it is called (since it
++     * whether the paging lock will be held when it is called (since it
+      * can be called via put_page_type when we clear a shadow l1e).
+      * If the lock isn't held, take it for the duration of the call. */
+-    do_locking = !shadow_locked_by_me(v->domain);
+-    if ( do_locking ) shadow_lock(v->domain);
++    do_locking = !paging_locked_by_me(v->domain);
++    if ( do_locking ) paging_lock(v->domain);
+ 
+     /* XXX TODO: 
+      * Heuristics for finding the (probably) single mapping of this gmfn */
+@@ -2563,7 +2562,7 @@ int sh_remove_all_mappings(struct vcpu *
+         }
+     }
+ 
+-    if ( do_locking ) shadow_unlock(v->domain);
++    if ( do_locking ) paging_unlock(v->domain);
+ 
+     /* We killed at least one mapping, so must flush TLBs. */
+     return 1;
+@@ -2698,11 +2697,11 @@ void sh_remove_shadows(struct vcpu *v, m
+     ASSERT(mfn_valid(gmfn));
+ 
+     /* Although this is an externally visible function, we do not know
+-     * whether the shadow lock will be held when it is called (since it
++     * whether the paging lock will be held when it is called (since it
+      * can be called via put_page_type when we clear a shadow l1e).
+      * If the lock isn't held, take it for the duration of the call. */
+-    do_locking = !shadow_locked_by_me(v->domain);
+-    if ( do_locking ) shadow_lock(v->domain);
++    do_locking = !paging_locked_by_me(v->domain);
++    if ( do_locking ) paging_lock(v->domain);
+ 
+     SHADOW_PRINTK("d=%d, v=%d, gmfn=%05lx\n",
+                    v->domain->domain_id, v->vcpu_id, mfn_x(gmfn));
+@@ -2710,7 +2709,7 @@ void sh_remove_shadows(struct vcpu *v, m
+     /* Bail out now if the page is not shadowed */
+     if ( (pg->count_info & PGC_page_table) == 0 )
+     {
+-        if ( do_locking ) shadow_unlock(v->domain);
++        if ( do_locking ) paging_unlock(v->domain);
+         return;
+     }
+ 
+@@ -2772,7 +2771,7 @@ void sh_remove_shadows(struct vcpu *v, m
+      * take a fault. */
+     flush_tlb_mask(&v->domain->domain_dirty_cpumask);
+ 
+-    if ( do_locking ) shadow_unlock(v->domain);
++    if ( do_locking ) paging_unlock(v->domain);
+ }
+ 
+ static void
+@@ -2841,7 +2840,7 @@ static void sh_update_paging_modes(struc
+     struct domain *d = v->domain;
+     const struct paging_mode *old_mode = v->arch.paging.mode;
+ 
+-    ASSERT(shadow_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+ 
+ #if (SHADOW_OPTIMIZATIONS & SHOPT_VIRTUAL_TLB) 
+     /* Make sure this vcpu has a virtual TLB array allocated */
+@@ -3034,9 +3033,9 @@ static void sh_update_paging_modes(struc
+ 
+ void shadow_update_paging_modes(struct vcpu *v)
+ {
+-    shadow_lock(v->domain);
++    paging_lock(v->domain);
+     sh_update_paging_modes(v);
+-    shadow_unlock(v->domain);
++    paging_unlock(v->domain);
+ }
+ 
+ /**************************************************************************/
+@@ -3047,7 +3046,7 @@ static void sh_new_mode(struct domain *d
+ {
+     struct vcpu *v;
+ 
+-    ASSERT(shadow_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+     ASSERT(d != current->domain);
+ 
+     d->arch.paging.mode = new_mode;
+@@ -3086,7 +3085,7 @@ int shadow_enable(struct domain *d, u32
+     if ( old_pages == 0 )
+     {
+         unsigned int r;
+-        shadow_lock(d);                
++        paging_lock(d);                
+         r = sh_set_allocation(d, 1024, NULL); /* Use at least 4MB */
+         if ( r != 0 )
+         {
+@@ -3094,14 +3093,14 @@ int shadow_enable(struct domain *d, u32
+             rv = -ENOMEM;
+             goto out_locked;
+         }        
+-        shadow_unlock(d);
++        paging_unlock(d);
+     }
+ 
+     /* Allow p2m and log-dirty code to borrow shadow memory */
+     d->arch.paging.alloc_page = shadow_alloc_p2m_page;
+     d->arch.paging.free_page = shadow_free_p2m_page;
+ 
+-    /* Init the P2M table.  Must be done before we take the shadow lock 
++    /* Init the P2M table.  Must be done before we take the paging lock 
+      * to avoid possible deadlock. */
+     if ( mode & PG_translate )
+     {
+@@ -3133,7 +3132,7 @@ int shadow_enable(struct domain *d, u32
+         pg->u.inuse.type_info = PGT_l2_page_table | 1 | PGT_validated;
+     }
+ 
+-    shadow_lock(d);
++    paging_lock(d);
+ 
+     /* Sanity check again with the lock held */
+     if ( shadow_mode_enabled(d) )
+@@ -3163,7 +3162,7 @@ int shadow_enable(struct domain *d, u32
+     sh_new_mode(d, mode);
+ 
+  out_locked:
+-    shadow_unlock(d);
++    paging_unlock(d);
+  out_unlocked:
+     if ( rv != 0 && !pagetable_is_null(p2m_get_pagetable(p2m)) )
+         p2m_teardown(p2m);
+@@ -3184,8 +3183,8 @@ void shadow_teardown(struct domain *d)
+     ASSERT(d->is_dying);
+     ASSERT(d != current->domain);
+ 
+-    if ( !shadow_locked_by_me(d) )
+-        shadow_lock(d); /* Keep various asserts happy */
++    if ( !paging_locked_by_me(d) )
++        paging_lock(d); /* Keep various asserts happy */
+ 
+     if ( shadow_mode_enabled(d) )
+     {
+@@ -3282,7 +3281,7 @@ void shadow_teardown(struct domain *d)
+         d->arch.hvm_domain.dirty_vram = NULL;
+     }
+ 
+-    shadow_unlock(d);
++    paging_unlock(d);
+ 
+     /* Must be called outside the lock */
+     if ( unpaged_pagetable ) 
+@@ -3308,7 +3307,7 @@ void shadow_final_teardown(struct domain
+     /* It is now safe to pull down the p2m map. */
+     p2m_teardown(p2m_get_hostp2m(d));
+     /* Free any shadow memory that the p2m teardown released */
+-    shadow_lock(d);
++    paging_lock(d);
+     sh_set_allocation(d, 0, NULL);
+     SHADOW_PRINTK("dom %u final teardown done."
+                    "  Shadow pages total = %u, free = %u, p2m=%u\n",
+@@ -3316,13 +3315,13 @@ void shadow_final_teardown(struct domain
+                    d->arch.paging.shadow.total_pages, 
+                    d->arch.paging.shadow.free_pages, 
+                    d->arch.paging.shadow.p2m_pages);
+-    shadow_unlock(d);
++    paging_unlock(d);
+ }
+ 
+ static int shadow_one_bit_enable(struct domain *d, u32 mode)
+ /* Turn on a single shadow mode feature */
+ {
+-    ASSERT(shadow_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+ 
+     /* Sanity check the call */
+     if ( d == current->domain || (d->arch.paging.mode & mode) == mode )
+@@ -3363,7 +3362,7 @@ static int shadow_one_bit_disable(struct
+ /* Turn off a single shadow mode feature */
+ {
+     struct vcpu *v;
+-    ASSERT(shadow_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+ 
+     /* Sanity check the call */
+     if ( d == current->domain || !((d->arch.paging.mode & mode) == mode) )
+@@ -3428,9 +3427,9 @@ static int shadow_test_enable(struct dom
+     int ret;
+ 
+     domain_pause(d);
+-    shadow_lock(d);
++    paging_lock(d);
+     ret = shadow_one_bit_enable(d, PG_SH_enable);
+-    shadow_unlock(d);
++    paging_unlock(d);
+     domain_unpause(d);
+ 
+     return ret;
+@@ -3441,9 +3440,9 @@ static int shadow_test_disable(struct do
+     int ret;
+ 
+     domain_pause(d);
+-    shadow_lock(d);
++    paging_lock(d);
+     ret = shadow_one_bit_disable(d, PG_SH_enable);
+-    shadow_unlock(d);
++    paging_unlock(d);
+     domain_unpause(d);
+ 
+     return ret;
+@@ -3531,7 +3530,7 @@ shadow_write_p2m_entry(struct vcpu *v, u
+ {
+     struct domain *d = v->domain;
+     
+-    shadow_lock(d);
++    paging_lock(d);
+ 
+     /* If there are any shadows, update them.  But if shadow_teardown()
+      * has already been called then it's not safe to try. */ 
+@@ -3563,7 +3562,7 @@ shadow_write_p2m_entry(struct vcpu *v, u
+     }
+ #endif
+ 
+-    shadow_unlock(d);
++    paging_unlock(d);
+ }
+ 
+ /**************************************************************************/
+@@ -3576,8 +3575,8 @@ int shadow_enable_log_dirty(struct domai
+ {
+     int ret;
+ 
+-    /* shadow lock is required here */
+-    shadow_lock(d);
++    /* paging lock is required here */
++    paging_lock(d);
+     if ( shadow_mode_enabled(d) )
+     {
+         /* This domain already has some shadows: need to clear them out 
+@@ -3595,7 +3594,7 @@ int shadow_enable_log_dirty(struct domai
+ #endif
+     
+     ret = shadow_one_bit_enable(d, PG_log_dirty);
+-    shadow_unlock(d);
++    paging_unlock(d);
+ 
+     return ret;
+ }
+@@ -3605,10 +3604,10 @@ int shadow_disable_log_dirty(struct doma
+ {
+     int ret;
+ 
+-    /* shadow lock is required here */    
+-    shadow_lock(d);
++    /* paging lock is required here */    
++    paging_lock(d);
+     ret = shadow_one_bit_disable(d, PG_log_dirty);
+-    shadow_unlock(d);
++    paging_unlock(d);
+     
+     return ret;
+ }
+@@ -3618,12 +3617,12 @@ int shadow_disable_log_dirty(struct doma
+  */
+ void shadow_clean_dirty_bitmap(struct domain *d)
+ {
+-    shadow_lock(d);
++    paging_lock(d);
+     /* Need to revoke write access to the domain's pages again.
+      * In future, we'll have a less heavy-handed approach to this,
+      * but for now, we just unshadow everything except Xen. */
+     shadow_blow_tables(d);
+-    shadow_unlock(d);
++    paging_unlock(d);
+ }
+ 
+ 
+@@ -3648,7 +3647,7 @@ int shadow_track_dirty_vram(struct domai
+             || end_pfn >= p2m->max_mapped_pfn)
+         return -EINVAL;
+ 
+-    shadow_lock(d);
++    paging_lock(d);
+ 
+     if ( dirty_vram && (!nr ||
+              ( begin_pfn != dirty_vram->begin_pfn
+@@ -3819,7 +3818,7 @@ out_dirty_vram:
+     dirty_vram = d->arch.hvm_domain.dirty_vram = NULL;
+ 
+ out:
+-    shadow_unlock(d);
++    paging_unlock(d);
+     return rc;
+ }
+ 
+@@ -3854,18 +3853,18 @@ int shadow_domctl(struct domain *d,
+         return 0;
+ 
+     case XEN_DOMCTL_SHADOW_OP_SET_ALLOCATION:
+-        shadow_lock(d);
++        paging_lock(d);
+         if ( sc->mb == 0 && shadow_mode_enabled(d) )
+         {            
+             /* Can't set the allocation to zero unless the domain stops using
+              * shadow pagetables first */
+             SHADOW_ERROR("Can't set shadow allocation to zero, domain %u"
+                          " is still using shadows.\n", d->domain_id);
+-            shadow_unlock(d);
++            paging_unlock(d);
+             return -EINVAL;
+         }
+         rc = sh_set_allocation(d, sc->mb << (20 - PAGE_SHIFT), &preempted);
+-        shadow_unlock(d);
++        paging_unlock(d);
+         if ( preempted )
+             /* Not finished.  Set up to re-run the call. */
+             rc = hypercall_create_continuation(
+--- a/xen/arch/x86/mm/shadow/multi.c
++++ b/xen/arch/x86/mm/shadow/multi.c
+@@ -203,7 +203,7 @@ shadow_check_gwalk(struct vcpu *v, unsig
+ #endif
+     int mismatch = 0;
+ 
+-    ASSERT(shadow_locked_by_me(d));
++    ASSERT(paging_locked_by_me(d));
+ 
+     if ( version == atomic_read(&d->arch.paging.shadow.gtable_dirty_version) )
+          return 1;
+@@ -781,7 +781,7 @@ l1e_propagate_from_guest(struct vcpu *v,
+ static inline void safe_write_entry(void *dst, void *src) 
+ /* Copy one PTE safely when processors might be running on the
+  * destination pagetable.   This does *not* give safety against
+- * concurrent writes (that's what the shadow lock is for), just 
++ * concurrent writes (that's what the paging lock is for), just 
+  * stops the hardware picking up partially written entries. */
+ {
+     volatile unsigned long *d = dst;
+@@ -3154,17 +3154,17 @@ static int sh_page_fault(struct vcpu *v,
+      * do is let Xen's normal fault handlers try to fix it.  In any case, 
+      * a diagnostic trace of the fault will be more useful than 
+      * a BUG() when we try to take the lock again. */
+-    if ( unlikely(shadow_locked_by_me(d)) )
++    if ( unlikely(paging_locked_by_me(d)) )
+     {
+         SHADOW_ERROR("Recursive shadow fault: lock was taken by %s\n",
+-                     d->arch.paging.shadow.locker_function);
++                     d->arch.paging.lock.locker_function);
+         return 0;
+     }
+ 
+  rewalk:
+ 
+     /* The walk is done in a lock-free style, with some sanity check
+-     * postponed after grabbing shadow lock later. Those delayed checks
++     * postponed after grabbing paging lock later. Those delayed checks
+      * will make sure no inconsistent mapping being translated into
+      * shadow page table. */ 
+     version = atomic_read(&d->arch.paging.shadow.gtable_dirty_version);
+@@ -3222,7 +3222,7 @@ static int sh_page_fault(struct vcpu *v,
+                 regs->error_code | PFEC_page_present);
+ #endif /* (SHADOW_OPTIMIZATIONS & SHOPT_VIRTUAL_TLB) */
+ 
+-    shadow_lock(d);
++    paging_lock(d);
+ 
+     TRACE_CLEAR_PATH_FLAGS;
+ 
+@@ -3256,7 +3256,7 @@ static int sh_page_fault(struct vcpu *v,
+     /* Second bit set: Resynced a page. Re-walk needed. */
+     if ( rc & GW_RMWR_REWALK )
+     {
+-        shadow_unlock(d);
++        paging_unlock(d);
+         goto rewalk;
+     }
+ #endif /* OOS */
+@@ -3264,7 +3264,7 @@ static int sh_page_fault(struct vcpu *v,
+     if ( !shadow_check_gwalk(v, va, &gw, version) )
+     {
+         perfc_incr(shadow_inconsistent_gwalk);
+-        shadow_unlock(d);
++        paging_unlock(d);
+         goto rewalk;
+     }
+ 
+@@ -3290,7 +3290,7 @@ static int sh_page_fault(struct vcpu *v,
+ #else
+         ASSERT(d->is_shutting_down);
+ #endif
+-        shadow_unlock(d);
++        paging_unlock(d);
+         trace_shadow_gen(TRC_SHADOW_DOMF_DYING, va);
+         return 0;
+     }
+@@ -3307,7 +3307,7 @@ static int sh_page_fault(struct vcpu *v,
+          * sh_remove_shadows() in a previous sh_resync() call has
+          * failed. We cannot safely continue since some page is still
+          * OOS but not in the hash table anymore. */
+-        shadow_unlock(d);
++        paging_unlock(d);
+         return 0;
+     }
+ 
+@@ -3316,7 +3316,7 @@ static int sh_page_fault(struct vcpu *v,
+     if ( shadow_check_gl1e(v, &gw)  )
+     {
+         perfc_incr(shadow_inconsistent_gwalk);
+-        shadow_unlock(d);
++        paging_unlock(d);
+         goto rewalk;
+     }
+ #endif /* OOS */
+@@ -3409,7 +3409,7 @@ static int sh_page_fault(struct vcpu *v,
+     sh_audit_gw(v, &gw);
+     SHADOW_PRINTK("fixed\n");
+     shadow_audit_tables(v);
+-    shadow_unlock(d);
++    paging_unlock(d);
+     return EXCRET_fault_fixed;
+ 
+  emulate:
+@@ -3477,7 +3477,7 @@ static int sh_page_fault(struct vcpu *v,
+      */
+     sh_audit_gw(v, &gw);
+     shadow_audit_tables(v);
+-    shadow_unlock(d);
++    paging_unlock(d);
+ 
+     this_cpu(trace_emulate_write_val) = 0;
+ 
+@@ -3615,7 +3615,7 @@ static int sh_page_fault(struct vcpu *v,
+     SHADOW_PRINTK("mmio %#"PRIpaddr"\n", gpa);
+     shadow_audit_tables(v);
+     reset_early_unshadow(v);
+-    shadow_unlock(d);
++    paging_unlock(d);
+     trace_shadow_gen(TRC_SHADOW_MMIO, va);
+     return (handle_mmio_with_translation(va, gpa >> PAGE_SHIFT)
+             ? EXCRET_fault_fixed : 0);
+@@ -3625,7 +3625,7 @@ static int sh_page_fault(struct vcpu *v,
+     SHADOW_PRINTK("not a shadow fault\n");
+     shadow_audit_tables(v);
+     reset_early_unshadow(v);
+-    shadow_unlock(d);
++    paging_unlock(d);
+ 
+ propagate:
+     trace_not_shadow_fault(gw.l1e, va);
+@@ -3665,7 +3665,7 @@ sh_invlpg(struct vcpu *v, unsigned long
+                & _PAGE_PRESENT) )
+             return 0;
+         /* This must still be a copy-from-user because we don't have the
+-         * shadow lock, and the higher-level shadows might disappear
++         * paging lock, and the higher-level shadows might disappear
+          * under our feet. */
+         if ( __copy_from_user(&sl3e, (sh_linear_l3_table(v) 
+                                       + shadow_l3_linear_offset(va)),
+@@ -3721,11 +3721,11 @@ sh_invlpg(struct vcpu *v, unsigned long
+              && page_is_out_of_sync(pg) )
+         {
+             /* The test above may give false positives, since we don't
+-             * hold the shadow lock yet.  Check again with the lock held. */
+-            shadow_lock(v->domain);
++             * hold the paging lock yet.  Check again with the lock held. */
++            paging_lock(v->domain);
+ 
+             /* This must still be a copy-from-user because we didn't
+-             * have the shadow lock last time we checked, and the
++             * have the paging lock last time we checked, and the
+              * higher-level shadows might have disappeared under our
+              * feet. */
+             if ( __copy_from_user(&sl2e, 
+@@ -3734,13 +3734,13 @@ sh_invlpg(struct vcpu *v, unsigned long
+                                   sizeof (sl2e)) != 0 )
+             {
+                 perfc_incr(shadow_invlpg_fault);
+-                shadow_unlock(v->domain);
++                paging_unlock(v->domain);
+                 return 0;
+             }
+ 
+             if ( !(shadow_l2e_get_flags(sl2e) & _PAGE_PRESENT) )
+             {
+-                shadow_unlock(v->domain);
++                paging_unlock(v->domain);
+                 return 0;
+             }
+ 
+@@ -3757,7 +3757,7 @@ sh_invlpg(struct vcpu *v, unsigned long
+                 (void) shadow_set_l1e(v, sl1, shadow_l1e_empty(),
+                                       p2m_invalid, sl1mfn);
+             }
+-            shadow_unlock(v->domain);
++            paging_unlock(v->domain);
+             /* Need the invlpg, to pick up the disappeareance of the sl1e */
+             return 1;
+         }
+@@ -4173,7 +4173,7 @@ sh_update_cr3(struct vcpu *v, int do_loc
+  * this function will call hvm_update_guest_cr(v, 3) to tell them where the 
+  * shadow tables are.
+  * If do_locking != 0, assume we are being called from outside the 
+- * shadow code, and must take and release the shadow lock; otherwise 
++ * shadow code, and must take and release the paging lock; otherwise 
+  * that is the caller's responsibility.
+  */
+ {
+@@ -4199,9 +4199,9 @@ sh_update_cr3(struct vcpu *v, int do_loc
+     shadow_resync_current_vcpu(v, do_locking);
+ #endif
+ 
+-    if ( do_locking ) shadow_lock(v->domain);
++    if ( do_locking ) paging_lock(v->domain);
+ 
+-    ASSERT(shadow_locked_by_me(v->domain));
++    ASSERT(paging_locked_by_me(v->domain));
+     ASSERT(v->arch.paging.mode);
+ 
+     ////
+@@ -4427,7 +4427,7 @@ sh_update_cr3(struct vcpu *v, int do_loc
+ #endif
+ 
+     /* Release the lock, if we took it (otherwise it's the caller's problem) */
+-    if ( do_locking ) shadow_unlock(v->domain);
++    if ( do_locking ) paging_unlock(v->domain);
+ 
+ #if (SHADOW_OPTIMIZATIONS & SHOPT_OUT_OF_SYNC)
+     /* Need to resync all the shadow entries on a TLB flush. We only
+@@ -4716,7 +4716,7 @@ static void sh_pagetable_dying(struct vc
+     guest_l3e_t *gl3e = NULL;
+     paddr_t gl2a = 0;
+ 
+-    shadow_lock(v->domain);
++    paging_lock(v->domain);
+ 
+     gcr3 = (v->arch.hvm_vcpu.guest_cr[3]);
+     /* fast path: the pagetable belongs to the current context */
+@@ -4772,7 +4772,7 @@ static void sh_pagetable_dying(struct vc
+ out:
+     if ( !fast_path )
+         unmap_domain_page(gl3pa);
+-    shadow_unlock(v->domain);
++    paging_unlock(v->domain);
+ }
+ #else
+ static void sh_pagetable_dying(struct vcpu *v, paddr_t gpa)
+@@ -4780,7 +4780,7 @@ static void sh_pagetable_dying(struct vc
+     mfn_t smfn, gmfn;
+     p2m_type_t p2mt;
+ 
+-    shadow_lock(v->domain);
++    paging_lock(v->domain);
+ 
+     gmfn = gfn_to_mfn_query(p2m_get_hostp2m(v->domain), _gfn(gpa >> PAGE_SHIFT), &p2mt);
+ #if GUEST_PAGING_LEVELS == 2
+@@ -4803,7 +4803,7 @@ static void sh_pagetable_dying(struct vc
+ 
+     v->arch.paging.shadow.pagetable_dying = 1;
+ 
+-    shadow_unlock(v->domain);
++    paging_unlock(v->domain);
+ }
+ #endif
+ 
+@@ -4836,8 +4836,8 @@ static mfn_t emulate_gva_to_mfn(struct v
+     }
+ 
+     /* Translate the GFN to an MFN */
+-    /* PoD: query only if shadow lock is held (to avoid deadlock) */
+-    if ( shadow_locked_by_me(v->domain) )
++    /* PoD: query only if paging lock is held (to avoid deadlock) */
++    if ( paging_locked_by_me(v->domain) )
+         mfn = gfn_to_mfn_query(p2m, _gfn(gfn), &p2mt);
+     else
+         mfn = gfn_to_mfn(p2m, _gfn(gfn), &p2mt);
+@@ -5029,7 +5029,7 @@ sh_x86_emulate_write(struct vcpu *v, uns
+     if ( emulate_map_dest_failed(addr) )
+         return (long)addr;
+ 
+-    shadow_lock(v->domain);
++    paging_lock(v->domain);
+     memcpy(addr, src, bytes);
+ 
+     if ( tb_init_done )
+@@ -5050,7 +5050,7 @@ sh_x86_emulate_write(struct vcpu *v, uns
+ 
+     emulate_unmap_dest(v, addr, bytes, sh_ctxt);
+     shadow_audit_tables(v);
+-    shadow_unlock(v->domain);
++    paging_unlock(v->domain);
+     return X86EMUL_OKAY;
+ }
+ 
+@@ -5071,7 +5071,7 @@ sh_x86_emulate_cmpxchg(struct vcpu *v, u
+     if ( emulate_map_dest_failed(addr) )
+         return (long)addr;
+ 
+-    shadow_lock(v->domain);
++    paging_lock(v->domain);
+     switch ( bytes )
+     {
+     case 1: prev = cmpxchg(((u8 *)addr), old, new);  break;
+@@ -5092,7 +5092,7 @@ sh_x86_emulate_cmpxchg(struct vcpu *v, u
+ 
+     emulate_unmap_dest(v, addr, bytes, sh_ctxt);
+     shadow_audit_tables(v);
+-    shadow_unlock(v->domain);
++    paging_unlock(v->domain);
+     return rv;
+ }
+ 
+@@ -5118,7 +5118,7 @@ sh_x86_emulate_cmpxchg8b(struct vcpu *v,
+     old = (((u64) old_hi) << 32) | (u64) old_lo;
+     new = (((u64) new_hi) << 32) | (u64) new_lo;
+ 
+-    shadow_lock(v->domain);
++    paging_lock(v->domain);
+     prev = cmpxchg(((u64 *)addr), old, new);
+ 
+     if ( prev != old )
+@@ -5126,7 +5126,7 @@ sh_x86_emulate_cmpxchg8b(struct vcpu *v,
+ 
+     emulate_unmap_dest(v, addr, 8, sh_ctxt);
+     shadow_audit_tables(v);
+-    shadow_unlock(v->domain);
++    paging_unlock(v->domain);
+     return rv;
+ }
+ #endif
+--- a/xen/arch/x86/mm/shadow/private.h
++++ b/xen/arch/x86/mm/shadow/private.h
+@@ -31,6 +31,7 @@
+ #include <asm/x86_emulate.h>
+ #include <asm/hvm/support.h>
+ 
++#include "../mm-locks.h"
+ 
+ /******************************************************************************
+  * Levels of self-test and paranoia
+@@ -128,57 +129,6 @@ enum {
+     TRCE_SFLAG_OOS_FIXUP_EVICT,
+ };
+ 
+-/******************************************************************************
+- * The shadow lock.
+- *
+- * This lock is per-domain.  It is intended to allow us to make atomic
+- * updates to the software TLB that the shadow tables provide.
+- * 
+- * Specifically, it protects:
+- *   - all changes to shadow page table pages
+- *   - the shadow hash table
+- *   - the shadow page allocator 
+- *   - all changes to guest page table pages
+- *   - all changes to the page_info->tlbflush_timestamp
+- *   - the page_info->count fields on shadow pages
+- *   - the shadow dirty bit array and count
+- */
+-#ifndef CONFIG_SMP
+-#error shadow.h currently requires CONFIG_SMP
+-#endif
+-
+-#define shadow_lock_init(_d)                                   \
+-    do {                                                       \
+-        spin_lock_init(&(_d)->arch.paging.shadow.lock);        \
+-        (_d)->arch.paging.shadow.locker = -1;                  \
+-        (_d)->arch.paging.shadow.locker_function = "nobody";   \
+-    } while (0)
+-
+-#define shadow_locked_by_me(_d)                     \
+-    (current->processor == (_d)->arch.paging.shadow.locker)
+-
+-#define shadow_lock(_d)                                                       \
+-    do {                                                                      \
+-        if ( unlikely((_d)->arch.paging.shadow.locker == current->processor) )\
+-        {                                                                     \
+-            printk("Error: shadow lock held by %s\n",                         \
+-                   (_d)->arch.paging.shadow.locker_function);                 \
+-            BUG();                                                            \
+-        }                                                                     \
+-        spin_lock(&(_d)->arch.paging.shadow.lock);                            \
+-        ASSERT((_d)->arch.paging.shadow.locker == -1);                        \
+-        (_d)->arch.paging.shadow.locker = current->processor;                 \
+-        (_d)->arch.paging.shadow.locker_function = __func__;                  \
+-    } while (0)
+-
+-#define shadow_unlock(_d)                                              \
+-    do {                                                               \
+-        ASSERT((_d)->arch.paging.shadow.locker == current->processor); \
+-        (_d)->arch.paging.shadow.locker = -1;                          \
+-        (_d)->arch.paging.shadow.locker_function = "nobody";           \
+-        spin_unlock(&(_d)->arch.paging.shadow.lock);                   \
+-    } while (0)
+-
+ 
+ /* Size (in bytes) of a guest PTE */
+ #if GUEST_PAGING_LEVELS >= 3
+@@ -595,7 +545,7 @@ static inline int sh_get_ref(struct vcpu
+         return 0;
+     }
+     
+-    /* Guarded by the shadow lock, so no need for atomic update */
++    /* Guarded by the paging lock, so no need for atomic update */
+     sp->u.sh.count = nx;
+ 
+     /* We remember the first shadow entry that points to each shadow. */
+@@ -635,7 +585,7 @@ static inline void sh_put_ref(struct vcp
+         BUG();
+     }
+ 
+-    /* Guarded by the shadow lock, so no need for atomic update */
++    /* Guarded by the paging lock, so no need for atomic update */
+     sp->u.sh.count = nx;
+ 
+     if ( unlikely(nx == 0) ) 
+--- a/xen/arch/x86/mm/shadow/types.h
++++ b/xen/arch/x86/mm/shadow/types.h
+@@ -292,7 +292,7 @@ static inline shadow_l4e_t shadow_l4e_fr
+  * MMIO emulation, and faults where the guest PTE is not present.  We
+  * record these as shadow l1 entries that have reserved bits set in
+  * them, so we can spot them immediately in the fault handler and handle
+- * them without needing to hold the shadow lock or walk the guest
++ * them without needing to hold the paging lock or walk the guest
+  * pagetables.
+  *
+  * This is only feasible for PAE and 64bit Xen: 32-bit non-PAE PTEs don't
+--- a/xen/include/asm-x86/domain.h
++++ b/xen/include/asm-x86/domain.h
+@@ -90,9 +90,6 @@ void hypercall_page_initialise(struct do
+ /*          shadow paging extension             */
+ /************************************************/
+ struct shadow_domain {
+-    spinlock_t        lock;  /* shadow domain lock */
+-    int               locker; /* processor which holds the lock */
+-    const char       *locker_function; /* Func that took it */
+     unsigned int      opt_flags;    /* runtime tunable optimizations on/off */
+     struct page_list_head pinned_shadows;
+ 
+@@ -158,10 +155,6 @@ struct shadow_vcpu {
+ /*            hardware assisted paging          */
+ /************************************************/
+ struct hap_domain {
+-    spinlock_t        lock;
+-    int               locker;
+-    const char       *locker_function;
+-
+     struct page_list_head freelist;
+     unsigned int      total_pages;  /* number of pages allocated */
+     unsigned int      free_pages;   /* number of pages on freelists */
+@@ -172,11 +165,6 @@ struct hap_domain {
+ /*       common paging data structure           */
+ /************************************************/
+ struct log_dirty_domain {
+-    /* log-dirty lock */
+-    spinlock_t     lock;
+-    int            locker; /* processor that holds the lock */
+-    const char    *locker_function; /* func that took it */
+-
+     /* log-dirty radix tree to record dirty pages */
+     mfn_t          top;
+     unsigned int   allocs;
+@@ -193,6 +181,9 @@ struct log_dirty_domain {
+ };
+ 
+ struct paging_domain {
++    /* paging lock */
++    mm_lock_t lock;
++
+     /* flags to control paging operation */
+     u32                     mode;
+     /* extension for shadow paging support */
+--- a/xen/include/asm-x86/mm.h
++++ b/xen/include/asm-x86/mm.h
+@@ -4,6 +4,7 @@
+ 
+ #include <xen/config.h>
+ #include <xen/list.h>
++#include <xen/spinlock.h>
+ #include <asm/io.h>
+ #include <asm/uaccess.h>
+ 
+@@ -595,4 +596,12 @@ unsigned long domain_get_maximum_gpfn(st
+ 
+ extern struct domain *dom_xen, *dom_io, *dom_cow;	/* for vmcoreinfo */
+ 
++/* Definition of an mm lock: spinlock with extra fields for debugging */
++typedef struct mm_lock {
++    spinlock_t         lock;
++    int                unlock_level;
++    int                locker;          /* processor which holds the lock */
++    const char        *locker_function; /* func that took it */
++} mm_lock_t;
++
+ #endif /* __ASM_X86_MM_H__ */
+--- a/xen/include/asm-x86/hap.h
++++ b/xen/include/asm-x86/hap.h
+@@ -46,40 +46,6 @@ hap_unmap_domain_page(void *p)
+     unmap_domain_page(p);
+ }
+ 
+-/************************************************/
+-/*           locking for hap code               */
+-/************************************************/
+-#define hap_lock_init(_d)                                   \
+-    do {                                                    \
+-        spin_lock_init(&(_d)->arch.paging.hap.lock);        \
+-        (_d)->arch.paging.hap.locker = -1;                  \
+-        (_d)->arch.paging.hap.locker_function = "nobody";   \
+-    } while (0)
+-
+-#define hap_locked_by_me(_d)                     \
+-    (current->processor == (_d)->arch.paging.hap.locker)
+-
+-#define hap_lock(_d)                                                       \
+-    do {                                                                   \
+-        if ( unlikely((_d)->arch.paging.hap.locker == current->processor) )\
+-        {                                                                  \
+-            printk("Error: hap lock held by %s\n",                         \
+-                   (_d)->arch.paging.hap.locker_function);                 \
+-            BUG();                                                         \
+-        }                                                                  \
+-        spin_lock(&(_d)->arch.paging.hap.lock);                            \
+-        ASSERT((_d)->arch.paging.hap.locker == -1);                        \
+-        (_d)->arch.paging.hap.locker = current->processor;                 \
+-        (_d)->arch.paging.hap.locker_function = __func__;                  \
+-    } while (0)
+-
+-#define hap_unlock(_d)                                              \
+-    do {                                                            \
+-        ASSERT((_d)->arch.paging.hap.locker == current->processor); \
+-        (_d)->arch.paging.hap.locker = -1;                          \
+-        (_d)->arch.paging.hap.locker_function = "nobody";           \
+-        spin_unlock(&(_d)->arch.paging.hap.lock);                   \
+-    } while (0)
+ 
+ /************************************************/
+ /*        hap domain level functions            */
+--- a/xen/arch/x86/mm/hap/private.h
++++ b/xen/arch/x86/mm/hap/private.h
+@@ -20,6 +20,8 @@
+ #ifndef __HAP_PRIVATE_H__
+ #define __HAP_PRIVATE_H__
+ 
++#include "../mm-locks.h"
++
+ /********************************************/
+ /*          GUEST TRANSLATION FUNCS         */
+ /********************************************/

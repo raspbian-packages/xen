@@ -1,0 +1,42 @@
+Description: Fix pointer type missmatch on interrupt functions
+Author: Bastian Blank <waldi@debian.org>
+
+---
+Origin: debian
+Forwarded: no
+Last-Update: 2012-06-15
+
+--- a/xen/arch/x86/i8259.c
++++ b/xen/arch/x86/i8259.c
+@@ -62,7 +62,7 @@
+     IRQ(x,8), IRQ(x,9), IRQ(x,a), IRQ(x,b), \
+     IRQ(x,c), IRQ(x,d), IRQ(x,e), IRQ(x,f)
+ 
+-    static void (*interrupt[])(void) = {
++    static void (*asmlinkage interrupt[])(void) = {
+         IRQLIST_16(0x0), IRQLIST_16(0x1), IRQLIST_16(0x2), IRQLIST_16(0x3),
+         IRQLIST_16(0x4), IRQLIST_16(0x5), IRQLIST_16(0x6), IRQLIST_16(0x7),
+         IRQLIST_16(0x8), IRQLIST_16(0x9), IRQLIST_16(0xa), IRQLIST_16(0xb),
+--- a/xen/include/asm-x86/hvm/svm/intr.h
++++ b/xen/include/asm-x86/hvm/svm/intr.h
+@@ -21,6 +21,8 @@
+ #ifndef __ASM_X86_HVM_SVM_INTR_H__
+ #define __ASM_X86_HVM_SVM_INTR_H__
+ 
+-void svm_intr_assist(void);
++#include <asm/config.h>
++
++asmlinkage void svm_intr_assist(void);
+ 
+ #endif /* __ASM_X86_HVM_SVM_INTR_H__ */
+--- a/xen/include/asm-x86/hvm/vmx/vmx.h
++++ b/xen/include/asm-x86/hvm/vmx/vmx.h
+@@ -63,7 +63,7 @@
+ 
+ void vmx_asm_vmexit_handler(struct cpu_user_regs);
+ void vmx_asm_do_vmentry(void);
+-void vmx_intr_assist(void);
++asmlinkage void vmx_intr_assist(void);
+ void vmx_do_resume(struct vcpu *);
+ void vmx_vlapic_msr_changed(struct vcpu *v);
+ void vmx_realmode(struct cpu_user_regs *regs);

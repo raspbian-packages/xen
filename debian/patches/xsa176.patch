@@ -1,0 +1,29 @@
+x86/mm: fully honor PS bits in guest page table walks
+
+In L4 entries it is currently unconditionally reserved (and hence
+should, when set, always result in a reserved bit page fault), and is
+reserved on hardware not supporting 1Gb pages (and hence should, when
+set, similarly cause a reserved bit page fault on such hardware).
+
+This is CVE-2016-4480 / XSA-176.
+
+Signed-off-by: Jan Beulich <jbeulich@suse.com>
+Reviewed-by: Andrew Cooper <andrew.cooper3@citrix.com>
+Tested-by: Andrew Cooper <andrew.cooper3@citrix.com>
+
+Index: xen-4.1.6.1/xen/arch/x86/mm/guest_walk.c
+===================================================================
+--- xen-4.1.6.1.orig/xen/arch/x86/mm/guest_walk.c	2016-05-31 09:57:37.000000000 +0000
++++ xen-4.1.6.1/xen/arch/x86/mm/guest_walk.c	2016-05-31 09:59:42.000000000 +0000
+@@ -172,6 +172,11 @@
+         rc |= _PAGE_PRESENT;
+         goto out;
+     }
++    if ( gflags & _PAGE_PSE )
++    {
++        rc |= _PAGE_PSE | _PAGE_INVALID_BIT;
++        goto out;
++    }
+     rc |= ((gflags & mflags) ^ mflags);
+ 
+     /* Map the l3 table */

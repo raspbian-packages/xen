@@ -1,0 +1,57 @@
+From 34db09fb9967441408a1ff0579d553222cf17441 Mon Sep 17 00:00:00 2001
+From: Gerd Hoffmann <kraxel@redhat.com>
+Date: Tue, 26 Apr 2016 14:11:34 +0200
+Subject: [PATCH 2/5] vga: add vbe_enabled() helper
+
+Makes code a bit easier to read.
+
+Signed-off-by: Gerd Hoffmann <kraxel@redhat.com>
+[Backport to qemu-xen-tradition]
+Signed-off-by: Andrew Cooper <andrew.cooper3@citrix.com>
+---
+ hw/vga.c | 13 +++++++++----
+ 1 file changed, 9 insertions(+), 4 deletions(-)
+
+Index: xen-4.1.6.1/qemu/hw/vga.c
+===================================================================
+--- xen-4.1.6.1.orig/qemu/hw/vga.c	2016-05-31 10:04:36.000000000 +0000
++++ xen-4.1.6.1/qemu/hw/vga.c	2016-05-31 10:04:46.000000000 +0000
+@@ -160,6 +160,11 @@
+ static uint16_t expand2[256];
+ static uint8_t expand4to8[16];
+ 
++static inline bool vbe_enabled(VGAState *s)
++{
++    return s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED;
++}
++
+ static void vga_bios_init(VGAState *s);
+ static void vga_screen_dump(void *opaque, const char *filename);
+ 
+@@ -1129,7 +1134,7 @@
+ {
+     uint32_t start_addr, line_offset, line_compare;
+ #ifdef CONFIG_BOCHS_VBE
+-    if (s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED) {
++    if (vbe_enabled(s)) {
+         line_offset = s->vbe_line_offset;
+         start_addr = s->vbe_start_addr;
+         line_compare = 65535;
+@@ -1515,7 +1520,7 @@
+ {
+     int ret;
+ #ifdef CONFIG_BOCHS_VBE
+-    if (s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED) {
++    if (vbe_enabled(s)) {
+         ret = s->vbe_regs[VBE_DISPI_INDEX_BPP];
+     } else
+ #endif
+@@ -1530,7 +1535,7 @@
+     int width, height;
+ 
+ #ifdef CONFIG_BOCHS_VBE
+-    if (s->vbe_regs[VBE_DISPI_INDEX_ENABLE] & VBE_DISPI_ENABLED) {
++    if (vbe_enabled(s)) {
+         width = s->vbe_regs[VBE_DISPI_INDEX_XRES];
+         height = s->vbe_regs[VBE_DISPI_INDEX_YRES];
+     } else

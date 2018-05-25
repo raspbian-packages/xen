@@ -1,0 +1,159 @@
+From 25379ea3b6edc30ae2d6e6fe5a531ca0a6e188d6 Mon Sep 17 00:00:00 2001
+From: Yuriy Kohut <ykohut@onapp.com>
+Date: Thu, 5 Nov 2015 12:43:38 +0200
+Subject: [PATCH] x86/HVM: always intercept #AC and #DB
+
+Both being benign exceptions, and both being possible to get triggered
+by exception delivery, this is required to prevent a guest from locking
+up a CPU (resulting from no other VM exits occurring once getting into
+such a loop).
+
+The specific scenarios:
+
+1) #AC may be raised during exception delivery if the handler is set to
+be a ring-3 one by a 32-bit guest, and the stack is misaligned.
+
+2) #DB may be raised during exception delivery when a breakpoint got
+placed on a data structure involved in delivering the exception. This
+can result in an endless loop when a 64-bit guest uses a non-zero IST
+for the vector 1 IDT entry, but even without use of IST the time it
+takes until a contributory fault would get raised (results depending
+on the handler) may be quite long.
+
+This is XSA-156.
+
+Signed-off-by: Jan Beulich <jbeulich@suse.com>
+Reviewed-by: Andrew Cooper <andrew.cooper3@citrix.com>
+Tested-by: Andrew Cooper <andrew.cooper3@citrix.com>
+[backport to Xen stable-4.2]
+Signed-off-by: Yuriy Kohut <ykohut@onapp.com>
+[backport to Xen stable-4.1.6.1]
+Signed-off-by: Stefan Bader <stefan.bader@canonical.com>
+---
+ xen/arch/x86/hvm/svm/svm.c    | 15 +++++++++++----
+ xen/arch/x86/hvm/vmx/vmx.c    | 22 +++++++++++-----------
+ xen/include/asm-x86/hvm/hvm.h |  5 ++++-
+ 3 files changed, 26 insertions(+), 16 deletions(-)
+
+--- a/xen/arch/x86/hvm/svm/svm.c
++++ b/xen/arch/x86/hvm/svm/svm.c
+@@ -756,10 +756,11 @@ static void svm_do_resume(struct vcpu *v
+     if ( unlikely(v->arch.hvm_vcpu.debug_state_latch != debug_state) )
+     {
+         uint32_t intercepts = vmcb_get_exception_intercepts(vmcb);
+-        uint32_t mask = (1U << TRAP_debug) | (1U << TRAP_int3);
++
+         v->arch.hvm_vcpu.debug_state_latch = debug_state;
+         vmcb_set_exception_intercepts(
+-            vmcb, debug_state ? (intercepts | mask) : (intercepts & ~mask));
++            vmcb, debug_state ? (intercepts | (1U << TRAP_int3))
++                              : (intercepts & ~(1U << TRAP_int3)));
+     }
+ 
+     if ( v->arch.hvm_svm.launch_core != smp_processor_id() )
+@@ -1632,8 +1633,9 @@ void svm_vmexit_handler(struct cpu_user_
+ 
+     case VMEXIT_EXCEPTION_DB:
+         if ( !v->domain->debugger_attached )
+-            goto exit_and_crash;
+-        domain_pause_for_debugger();
++            hvm_inject_exception(TRAP_debug, HVM_DELIVER_NO_ERROR_CODE, 0);
++        else
++            domain_pause_for_debugger();
+         break;
+ 
+     case VMEXIT_EXCEPTION_BP:
+@@ -1681,6 +1683,10 @@ void svm_vmexit_handler(struct cpu_user_
+         break;
+     }
+ 
++    case VMEXIT_EXCEPTION_AC:
++        hvm_inject_exception(TRAP_alignment_check, vmcb->exitinfo1, 0);
++        break;
++
+     case VMEXIT_EXCEPTION_UD:
+         svm_vmexit_ud_intercept(regs);
+         break;
+--- a/xen/arch/x86/hvm/vmx/vmx.c
++++ b/xen/arch/x86/hvm/vmx/vmx.c
+@@ -1059,18 +1059,12 @@ static void vmx_update_host_cr3(struct v
+ 
+ void vmx_update_debug_state(struct vcpu *v)
+ {
+-    unsigned long mask;
+-
+     ASSERT(v == current);
+ 
+-    mask = 1u << TRAP_int3;
+-    if ( !cpu_has_monitor_trap_flag )
+-        mask |= 1u << TRAP_debug;
+-
+     if ( v->arch.hvm_vcpu.debug_state_latch )
+-        v->arch.hvm_vmx.exception_bitmap |= mask;
++        v->arch.hvm_vmx.exception_bitmap |= 1U << TRAP_int3;
+     else
+-        v->arch.hvm_vmx.exception_bitmap &= ~mask;
++        v->arch.hvm_vmx.exception_bitmap &= ~(1U << TRAP_int3);
+     vmx_update_exception_bitmap(v);
+ }
+ 
+@@ -1294,7 +1288,6 @@ void vmx_inject_hw_exception(int trap, i
+     switch ( trap )
+     {
+     case TRAP_debug:
+-        type = X86_EVENTTYPE_SW_EXCEPTION;
+         if ( guest_cpu_user_regs()->eflags & X86_EFLAGS_TF )
+         {
+             __restore_debug_registers(curr);
+@@ -1302,6 +1295,13 @@ void vmx_inject_hw_exception(int trap, i
+         }
+         if ( cpu_has_monitor_trap_flag )
+             break;
++        if ( curr->domain->debugger_attached )
++        {
++            /* Debug/Int3: Trap to debugger. */
++            domain_pause_for_debugger();
++            return;
++        }
++        break;
+     case TRAP_int3:
+         if ( curr->domain->debugger_attached )
+         {
+@@ -2278,9 +2278,10 @@ void vmx_vmexit_handler(struct cpu_user_
+              */
+             exit_qualification = __vmread(EXIT_QUALIFICATION);
+             write_debugreg(6, exit_qualification | 0xffff0ff0);
+-            if ( !v->domain->debugger_attached || cpu_has_monitor_trap_flag )
+-                goto exit_and_crash;
+-            domain_pause_for_debugger();
++            if ( !v->domain->debugger_attached )
++                hvm_inject_exception(vector, HVM_DELIVER_NO_ERROR_CODE, 0);
++            else
++                domain_pause_for_debugger();
+             break;
+         case TRAP_int3: 
+         {
+@@ -2334,6 +2335,9 @@ void vmx_vmexit_handler(struct cpu_user_
+             v->arch.hvm_vcpu.guest_cr[2] = exit_qualification;
+             vmx_inject_hw_exception(TRAP_page_fault, regs->error_code);
+             break;
++        case TRAP_alignment_check:
++            hvm_inject_exception(vector, __vmread(VM_EXIT_INTR_ERROR_CODE), 0);
++            break;
+         case TRAP_nmi:
+             if ( (intr_info & INTR_INFO_INTR_TYPE_MASK) !=
+                  (X86_EVENTTYPE_NMI << 8) )
+--- a/xen/include/asm-x86/hvm/hvm.h
++++ b/xen/include/asm-x86/hvm/hvm.h
+@@ -307,7 +307,10 @@ static inline int hvm_do_pmu_interrupt(s
+         (xsave_enabled(_v) ? X86_CR4_OSXSAVE : 0))))
+ 
+ /* These exceptions must always be intercepted. */
+-#define HVM_TRAP_MASK ((1U << TRAP_machine_check) | (1U << TRAP_invalid_op))
++#define HVM_TRAP_MASK ((1U << TRAP_debug)           | \
++                       (1U << TRAP_invalid_op)      | \
++                       (1U << TRAP_alignment_check) | \
++                       (1U << TRAP_machine_check))
+ 
+ /*
+  * x86 event types. This enumeration is valid for:

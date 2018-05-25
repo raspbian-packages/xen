@@ -1,0 +1,41 @@
+From ee889ac19c00202302c2dd04edf94e0487b15c2a Mon Sep 17 00:00:00 2001
+From: Peter Dreuw <peter.dreuw@credativ.de>
+Date: Fri, 15 Sep 2017 15:38:58 +0200
+Subject: [PATCH 18/18] added i386 typecast in logging function to make
+ compiler happy again
+
+---
+ xen/arch/x86/mm.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/xen/arch/x86/mm.c b/xen/arch/x86/mm.c
+index 6c2bd92f1..c8b9dc179 100644
+--- a/xen/arch/x86/mm.c
++++ b/xen/arch/x86/mm.c
+@@ -4300,13 +4300,22 @@ static int replace_grant_va_mapping(
+ 
+     if ( unlikely((l1e_get_flags(ol1e) ^ grant_pte_flags) &
+                   ~(_PAGE_AVAIL | PAGE_CACHE_ATTRS)) )
++#ifdef __i386__
++        MEM_LOG("PTE flags %x for %"PRIx64" don't match grant (%x)",
++                l1e_get_flags(ol1e), (long long unsigned)addr, grant_pte_flags);        
++#else
+         MEM_LOG("PTE flags %x for %"PRIx64" don't match grant (%x)",
+                 l1e_get_flags(ol1e), addr, grant_pte_flags);
+-
++#endif
++    
+     /* Delete pagetable entry. */
+     if ( unlikely(!UPDATE_ENTRY(l1, pl1e, ol1e, nl1e, gl1mfn, v, 0)) )
+     {
++#ifdef __i386__
++        MEM_LOG("Cannot delete PTE entry for %"PRIx64, (long long unsigned)addr);
++#else
+         MEM_LOG("Cannot delete PTE entry for %"PRIx64, addr);
++#endif
+         rc = GNTST_general_error;
+         goto unlock_and_out;
+     }
+-- 
+2.14.1
+

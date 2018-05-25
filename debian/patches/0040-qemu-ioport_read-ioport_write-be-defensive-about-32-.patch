@@ -1,0 +1,90 @@
+From 0d8cec1449006badccad1098d5d1ca5eda587f00 Mon Sep 17 00:00:00 2001
+From: Ian Jackson <ian.jackson@eu.citrix.com>
+Date: Mon, 14 Nov 2016 17:19:46 +0000
+Subject: [PATCH 40/42] qemu: ioport_read, ioport_write: be defensive about
+ 32-bit addresses
+
+On x86, ioport addresses are 16-bit.  That these functions take 32-bit
+arguments is a mistake.  Changing the argument type to 16-bit will
+discard the top bits of any erroneous values from elsewhere in qemu.
+
+Also, check just before use that the value is in range.  (This turns
+an ill-advised change to MAX_IOPORTS into a possible guest crash
+rather than a privilege escalation vulnerability.)
+
+And, in the Xen ioreq processor, clamp incoming ioport addresses to
+16-bit values.  Xen will never write >16-bit values but the guest may
+have access to the ioreq ring.  We want to defend the rest of the qemu
+code from wrong values.
+
+This is XSA-199.
+
+Reported-by: yanghongke <yanghongke@huawei.com>
+Signed-off-by: Ian Jackson <Ian.Jackson@eu.citrix.com>
+---
+ qemu/i386-dm/helper2.c | 3 +++
+ qemu/vl.c              | 9 +++++++--
+ 2 files changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/qemu/i386-dm/helper2.c b/qemu/i386-dm/helper2.c
+index 09635bb82..8de0904c7 100644
+--- a/qemu/i386-dm/helper2.c
++++ b/qemu/i386-dm/helper2.c
+@@ -333,6 +333,9 @@ static void cpu_ioreq_pio(CPUState *env, ioreq_t *req)
+ 
+     sign = req->df ? -1 : 1;
+ 
++    req->addr &= 0x0ffffU;
++
++
+     if (req->size > sizeof(uint32_t)) {
+         hw_error("PIO: bad size (%u)", req->size);
+     }
+diff --git a/qemu/vl.c b/qemu/vl.c
+index c87dc4bae..86d8ff6cb 100644
+--- a/qemu/vl.c
++++ b/qemu/vl.c
+@@ -52,6 +52,7 @@
+ 
+ #include <xen/hvm/hvm_info_table.h>
+ 
++#include <assert.h>
+ #include <unistd.h>
+ #include <fcntl.h>
+ #include <signal.h>
+@@ -290,26 +291,30 @@ PicState2 *isa_pic;
+ static IOPortReadFunc default_ioport_readb, default_ioport_readw, default_ioport_readl;
+ static IOPortWriteFunc default_ioport_writeb, default_ioport_writew, default_ioport_writel;
+ 
+-static uint32_t ioport_read(int index, uint32_t address)
++static uint32_t ioport_read(int index, uint16_t address)
+ {
+     static IOPortReadFunc *default_func[3] = {
+         default_ioport_readb,
+         default_ioport_readw,
+         default_ioport_readl
+     };
++    if (address >= MAX_IOPORTS)
++        abort();
+     IOPortReadFunc *func = ioport_read_table[index][address];
+     if (!func)
+         func = default_func[index];
+     return func(ioport_opaque[address], address);
+ }
+ 
+-static void ioport_write(int index, uint32_t address, uint32_t data)
++static void ioport_write(int index, uint16_t address, uint32_t data)
+ {
+     static IOPortWriteFunc *default_func[3] = {
+         default_ioport_writeb,
+         default_ioport_writew,
+         default_ioport_writel
+     };
++    if (address >= MAX_IOPORTS)
++        abort();
+     IOPortWriteFunc *func = ioport_write_table[index][address];
+     if (!func)
+         func = default_func[index];
+-- 
+2.15.1
+

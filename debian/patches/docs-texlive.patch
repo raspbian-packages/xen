@@ -1,0 +1,10 @@
+--- a/docs/xen-api/xenapi.tex
++++ b/docs/xen-api/xenapi.tex
+@@ -13,7 +13,6 @@
+ 
+ \documentclass{report}
+ 
+-\usepackage{a4wide}
+ \usepackage{graphics}
+ \usepackage{longtable}
+ \usepackage{fancyhdr}

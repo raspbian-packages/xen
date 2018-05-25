@@ -1,0 +1,31 @@
+From 266ff650113e2a4d757fc3149b57002d37ffe9dc Mon Sep 17 00:00:00 2001
+From: Peter Dreuw <peter.dreuw@credativ.de>
+Date: Thu, 14 Sep 2017 15:54:23 +0200
+Subject: [PATCH 15/16] reverted XSA-233 patch partly as its incomplete by now
+ and no ad hoc solution handy
+
+---
+ tools/xenstore/xenstored_domain.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/tools/xenstore/xenstored_domain.c b/tools/xenstore/xenstored_domain.c
+index 757bc46ab..862395b79 100644
+--- a/tools/xenstore/xenstored_domain.c
++++ b/tools/xenstore/xenstored_domain.c
+@@ -185,11 +185,11 @@ static int destroy_domain(void *_domain)
+ static void domain_cleanup(void)
+ {
+ 	xc_dominfo_t dominfo;
+-	struct domain *domain;
++	struct domain *domain, *tmp;
+ 	int notify = 0;
+ 
+ again:
+-	list_for_each_entry_safe(domain, &domains, list) {
++	list_for_each_entry_safe(domain, tmp, &domains, list) {
+ 		if (xc_domain_getinfo(*xc_handle, domain->domid, 1,
+ 				      &dominfo) == 1 &&
+ 		    dominfo.domid == domain->domid) {
+-- 
+2.14.1
+

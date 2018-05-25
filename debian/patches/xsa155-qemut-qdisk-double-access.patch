@@ -1,0 +1,48 @@
+From 27942b0cb2327e93deb12326bbe7b36c81f9fa7b Mon Sep 17 00:00:00 2001
+From: Stefano Stabellini <stefano.stabellini@eu.citrix.com>
+Date: Fri, 20 Nov 2015 10:56:00 -0500
+Subject: [PATCH] blkif: Avoid double access to src->nr_segments
+
+src is stored in shared memory and src->nr_segments is dereferenced
+twice at the end of the function.  If a compiler decides to compile this
+into two separate memory accesses then the size limitation could be
+bypassed.
+
+Fix it by removing the double access to src->nr_segments.
+
+This is part of XSA-155.
+
+Signed-off-by: Stefano Stabellini <stefano.stabellini@eu.citrix.com>
+Signed-off-by: Konrad Rzeszutek Wilk <konrad.wilk@oracle.com>
+---
+ qemu/hw/xen_blkif.h | 12 ++++++++----
+ 1 file changed, 8 insertions(+), 4 deletions(-)
+
+--- a/qemu/hw/xen_blkif.h
++++ b/qemu/hw/xen_blkif.h
+@@ -79,8 +79,10 @@
+ 	dst->handle = src->handle;
+ 	dst->id = src->id;
+ 	dst->sector_number = src->sector_number;
+-	if (n > src->nr_segments)
+-		n = src->nr_segments;
++	/* prevent the compiler from optimizing the code and using src->nr_segments instead */
++	xen_mb();
++	if (n > dst->nr_segments)
++		n = dst->nr_segments;
+ 	for (i = 0; i < n; i++)
+ 		dst->seg[i] = src->seg[i];
+ }
+@@ -94,8 +96,10 @@
+ 	dst->handle = src->handle;
+ 	dst->id = src->id;
+ 	dst->sector_number = src->sector_number;
+-	if (n > src->nr_segments)
+-		n = src->nr_segments;
++	/* prevent the compiler from optimizing the code and using src->nr_segments instead */
++	xen_mb();
++	if (n > dst->nr_segments)
++		n = dst->nr_segments;
+ 	for (i = 0; i < n; i++)
+ 		dst->seg[i] = src->seg[i];
+ }
