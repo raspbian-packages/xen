@@ -14,7 +14,6 @@ CFLAGS    += -Wno-unused
 CFLAGS    += -fno-strict-aliasing
 CFLAGS    += -I$(BLKTAP_ROOT)/include -I$(BLKTAP_ROOT)/drivers
 CFLAGS    += $(CFLAGS_libxenctrl)
-CFLAGS    += -I $(LIBAIO_DIR)
 CFLAGS    += -I $(MEMSHR_DIR)
 CFLAGS    += -D_GNU_SOURCE
 CFLAGS    += -DUSE_NFS_LOCKS
@@ -40,7 +39,6 @@ REMUS-OBJS  += hashtable_utility.o
 
 $(REMUS-OBJS): CFLAGS += -I$(XEN_XENSTORE)
 
-LIBAIO_DIR = $(XEN_ROOT)/tools/libaio/src
 MEMSHR_DIR = $(XEN_ROOT)/tools/memshr
 
 MEMSHRLIBS :=
@@ -49,8 +47,8 @@ CFLAGS += -DMEMSHR
 MEMSHRLIBS += $(MEMSHR_DIR)/libmemshr.a
 endif
 
-tapdisk2 tapdisk-stream tapdisk-diff $(QCOW_UTIL): AIOLIBS := $(LIBAIO_DIR)/libaio.a 
-tapdisk-client tapdisk-stream tapdisk-diff $(QCOW_UTIL): CFLAGS  += -I$(LIBAIO_DIR) -I$(XEN_LIBXC)
+tapdisk2 tapdisk-stream tapdisk-diff $(QCOW_UTIL): AIOLIBS := -laio
+tapdisk-client tapdisk-stream tapdisk-diff $(QCOW_UTIL): CFLAGS  += -I$(XEN_LIBXC)
 
 ifeq ($(VHD_STATIC),y)
 td-util: CFLAGS += -static
