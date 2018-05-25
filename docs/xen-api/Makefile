@@ -6,35 +6,30 @@ include $(XEN_ROOT)/docs/Docs.mk
 
 
 TEX := $(wildcard *.tex)
-EPS := $(wildcard *.eps)
-EPSDOT := $(patsubst %.dot,%.eps,$(wildcard *.dot))
+PDFEPS := $(patsubst %.eps,%.pdf,$(wildcard *.eps))
+PDFDOT := $(patsubst %.dot,%.pdf,$(wildcard *.dot))
 
 .PHONY: all
 all: build
 
 .PHONY: build
-build: xenapi.pdf xenapi.ps
+build: xenapi.pdf
 
 install:
-	$(INSTALL_DIR) $(DESTDIR)$(DOCDIR)/ps
-	$(INSTALL_DIR) $(DESTDIR)$(DOCDIR)/pdf
+	$(INSTALL_DIR) $(DESTDIR)$(DOCDIR)
 
-	[ -e xenapi.ps ] && cp xenapi.ps $(DESTDIR)$(DOCDIR)/ps || true
-	[ -e xenapi.pdf ] && cp xenapi.pdf $(DESTDIR)$(DOCDIR)/pdf || true
+	[ -e xenapi.pdf ] && cp xenapi.pdf $(DESTDIR)$(DOCDIR) || true
 
-xenapi.dvi: $(TEX) $(EPS) $(EPSDOT)
-	$(LATEX) xenapi.tex
-	$(LATEX) xenapi.tex
+xenapi.pdf: $(TEX) $(PDFEPS) $(PDFDOT)
+	$(PDFLATEX) xenapi.tex
+	$(PDFLATEX) xenapi.tex
 	rm -f *.aux *.log
 
-%.pdf: %.ps
-	$(PS2PDF) $< $@
+%.pdf: %.eps
+	$(EPSTOPDF) $<
 
-%.ps: %.dvi
-	$(DVIPS) $< -o $@
-
-%.eps: %.dot
-	$(DOT) -Tps $< >$@
+%.pdf: %.dot
+	$(DOT) -Tpdf $< >$@
 
 xenapi-datamodel-graph.eps: xenapi-datamodel-graph.dot
 	$(NEATO) -Goverlap=false -Tps $< >$@
