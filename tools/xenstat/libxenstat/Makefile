@@ -40,16 +40,12 @@ CFLAGS+=-Isrc -I$(XEN_LIBXC) -I$(XEN_XENSTORE) -I$(XEN_INCLUDE)
 LDFLAGS+=-Lsrc -L$(XEN_XENSTORE)/ -L$(XEN_LIBXC)/
 LDLIBS-y = -lxenstore -lxenctrl
 LDLIBS-$(CONFIG_SunOS) += -lkstat
-ARLIBS-y = $(XEN_XENSTORE)/libxenstore.so $(XEN_LIBXC)/libxenctrl.so
-ARLIBS-x86_64 = /usr/lib/amd64/libkstat.so
-ARLIBS-x86_32 = /usr/lib/libkstat.so
-ARLIBS-$(CONFIG_SunOS) += $(ARLIBS-$(XEN_TARGET_ARCH))
 
 .PHONY: all
 all: $(LIB)
 
 $(LIB): $(OBJECTS-y)
-	$(AR) rc $@ $^ $(ARLIBS-y)
+	$(AR) rc $@ $^
 	$(RANLIB) $@
 
 $(SHLIB): $(OBJECTS-y)
