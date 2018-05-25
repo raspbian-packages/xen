@@ -50,7 +50,7 @@ clean:
 	$(CC) -c $(CFLAGS) -o $@ $<
 
 xen-hvmctx xen-hvmcrash xenperf xenpm gtracestat xenlockprof xen-hptool xenwatchdogd: %: %.o Makefile
-	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest) $(LDLIBS_libxenstore)
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest) $(LDLIBS_libxenstore) $(call LDFLAGS_RPATH,../lib)
 
 gtraceview: %: %.o Makefile
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS) $(CURSES_LIBS)
