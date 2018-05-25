@@ -1,0 +1,29 @@
+From 7e370cbc569f2b6b8c72a2327d14381891be3c1b Mon Sep 17 00:00:00 2001
+From: Peter Dreuw <peter.dreuw@credativ.de>
+Date: Fri, 15 Sep 2017 15:38:30 +0200
+Subject: [PATCH 17/18] added missing macro definition for i386 support
+
+---
+ xen/include/asm-x86/x86_32/page.h | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/xen/include/asm-x86/x86_32/page.h b/xen/include/asm-x86/x86_32/page.h
+index a8a23e8f7..e9c918788 100644
+--- a/xen/include/asm-x86/x86_32/page.h
++++ b/xen/include/asm-x86/x86_32/page.h
+@@ -125,6 +125,12 @@ extern unsigned int PAGE_HYPERVISOR_NOCACHE;
+ #define get_pte_flags(x) (((int)((x) >> 32) & ~0xFFF) | ((int)(x) & 0xFFF))
+ #define put_pte_flags(x) (((intpte_t)((x) & ~0xFFF) << 32) | ((x) & 0xFFF))
+ 
++/*
++ * Bit 12 of a 24-bit flag mask. This corresponds to bit 52 of a pte.
++ * This is needed to distinguish between user and kernel PTEs since _PAGE_USER
++ * is asserted for both.
++ */
++#define _PAGE_GUEST_KERNEL (1U<<12)
+ /*
+  * Disallow unused flag bits plus PAT/PSE, PCD, PWT and GLOBAL.
+  * Permit the NX bit if the hardware supports it.
+-- 
+2.14.1
+

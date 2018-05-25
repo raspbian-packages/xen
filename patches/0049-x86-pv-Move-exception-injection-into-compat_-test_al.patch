@@ -1,0 +1,127 @@
+From 68b9b11d194866f8b7db555233c3116b690affef Mon Sep 17 00:00:00 2001
+From: Andrew Cooper <andrew.cooper3@citrix.com>
+Date: Tue, 15 May 2018 14:18:59 +0200
+Subject: [PATCH 49/52] x86/pv: Move exception injection into
+ {,compat_}test_all_events()
+
+This allows paths to jump straight to {,compat_}test_all_events() and have
+injection of pending exceptions happen automatically, rather than requiring
+all calling paths to handle exceptions themselves.
+
+The normal exception path is simplified as a result, and
+compat_post_handle_exception() is removed entirely.
+
+This is part of XSA-260 / CVE-2018-8897.
+
+Signed-off-by: Andrew Cooper <andrew.cooper3@citrix.com>
+Reviewed-by: Jan Beulich <jbeulich@suse.com>
+
+Adapted to Xen 4.1 by Peter Dreuw <peter.dreuw@credativ.de>
+---
+ xen/arch/x86/x86_64/compat/entry.S | 24 +++++++++++++++---------
+ xen/arch/x86/x86_64/entry.S        | 24 ++++++++++++++++--------
+ 2 files changed, 31 insertions(+), 17 deletions(-)
+
+diff --git a/xen/arch/x86/x86_64/compat/entry.S b/xen/arch/x86/x86_64/compat/entry.S
+index 3cda2e61e..47b3201ad 100644
+--- a/xen/arch/x86/x86_64/compat/entry.S
++++ b/xen/arch/x86/x86_64/compat/entry.S
+@@ -102,6 +102,12 @@ ENTRY(compat_test_all_events)
+         leaq  irq_stat(%rip),%rcx
+         testl $~0,(%rcx,%rax,1)
+         jnz   compat_process_softirqs
++
++        /* Inject exception if pending. */
++        lea   VCPU_trap_bounce(%rbx), %rdx
++        testb $TBF_EXCEPTION, TRAPBOUNCE_flags(%rdx)
++        jnz   .Lcompat_process_trapbounce
++
+         testb $1,VCPU_mce_pending(%rbx)
+         jnz   compat_process_mce
+ .Lcompat_test_guest_nmi:
+@@ -131,6 +137,15 @@ compat_process_softirqs:
+         call  do_softirq
+         jmp   compat_test_all_events
+ 
++        ALIGN
++/* %rbx: struct vcpu, %rdx: struct trap_bounce */
++.Lcompat_process_trapbounce:
++        sti
++.Lcompat_bounce_exception:
++        call  compat_create_bounce_frame
++        movb  $0, TRAPBOUNCE_flags(%rdx)
++        jmp   compat_test_all_events
++
+ 	ALIGN
+ /* %rbx: struct vcpu */
+ compat_process_mce:
+@@ -216,15 +231,6 @@ compat_failsafe_callback:
+         _ASM_PRE_EXTABLE(.Lft0, .Lfx0)
+         _ASM_EXTABLE(.Ldf0, compat_failsafe_callback)
+ 
+-/* %rdx: trap_bounce, %rbx: struct vcpu */
+-ENTRY(compat_post_handle_exception)
+-        testb $TBF_EXCEPTION,TRAPBOUNCE_flags(%rdx)
+-        jz    compat_test_all_events
+-.Lcompat_bounce_exception:
+-        call  compat_create_bounce_frame
+-        movb  $0,TRAPBOUNCE_flags(%rdx)
+-        jmp   compat_test_all_events
+-
+ ENTRY(compat_syscall)
+         cmpb  $0,VCPU_syscall32_disables_events(%rbx)
+         movzwl VCPU_syscall32_sel(%rbx),%esi
+diff --git a/xen/arch/x86/x86_64/entry.S b/xen/arch/x86/x86_64/entry.S
+index 61343e69a..4c39d4a5e 100644
+--- a/xen/arch/x86/x86_64/entry.S
++++ b/xen/arch/x86/x86_64/entry.S
+@@ -202,7 +202,13 @@ test_all_events:
+         leaq  irq_stat(%rip),%rcx
+         testl $~0,(%rcx,%rax,1)
+         jnz   process_softirqs
+-        testb $1,VCPU_mce_pending(%rbx)
++
++        /* Inject exception if pending. */
++        lea   VCPU_trap_bounce(%rbx), %rdx
++        testb $TBF_EXCEPTION, TRAPBOUNCE_flags(%rdx)
++        jnz   .Lprocess_trapbounce
++
++	testb $1,VCPU_mce_pending(%rbx)
+         jnz   process_mce
+ .Ltest_guest_nmi:
+         testb $1,VCPU_nmi_pending(%rbx)
+@@ -222,6 +228,15 @@ test_guest_events:
+         call  create_bounce_frame
+         jmp   test_all_events
+ 
++        ALIGN
++/* %rbx: struct vcpu, %rdx struct trap_bounce */
++.Lprocess_trapbounce:
++        sti
++.Lbounce_exception:
++        call  create_bounce_frame
++        movb  $0, TRAPBOUNCE_flags(%rdx)
++        jmp   test_all_events
++
+         ALIGN
+ /* %rbx: struct vcpu */
+ process_softirqs:
+@@ -497,15 +512,8 @@ handle_exception_saved:
+         callq *(%rdx,%rax,8)
+         testb $3,UREGS_cs(%rsp)
+         jz    restore_all_xen
+-        leaq  VCPU_trap_bounce(%rbx),%rdx
+         movq  VCPU_domain(%rbx),%rax
+         testb $1,DOMAIN_is_32bit_pv(%rax)
+-        jnz   compat_post_handle_exception
+-        testb $TBF_EXCEPTION,TRAPBOUNCE_flags(%rdx)
+-        jz    test_all_events
+-.Lbounce_exception:
+-        call  create_bounce_frame
+-        movb  $0,TRAPBOUNCE_flags(%rdx)
+         jmp   test_all_events
+ 
+ /* No special register assumptions. */
+-- 
+2.17.0
+

@@ -1,0 +1,40 @@
+pre-fill structures for certain HYPERVISOR_xen_version sub-ops
+
+... avoiding to pass hypervisor stack contents back to the caller
+through space unused by the respective strings.
+
+This is XSA-122.
+
+Acked-by: Jan Beulich <jbeulich@suse.com>
+
+Index: xen-4.1.4/xen/common/kernel.c
+===================================================================
+--- xen-4.1.4.orig/xen/common/kernel.c	2015-03-04 17:36:18.000000000 +0200
++++ xen-4.1.4/xen/common/kernel.c	2015-03-04 17:51:17.000000000 +0200
+@@ -218,6 +218,8 @@
+     case XENVER_extraversion:
+     {
+         xen_extraversion_t extraversion;
++
++        memset(extraversion, 0, sizeof(extraversion));
+         safe_strcpy(extraversion, xen_extra_version());
+         if ( copy_to_guest(arg, extraversion, ARRAY_SIZE(extraversion)) )
+             return -EFAULT;
+@@ -227,6 +229,8 @@
+     case XENVER_compile_info:
+     {
+         struct xen_compile_info info;
++
++        memset(&info, 0, sizeof(info));
+         safe_strcpy(info.compiler,       xen_compiler());
+         safe_strcpy(info.compile_by,     xen_compile_system_maintainer_local());
+         safe_strcpy(info.compile_domain, xen_compile_system_maintainer_domain());
+@@ -263,6 +267,8 @@
+     case XENVER_changeset:
+     {
+         xen_changeset_info_t chgset;
++
++        memset(chgset, 0, sizeof(chgset));
+         safe_strcpy(chgset, xen_changeset());
+         if ( copy_to_guest(arg, chgset, ARRAY_SIZE(chgset)) )
+             return -EFAULT;

@@ -1,0 +1,87 @@
+From 968c201337aa6d09d560563022a9ceeca6b30434 Mon Sep 17 00:00:00 2001
+From: Jan Beulich <jbeulich@suse.com>
+Date: Tue, 15 May 2018 14:27:51 +0200
+Subject: [PATCH 52/52] x86/HVM: guard against emulator driving ioreq state in
+ weird ways
+
+In the case where hvm_wait_for_io() calls wait_on_xen_event_channel(),
+p->state ends up being read twice in succession: once to determine that
+state != p->state, and then again at the top of the loop.  This gives a
+compromised emulator a chance to change the state back between the two
+reads, potentially keeping Xen in a loop indefinitely.
+
+Instead:
+* Read p->state once in each of the wait_on_xen_event_channel() tests,
+* re-use that value the next time around,
+* and insist that the states continue to transition "forward" (with the
+  exception of the transition to STATE_IOREQ_NONE).
+
+This is XSA-262.
+
+Signed-off-by: Jan Beulich <jbeulich@suse.com>
+Reviewed-by: George Dunlap <george.dunlap@citrix.com>
+
+Patch adapted to Xen 4.1 by: Peter Dreuw <peter.dreuw@credativ.de>
+---
+ xen/arch/x86/hvm/hvm.c | 31 +++++++++++++++++++++++++++----
+ 1 file changed, 27 insertions(+), 4 deletions(-)
+
+diff --git a/xen/arch/x86/hvm/hvm.c b/xen/arch/x86/hvm/hvm.c
+index 6c2bdc330..4f8cd27da 100644
+--- a/xen/arch/x86/hvm/hvm.c
++++ b/xen/arch/x86/hvm/hvm.c
+@@ -317,6 +317,7 @@ void hvm_do_resume(struct vcpu *v)
+ {
+     ioreq_t *p;
+     unsigned int state;
++    unsigned int prev_state = STATE_IOREQ_NONE;
+ 
+     pt_restore_timer(v);
+ 
+@@ -326,17 +327,39 @@ void hvm_do_resume(struct vcpu *v)
+     p = get_ioreq(v);
+     while ( (state = p->state) != STATE_IOREQ_NONE )
+     {
+-        rmb();
+-        switch ( state )
++        smp_rmb();
++    recheck:
++        if ( unlikely(state == STATE_IOREQ_NONE) )
+         {
++            /*
++             * The only reason we should see this case is when an
++             * emulator is dying and it races with an I/O being
++             * requested.
++             */
++            hvm_io_assist();
++        }
++        if ( unlikely(state < prev_state) )
++        {
++            gdprintk(XENLOG_ERR, "Weird HVM ioreq state transition %u -> %u\n",
++                     prev_state, state);
++            domain_crash(v->domain);
++            return; /* bail */
++        }
++
++        switch ( prev_state = state )
++        {
++
++
+         case STATE_IORESP_READY: /* IORESP_READY -> NONE */
+             hvm_io_assist();
+             break;
+         case STATE_IOREQ_READY:  /* IOREQ_{READY,INPROCESS} -> IORESP_READY */
+         case STATE_IOREQ_INPROCESS:
+             wait_on_xen_event_channel(v->arch.hvm_vcpu.xen_port,
+-                                      p->state != state);
+-            break;
++                                      ({ state = p->state;
++                                         smp_rmb();
++                                         state != prev_state; }));
++            goto recheck;
+         default:
+             gdprintk(XENLOG_ERR, "Weird HVM iorequest state %u\n", state);
+             domain_crash(v->domain);
+-- 
+2.17.0
+

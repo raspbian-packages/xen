@@ -1,0 +1,86 @@
+From 08df6257e89292b7af2d70627cfb61366d337abe Mon Sep 17 00:00:00 2001
+From: George Dunlap <george.dunlap@citrix.com>
+Date: Thu, 14 Sep 2017 14:07:27 +0200
+Subject: [PATCH 10/16] xen/mm: make sure node is less than MAX_NUMNODES
+
+The output of MEMF_get_node(memflags) can be as large as nodeid_t can
+hold (currently 255).  This is then used as an index to arrays of size
+MAX_NUMNODE, which is 64 on x86 and 1 on ARM, can be passed in by an
+untrusted guest (via memory_exchange and increase_reservation) and is
+not currently bounds-checked.
+
+Check the value in page_alloc.c before using it, and also check the
+value in the hypercall call sites and return -EINVAL if appropriate.
+Don't permit domains other than the hardware or control domain to
+allocate node-constrained memory.
+
+This is XSA-231.
+
+Reported-by: Matthew Daley <mattd@bugfuzz.com>
+Signed-off-by: George Dunlap <george.dunlap@citrix.com>
+Signed-off-by: Jan Beulich <jbeulich@suse.com>
+Reviewed-by: Andrew Cooper <andrew.cooper3@citrix.com>
+---
+ xen/common/memory.c     | 12 ++++++++----
+ xen/common/page_alloc.c |  6 +++++-
+ 2 files changed, 13 insertions(+), 5 deletions(-)
+
+diff --git a/xen/common/memory.c b/xen/common/memory.c
+index 0c831ddb6..76fda8a3d 100644
+--- a/xen/common/memory.c
++++ b/xen/common/memory.c
+@@ -341,6 +341,12 @@ static long memory_exchange(XEN_GUEST_HANDLE(xen_memory_exchange_t) arg)
+         }
+     }
+ 
++    if ( unlikely(!propagate_node(exch.out.mem_flags, &memflags)) )
++    {
++        rc = -EINVAL;
++        goto fail_early;
++    }
++    
+     rc = rcu_lock_target_domain_by_id(exch.in.domid, &d);
+     if ( rc )
+         goto fail_early;
+@@ -349,7 +355,6 @@ static long memory_exchange(XEN_GUEST_HANDLE(xen_memory_exchange_t) arg)
+         d,
+         XENMEMF_get_address_bits(exch.out.mem_flags) ? :
+         (BITS_PER_LONG+PAGE_SHIFT)));
+-    memflags |= MEMF_node(XENMEMF_get_node(exch.out.mem_flags));
+ 
+     for ( i = (exch.nr_exchanged >> in_chunk_order);
+           i < (exch.in.nr_extents >> in_chunk_order);
+@@ -571,9 +576,8 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE(void) arg)
+             args.memflags = MEMF_bits(address_bits);
+         }
+ 
+-        args.memflags |= MEMF_node(XENMEMF_get_node(reservation.mem_flags));
+-        if ( reservation.mem_flags & XENMEMF_exact_node_request )
+-            args.memflags |= MEMF_exact_node;
++        if ( unlikely(!propagate_node(reservation.mem_flags, &args.memflags)) )
++            return -EINVAL;
+ 
+         if ( op == XENMEM_populate_physmap
+              && (reservation.mem_flags & XENMEMF_populate_on_demand) )
+diff --git a/xen/common/page_alloc.c b/xen/common/page_alloc.c
+index 72fc0e79e..464e2a333 100644
+--- a/xen/common/page_alloc.c
++++ b/xen/common/page_alloc.c
+@@ -377,9 +377,13 @@ static struct page_info *alloc_heap_pages(
+         if ( node >= MAX_NUMNODES )
+             node = cpu_to_node(smp_processor_id());
+     }
++    else if ( unlikely(node >= MAX_NUMNODES) )
++    {
++        ASSERT_UNREACHABLE();
++        return NULL;
++    }
+     first_node = node;
+ 
+-    ASSERT(node >= 0);
+     ASSERT(zone_lo <= zone_hi);
+     ASSERT(zone_hi < NR_ZONES);
+ 
+-- 
+2.14.1
+

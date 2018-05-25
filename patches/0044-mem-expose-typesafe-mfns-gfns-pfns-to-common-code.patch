@@ -1,0 +1,188 @@
+From 7312f3f39b2e60116c173384c8af67c8649f091f Mon Sep 17 00:00:00 2001
+From: Andrew Cooper <andrew.cooper3@citrix.com>
+Date: Fri, 2 Mar 2018 14:11:53 +0100
+Subject: [PATCH 44/47] mem: expose typesafe mfns/gfns/pfns to common code
+
+As the first step of memory management cleanup, introduce the common code to
+mfn_t, gfn_t and pfn_t.
+
+The typesafe construction moves to its own header file, while the declarations
+and sentinal values are moved to being common.
+
+No functional change.
+
+Signed-off-by: Andrew Cooper <andrew.cooper3@citrix.com>
+Acked-by: Tim Deegan <tim@xen.org>
+
+Backported-by: Felix Geyer <felix.geyer@credativ.de>
+---
+ xen/include/asm-x86/guest_pt.h |  4 ----
+ xen/include/asm-x86/mm.h       | 32 -----------------------------
+ xen/include/asm-x86/paging.h   |  1 -
+ xen/include/xen/mm.h           | 19 +++++++++++++++++
+ xen/include/xen/typesafe.h     | 46 ++++++++++++++++++++++++++++++++++++++++++
+ 5 files changed, 65 insertions(+), 37 deletions(-)
+ create mode 100644 xen/include/xen/typesafe.h
+
+diff --git a/xen/include/asm-x86/guest_pt.h b/xen/include/asm-x86/guest_pt.h
+index 39bb615bf..e597208b6 100644
+--- a/xen/include/asm-x86/guest_pt.h
++++ b/xen/include/asm-x86/guest_pt.h
+@@ -33,10 +33,6 @@
+ #error GUEST_PAGING_LEVELS not defined
+ #endif
+ 
+-/* Type of the guest's frame numbers */
+-TYPE_SAFE(unsigned long,gfn)
+-#define PRI_gfn "05lx"
+-
+ #define VALID_GFN(m) (m != INVALID_GFN)
+ 
+ static inline int
+diff --git a/xen/include/asm-x86/mm.h b/xen/include/asm-x86/mm.h
+index 03dddd4f3..0b817a5f5 100644
+--- a/xen/include/asm-x86/mm.h
++++ b/xen/include/asm-x86/mm.h
+@@ -435,36 +435,6 @@ extern bool_t mem_hotplug;
+  * guest L2 page), etc...
+  */
+ 
+-/* With this defined, we do some ugly things to force the compiler to
+- * give us type safety between mfns and gfns and other integers.
+- * TYPE_SAFE(int foo) defines a foo_t, and _foo() and foo_x() functions 
+- * that translate beween int and foo_t.
+- * 
+- * It does have some performance cost because the types now have 
+- * a different storage attribute, so may not want it on all the time. */
+-
+-#ifndef NDEBUG
+-#define TYPE_SAFETY 1
+-#endif
+-
+-#ifdef TYPE_SAFETY
+-#define TYPE_SAFE(_type,_name)                                  \
+-typedef struct { _type _name; } _name##_t;                      \
+-static inline _name##_t _##_name(_type n) { return (_name##_t) { n }; } \
+-static inline _type _name##_x(_name##_t n) { return n._name; }
+-#else
+-#define TYPE_SAFE(_type,_name)                                          \
+-typedef _type _name##_t;                                                \
+-static inline _name##_t _##_name(_type n) { return n; }                 \
+-static inline _type _name##_x(_name##_t n) { return n; }
+-#endif
+-
+-TYPE_SAFE(unsigned long,mfn);
+-
+-/* Macro for printk formats: use as printk("%"PRI_mfn"\n", mfn_x(foo)); */
+-#define PRI_mfn "05lx"
+-
+-
+ /*
+  * The MPT (machine->physical mapping table) is an array of word-sized
+  * values, indexed on machine frame number. It is expected that guest OSes
+@@ -504,8 +474,6 @@ TYPE_SAFE(unsigned long,mfn);
+       ? get_gpfn_from_mfn(mfn)                          \
+       : (mfn) )
+ 
+-#define INVALID_MFN             (~0UL)
+-
+ #define compat_pfn_to_cr3(pfn) (((unsigned)(pfn) << 12) | ((unsigned)(pfn) >> 20))
+ #define compat_cr3_to_pfn(cr3) (((unsigned)(cr3) >> 12) | ((unsigned)(cr3) << 20))
+ 
+diff --git a/xen/include/asm-x86/paging.h b/xen/include/asm-x86/paging.h
+index df7357e6e..442d913a9 100644
+--- a/xen/include/asm-x86/paging.h
++++ b/xen/include/asm-x86/paging.h
+@@ -247,7 +247,6 @@ static inline int paging_invlpg(struct vcpu *v, unsigned long va)
+  * pfec[0] is used to determine which kind of access this is when
+  * walking the tables.  The caller should set the PFEC_page_present bit
+  * in pfec[0]; in the failure case, that bit will be cleared if appropriate. */
+-#define INVALID_GFN (-1UL)
+ static inline unsigned long paging_gva_to_gfn(struct vcpu *v, 
+                                               unsigned long va,
+                                               uint32_t *pfec)
+diff --git a/xen/include/xen/mm.h b/xen/include/xen/mm.h
+index e0d83541c..7a64d9d03 100644
+--- a/xen/include/xen/mm.h
++++ b/xen/include/xen/mm.h
+@@ -32,6 +32,25 @@
+ #include <xen/types.h>
+ #include <xen/list.h>
+ #include <xen/spinlock.h>
++#include <xen/typesafe.h>
++
++TYPE_SAFE(unsigned long, mfn);
++#define PRI_mfn          "05lx"
++#define INVALID_MFN      (~0UL)
++
++#ifndef mfn_t
++#define mfn_t /* Grep fodder: mfn_t, _mfn() and mfn_x() are defined above */
++#undef mfn_t
++#endif
++
++TYPE_SAFE(unsigned long, gfn);
++#define PRI_gfn          "05lx"
++#define INVALID_GFN      (~0UL)
++
++#ifndef gfn_t
++#define gfn_t /* Grep fodder: gfn_t, _gfn() and gfn_x() are defined above */
++#undef gfn_t
++#endif
+ 
+ struct domain;
+ struct page_info;
+diff --git a/xen/include/xen/typesafe.h b/xen/include/xen/typesafe.h
+new file mode 100644
+index 000000000..7ecd3b4a8
+--- /dev/null
++++ b/xen/include/xen/typesafe.h
+@@ -0,0 +1,46 @@
++#ifndef __XEN_TYPESAFE_H__
++#define __XEN_TYPESAFE_H__
++
++/*
++ * Compiler games to gain type safety between different logical integers.
++ *
++ * TYPE_SAFE($TYPE, $FOO) declares:
++ *  * $FOO_t   which encapsulates $TYPE
++ *  * _$FOO()  which boxes a $TYPE as a $FOO_t
++ *  * $FOO_x() which unboxes a $FOO_t to $TYPE
++ *
++ * This makes a $FOO_t and a $BAR_t incompatible even when the box the same
++ * $TYPE.
++ *
++ * It does have some performance cost because the types now have a different
++ * storage attribute, so type safety is only enforced in a debug build.
++ * Non-debug builds degrade to a simple typedef and noops for the functions.
++ */
++
++#ifndef NDEBUG
++
++#define TYPE_SAFE(_type, _name)                                         \
++    typedef struct { _type _name; } _name##_t;                          \
++    static inline _name##_t _##_name(_type n) { return (_name##_t) { n }; } \
++    static inline _type _name##_x(_name##_t n) { return n._name; }
++
++#else
++
++#define TYPE_SAFE(_type, _name)                                         \
++    typedef _type _name##_t;                                            \
++    static inline _name##_t _##_name(_type n) { return n; }             \
++    static inline _type _name##_x(_name##_t n) { return n; }
++
++#endif
++
++#endif /* __XEN_TYPESAFE_H__ */
++
++/*
++ * Local variables:
++ * mode: C
++ * c-file-style: "BSD"
++ * c-basic-offset: 4
++ * tab-width: 4
++ * indent-tabs-mode: nil
++ * End:
++ */
+-- 
+2.16.1
+

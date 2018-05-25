@@ -1,0 +1,27 @@
+x86: fix information leak on AMD CPUs
+
+The fix for XSA-52 was wrong, and so was the change synchronizing that
+new behavior to the FXRSTOR logic: AMD's manuals explictly state that
+writes to the ES bit are ignored, and it instead gets calculated from
+the exception and mask bits (it gets set whenever there is an unmasked
+exception, and cleared otherwise). Hence we need to follow that model
+in our workaround.
+
+This is XSA-172 / CVE-2016-3158.
+
+Signed-off-by: Jan Beulich <jbeulich@suse.com>
+Reviewed-by: Andrew Cooper <andrew.cooper3@citrix.com>
+
+Index: xen-4.1.6.1/xen/arch/x86/i387.c
+===================================================================
+--- xen-4.1.6.1.orig/xen/arch/x86/i387.c	2016-05-31 09:28:06.000000000 +0000
++++ xen-4.1.6.1/xen/arch/x86/i387.c	2016-05-31 09:52:08.000000000 +0000
+@@ -52,7 +52,7 @@
+      * data block as a safe address because it should be in L1.
+      */
+     if ( (ptr->xsave_hdr.xstate_bv & XSTATE_FP) &&
+-         !(ptr->fpu_sse.fsw & 0x0080) &&
++         !(ptr->fpu_sse.fsw & ~ptr->fpu_sse.fcw & 0x003f) &&
+          boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
+         asm volatile ( "fnclex\n\t"        /* clear exceptions */
+                        "ffree %%st(7)\n\t" /* clear stack tag */

@@ -1,0 +1,104 @@
+From d6a1273b2047a2d801eeaebdb1b3cee2063714dd Mon Sep 17 00:00:00 2001
+From: Andrew Cooper <andrew.cooper3@citrix.com>
+Date: Thu, 14 Sep 2017 13:45:50 +0200
+Subject: [PATCH 08/16] grant_table: Default to v1, and disallow transitive
+ grants
+
+The reference counting and locking discipline for transitive grants is broken.
+Their use is therefore declared out of security support.
+
+This is XSA-226.
+
+Transitive grants are expected to be unconditionally available with grant
+table v2.  Hiding transitive grants alone is an ABI breakage for the guest.
+Modern versions of Linux and the Windows PV drivers use grant table v1, but
+older versions did use v2.
+
+In principle, disabling gnttab v2 entirely is the safer way to cause guests to
+avoid using transitive grants. However, some older guests which defaulted to
+using gnttab v2 don't tolerate falling back from v2 to v1 over migrate.
+
+This patch introduces a new command line option to control grant table
+behaviour.  One suboption allows a choice of the maximum grant table version
+Xen will allow the guest to use, and defaults to v2.  A different suboption
+independently controls whether transitive grants can be used.
+
+The default case is:
+
+    gnttab=max_ver:2
+
+To disable gnttab v2 entirely, use:
+
+    gnttab=max_ver:1
+
+To allow gnttab v2 and transitive grants, use:
+
+    gnttab=max_ver:2,transitive
+
+Reported-by: Jan Beulich <jbeulich@suse.com>
+Signed-off-by: Andrew Cooper <andrew.cooper3@citrix.com>
+---
+ xen/common/grant_table.c | 40 +++++++++++++++++++++++++++++++++++++++-
+ 1 file changed, 39 insertions(+), 1 deletion(-)
+
+diff --git a/xen/common/grant_table.c b/xen/common/grant_table.c
+index 6c688dabc..60616c83f 100644
+--- a/xen/common/grant_table.c
++++ b/xen/common/grant_table.c
+@@ -51,6 +51,41 @@ integer_param("gnttab_max_nr_frames", max_nr_grant_frames);
+ unsigned int __read_mostly max_grant_frames;
+ integer_param("gnttab_max_frames", max_grant_frames);
+ 
++static unsigned int __read_mostly opt_gnttab_max_version = 2;
++static bool_t __read_mostly opt_transitive_grants;
++
++static void __init parse_gnttab(char *s)
++{
++    char *ss;
++
++    do {
++        ss = strchr(s, ',');
++        if ( ss )
++            *ss = '\0';
++
++        if ( !strncmp(s, "max_ver:", 8) )
++        {
++            long ver = simple_strtol(s + 8, NULL, 10);
++
++            if ( ver >= 1 && ver <= 2 )
++                opt_gnttab_max_version = ver;
++        }
++        else
++        {
++            bool_t val = !!strncmp(s, "no-", 3);
++
++            if ( !val )
++                s += 3;
++
++            if ( !strcmp(s, "transitive") )
++                opt_transitive_grants = val;
++        }
++
++        s = ss + 1;
++    } while ( ss );
++}
++
++custom_param("gnttab", parse_gnttab);
+ 
+ /* The maximum number of grant mappings is defined as a multiplier of the
+  * maximum number of grant table entries. This defines the multiplier used.
+@@ -2802,7 +2837,10 @@ do_grant_table_op(
+     }
+     case GNTTABOP_set_version:
+     {
+-        rc = gnttab_set_version(guest_handle_cast(uop, gnttab_set_version_t));
++        if ( opt_gnttab_max_version == 1 )
++            rc = -ENOSYS; /* Behave as before set_version was introduced. */
++        else
++            rc = gnttab_set_version(guest_handle_cast(uop, gnttab_set_version_t));
+         break;
+     }
+     case GNTTABOP_get_status_frames:
+-- 
+2.14.1
+

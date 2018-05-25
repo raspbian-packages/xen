@@ -1,0 +1,108 @@
+From dc7f43759e37132c28b8154da4c83fca5efe7478 Mon Sep 17 00:00:00 2001
+From: Peter Dreuw <peter.dreuw@credativ.de>
+Date: Thu, 14 Sep 2017 15:17:30 +0200
+Subject: [PATCH 14/16] picked some functions and #define from 4.6 staging to
+ make the latest xsa patches compile
+
+---
+ xen/common/memory.c        | 25 +++++++++++++++++++++++++
+ xen/include/asm-x86/numa.h |  2 ++
+ xen/include/xen/lib.h      |  2 ++
+ xen/include/xen/mm.h       |  2 ++
+ xen/include/xen/sched.h    |  2 ++
+ 5 files changed, 33 insertions(+)
+
+diff --git a/xen/common/memory.c b/xen/common/memory.c
+index 76fda8a3d..1c55169e5 100644
+--- a/xen/common/memory.c
++++ b/xen/common/memory.c
+@@ -263,6 +263,31 @@ static void decrease_reservation(struct memop_args *a)
+     a->nr_done = i;
+ }
+ 
++static bool_t propagate_node(unsigned int xmf, unsigned int *memflags)
++{
++    const struct domain *currd = current->domain;
++
++    BUILD_BUG_ON(XENMEMF_get_node(0) != NUMA_NO_NODE);
++    BUILD_BUG_ON(MEMF_get_node(0) != NUMA_NO_NODE);
++
++    if ( XENMEMF_get_node(xmf) == NUMA_NO_NODE )
++        return 1;
++
++    if ( is_hardware_domain(currd) || is_control_domain(currd) )
++    {
++        if ( XENMEMF_get_node(xmf) >= MAX_NUMNODES )
++            return 0;
++
++        *memflags |= MEMF_node(XENMEMF_get_node(xmf));
++        if ( xmf & XENMEMF_exact_node_request )
++            *memflags |= MEMF_exact_node;
++    }
++    else if ( xmf & XENMEMF_exact_node_request )
++        return 0;
++
++    return 1;
++}
++
+ static long memory_exchange(XEN_GUEST_HANDLE(xen_memory_exchange_t) arg)
+ {
+     struct xen_memory_exchange exch;
+diff --git a/xen/include/asm-x86/numa.h b/xen/include/asm-x86/numa.h
+index b2a2255eb..0bc1cfaed 100644
+--- a/xen/include/asm-x86/numa.h
++++ b/xen/include/asm-x86/numa.h
+@@ -5,6 +5,8 @@
+ 
+ #define NODES_SHIFT 6
+ 
++typedef u8 nodeid_t;
++
+ extern int srat_rev;
+ 
+ extern unsigned char cpu_to_node[];
+diff --git a/xen/include/xen/lib.h b/xen/include/xen/lib.h
+index 65e4fb8bd..c7e9ac8b5 100644
+--- a/xen/include/xen/lib.h
++++ b/xen/include/xen/lib.h
+@@ -36,8 +36,10 @@ do {                                                            \
+ #ifndef NDEBUG
+ #define ASSERT(p) \
+     do { if ( unlikely(!(p)) ) assert_failed(#p); } while (0)
++#define ASSERT_UNREACHABLE() assert_failed("unreachable")
+ #else
+ #define ASSERT(p) ((void)0)
++#define ASSERT_UNREACHABLE() do { } while (0)
+ #endif
+ 
+ #define ABS(_x) ({                              \
+diff --git a/xen/include/xen/mm.h b/xen/include/xen/mm.h
+index b74e70cbd..e0d83541c 100644
+--- a/xen/include/xen/mm.h
++++ b/xen/include/xen/mm.h
+@@ -91,7 +91,9 @@ int assign_pages(
+ #define _MEMF_exact_node  4
+ #define  MEMF_exact_node  (1U<<_MEMF_exact_node)
+ #define _MEMF_node        8
++#define  MEMF_node_mask   ((1U << (8 * sizeof(nodeid_t))) - 1)
+ #define  MEMF_node(n)     ((((n)+1)&0xff)<<_MEMF_node)
++#define  MEMF_get_node(f) ((((f) >> _MEMF_node) - 1) & MEMF_node_mask)
+ #define _MEMF_bits        24
+ #define  MEMF_bits(n)     ((n)<<_MEMF_bits)
+ 
+diff --git a/xen/include/xen/sched.h b/xen/include/xen/sched.h
+index cfe73a39b..3e515abdf 100644
+--- a/xen/include/xen/sched.h
++++ b/xen/include/xen/sched.h
+@@ -659,6 +659,8 @@ void watchdog_domain_destroy(struct domain *d);
+  */
+ #define is_hardware_domain(_d) ((_d) == dom0)
+ 
++/* This check is for functionality specific to a control domain */
++#define is_control_domain(_d) ((_d)->is_privileged)
+ 
+ #define IS_PRIV(_d) ((_d)->is_privileged)
+ #define IS_PRIV_FOR(_d, _t) (IS_PRIV(_d) || ((_d)->target && (_d)->target == (_t)))
+-- 
+2.14.1
+
