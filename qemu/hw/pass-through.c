@@ -146,6 +146,10 @@ static uint32_t pt_msgaddr64_reg_init(struct pt_dev *ptdev,
     struct pt_reg_info_tbl *reg, uint32_t real_offset);
 static uint32_t pt_msgdata_reg_init(struct pt_dev *ptdev,
     struct pt_reg_info_tbl *reg, uint32_t real_offset);
+static uint32_t pt_mask_reg_init(struct pt_dev *ptdev,
+    struct pt_reg_info_tbl *reg, uint32_t real_offset);
+static uint32_t pt_pending_reg_init(struct pt_dev *ptdev,
+    struct pt_reg_info_tbl *reg, uint32_t real_offset);
 static uint32_t pt_msixctrl_reg_init(struct pt_dev *ptdev,
     struct pt_reg_info_tbl *reg, uint32_t real_offset);
 static uint32_t pt_header_type_reg_init(struct pt_dev *ptdev,
@@ -625,7 +629,7 @@ static struct pt_reg_info_tbl pt_emu_reg_msi_tbl[] = {
         .size       = 2,
         .init_val   = 0x0000,
         .ro_mask    = 0xFF8E,
-        .emu_mask   = 0x007F,
+        .emu_mask   = 0x017F,
         .init       = pt_msgctrl_reg_init,
         .u.w.read   = pt_word_reg_read,
         .u.w.write  = pt_msgctrl_reg_write,
@@ -682,6 +686,50 @@ static struct pt_reg_info_tbl pt_emu_reg_msi_tbl[] = {
         .u.w.read   = pt_word_reg_read,
         .u.w.write  = pt_msgdata_reg_write,
         .u.w.restore  = NULL,
+    },
+    /* Mask reg (if PCI_MSI_FLAGS_MASK_BIT set, for 32-bit devices) */
+    {
+        .offset     = PCI_MSI_MASK_32,
+        .size       = 4,
+        .init_val   = 0x00000000,
+        .ro_mask    = 0xFFFFFFFF,
+        .emu_mask   = 0xFFFFFFFF,
+        .init       = pt_mask_reg_init,
+        .u.dw.read  = pt_long_reg_read,
+        .u.dw.write = pt_long_reg_write,
+    },
+    /* Mask reg (if PCI_MSI_FLAGS_MASK_BIT set, for 64-bit devices) */
+    {
+        .offset     = PCI_MSI_MASK_64,
+        .size       = 4,
+        .init_val   = 0x00000000,
+        .ro_mask    = 0xFFFFFFFF,
+        .emu_mask   = 0xFFFFFFFF,
+        .init       = pt_mask_reg_init,
+        .u.dw.read  = pt_long_reg_read,
+        .u.dw.write = pt_long_reg_write,
+    },
+    /* Pending reg (if PCI_MSI_FLAGS_MASK_BIT set, for 32-bit devices) */
+    {
+        .offset     = PCI_MSI_MASK_32 + 4,
+        .size       = 4,
+        .init_val   = 0x00000000,
+        .ro_mask    = 0xFFFFFFFF,
+        .emu_mask   = 0x00000000,
+        .init       = pt_pending_reg_init,
+        .u.dw.read  = pt_long_reg_read,
+        .u.dw.write = pt_long_reg_write,
+    },
+    /* Pending reg (if PCI_MSI_FLAGS_MASK_BIT set, for 64-bit devices) */
+    {
+        .offset     = PCI_MSI_MASK_64 + 4,
+        .size       = 4,
+        .init_val   = 0x00000000,
+        .ro_mask    = 0xFFFFFFFF,
+        .emu_mask   = 0x00000000,
+        .init       = pt_pending_reg_init,
+        .u.dw.read  = pt_long_reg_read,
+        .u.dw.write = pt_long_reg_write,
     },
     {
         .size = 0,
@@ -2975,6 +3023,42 @@ static uint32_t pt_msgdata_reg_init(struct pt_dev *ptdev,
         return reg->init_val;
     else
         return PT_INVALID_REG;
+}
+
+/* this function will be called twice (for 32 bit and 64 bit type) */
+/* initialize Mask register */
+static uint32_t pt_mask_reg_init(struct pt_dev *ptdev,
+        struct pt_reg_info_tbl *reg, uint32_t real_offset)
+{
+    uint32_t flags = ptdev->msi->flags;
+    uint32_t offset = reg->offset;
+
+    if (!(flags & PCI_MSI_FLAGS_MASK_BIT))
+        return PT_INVALID_REG;
+
+    if (offset == (flags & PCI_MSI_FLAGS_64BIT ?
+                   PCI_MSI_MASK_64 : PCI_MSI_MASK_32))
+        return reg->init_val;
+
+    return PT_INVALID_REG;
+}
+
+/* this function will be called twice (for 32 bit and 64 bit type) */
+/* initialize Pending register */
+static uint32_t pt_pending_reg_init(struct pt_dev *ptdev,
+        struct pt_reg_info_tbl *reg, uint32_t real_offset)
+{
+    uint32_t flags = ptdev->msi->flags;
+    uint32_t offset = reg->offset;
+
+    if (!(flags & PCI_MSI_FLAGS_MASK_BIT))
+        return PT_INVALID_REG;
+
+    if (offset == (flags & PCI_MSI_FLAGS_64BIT ?
+                   PCI_MSI_MASK_64 + 4 : PCI_MSI_MASK_32 + 4))
+        return reg->init_val;
+
+    return PT_INVALID_REG;
 }
 
 /* initialize Message Control register for MSI-X */
