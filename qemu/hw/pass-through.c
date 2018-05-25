@@ -3398,6 +3398,15 @@ static int pt_bar_reg_read(struct pt_dev *ptdev,
 }
 
 
+static uint32_t get_throughable_mask(const struct pt_dev *ptdev,
+                                     const struct pt_reg_info_tbl *reg,
+                                     uint32_t valid_mask)
+{
+    uint32_t throughable_mask = ~(reg->emu_mask | reg->ro_mask);
+
+    return throughable_mask & valid_mask;
+}
+
 /* write byte size emulate register */
 static int pt_byte_reg_write(struct pt_dev *ptdev,
         struct pt_reg_tbl *cfg_entry,
@@ -3405,14 +3414,13 @@ static int pt_byte_reg_write(struct pt_dev *ptdev,
 {
     struct pt_reg_info_tbl *reg = cfg_entry->reg;
     uint8_t writable_mask = 0;
-    uint8_t throughable_mask = 0;
+    uint8_t throughable_mask = get_throughable_mask(ptdev, reg, valid_mask);
 
     /* modify emulate register */
     writable_mask = reg->emu_mask & ~reg->ro_mask & valid_mask;
     cfg_entry->data = PT_MERGE_VALUE(*value, cfg_entry->data, writable_mask);
 
     /* create value for writing to I/O device register */
-    throughable_mask = ~reg->emu_mask & valid_mask;
     *value = PT_MERGE_VALUE(*value, dev_value, throughable_mask);
 
     return 0;
@@ -3425,14 +3433,13 @@ static int pt_word_reg_write(struct pt_dev *ptdev,
 {
     struct pt_reg_info_tbl *reg = cfg_entry->reg;
     uint16_t writable_mask = 0;
-    uint16_t throughable_mask = 0;
+    uint16_t throughable_mask = get_throughable_mask(ptdev, reg, valid_mask);
 
     /* modify emulate register */
     writable_mask = reg->emu_mask & ~reg->ro_mask & valid_mask;
     cfg_entry->data = PT_MERGE_VALUE(*value, cfg_entry->data, writable_mask);
 
     /* create value for writing to I/O device register */
-    throughable_mask = ~reg->emu_mask & valid_mask;
     *value = PT_MERGE_VALUE(*value, dev_value, throughable_mask);
 
     return 0;
@@ -3445,14 +3452,13 @@ static int pt_long_reg_write(struct pt_dev *ptdev,
 {
     struct pt_reg_info_tbl *reg = cfg_entry->reg;
     uint32_t writable_mask = 0;
-    uint32_t throughable_mask = 0;
+    uint32_t throughable_mask = get_throughable_mask(ptdev, reg, valid_mask);
 
     /* modify emulate register */
     writable_mask = reg->emu_mask & ~reg->ro_mask & valid_mask;
     cfg_entry->data = PT_MERGE_VALUE(*value, cfg_entry->data, writable_mask);
 
     /* create value for writing to I/O device register */
-    throughable_mask = ~reg->emu_mask & valid_mask;
     *value = PT_MERGE_VALUE(*value, dev_value, throughable_mask);
 
     return 0;
@@ -3465,7 +3471,7 @@ static int pt_cmd_reg_write(struct pt_dev *ptdev,
 {
     struct pt_reg_info_tbl *reg = cfg_entry->reg;
     uint16_t writable_mask = 0;
-    uint16_t throughable_mask = 0;
+    uint16_t throughable_mask = get_throughable_mask(ptdev, reg, valid_mask);
     uint16_t wr_value = *value;
 
     /* modify emulate register */
@@ -3473,7 +3479,6 @@ static int pt_cmd_reg_write(struct pt_dev *ptdev,
     cfg_entry->data = PT_MERGE_VALUE(*value, cfg_entry->data, writable_mask);
 
     /* create value for writing to I/O device register */
-    throughable_mask = ~reg->emu_mask & valid_mask;
 
     if (*value & PCI_COMMAND_DISABLE_INTx)
     {
@@ -3520,7 +3525,6 @@ static int pt_bar_reg_write(struct pt_dev *ptdev,
     PCIDevice *d = (PCIDevice *)&ptdev->dev;
     PCIIORegion *r;
     uint32_t writable_mask = 0;
-    uint32_t throughable_mask = 0;
     uint32_t bar_emu_mask = 0;
     uint32_t bar_ro_mask = 0;
     uint32_t new_addr, last_addr;
@@ -3649,8 +3653,7 @@ static int pt_bar_reg_write(struct pt_dev *ptdev,
 
 exit:
     /* create value for writing to I/O device register */
-    throughable_mask = ~bar_emu_mask & valid_mask;
-    *value = PT_MERGE_VALUE(*value, dev_value, throughable_mask);
+    *value = PT_MERGE_VALUE(*value, dev_value, 0);
 
     /* After BAR reg update, we need to remap BAR*/
     reg_grp_entry = pt_find_reg_grp(ptdev, PCI_COMMAND);
@@ -3677,9 +3680,8 @@ static int pt_exp_rom_bar_reg_write(struct pt_dev *ptdev,
     PCIDevice *d = (PCIDevice *)&ptdev->dev;
     PCIIORegion *r;
     uint32_t writable_mask = 0;
-    uint32_t throughable_mask = 0;
+    uint32_t throughable_mask = get_throughable_mask(ptdev, reg, valid_mask);
     uint32_t r_size = 0;
-    uint32_t bar_emu_mask = 0;
     uint32_t bar_ro_mask = 0;
 
     r = &d->io_regions[PCI_ROM_SLOT];
@@ -3689,7 +3691,6 @@ static int pt_exp_rom_bar_reg_write(struct pt_dev *ptdev,
     PT_GET_EMUL_SIZE(base->bar_flag, r_size);
 
     /* set emulate mask and read-only mask */
-    bar_emu_mask = reg->emu_mask;
     bar_ro_mask = (reg->ro_mask | (r_size - 1)) & ~PCI_ROM_ADDRESS_ENABLE;
 
     /* modify emulate register */
@@ -3709,7 +3710,6 @@ static int pt_exp_rom_bar_reg_write(struct pt_dev *ptdev,
         r->addr = cfg_entry->data;
 
     /* create value for writing to I/O device register */
-    throughable_mask = ~bar_emu_mask & valid_mask;
     *value = PT_MERGE_VALUE(*value, dev_value, throughable_mask);
 
     /* After BAR reg update, we need to remap BAR*/
@@ -3734,7 +3734,7 @@ static int pt_pmcsr_reg_write(struct pt_dev *ptdev,
     struct pt_reg_info_tbl *reg = cfg_entry->reg;
     PCIDevice *d = &ptdev->dev;
     uint16_t writable_mask = 0;
-    uint16_t throughable_mask = 0;
+    uint16_t throughable_mask = get_throughable_mask(ptdev, reg, valid_mask);
     struct pt_pm_info *pm_state = ptdev->pm_state;
     uint16_t read_val = 0;
 
@@ -3743,7 +3743,6 @@ static int pt_pmcsr_reg_write(struct pt_dev *ptdev,
     cfg_entry->data = PT_MERGE_VALUE(*value, cfg_entry->data, writable_mask);
 
     /* create value for writing to I/O device register */
-    throughable_mask = ~reg->emu_mask & valid_mask;
     *value = PT_MERGE_VALUE(*value, dev_value & ~PCI_PM_CTRL_PME_STATUS,
                             throughable_mask);
 
@@ -3854,7 +3853,7 @@ static int pt_msgctrl_reg_write(struct pt_dev *ptdev,
 {
     struct pt_reg_info_tbl *reg = cfg_entry->reg;
     uint16_t writable_mask = 0;
-    uint16_t throughable_mask = 0;
+    uint16_t throughable_mask = get_throughable_mask(ptdev, reg, valid_mask);
     uint16_t old_ctrl = cfg_entry->data;
     PCIDevice *pd = (PCIDevice *)ptdev;
     uint16_t val;
@@ -3866,8 +3865,10 @@ static int pt_msgctrl_reg_write(struct pt_dev *ptdev,
     /* modify emulate register */
     writable_mask = reg->emu_mask & ~reg->ro_mask & valid_mask;
     /* also emulate MSI_ENABLE bit for MSI-INTx translation */
-    if (ptdev->msi_trans_en)
+    if (ptdev->msi_trans_en) {
         writable_mask |= PCI_MSI_FLAGS_ENABLE & valid_mask;
+        throughable_mask &= ~PCI_MSI_FLAGS_ENABLE;
+    }
     cfg_entry->data = PT_MERGE_VALUE(*value, cfg_entry->data, writable_mask);
     /* update the msi_info too */
     ptdev->msi->flags |= cfg_entry->data &
@@ -3875,10 +3876,6 @@ static int pt_msgctrl_reg_write(struct pt_dev *ptdev,
 
     /* create value for writing to I/O device register */
     val = *value;
-    throughable_mask = ~reg->emu_mask & valid_mask;
-    /* don't pass through MSI_ENABLE bit for MSI-INTx translation */
-    if (ptdev->msi_trans_en)
-        throughable_mask &= ~PCI_MSI_FLAGS_ENABLE;
     *value = PT_MERGE_VALUE(*value, dev_value, throughable_mask);
 
     /* update MSI */
@@ -3928,7 +3925,6 @@ static int pt_msgaddr32_reg_write(struct pt_dev *ptdev,
 {
     struct pt_reg_info_tbl *reg = cfg_entry->reg;
     uint32_t writable_mask = 0;
-    uint32_t throughable_mask = 0;
     uint32_t old_addr = cfg_entry->data;
 
     /* modify emulate register */
@@ -3938,8 +3934,7 @@ static int pt_msgaddr32_reg_write(struct pt_dev *ptdev,
     ptdev->msi->addr_lo = cfg_entry->data;
 
     /* create value for writing to I/O device register */
-    throughable_mask = ~reg->emu_mask & valid_mask;
-    *value = PT_MERGE_VALUE(*value, dev_value, throughable_mask);
+    *value = PT_MERGE_VALUE(*value, dev_value, 0);
 
     /* update MSI */
     if (cfg_entry->data != old_addr)
@@ -3958,7 +3953,6 @@ static int pt_msgaddr64_reg_write(struct pt_dev *ptdev,
 {
     struct pt_reg_info_tbl *reg = cfg_entry->reg;
     uint32_t writable_mask = 0;
-    uint32_t throughable_mask = 0;
     uint32_t old_addr = cfg_entry->data;
 
     /* check whether the type is 64 bit or not */
@@ -3976,8 +3970,7 @@ static int pt_msgaddr64_reg_write(struct pt_dev *ptdev,
     ptdev->msi->addr_hi = cfg_entry->data;
 
     /* create value for writing to I/O device register */
-    throughable_mask = ~reg->emu_mask & valid_mask;
-    *value = PT_MERGE_VALUE(*value, dev_value, throughable_mask);
+    *value = PT_MERGE_VALUE(*value, dev_value, 0);
 
     /* update MSI */
     if (cfg_entry->data != old_addr)
@@ -3997,7 +3990,6 @@ static int pt_msgdata_reg_write(struct pt_dev *ptdev,
 {
     struct pt_reg_info_tbl *reg = cfg_entry->reg;
     uint16_t writable_mask = 0;
-    uint16_t throughable_mask = 0;
     uint16_t old_data = cfg_entry->data;
     uint32_t flags = ptdev->msi->flags;
     uint32_t offset = reg->offset;
@@ -4018,8 +4010,7 @@ static int pt_msgdata_reg_write(struct pt_dev *ptdev,
     ptdev->msi->data = cfg_entry->data;
 
     /* create value for writing to I/O device register */
-    throughable_mask = ~reg->emu_mask & valid_mask;
-    *value = PT_MERGE_VALUE(*value, dev_value, throughable_mask);
+    *value = PT_MERGE_VALUE(*value, dev_value, 0);
 
     /* update MSI */
     if (cfg_entry->data != old_data)
@@ -4038,7 +4029,7 @@ static int pt_msixctrl_reg_write(struct pt_dev *ptdev,
 {
     struct pt_reg_info_tbl *reg = cfg_entry->reg;
     uint16_t writable_mask = 0;
-    uint16_t throughable_mask = 0;
+    uint16_t throughable_mask = get_throughable_mask(ptdev, reg, valid_mask);
     uint16_t old_ctrl = cfg_entry->data;
 
     /* modify emulate register */
@@ -4046,7 +4037,6 @@ static int pt_msixctrl_reg_write(struct pt_dev *ptdev,
     cfg_entry->data = PT_MERGE_VALUE(*value, cfg_entry->data, writable_mask);
 
     /* create value for writing to I/O device register */
-    throughable_mask = ~reg->emu_mask & valid_mask;
     *value = PT_MERGE_VALUE(*value, dev_value, throughable_mask);
 
     /* update MSI-X */
