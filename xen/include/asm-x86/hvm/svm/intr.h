@@ -21,6 +21,8 @@
 #ifndef __ASM_X86_HVM_SVM_INTR_H__
 #define __ASM_X86_HVM_SVM_INTR_H__
 
-void svm_intr_assist(void);
+#include <asm/config.h>
+
+asmlinkage void svm_intr_assist(void);
 
 #endif /* __ASM_X86_HVM_SVM_INTR_H__ */
