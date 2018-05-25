@@ -10,11 +10,6 @@ CONFIG_IOEMU := y
 
 CFLAGS += -m64
 
-LIBLEAFDIR = $(LIBLEAFDIR_x86_64)
-LIBDIR = $(LIBDIR_x86_64)
-
-SunOS_LIBDIR = $(SunOS_LIBDIR_x86_64)
-
 # Use only if calling $(LD) directly.
 ifeq ($(XEN_OS),OpenBSD)
 LDFLAGS_DIRECT += -melf_x86_64_obsd

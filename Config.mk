@@ -49,14 +49,14 @@ $(eval $(call setvar_dir,INITD_DIR,/etc,/rc.d/init.d,/rc.d/init.d,/init.d))
 
 ifneq ($(EXTRA_PREFIX),)
 EXTRA_INCLUDES += $(EXTRA_PREFIX)/include
-EXTRA_LIB += $(EXTRA_PREFIX)/$(LIBLEAFDIR)
+EXTRA_LIB += $(EXTRA_LIBDIR)
 endif
 
 BISON	?= bison
 FLEX	?= flex
 
 PYTHON      ?= python
-PYTHON_PREFIX_ARG ?= --prefix="$(PREFIX)"
+PYTHON_PREFIX_ARG ?= --home="$(PRIVATE_PREFIX)"
 # The above requires that PREFIX contains *no spaces*. This variable is here
 # to permit the user to set PYTHON_PREFIX_ARG to '' to workaround this bug:
 #  https://bugs.launchpad.net/ubuntu/+bug/362570
