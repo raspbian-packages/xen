@@ -367,6 +367,8 @@ struct pt_reg_info_tbl {
     uint32_t size;
     /* reg initial value */
     uint32_t init_val;
+    /* reg reserved field mask (ON:reserved, OFF:defined) */
+    uint32_t res_mask;
     /* reg read only field mask (ON:RO/ROS, OFF:other) */
     uint32_t ro_mask;
     /* reg emulate field mask (ON:emu, OFF:passthrough) */
