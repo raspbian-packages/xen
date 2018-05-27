@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:50 +0200
-X-Dgit-Generated: 4.8.3+comet2+shim4.10.0+comet3-1+deb9u4 48e44f39aff7d11cf72a1cca7172609a7df0e98d
+X-Dgit-Generated: 4.8.3+xsa262+shim4.10.0+comet3-1+deb9u7~ b604abd7a51662ff5af04777c06da480a0865f7c
 Subject: tools-xenstat-abiname.diff
 
 Patch-Name: tools-xenstat-abiname.diff
 
 ---
 
---- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/xenstat/libxenstat/Makefile
-+++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/xenstat/libxenstat/Makefile
+--- xen-4.8.3+xsa262+shim4.10.0+comet3.orig/tools/xenstat/libxenstat/Makefile
++++ xen-4.8.3+xsa262+shim4.10.0+comet3/tools/xenstat/libxenstat/Makefile
 @@ -18,18 +18,14 @@ include $(XEN_ROOT)/tools/Rules.mk
  LDCONFIG=ldconfig
  MAKE_LINK=ln -sf

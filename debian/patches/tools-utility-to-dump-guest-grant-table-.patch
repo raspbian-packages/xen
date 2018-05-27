@@ -1,6 +1,6 @@
 From: Dongli Zhang <dongli.zhang@oracle.com>
 Date: Mon, 3 Jul 2017 07:34:13 +0800
-X-Dgit-Generated: 4.8.3+comet2+shim4.10.0+comet3-1+deb9u5 13ebc27d234fbf57210cb218f685981bb2af9c3b
+X-Dgit-Generated: 4.8.3+xsa262+shim4.10.0+comet3-1+deb9u7~ 47bca8f4df3cb235181d009cf030fe68482cbf5b
 Subject: tools: utility to dump guest grant table info
 
 As both xen-netfront and xen-blkfront support multi-queue, they would
@@ -23,8 +23,8 @@ Acked-by: Wei Liu <wei.liu2@citrix.com>
 
 ---
 
---- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/misc/Makefile
-+++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/misc/Makefile
+--- xen-4.8.3+xsa262+shim4.10.0+comet3.orig/tools/misc/Makefile
++++ xen-4.8.3+xsa262+shim4.10.0+comet3/tools/misc/Makefile
 @@ -31,6 +31,7 @@ INSTALL_SBIN                   += xenper
  INSTALL_SBIN                   += xenpm
  INSTALL_SBIN                   += xenwatchdogd
@@ -44,7 +44,7 @@ Acked-by: Wei Liu <wei.liu2@citrix.com>
  	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS_libxenevtchn) $(LDLIBS_libxenctrl) $(LDLIBS_libxenstore) $(APPEND_LDFLAGS)
  
 --- /dev/null
-+++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/misc/xen-diag.c
++++ xen-4.8.3+xsa262+shim4.10.0+comet3/tools/misc/xen-diag.c
 @@ -0,0 +1,129 @@
 +/*
 + * Copyright (c) 2017 Oracle and/or its affiliates. All rights reserved.

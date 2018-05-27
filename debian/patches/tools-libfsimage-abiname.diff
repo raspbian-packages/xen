@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:47 +0200
-X-Dgit-Generated: 4.8.3+comet2+shim4.10.0+comet3-1+deb9u4 379a7717ef503745182517ccb1030044dc553149
+X-Dgit-Generated: 4.8.3+xsa262+shim4.10.0+comet3-1+deb9u7~ b1dfdf53b3f7708f601a2fa71cdc5aad9ca4c571
 Subject: tools-libfsimage-abiname.diff
 
 Patch-Name: tools-libfsimage-abiname.diff
 
 ---
 
---- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/libfsimage/common/Makefile
-+++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/libfsimage/common/Makefile
+--- xen-4.8.3+xsa262+shim4.10.0+comet3.orig/tools/libfsimage/common/Makefile
++++ xen-4.8.3+xsa262+shim4.10.0+comet3/tools/libfsimage/common/Makefile
 @@ -1,9 +1,6 @@
  XEN_ROOT = $(CURDIR)/../../..
  include $(XEN_ROOT)/tools/libfsimage/Rules.mk

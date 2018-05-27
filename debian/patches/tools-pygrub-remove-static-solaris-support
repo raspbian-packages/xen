@@ -1,14 +1,14 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:47:29 +0200
-X-Dgit-Generated: 4.8.3+comet2+shim4.10.0+comet3-1+deb9u4 6a62a2910d4d16f5a18870c3eead22a0d1cde8fc
+X-Dgit-Generated: 4.8.3+xsa262+shim4.10.0+comet3-1+deb9u7~ 6241422b13c74840da18439a0dbc1de2b4d04ce5
 Subject: Remove static solaris support from pygrub
 
 Patch-Name: tools-pygrub-remove-static-solaris-support
 
 ---
 
---- xen-4.8.3+comet2+shim4.10.0+comet3.orig/tools/pygrub/src/pygrub
-+++ xen-4.8.3+comet2+shim4.10.0+comet3/tools/pygrub/src/pygrub
+--- xen-4.8.3+xsa262+shim4.10.0+comet3.orig/tools/pygrub/src/pygrub
++++ xen-4.8.3+xsa262+shim4.10.0+comet3/tools/pygrub/src/pygrub
 @@ -16,7 +16,6 @@ import os, sys, string, struct, tempfile
  import copy
  import logging

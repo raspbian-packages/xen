@@ -1,6 +1,6 @@
 From: Ian Jackson <ian.jackson@citrix.com>
 Date: Wed, 7 Feb 2018 17:05:53 +0000
-X-Dgit-Generated: 4.8.3+comet2+shim4.10.0+comet3-1+deb9u4 824a4d730ebbeb10bac3a66f43363bfd348c612a
+X-Dgit-Generated: 4.8.3+xsa262+shim4.10.0+comet3-1+deb9u7~ dab3fa497e585fb011da509e56ee8d18bfbabf44
 Subject: Copy README.pti and README.comet from the XSA-254 advisory
 
 We would like these to be installed with the Debian Xen packages
@@ -11,7 +11,7 @@ Signed-off-by: Ian Jackson <ian.jackson@citrix.com>
 ---
 
 --- /dev/null
-+++ xen-4.8.3+comet2+shim4.10.0+comet3/README.comet
++++ xen-4.8.3+xsa262+shim4.10.0+comet3/README.comet
 @@ -0,0 +1,96 @@
 +			    PV-in-PVH shim
 +                            ==============
@@ -110,7 +110,7 @@ Signed-off-by: Ian Jackson <ian.jackson@citrix.com>
 +
 +* There is no need to reboot the host.
 --- /dev/null
-+++ xen-4.8.3+comet2+shim4.10.0+comet3/README.pti
++++ xen-4.8.3+xsa262+shim4.10.0+comet3/README.pti
 @@ -0,0 +1,48 @@
 +                      Xen page-table isolation (XPTI)
 +                      ===============================
