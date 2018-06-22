@@ -3588,11 +3588,6 @@ void hvm_cpuid(unsigned int input, unsigned int *eax, unsigned int *ebx,
             *ecx &= hvm_featureset[FEATURESET_7c0];
             *edx &= hvm_featureset[FEATURESET_7d0];
 
-            /* Force STIBP equal to IBRSB */
-            *edx &= ~cpufeat_mask(X86_FEATURE_STIBP);
-            if ( *edx & cpufeat_mask(X86_FEATURE_IBRSB) )
-                *edx |= cpufeat_mask(X86_FEATURE_STIBP);
-
             /* Don't expose HAP-only features to non-hap guests. */
             if ( !hap_enabled(d) )
             {
@@ -4148,7 +4143,7 @@ int hvm_msr_write_intercept(unsigned int msr, uint64_t msr_content,
          */
 
         if ( msr_content & ~(SPEC_CTRL_IBRS | SPEC_CTRL_STIBP |
-                             ((edx & cpufeat_mask(X86_FEATURE_SSBD) ? SPEC_CTRL_SSBD : 0))) )
+                             (edx & cpufeat_mask(X86_FEATURE_SSBD) ? SPEC_CTRL_SSBD : 0)) )
             goto gp_fault; /* Rsvd bit set? */
 
         v->arch.spec_ctrl = msr_content;

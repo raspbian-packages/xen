@@ -1,14 +1,16 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:47:02 +0200
-X-Dgit-Generated: 4.8.3+xsa262+shim4.10.0+comet3-1+deb9u7~ f0fc339188154e5e4df01d084852c32677090cd8
 Subject: tools-python-prefix.diff
 
 Patch-Name: tools-python-prefix.diff
-
 ---
+ tools/python/setup.py | 4 +++-
+ 1 file changed, 3 insertions(+), 1 deletion(-)
 
---- xen-4.8.3+xsa262+shim4.10.0+comet3.orig/tools/python/setup.py
-+++ xen-4.8.3+xsa262+shim4.10.0+comet3/tools/python/setup.py
+diff --git a/tools/python/setup.py b/tools/python/setup.py
+index 8faf1c0..db61025 100644
+--- a/tools/python/setup.py
++++ b/tools/python/setup.py
 @@ -5,6 +5,7 @@ import os, sys
  XEN_ROOT = "../.."
  

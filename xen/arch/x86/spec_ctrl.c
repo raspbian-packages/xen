@@ -44,6 +44,7 @@ static enum ind_thunk {
 static int8_t __initdata opt_ibrs = -1;
 bool __read_mostly opt_ibpb = true;
 bool __read_mostly opt_ssbd = false;
+int8_t __read_mostly opt_eager_fpu = -1;
 
 bool __initdata bsp_delay_spec_ctrl;
 uint8_t __read_mostly default_xen_spec_ctrl;
@@ -90,15 +91,15 @@ static int __init parse_bti(const char *s)
 }
 custom_param("bti", parse_bti);
 
-static int __init parse_spec_ctrl(const char *s)
+static int __init parse_spec_ctrl(char *s)
 {
-    const char *ss;
+    char *ss;
     int val, rc = 0;
 
     do {
         ss = strchr(s, ',');
-        if ( !ss )
-            ss = strchr(s, '\0');
+        if ( ss )
+            *ss = '\0';
 
         /* Global and Xen-wide disable. */
         val = parse_bool(s);
@@ -114,6 +115,7 @@ static int __init parse_spec_ctrl(const char *s)
             opt_thunk = THUNK_JMP;
             opt_ibrs = 0;
             opt_ibpb = false;
+            opt_eager_fpu = 0;
         }
         else if ( val > 0 )
             rc = -EINVAL;
@@ -152,11 +154,11 @@ static int __init parse_spec_ctrl(const char *s)
         {
             s += 10;
 
-            if ( !strncmp(s, "retpoline", ss - s) )
+            if ( !strcmp(s, "retpoline") )
                 opt_thunk = THUNK_RETPOLINE;
-            else if ( !strncmp(s, "lfence", ss - s) )
+            else if ( !strcmp(s, "lfence") )
                 opt_thunk = THUNK_LFENCE;
-            else if ( !strncmp(s, "jmp", ss - s) )
+            else if ( !strcmp(s, "jmp") )
                 opt_thunk = THUNK_JMP;
             else
                 rc = -EINVAL;
@@ -167,11 +169,13 @@ static int __init parse_spec_ctrl(const char *s)
             opt_ibpb = val;
         else if ( (val = parse_boolean("ssbd", s, ss)) >= 0 )
             opt_ssbd = val;
+        else if ( (val = parse_boolean("eager-fpu", s, ss)) >= 0 )
+            opt_eager_fpu = val;
         else
             rc = -EINVAL;
 
         s = ss + 1;
-    } while ( *ss );
+    } while ( ss );
 
     return rc;
 }
@@ -223,18 +227,23 @@ static void __init print_details(enum ind_thunk thunk, uint64_t caps)
      * Alternatives blocks for protecting against and/or virtualising
      * mitigation support for guests.
      */
-    printk("  Support for VMs: PV:%s%s%s, HVM:%s%s%s\n",
+    printk("  Support for VMs: PV:%s%s%s%s, HVM:%s%s%s%s\n",
            (boot_cpu_has(X86_FEATURE_SC_MSR_PV) ||
-            boot_cpu_has(X86_FEATURE_SC_RSB_PV))     ? ""               : " None",
+            boot_cpu_has(X86_FEATURE_SC_RSB_PV) ||
+            opt_eager_fpu)                           ? ""               : " None",
            boot_cpu_has(X86_FEATURE_SC_MSR_PV)       ? " MSR_SPEC_CTRL" : "",
            boot_cpu_has(X86_FEATURE_SC_RSB_PV)       ? " RSB"           : "",
+           opt_eager_fpu                             ? " EAGER_FPU"     : "",
            (boot_cpu_has(X86_FEATURE_SC_MSR_HVM) ||
-            boot_cpu_has(X86_FEATURE_SC_RSB_HVM))    ? ""               : " None",
+            boot_cpu_has(X86_FEATURE_SC_RSB_HVM) ||
+            opt_eager_fpu)                           ? ""               : " None",
            boot_cpu_has(X86_FEATURE_SC_MSR_HVM)      ? " MSR_SPEC_CTRL" : "",
-           boot_cpu_has(X86_FEATURE_SC_RSB_HVM)      ? " RSB"           : "");
+           boot_cpu_has(X86_FEATURE_SC_RSB_HVM)      ? " RSB"           : "",
+           opt_eager_fpu                             ? " EAGER_FPU"     : "");
 
-    printk("XPTI: %s\n",
-           boot_cpu_has(X86_FEATURE_NO_XPTI) ? "disabled" : "enabled");
+    printk("  XPTI (64-bit PV only): Dom0 %s, DomU %s\n",
+           opt_xpti & OPT_XPTI_DOM0 ? "enabled" : "disabled",
+           opt_xpti & OPT_XPTI_DOMU ? "enabled" : "disabled");
 }
 
 /* Calculate whether Retpoline is known-safe on this CPU. */
@@ -319,6 +328,146 @@ static bool __init retpoline_safe(uint64_t caps)
         return false;
     }
 }
+
+/* Calculate whether this CPU speculates past #NM */
+static bool __init should_use_eager_fpu(void)
+{
+    /*
+     * Assume all unrecognised processors are ok.  This is only known to
+     * affect Intel Family 6 processors.
+     */
+    if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
+         boot_cpu_data.x86 != 6 )
+        return false;
+
+    switch ( boot_cpu_data.x86_model )
+    {
+        /*
+         * Core processors since at least Nehalem are vulnerable.
+         */
+    case 0x1e: /* Nehalem */
+    case 0x1f: /* Auburndale / Havendale */
+    case 0x1a: /* Nehalem EP */
+    case 0x2e: /* Nehalem EX */
+    case 0x25: /* Westmere */
+    case 0x2c: /* Westmere EP */
+    case 0x2f: /* Westmere EX */
+    case 0x2a: /* SandyBridge */
+    case 0x2d: /* SandyBridge EP/EX */
+    case 0x3a: /* IvyBridge */
+    case 0x3e: /* IvyBridge EP/EX */
+    case 0x3c: /* Haswell */
+    case 0x3f: /* Haswell EX/EP */
+    case 0x45: /* Haswell D */
+    case 0x46: /* Haswell H */
+    case 0x3d: /* Broadwell */
+    case 0x47: /* Broadwell H */
+    case 0x4f: /* Broadwell EP/EX */
+    case 0x56: /* Broadwell D */
+    case 0x4e: /* Skylake M */
+    case 0x55: /* Skylake X */
+    case 0x5e: /* Skylake D */
+    case 0x66: /* Cannonlake */
+    case 0x67: /* Cannonlake? */
+    case 0x8e: /* Kabylake M */
+    case 0x9e: /* Kabylake D */
+        return true;
+
+        /*
+         * Atom processors are not vulnerable.
+         */
+    case 0x1c: /* Pineview */
+    case 0x26: /* Lincroft */
+    case 0x27: /* Penwell */
+    case 0x35: /* Cloverview */
+    case 0x36: /* Cedarview */
+    case 0x37: /* Baytrail / Valleyview (Silvermont) */
+    case 0x4d: /* Avaton / Rangely (Silvermont) */
+    case 0x4c: /* Cherrytrail / Brasswell */
+    case 0x4a: /* Merrifield */
+    case 0x5a: /* Moorefield */
+    case 0x5c: /* Goldmont */
+    case 0x5f: /* Denverton */
+    case 0x7a: /* Gemini Lake */
+        return false;
+
+        /*
+         * Knights processors are not vulnerable.
+         */
+    case 0x57: /* Knights Landing */
+    case 0x85: /* Knights Mill */
+        return false;
+
+    default:
+        printk("Unrecognised CPU model %#x - assuming vulnerable to LazyFPU\n",
+               boot_cpu_data.x86_model);
+        return true;
+    }
+}
+
+#define OPT_XPTI_DEFAULT  0xff
+uint8_t __read_mostly opt_xpti = OPT_XPTI_DEFAULT;
+
+static __init void xpti_init_default(bool force)
+{
+    uint64_t caps = 0;
+
+    if ( !force && (opt_xpti != OPT_XPTI_DEFAULT) )
+        return;
+
+    if ( boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
+        caps = ARCH_CAPABILITIES_RDCL_NO;
+    else if ( boot_cpu_has(X86_FEATURE_ARCH_CAPS) )
+        rdmsrl(MSR_ARCH_CAPABILITIES, caps);
+
+    if ( caps & ARCH_CAPABILITIES_RDCL_NO )
+        opt_xpti = 0;
+    else
+        opt_xpti = OPT_XPTI_DOM0 | OPT_XPTI_DOMU;
+}
+
+static __init int parse_xpti(char *s)
+{
+    char *ss;
+    int val, rc = 0;
+
+    xpti_init_default(false);
+
+    do {
+        ss = strchr(s, ',');
+        if ( ss )
+            *ss = '\0';
+
+        switch ( parse_bool(s) )
+        {
+        case 0:
+            opt_xpti = 0;
+            break;
+
+        case 1:
+            opt_xpti = OPT_XPTI_DOM0 | OPT_XPTI_DOMU;
+            break;
+
+        default:
+            if ( !strcmp(s, "default") )
+                xpti_init_default(true);
+            else if ( (val = parse_boolean("dom0", s, ss)) >= 0 )
+                opt_xpti = (opt_xpti & ~OPT_XPTI_DOM0) |
+                           (val ? OPT_XPTI_DOM0 : 0);
+            else if ( (val = parse_boolean("domu", s, ss)) >= 0 )
+                opt_xpti = (opt_xpti & ~OPT_XPTI_DOMU) |
+                           (val ? OPT_XPTI_DOMU : 0);
+            else
+                rc = -EINVAL;
+            break;
+        }
+
+        s = ss + 1;
+    } while ( ss );
+
+    return rc;
+}
+custom_param("xpti", parse_xpti);
 
 void __init init_speculation_mitigations(void)
 {
@@ -454,12 +603,22 @@ void __init init_speculation_mitigations(void)
     if ( !boot_cpu_has(X86_FEATURE_IBRSB) && !boot_cpu_has(X86_FEATURE_IBPB) )
         opt_ibpb = false;
 
+    /* Check whether Eager FPU should be enabled by default. */
+    if ( opt_eager_fpu == -1 )
+        opt_eager_fpu = should_use_eager_fpu();
+
     /* (Re)init BSP state now that default_spec_ctrl_flags has been calculated. */
     init_shadow_spec_ctrl_state();
 
     /* If Xen is using any MSR_SPEC_CTRL settings, adjust the idle path. */
     if ( default_xen_spec_ctrl )
         setup_force_cpu_cap(X86_FEATURE_SC_MSR_IDLE);
+
+    xpti_init_default(false);
+    if ( opt_xpti == 0 )
+        setup_force_cpu_cap(X86_FEATURE_NO_XPTI);
+    else
+        setup_clear_cpu_cap(X86_FEATURE_NO_XPTI);
 
     print_details(thunk, caps);
 

@@ -1275,6 +1275,15 @@ Because responsibility for APIC setup is shared between Xen and the
 domain 0 kernel this option is automatically propagated to the domain
 0 command line.
 
+### invpcid (x86)
+> `= <boolean>`
+
+> Default: `true`
+
+By default, Xen will use the INVPCID instruction for TLB management if
+it is available.  This option can be used to cause Xen to fall back to
+older mechanisms, which are generally slower.
+
 ### noirqbalance
 > `= <boolean>`
 
@@ -1352,6 +1361,20 @@ Flag to enable Memory Protection Keys.
 
 The protection-key feature provides an additional mechanism by which IA-32e
 paging controls access to usermode addresses.
+
+### pcid (x86)
+> `= <boolean> | xpti=<bool>`
+
+> Default: `xpti`
+
+> Can be modified at runtime (change takes effect only for domains created
+  afterwards)
+
+If available, control usage of the PCID feature of the processor for
+64-bit pv-domains. PCID can be used either for no domain at all (`false`),
+for all of them (`true`), only for those subject to XPTI (`xpti`) or for
+those not subject to XPTI (`no-xpti`). The feature is used only in case
+INVPCID is supported and not disabled via `invpcid=false`.
 
 ### psr (Intel)
 > `= List of ( cmt:<boolean> | rmid_max:<integer> | cat:<boolean> | cos_max:<integer> | cdp:<boolean> )`
@@ -1521,7 +1544,7 @@ false disable the quirk workaround, which is also the default.
 
 ### spec-ctrl (x86)
 > `= List of [ <bool>, xen=<bool>, {pv,hvm,msr-sc,rsb}=<bool>,
->              bti-thunk=retpoline|lfence|jmp, {ibrs,ibpb,ssbd}=<bool> ]`
+>              bti-thunk=retpoline|lfence|jmp, {ibrs,ibpb,ssbd,eager-fpu}=<bool> ]`
 
 Controls for speculative execution sidechannel mitigations.  By default, Xen
 will pick the most appropriate mitigations based on compiled in support,
@@ -1570,6 +1593,11 @@ option can be used to force or prevent Xen using the feature itself.  On AMD
 hardware, this is a global option applied at boot, and not virtualised for
 guest use.  On Intel hardware, the feature is virtualised for guests,
 independently of Xen's choice of setting.
+
+On all hardware, the `eager-fpu=` option can be used to force or prevent Xen
+from using fully eager FPU context switches.  This is currently implemented as
+a global control.  By default, Xen will choose to use fully eager context
+switches on hardware believed to speculate past #NM exceptions.
 
 ### sync\_console
 > `= <boolean>`
@@ -1783,13 +1811,23 @@ clustered mode.  The default, given no hint from the **FADT**, is cluster
 mode.
 
 ### xpti
-> `= <boolean>`
+> `= List of [ default | <boolean> | dom0=<bool> | domu=<bool> ]`
 
-> Default: `false` on AMD hardware
+> Default: `false` on hardware not to be vulnerable to Meltdown (e.g. AMD)
 > Default: `true` everywhere else
 
 Override default selection of whether to isolate 64-bit PV guest page
 tables.
+
+`true` activates page table isolation even on hardware not vulnerable by
+Meltdown for all domains.
+
+`false` deactivates page table isolation on all systems for all domains.
+
+`default` sets the default behaviour.
+
+With `dom0` and `domu` it is possible to control page table isolation
+for dom0 or guest domains only.
 
 ### xsave
 > `= <boolean>`

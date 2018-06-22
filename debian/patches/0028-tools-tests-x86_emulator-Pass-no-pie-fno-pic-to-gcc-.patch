@@ -1,6 +1,5 @@
 From: Ian Jackson <ian.jackson@citrix.com>
 Date: Tue, 1 Nov 2016 16:20:27 +0000
-X-Dgit-Generated: 4.8.3+xsa262+shim4.10.0+comet3-1+deb9u7~ 369a512ba21f4cf2eafec9b2570e605c72f89d4a
 Subject: tools/tests/x86_emulator: Pass -no-pie -fno-pic to gcc on x86_32
 
 The current build fails with GCC6 on Debian sid i386 (unstable):
@@ -30,12 +29,15 @@ CC: Andrew Cooper <andrew.cooper3@citrix.com>
 squash! tools/tests/x86_emulator: Pass -no-pie -fno-pic to gcc
 
 Signed-off-by: Ian Jackson <ian.jackson@citrix.com>
-
 ---
+ tools/tests/x86_emulator/Makefile | 4 ++++
+ 1 file changed, 4 insertions(+)
 
---- xen-4.8.3+xsa262+shim4.10.0+comet3.orig/tools/tests/x86_emulator/Makefile
-+++ xen-4.8.3+xsa262+shim4.10.0+comet3/tools/tests/x86_emulator/Makefile
-@@ -45,6 +45,10 @@ x86_emulate/x86_emulate.c x86_emulate/x8
+diff --git a/tools/tests/x86_emulator/Makefile b/tools/tests/x86_emulator/Makefile
+index 13ace9a..d349c0f 100644
+--- a/tools/tests/x86_emulator/Makefile
++++ b/tools/tests/x86_emulator/Makefile
+@@ -45,6 +45,10 @@ x86_emulate/x86_emulate.c x86_emulate/x86_emulate.h:
  
  HOSTCFLAGS += $(CFLAGS_xeninclude)
  

@@ -1,4 +1,4 @@
-xen (4.8.3+xsa262+shim4.10.0+comet3-1+deb9u7+rpi1) stretch-staging; urgency=medium
+xen (4.8.3+xsa267+shim4.10.1+xsa267-1+deb9u8+rpi1) stretch-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,7 +9,25 @@ xen (4.8.3+xsa262+shim4.10.0+comet3-1+deb9u7+rpi1) stretch-staging; urgency=medi
   [changes introduced in 4.8.0-1+rpi1 by Peter Micheal Green]
   * Add build-depends on ghostscript.
 
- -- Raspbian forward porter <root@raspbian.org>  Sun, 27 May 2018 13:50:48 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Fri, 22 Jun 2018 03:45:56 +0000
+
+xen (4.8.3+xsa267+shim4.10.1+xsa267-1+deb9u8) stretch-security; urgency=high
+
+  * Update to new upstream version 4.8.3+xsa267+shim4.10.1+xsa267.
+       XSA-267 CVE-2018-3665
+
+    I have actually taken upstream's staging-4.8 CI input branch, which is
+    identical to the CI-tested stable-4.8 except that it also has the
+    XSA-267 patches.  There are additional patches in upstream's
+    stable-4.8 branch, beyond what was in the previous Debian stretch
+    security update, which are prerequisites for the XSA-267 patches.
+
+    For the shim, I have updated to upstream's staging-4.10, which is
+    identical to the CI-tested stable-4.10q except, again, for
+    XSA-267-related patches.  The 4.10.0-comet branch lacks speculation
+    control entirely and has been superseded upstream.
+
+ -- Ian Jackson <ian.jackson@citrix.com>  Mon, 18 Jun 2018 16:10:38 +0100
 
 xen (4.8.3+xsa262+shim4.10.0+comet3-1+deb9u7) stretch-security; urgency=high
 

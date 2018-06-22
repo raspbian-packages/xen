@@ -1,14 +1,16 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:46:50 +0200
-X-Dgit-Generated: 4.8.3+xsa262+shim4.10.0+comet3-1+deb9u7~ b604abd7a51662ff5af04777c06da480a0865f7c
 Subject: tools-xenstat-abiname.diff
 
 Patch-Name: tools-xenstat-abiname.diff
-
 ---
+ tools/xenstat/libxenstat/Makefile | 22 +++++-----------------
+ 1 file changed, 5 insertions(+), 17 deletions(-)
 
---- xen-4.8.3+xsa262+shim4.10.0+comet3.orig/tools/xenstat/libxenstat/Makefile
-+++ xen-4.8.3+xsa262+shim4.10.0+comet3/tools/xenstat/libxenstat/Makefile
+diff --git a/tools/xenstat/libxenstat/Makefile b/tools/xenstat/libxenstat/Makefile
+index 213d998..00da0f8 100644
+--- a/tools/xenstat/libxenstat/Makefile
++++ b/tools/xenstat/libxenstat/Makefile
 @@ -18,18 +18,14 @@ include $(XEN_ROOT)/tools/Rules.mk
  LDCONFIG=ldconfig
  MAKE_LINK=ln -sf
@@ -31,7 +33,7 @@ Patch-Name: tools-xenstat-abiname.diff
  
  CFLAGS+=-fPIC
  CFLAGS+=-Isrc $(CFLAGS_libxenctrl) $(CFLAGS_libxenstore) $(CFLAGS_xeninclude) -include $(XEN_ROOT)/tools/config.h
-@@ -38,7 +34,7 @@ LDLIBS-y = $(LDLIBS_libxenstore) $(LDLIB
+@@ -38,7 +34,7 @@ LDLIBS-y = $(LDLIBS_libxenstore) $(LDLIBS_libxenctrl)
  LDLIBS-$(CONFIG_SunOS) += -lkstat
  
  .PHONY: all

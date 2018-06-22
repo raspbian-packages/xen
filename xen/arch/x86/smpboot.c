@@ -321,8 +321,9 @@ void start_secondary(void *unused)
      */
     spin_debug_disable();
 
+    get_cpu_info()->use_pv_cr3 = false;
     get_cpu_info()->xen_cr3 = 0;
-    get_cpu_info()->pv_cr3 = this_cpu(root_pgt) ? __pa(this_cpu(root_pgt)) : 0;
+    get_cpu_info()->pv_cr3 = 0;
 
     load_system_tables();
 
@@ -872,7 +873,7 @@ static void cleanup_cpu_root_pgt(unsigned int cpu)
         l2_pgentry_t *l2t = l3e_to_l2e(l3t[l3_table_offset(stub_linear)]);
         l1_pgentry_t *l1t = l2e_to_l1e(l2t[l2_table_offset(stub_linear)]);
 
-        l1t[l2_table_offset(stub_linear)] = l1e_empty();
+        l1t[l1_table_offset(stub_linear)] = l1e_empty();
     }
 }
 
@@ -1047,7 +1048,7 @@ void __init smp_prepare_cpus(unsigned int max_cpus)
         panic("Error %d setting up PV root page table\n", rc);
     if ( per_cpu(root_pgt, 0) )
     {
-        get_cpu_info()->pv_cr3 = __pa(per_cpu(root_pgt, 0));
+        get_cpu_info()->pv_cr3 = 0;
 
         /*
          * All entry points which may need to switch page tables have to start
@@ -1122,6 +1123,7 @@ void __init smp_prepare_boot_cpu(void)
     cpumask_set_cpu(smp_processor_id(), &cpu_online_map);
     cpumask_set_cpu(smp_processor_id(), &cpu_present_map);
 
+    get_cpu_info()->use_pv_cr3 = false;
     get_cpu_info()->xen_cr3 = 0;
     get_cpu_info()->pv_cr3 = 0;
 }

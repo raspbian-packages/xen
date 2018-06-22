@@ -1157,11 +1157,6 @@ void pv_cpuid(struct cpu_user_regs *regs)
             c &= pv_featureset[FEATURESET_7c0];
             d &= pv_featureset[FEATURESET_7d0];
 
-            /* Force STIBP equal to IBRSB */
-            d &= ~cpufeat_mask(X86_FEATURE_STIBP);
-            if ( d & cpufeat_mask(X86_FEATURE_IBRSB) )
-                d |= cpufeat_mask(X86_FEATURE_STIBP);
-
             if ( !is_pvh_domain(currd) )
             {
                 /*
@@ -2753,7 +2748,7 @@ static int priv_op_write_msr(unsigned int reg, uint64_t val,
          */
 
         if ( val & ~(SPEC_CTRL_IBRS | SPEC_CTRL_STIBP |
-                     ((edx & cpufeat_mask(X86_FEATURE_SSBD) ? SPEC_CTRL_SSBD : 0))) )
+                     (edx & cpufeat_mask(X86_FEATURE_SSBD) ? SPEC_CTRL_SSBD : 0)) )
             break; /* Rsvd bit set? */
 
         curr->arch.spec_ctrl = val;

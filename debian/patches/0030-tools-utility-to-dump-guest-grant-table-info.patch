@@ -1,6 +1,5 @@
 From: Dongli Zhang <dongli.zhang@oracle.com>
 Date: Mon, 3 Jul 2017 07:34:13 +0800
-X-Dgit-Generated: 4.8.3+xsa262+shim4.10.0+comet3-1+deb9u7~ 47bca8f4df3cb235181d009cf030fe68482cbf5b
 Subject: tools: utility to dump guest grant table info
 
 As both xen-netfront and xen-blkfront support multi-queue, they would
@@ -20,12 +19,17 @@ the framework of xen-diag.c is from xen-livepatch.c.
 Signed-off-by: Dongli Zhang <dongli.zhang@oracle.com>
 Acked-by: Wei Liu <wei.liu2@citrix.com>
 (cherry picked from commit df36d82e3fc91bee2ff1681fd438c815fa324b6a)
-
 ---
+ tools/misc/Makefile   |   4 ++
+ tools/misc/xen-diag.c | 129 ++++++++++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 133 insertions(+)
+ create mode 100644 tools/misc/xen-diag.c
 
---- xen-4.8.3+xsa262+shim4.10.0+comet3.orig/tools/misc/Makefile
-+++ xen-4.8.3+xsa262+shim4.10.0+comet3/tools/misc/Makefile
-@@ -31,6 +31,7 @@ INSTALL_SBIN                   += xenper
+diff --git a/tools/misc/Makefile b/tools/misc/Makefile
+index dc8443a..97f72a4 100644
+--- a/tools/misc/Makefile
++++ b/tools/misc/Makefile
+@@ -31,6 +31,7 @@ INSTALL_SBIN                   += xenperf
  INSTALL_SBIN                   += xenpm
  INSTALL_SBIN                   += xenwatchdogd
  INSTALL_SBIN                   += xen-livepatch
@@ -43,8 +47,11 @@ Acked-by: Wei Liu <wei.liu2@citrix.com>
  xen-lowmemd: xen-lowmemd.o
  	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS_libxenevtchn) $(LDLIBS_libxenctrl) $(LDLIBS_libxenstore) $(APPEND_LDFLAGS)
  
+diff --git a/tools/misc/xen-diag.c b/tools/misc/xen-diag.c
+new file mode 100644
+index 0000000..8ab5655
 --- /dev/null
-+++ xen-4.8.3+xsa262+shim4.10.0+comet3/tools/misc/xen-diag.c
++++ b/tools/misc/xen-diag.c
 @@ -0,0 +1,129 @@
 +/*
 + * Copyright (c) 2017 Oracle and/or its affiliates. All rights reserved.

@@ -1,14 +1,16 @@
 From: Bastian Blank <waldi@debian.org>
 Date: Sat, 5 Jul 2014 11:47:30 +0200
-X-Dgit-Generated: 4.8.3+xsa262+shim4.10.0+comet3-1+deb9u7~ db25ee5d4a1e0c254a418e9b6bb93e6dac03f216
 Subject: tools-include-install.diff
 
 Patch-Name: tools-include-install.diff
-
 ---
+ tools/include/Makefile | 2 --
+ 1 file changed, 2 deletions(-)
 
---- xen-4.8.3+xsa262+shim4.10.0+comet3.orig/tools/include/Makefile
-+++ xen-4.8.3+xsa262+shim4.10.0+comet3/tools/include/Makefile
+diff --git a/tools/include/Makefile b/tools/include/Makefile
+index f1af91c..19830b1 100644
+--- a/tools/include/Makefile
++++ b/tools/include/Makefile
 @@ -14,7 +14,6 @@ xen-foreign:
  xen/.dir:
  	@rm -rf xen
