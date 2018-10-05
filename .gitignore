@@ -289,3 +289,9 @@ tools/debugger/kdd/kdd
 tools/firmware/etherboot/ipxe.tar.gz
 tools/firmware/etherboot/ipxe/
 tools/xl/xl
+
+configure
+docs/configure
+tools/configure
+config.sub
+config.guess
