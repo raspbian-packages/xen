@@ -75,4 +75,4 @@ ARGP_LDFLAGS        := @argp_ldflags@
 
 FILE_OFFSET_BITS    := @FILE_OFFSET_BITS@
 
-CONFIG_PV_SHIM      := @pvshim@
+CONFIG_PV_SHIM      ?= @pvshim@
