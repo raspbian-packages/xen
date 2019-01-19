@@ -266,7 +266,7 @@ index a081168..8c32bfb 100644
      domid_t domain_id;
      xenevtchn_handle *xce_handle;
 diff --git a/tools/tests/xenstore/xs-test.c b/tools/tests/xenstore/xs-test.c
-index eb5fe55..ec0e47a 100644
+index 6f902dd..e6b76b5 100644
 --- a/tools/tests/xenstore/xs-test.c
 +++ b/tools/tests/xenstore/xs-test.c
 @@ -30,8 +30,9 @@

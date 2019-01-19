@@ -1,4 +1,4 @@
-xen (4.11.1~pre.20180911.5acdd26fdc+dfsg-5+rpi1) buster-staging; urgency=medium
+xen (4.11.1-1+rpi1) buster-staging; urgency=medium
 
   [changes brought forward from 4.8.3+comet2+shim4.10.0+comet3-1+deb9u4 by Ian Jackson <ijackson@chiark.greenend.org.uk> at Wed, 07 Feb 2018 17:50:45 +0000]
   * Update to new upstream version 4.8.3+comet2+shim4.10.0+comet3.
@@ -111,7 +111,37 @@ xen (4.11.1~pre.20180911.5acdd26fdc+dfsg-5+rpi1) buster-staging; urgency=medium
   [changes introduced in 4.8.0-1+rpi1 by Peter Micheal Green]
   * Add build-depends on ghostscript.
 
- -- Raspbian forward porter <root@raspbian.org>  Thu, 25 Oct 2018 20:13:19 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Sat, 19 Jan 2019 11:47:24 +0000
+
+xen (4.11.1-1) unstable; urgency=medium
+
+  * debian/control: Add Homepage, Vcs-Browser and Vcs-Git.
+    (Closes: #911457)
+  * grub.d/xen.cfg: fix default entry when using l10n (Closes: #865086)
+  * debian/rules: Don't exclude the actual pygrub script.
+  * Update to new upstream version 4.11.1, which also contains:
+    - Fix: insufficient TLB flushing / improper large page mappings with AMD
+      IOMMUs
+      XSA-275 CVE-2018-19961 CVE-2018-19962
+    - Fix: resource accounting issues in x86 IOREQ server handling
+      XSA-276 CVE-2018-19963
+    - Fix: x86: incorrect error handling for guest p2m page removals
+      XSA-277 CVE-2018-19964
+    - Fix: x86: Nested VT-x usable even when disabled
+      XSA-278 CVE-2018-18883
+    - Fix: x86: DoS from attempting to use INVPCID with a non-canonical
+      addresses
+      XSA-279 CVE-2018-19965
+    - Fix for XSA-240 conflicts with shadow paging
+      XSA-280 CVE-2018-19966
+    - Fix: guest use of HLE constructs may lock up host
+      XSA-282 CVE-2018-19967
+  * Update version handling patching to put the team mailing list address in
+    the first hypervisor log line and fix broken other substitutions.
+  * Disable handle_iptable hook in vif-common script. See #894013 for more
+    information.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Wed, 02 Jan 2019 20:59:40 +0100
 
 xen (4.11.1~pre.20180911.5acdd26fdc+dfsg-5) unstable; urgency=medium
 

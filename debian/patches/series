@@ -41,4 +41,6 @@ prefix-abiname/tools-libfsimage-prefix.diff
 0041-tools-firmware-Makefile-CONFIG_PV_SHIM-enable-only-o.patch
 0042-docs-man-xen-vbd-interface.7-Provide-properly-format.patch
 0043-Revert-tools-xenstore-compatibility.diff.patch
+0044-Fix-empty-fields-in-first-hypervisor-log-line.patch
+0045-vif-common-disable-handle_iptable.patch
 armv6.diff

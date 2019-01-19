@@ -9,10 +9,10 @@ Signed-off-by: Ian Jackson <ian.jackson@citrix.com>
  1 file changed, 6 insertions(+)
 
 diff --git a/.gitignore b/.gitignore
-index 7004349..edd0db6 100644
+index c5032f3..d62277a 100644
 --- a/.gitignore
 +++ b/.gitignore
-@@ -425,3 +425,9 @@ tools/xl/xl
+@@ -424,3 +424,9 @@ tools/xl/xl
  docs/txt/misc/*.txt
  docs/txt/man/*.txt
  docs/figs/*.png

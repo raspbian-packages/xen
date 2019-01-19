@@ -13,7 +13,7 @@ Patch-Name: version.diff
  6 files changed, 29 insertions(+), 29 deletions(-)
 
 diff --git a/xen/Makefile b/xen/Makefile
-index a922a1b..f16047d 100644
+index c07b2c3..1009d87 100644
 --- a/xen/Makefile
 +++ b/xen/Makefile
 @@ -161,7 +161,7 @@ delete-unfresh-files:
