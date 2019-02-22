@@ -7,6 +7,7 @@ PY_LDFLAGS = $(SHLIB_LDFLAGS) $(APPEND_LDFLAGS)
 INSTALL_LOG = build/installed_files.txt
 
 setup.py = CC="$(CC)" CFLAGS="$(PY_CFLAGS)" LDSHARED="$(CC)" LDFLAGS="$(PY_LDFLAGS)" \
+           LIBEXEC_LIB="$(LIBEXEC_LIB)" \
            $(PYTHON) setup.py
 
 .PHONY: all
