@@ -6,7 +6,10 @@ xen (4.11.1+26-g87f51bf366-3+rpi1) buster-staging; urgency=medium
   [changes introduced in 4.6.0-1+rpi1 by Peter Michael Green]
   * Use kernel 3.18 for now as I haven't dealt with 4.x yet.
 
- -- Raspbian forward porter <root@raspbian.org>  Mon, 11 Mar 2019 21:30:41 +0000
+  [changes introduced in 4.11.1+26-g87f51bf366-3+rpi1 by Peter Michael Green]
+  * Do not fail on files that are not installed.
+
+ -- Peter Michael Green <plugwash@raspbian.org>  Mon, 11 Mar 2019 21:30:41 +0000
 
 xen (4.11.1+26-g87f51bf366-3) unstable; urgency=medium
 

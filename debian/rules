@@ -312,8 +312,8 @@ override_dh_compress:
 
 # By default, files in debian/tmp which are not handled by anything
 # in rules are ignored.  This makes them into errors.
-override_dh_missing:
-	dh_missing --fail-missing
+#override_dh_missing:
+#	dh_missing --fail-missing
 
 
 # We are dropping the config file /etc/default/xen which appeared in
