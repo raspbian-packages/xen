@@ -1,10 +1,10 @@
 #!/bin/bash
 ### BEGIN INIT INFO
 # Provides:          xendomains
-# Required-Start:    $syslog $remote_fs xen
-# Required-Stop:     $syslog $remote_fs xen
-# Should-Start:      drbd iscsi openvswitch-switch
-# Should-Stop:       drbd iscsi openvswitch-switch
+# Required-Start:    $syslog $network $remote_fs xen
+# Required-Stop:     $syslog $network $remote_fs xen
+# Should-Start:      drbd iscsi openvswitch-switch nfs-kernel-server
+# Should-Stop:       drbd iscsi openvswitch-switch nfs-kernel-server
 # X-Start-Before:    corosync heartbeat libvirtd
 # X-Stop-After:      corosync heartbeat libvirtd
 # Default-Start:     2 3 4 5
@@ -21,15 +21,6 @@ xen list &> /dev/null
 if test $? -ne 0
 then
 	exit 0;
-fi
-
-TOOLSTACK=$(/usr/lib/xen-common/bin/xen-toolstack 2>/dev/null)
-if [ $? -ne 0 ]; then
-        log_warning_msg "No usable Xen toolstack selected"
-        exit 0
-fi
-if [ "$(basename "$TOOLSTACK")" != xm ] && [ "$(basename "$TOOLSTACK")" != xl ]; then
-	exit 0
 fi
 
 if ! [ -e /proc/xen/privcmd ]; then

@@ -13,7 +13,7 @@ Patch-Name: version.diff
  6 files changed, 29 insertions(+), 29 deletions(-)
 
 diff --git a/xen/Makefile b/xen/Makefile
-index c07b2c3..1009d87 100644
+index 047427e..c7ed37f 100644
 --- a/xen/Makefile
 +++ b/xen/Makefile
 @@ -161,7 +161,7 @@ delete-unfresh-files:
@@ -40,10 +40,10 @@ index c07b2c3..1009d87 100644
  
  include/asm-$(TARGET_ARCH)/asm-offsets.h: arch/$(TARGET_ARCH)/asm-offsets.s
 diff --git a/xen/common/kernel.c b/xen/common/kernel.c
-index 5766a0f..1cf4cd8 100644
+index 053c31d..f39422f 100644
 --- a/xen/common/kernel.c
 +++ b/xen/common/kernel.c
-@@ -357,8 +357,8 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
+@@ -404,8 +404,8 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
  
          memset(&info, 0, sizeof(info));
          safe_strcpy(info.compiler,       deny ? xen_deny() : xen_compiler());

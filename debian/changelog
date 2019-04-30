@@ -1,106 +1,4 @@
-xen (4.11.1-1+rpi1) buster-staging; urgency=medium
-
-  [changes brought forward from 4.8.3+comet2+shim4.10.0+comet3-1+deb9u4 by Ian Jackson <ijackson@chiark.greenend.org.uk> at Wed, 07 Feb 2018 17:50:45 +0000]
-  * Update to new upstream version 4.8.3+comet2+shim4.10.0+comet3.
-    Specifically, this is two upstreams:
-      - Upstream Xen 4.8.3 "git merge"d with upstream
-        Xen Security Team (XSA-254) 4.8.3pre-shim-comet-2, in `.'
-      - Upstream Xen 4.10.0-shim-comet-3 in `shim'.
-    The upstream tarballs are from `git archive' with the
-    gitattributes for mangling .gitarchive-info disabled.
-    Therefore, we include these security fixes:
-       XSA-254 CVE-2017-5754 but SP3 "Meltdown" only
-       XSA-253 CVE-2018-5244
-       XSA-251 CVE-2017-17565
-       XSA-250 CVE-2017-17564
-       XSA-249 CVE-2017-17563
-       XSA-248 CVE-2017-17566
-  * Ship README.pti and README.comet from the upstream XSA-254
-    advisory in /usr/share/doc/xen-utils/common/.
-
-  [changes brought forward from 4.8.3+comet2+shim4.10.0+comet3-1+deb9u4.1 by Ian Jackson <ijackson@chiark.greenend.org.uk> at Fri, 09 Feb 2018 14:42:57 +0000]
-  * Fix builds on other than amd64.
-
-  [changes brought forward from 4.8.3+comet2+shim4.10.0+comet3-1+deb9u5 by Ian Jackson <ijackson@chiark.greenend.org.uk> at Fri, 02 Mar 2018 16:07:18 +0000]
-  * Security fixes from upstream XSAs:
-       XSA-252 CVE-2018-7540
-       XSA-255 CVE-2018-7541
-       XSA-256 CVE-2018-7542
-    The upstream BTI changes from XSA-254 (Spectre v2 mitigation)
-    are *not* included.  They are currently failing in upstream CI.
-  * init scripts: Do not kill per-domain qemu processes.  Closes:#879751.
-  * Install Meltdown READMEs on all architectures.  Closes:#890488.
-  * Ship xen-diag (by cherry-picking the appropriate commits from
-    upstream).  This can help with diagnosis of #880554.
-
-  [changes brought forward from 4.8.3+xsa262+shim4.10.0+comet3-1+deb9u6 by Ian Jackson <ijackson@chiark.greenend.org.uk> at Thu, 10 May 2018 16:50:52 +0100]
-  * Update to new upstream version 4.8.3+xsa262+shim4.10.0+comet3.
-    (This is the upstream staging-4.8 branch, which is ahead of the
-    upstream CI-tested stable-4.8 branch by precisely the three
-    most recent XSA fixes.  We are switching away from the special
-    upstream 4.8 comet branch.)
-
-  * Resulting security fixes:
-       XSA-258 CVE-2018-10472
-       XSA-259 CVE-2018-10471
-       XSA-260 CVE-2018-8897
-       XSA-261 CVE-2018-10982
-       XSA-262 CVE-2018-10981
-
-   * Apply two further build fixes from upstream staging-4.8.
-
-  [changes brought forward from 4.8.3+xsa262+shim4.10.0+comet3-1+deb9u7 by Ian Jackson <ijackson@chiark.greenend.org.uk> at Tue, 22 May 2018 18:41:33 +0100]
-  * Include upstream XSA-263 (speculative store bypass) fixes for x86.
-    I hear that ARM fixes will be forthcoming RSN.  Ie,
-       XSA-263 CVE-2018-3639 (amd64/i386; armhf/arm64 still vuln.)
-
-  * Include a number of upstream bugfixes, including fixes to previous
-    security fixes, some of which are security-relevant:
-      x86: correct ordering of operations during S3 resume
-      x86: suppress BTI mitigations around S3 suspend/resume
-      x86/spec_ctrl: Updates to retpoline-safety decision making
-      x86/HPET: fix race triggering ASSERT(cpu < nr_cpu_ids)
-      x86/HVM: never retain emulated insn cache when exiting back to guest
-      xpti: fix bug in double fault handling
-      x86/cpuidle: don't init stats lock more than once
-      xen: Introduce vcpu_sleep_nosync_locked()
-      xen/schedule: Fix races in vcpu migration
-      x86: Fix "x86: further CPUID handling adjustments"
-
-    The result is very similar to upstream staging-4.8.  However, as
-    upstream staging-4.8 has not yet passed upstream CI, I have chosen to
-    cherry pick fixes so that I can drop a couple that don't look
-    immediately important.  We will expect to resynchronise with
-    upstream's 4.8 stable branch soon.
-
-  * Drop our patch `tools: fix arm build after bdf693ee61b48' (which was
-    needed to build the upstream 4.8 comet branch on ARM but is not needed
-    for the the upstream staging/stable branch).  Closes:#898898.
-
-  * Update changelog for 4.8.3+xsa262+shim4.10.0+comet3-1+deb9u6 to
-    mention branch switch from upstream 4.8 comet to upstream main 4.8,
-    and add some missing CVEs.
-
-  [changes brought forward from 4.8.3+xsa267+shim4.10.1+xsa267-1+deb9u8 by Ian Jackson <ian.jackson@citrix.com> at Mon, 18 Jun 2018 16:10:38 +0100]
-  * Update to new upstream version 4.8.3+xsa267+shim4.10.1+xsa267.
-       XSA-267 CVE-2018-3665
-
-    I have actually taken upstream's staging-4.8 CI input branch, which is
-    identical to the CI-tested stable-4.8 except that it also has the
-    XSA-267 patches.  There are additional patches in upstream's
-    stable-4.8 branch, beyond what was in the previous Debian stretch
-    security update, which are prerequisites for the XSA-267 patches.
-
-    For the shim, I have updated to upstream's staging-4.10, which is
-    identical to the CI-tested stable-4.10q except, again, for
-    XSA-267-related patches.  The 4.10.0-comet branch lacks speculation
-    control entirely and has been superseded upstream.
-
-  [changes brought forward from 4.8.3+xsa267+shim4.10.1+xsa267-1+deb9u9 by Ian Jackson <ijackson@chiark.greenend.org.uk> at Fri, 22 Jun 2018 16:38:39 +0100]
-  * Security upload [thanks to Wolodja Wentland]:
-       XSA-264 (no CVE yet)
-       XSA-265 (no CVE yet)
-       XSA-266 (no CVE yet)
+xen (4.11.1+26-g87f51bf366-3+rpi1) buster-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -108,10 +6,88 @@ xen (4.11.1-1+rpi1) buster-staging; urgency=medium
   [changes introduced in 4.6.0-1+rpi1 by Peter Michael Green]
   * Use kernel 3.18 for now as I haven't dealt with 4.x yet.
 
-  [changes introduced in 4.8.0-1+rpi1 by Peter Micheal Green]
-  * Add build-depends on ghostscript.
+ -- Raspbian forward porter <root@raspbian.org>  Mon, 11 Mar 2019 21:30:41 +0000
 
- -- Raspbian forward porter <root@raspbian.org>  Sat, 19 Jan 2019 11:47:24 +0000
+xen (4.11.1+26-g87f51bf366-3) unstable; urgency=medium
+
+  Minor useability improvements and fixes:
+  * bash-completion: also complete 'xen'  [Hans van Kranenburg]
+  * /etc/default/xen: Handle with ucf again, like in stretch.
+    Closes:#923401.  [Ian Jackson]
+
+  Build fix:
+  * Fix FTBFS when building only arch-indep binaries (eg
+    dpkg-buildpackage -A).  Was due to dh-exec bug wrt not-installed.
+    Closes:#923013.  [Hans van Kranenburg; report from Santiago Vila]
+
+  Documentation fix:
+  * grub.d/xen.cfg: dom0_mem max IS needed  [Hans van Kranenburg]
+
+ -- Ian Jackson <ijackson@chiark.greenend.org.uk>  Thu, 28 Feb 2019 16:37:04 +0000
+
+xen (4.11.1+26-g87f51bf366-2) unstable; urgency=medium
+
+  * Packaging change: override spurious lintian warning about
+    fsimage.so rpath.
+
+ -- Ian Jackson <ijackson@chiark.greenend.org.uk>  Fri, 22 Feb 2019 16:07:37 +0000
+
+xen (4.11.1+26-g87f51bf366-1) unstable; urgency=medium
+
+  Significant changes:
+  * Update to new upstream version 4.11.1+26-g87f51bf366.
+    (This is from the upstream stable branch.)  [Ian Jackson]
+  * Build and use oxenstored rather than the C xenstored by default.
+    [Ian Jackson and Hans van Kranenburg]
+  * xen init script: rewrite and reorganise xenstored start logic.
+    [Hans van Kranenburg]
+
+  Documentation etc. improvements:
+  * Refresh hypervisor and dom0 command line options documentation.
+    (Closes: #919758)  [Hans van Kranenburg; report from Gergely]
+  * Ship /etc/default/xen, a striped and tidied version of upstream
+    sysconfig.xencommons.in.  [Hans van Kranenburg]
+
+  Significant bugfixes:
+  * xen init script: Do nothing if running for wrong Xen package.
+    Avoids mystery loss of xenconsoled.  Closes:#851654.
+    [Ian Jackson; report from Wolodja Wentland]
+  * Make pygrub work again (by fixing python module and shared library
+    paths).  Closes:#912381.  [Ian Jackson; earlier, Bastian Blank;
+    report from Dimitar Angelov, also Torben Schou Jensen]
+
+  Packaging bugfixes:
+  * Have xen-utils-common suggest xen-doc, because it contains a broken
+    symlink to it.  Closes:#911046.
+    [Hans van Kranenburg; report from Andreas Beckmann]
+  * Have xenstore-utils declare Breaks on xen-utils-common to make
+    piuparts happy.  Closes:#911045.
+    [Hans van Kranenburg, report from Andreas Beckmann]
+  * hotplug-common: Strip arch-specific libdir from config file
+    Closes:#862236.  [Ian Jackson; report from Stefan Bühler]
+  * xendomains init script; Add dependency on $network.
+    Closes:#798510.  [Francois Lesueur]
+  * xendomains init script; Add should-dependency on nfs-kernel-server
+    Closes:#826871.  [Geoffrey McRae]
+
+  Packaging minor fixes and improvements [Hans van Kranenburg]:
+  * debian/libxenstore3.0.symbols: revert ea2334dfe0
+  * debian/control: add dh-python build-dep
+  * d/xen-utils-V...: override xen-shim-syms lintian
+  * debian/control: bump debhelper builddep to 10
+  * debian/.gitignore: ignore more debhelper snippets
+  * bash-completion: install completion rules for xl
+  * xen init script: don't fail when being run in domU
+  * Remove xend cruft from various init scripts etc.
+
+  Packaging minor fixes and improvements [Ian Jackson]:
+  * xen version/upgrade handling: Improve an error message
+  * xen init script: silently exit status 0 if not running under xen
+  * xen init script: Tidy up wrong/missing Xen version error handling
+  * debian/rules: Fix tiny typos
+  * hotplug-common: Do not adjust LD_LIBRARY_PATH
+
+ -- Ian Jackson <ijackson@chiark.greenend.org.uk>  Fri, 22 Feb 2019 15:11:45 +0000
 
 xen (4.11.1-1) unstable; urgency=medium
 

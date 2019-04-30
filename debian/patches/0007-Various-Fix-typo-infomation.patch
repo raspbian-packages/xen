@@ -13,7 +13,7 @@ Signed-off-by: Ian Jackson <ian.jackson@citrix.com>
  6 files changed, 6 insertions(+), 6 deletions(-)
 
 diff --git a/tools/libxl/libxl_internal.h b/tools/libxl/libxl_internal.h
-index c582894..f80c85f 100644
+index ad536b7..90414ba 100644
 --- a/tools/libxl/libxl_internal.h
 +++ b/tools/libxl/libxl_internal.h
 @@ -2599,7 +2599,7 @@ struct libxl__multidev {

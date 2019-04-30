@@ -1,6 +1,6 @@
 #!/bin/sh
 ### BEGIN INIT INFO
-# Provides:          xen xend
+# Provides:          xen
 # Required-Start:    $syslog $remote_fs
 # Required-Stop:     $syslog $remote_fs
 # Default-Start:     2 3 4 5
@@ -16,26 +16,53 @@
 XENSTORED_DIR="/var/run/xenstored"
 
 [ -r /etc/default/xen ] && . /etc/default/xen
-[ -r /etc/default/xend ] && . /etc/default/xend
 
 PATH=/sbin:/bin:/usr/sbin:/usr/bin
 DESC="Xen daemons"
 
-ROOT=$(/usr/lib/xen-common/bin/xen-dir 2>/dev/null)
+case "$(cat /sys/hypervisor/type 2>/dev/null)" in
+xen)		;;
+*)	exit 0	;; # not running under Xen
+esac
+
+VERSION=$(/usr/lib/xen-common/bin/xen-version)
+
+# The arrangements for the `xen' init script are a bit odd.
+# This script is part of xen-utils-common, of which there is one
+# version installed regardless of the Xen version.
+#
+# But it is called by the prerm and postinsts of xen-utils-VERSION.
+# The idea is that (for example) if xen-utils-VERSION is upgraded, the
+# daemons are restarted.
+#
+# However, this means that this script may be called by the
+# maintscript of a xen-utils-V package for a different V to the
+# running version of Xen (X, say).  Such a xen-utils-V package does
+# not actually want to start or stop its daemons.  Indeed, the version
+# selection machinery would redirect its efforts to the xen-utils-X
+# utilities.  But this is not right: we don't actually want to (for
+# example) stop xenconsoled from xen-utils-X just because some
+# not-currently-relevant xen-utils-V is installed/removed/whatever.
+#
+# So we use DPKG_MAINTSCRIPT_PACKAGE to detect this situation, and
+# turn these extraneous calls into no-ops.
+
+case $DPKG_MAINTSCRIPT_PACKAGE in
+xen-utils-$VERSION)	;;	# xen-utils-V maintscript, under Xen X=V
+xen-utils-*)		exit 0;; # xen-utils-V maintscript, but under Xen X!=V
+*)			;;	# maybe not under dpkg, etc.
+esac
+
+ROOT=$(/usr/lib/xen-common/bin/xen-dir)
 if [ $? -ne 0 ]; then
-	log_warning_msg "Not running within Xen or no compatible utils"
-	exit 0
-fi
-TOOLSTACK=$(/usr/lib/xen-common/bin/xen-toolstack 2>/dev/null)
-if [ $? -ne 0 ]; then
-	log_warning_msg "No usable Xen toolstack selected"
-	exit 0
+	log_warning_msg "No compatible Xen utils for Xen $VERSION"
+	exit 1
 fi
 
-[ -e "$ROOT"/bin/xend ] && XEND="$ROOT"/bin/xend
 XENCONSOLED="$ROOT"/bin/xenconsoled
 XENCONSOLED_PIDFILE="/var/run/xenconsoled.pid"
-XENSTORED="$ROOT"/bin/xenstored
+CXENSTORED="$ROOT"/bin/xenstored
+OXENSTORED="$ROOT"/bin/oxenstored
 XENSTORED_PIDFILE="/var/run/xenstore.pid"
 QEMU=/usr/bin/qemu-system-i386
 QEMU_PIDFILE="/var/run/qemu-dom0.pid"
@@ -70,70 +97,6 @@ env_setup()
 
 	mkdir -m 700 /run/xen
 	[ -x /sbin/restorecon ] && /sbin/restorecon /run/xen
-}
-
-xend_start()
-{
-	if [ -z "$XEND" ] || [ "$(basename "$TOOLSTACK")" != xm ]; then
-		return 0
-	fi
-
-	log_progress_msg "xend"
-	xend_start_real
-	return $?
-}
-
-xend_stop()
-{
-	if [ -z "$XEND" ] || [ "$(basename "$TOOLSTACK")" != xm ]; then
-		return 0
-	fi
-
-	log_progress_msg "xend"
-	xend_stop_real
-	return $?
-}
-
-xend_restart()
-{
-	if [ -z "$XEND" ] || [ "$(basename "$TOOLSTACK")" != xm ]; then
-		return 0
-	fi
-
-	log_progress_msg "xend"
-	xend_stop_real
-	case "$?" in
-		0|1)
-		xend_start_real
-		case "$?" in
-			0) ;;
-			*) return 2 ;;
-		esac
-		;;
-		*) return 2 ;;
-	esac
-	return 0
-}
-
-xend_start_real()
-{
-	$XEND status && return 1
-	$XEND start || return 2
-
-	i=0
-	while [ $i -lt 10 ]; do
-		$XEND status && return 0 || true
-		i=$(($i + 1))
-		sleep 1
-	done
-	return 2
-}
-
-xend_stop_real()
-{
-	log_progress_msg "xend"
-	$XEND status || return 0
-	$XEND stop || return 1
 }
 
 xenconsoled_start()
@@ -172,7 +135,7 @@ xenconsoled_start_real()
 	start-stop-daemon --start --quiet --pidfile "$XENCONSOLED_PIDFILE" --exec "$XENCONSOLED" --test > /dev/null \
 		|| return 1
 	start-stop-daemon --start --quiet --pidfile "$XENCONSOLED_PIDFILE" --exec "$XENCONSOLED" -- \
-		$XENCONSOLED_ARGS --pid-file="$XENCONSOLED_PIDFILE" \
+		$XENCONSOLED_ARGS --pid-file "$XENCONSOLED_PIDFILE" \
 		|| return 2
 }
 
@@ -242,15 +205,44 @@ qemu_stop_real()
 
 xenstored_start()
 {
+	# First, we check if any of xenstored or oxenstored is already running. If
+	# so, we abort and leave it alone.
+	for try_xenstored in "$OXENSTORED" "$CXENSTORED"; do
+		if [ -x $try_xenstored ]; then
+			start-stop-daemon --start --quiet --pidfile "$XENSTORED_PIDFILE" \
+				--exec "$try_xenstored" --test > /dev/null
+			# s-s-d code 1 here means: "We found a matching live process!"
+			if [ $? -eq 1 ]; then
+				return 0
+			fi
+		fi
+	done
 	log_progress_msg "xenstored"
-	start-stop-daemon --start --quiet --pidfile "$XENSTORED_PIDFILE" --exec "$XENSTORED" --test > /dev/null \
-		|| return 1
 	[ -d "$XENSTORED_DIR" ] || mkdir -p "$XENSTORED_DIR"
 	[ -x /sbin/restorecon ] && /sbin/restorecon "$XENSTORED_DIR"
 	export XENSTORED_ROOTDIR="$XENSTORED_DIR"
-	start-stop-daemon --start --quiet --pidfile "$XENSTORED_PIDFILE" --exec "$XENSTORED" -- \
-		$XENSTORED_ARGS --pid-file="$XENSTORED_PIDFILE" \
-		|| return 2
+	# If none of them are running, then try starting one. If the user made an
+	# explicit choice, then run that. Else try the different xenstored
+	# implementations we know about in order of preference.
+	case "$XENSTORED" in
+	?*) try_xenstoreds='XENSTORED' ;;
+	'') try_xenstoreds='OXENSTORED CXENSTORED' ;;
+	esac
+	for try_xenstored_var in $try_xenstoreds; do
+		eval "try_xenstored=\$$try_xenstored_var"
+		if [ -x $try_xenstored ]; then
+			if start-stop-daemon --start --quiet \
+				--pidfile "$XENSTORED_PIDFILE" --exec "$try_xenstored" -- \
+				$XENSTORED_ARGS --pid-file "$XENSTORED_PIDFILE"; then
+					started_xenstored=$try_xenstored
+					break
+			fi
+		fi
+	done
+	if [ -z "$started_xenstored" ]; then
+		log_failure_msg "No suitable xenstored binary found to start."
+		return 1
+	fi
 
 	# Wait for xenstored to actually come up, timing out after 30 seconds
 	local time=0
@@ -264,14 +256,13 @@ xenstored_start()
 	if ! [ $time -lt $timeout ] ; then
 	    return 2
 	fi
-}
 
-init_dom0()
-{
-	log_progress_msg "init-dom0"
+	# Add some extra entries about dom0 into xenstore
 	if [ -e $ROOT/bin/xen-init-dom0 ] ; then
 	    $ROOT/bin/xen-init-dom0 > /dev/null
 	else
+	    # xen-init-dom0 has been present since Stretch.
+	    # Remove this compatibility section in Buster+1
 	    xenstore-write "/local/domain/0/name" "Domain-0"
 	    xenstore-write "/local/domain/0/domid" "0"
 	fi
@@ -289,25 +280,15 @@ case "$1" in
 	capability_check
 	case "$?" in
 		0) ;;
-		*) log_end_msg 255; exit ;;
+		*) log_end_msg 0; exit ;; # not a dom0, skip the rest
 	esac
 	env_setup
 	xenstored_start
 	case "$?" in
-		0|1) ;;
+		0) ;;
 		*) log_end_msg 1; exit ;;
 	esac
 	xenconsoled_start
-	case "$?" in
-		0|1) ;;
-		*) log_end_msg 1; exit ;;
-	esac
-	xend_start
-	case "$?" in
-		0|1) ;;
-		*) log_end_msg 1; exit ;;
-	esac
-	init_dom0
 	case "$?" in
 		0|1) ;;
 		*) log_end_msg 1; exit ;;
@@ -332,11 +313,6 @@ case "$1" in
 		0|1) ;;
 		*) ret=1 ;;
 	esac
-	xend_stop
-	case "$?" in
-		0|1) ;;
-		*) ret=1 ;;
-	esac
 	xenconsoled_stop
 	case "$?" in
 		0|1) ;;
@@ -353,11 +329,6 @@ case "$1" in
 	log_daemon_msg "Restarting $DESC"
 	ret=0
 	qemu_restart
-	case "$?" in
-		0|1) ;;
-		*) ret=1 ;;
-	esac
-	xend_restart
 	case "$?" in
 		0|1) ;;
 		*) ret=1 ;;

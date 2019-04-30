@@ -182,7 +182,6 @@ override_dh_auto_configure:
 		--with-libexec-leaf-dir=xen-$(upstream_version) \
 		--disable-blktap1 \
 		--disable-blktap2 \
-		--disable-ocamltools \
 		--disable-qemu-traditional --disable-rombios \
 		--with-system-qemu=/usr/bin/qemu-system-i386 \
 		--enable-ovmf --with-system-ovmf=/usr/share/ovmf/OVMF.fd \
@@ -225,11 +224,17 @@ override_dh_auto_install: $(TEMPLATED_FILES)
 	@# be in /usr/lib/<triplet>, not /usr/share.
 	mv $t/usr/share/pkgconfig $t/usr/lib/$(DEB_HOST_MULTIARCH)/
 	:
-	@# Inexplicably, upstream pots the efi binares in usr/lib64
+	@# Inexplicably, upstream puts the efi binares in usr/lib64
 	case $(flavour) in \
 		armhf) ;; \
 		*) mv $t/usr/lib64/efi/* $t/boot/. ;; \
 	esac
+	:
+	@# This file contains an arch-specific path and we put it
+	@# in xen-utils-common, an arch-all package.  But the
+	@# path is only used to put the libdir on LD_LIBRARY_PATH
+	@# in the hotplug scripts.  We have a patch to drop that.
+	sed -i '/^libdir=/d' $t/etc/xen/scripts/hotplugpath.sh
 
 # libfsimage not only has an unstable ABI, but also a very poor name.
 # Our makefile patch puts it in a different directory and fixes up the
@@ -315,4 +320,3 @@ override_dh_missing:
 # earlier versions.  See ./ucf-remove-fixup for more details.
 override_dh_ucf:
 	dh_ucf
-	debian/ucf-remove-fixup xen-utils-common /etc/default/xen

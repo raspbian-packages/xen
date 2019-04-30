@@ -41,10 +41,10 @@ index 2eb8156..87c2537 100644
  /*
  * For little endian,reverse the low significant equal bits into MSB,then
 diff --git a/xen/arch/x86/hvm/hvm.c b/xen/arch/x86/hvm/hvm.c
-index 611545f..79ebbc3 100644
+index 7a64368..0b423b5 100644
 --- a/xen/arch/x86/hvm/hvm.c
 +++ b/xen/arch/x86/hvm/hvm.c
-@@ -1746,7 +1746,7 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
+@@ -1736,7 +1736,7 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
          case NESTEDHVM_PAGEFAULT_RETRY:
              return 1;
          case NESTEDHVM_PAGEFAULT_L1_ERROR:

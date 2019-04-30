@@ -43,4 +43,9 @@ prefix-abiname/tools-libfsimage-prefix.diff
 0043-Revert-tools-xenstore-compatibility.diff.patch
 0044-Fix-empty-fields-in-first-hypervisor-log-line.patch
 0045-vif-common-disable-handle_iptable.patch
+0046-sysconfig.xencommons.in-Strip-and-debianize.patch
+0047-hotplug-common-Do-not-adjust-LD_LIBRARY_PATH.patch
+0048-pygrub-Set-sys.path.patch
+0049-pygrub-Specify-rpath-LIBEXEC_LIB-when-building-fsima.patch
+0050-tools-xl-bash-completion-also-complete-xen.patch
 armv6.diff
