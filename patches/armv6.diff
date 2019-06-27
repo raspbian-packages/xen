@@ -1,0 +1,20 @@
+Description:  replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
+Author: Peter Michael Green <plugwash@raspbian.org>
+
+Index: xen-4.6.0/tools/libxc/include/xenctrl.h
+===================================================================
+--- xen-4.6.0.orig/tools/libxc/include/xenctrl.h
++++ xen-4.6.0/tools/libxc/include/xenctrl.h
+@@ -78,9 +78,9 @@
+ #define xen_rmb() xen_barrier()
+ #define xen_wmb() xen_barrier()
+ #elif defined(__arm__)
+-#define xen_mb()   asm volatile ("dmb" : : : "memory")
+-#define xen_rmb()  asm volatile ("dmb" : : : "memory")
+-#define xen_wmb()  asm volatile ("dmb" : : : "memory")
++#define xen_mb()   asm volatile ("mcr p15, #0, r0, c7, c10, #5" : : : "memory")
++#define xen_rmb()  asm volatile ("mcr p15, #0, r0, c7, c10, #5" : : : "memory")
++#define xen_wmb()  asm volatile ("mcr p15, #0, r0, c7, c10, #5" : : : "memory")
+ #elif defined(__aarch64__)
+ #define xen_mb()   asm volatile ("dmb sy" : : : "memory")
+ #define xen_rmb()  asm volatile ("dmb sy" : : : "memory")
