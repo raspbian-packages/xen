@@ -17,23 +17,23 @@ xen (4.11.1+92-g6c33308a8d-1) unstable; urgency=high
   * Update to new upstream version 4.11.1+92-g6c33308a8d, which also
     contains the following security fixes:
     - Fix: grant table transfer issues on large hosts
-      XSA-284 (no CVE yet) (Closes: #929991)
+      XSA-284 CVE-2019-17340 (Closes: #929991)
     - Fix: race with pass-through device hotplug
-      XSA-285 (no CVE yet) (Closes: #929998)
+      XSA-285 CVE-2019-17341 (Closes: #929998)
     - Fix: x86: steal_page violates page_struct access discipline
-      XSA-287 (no CVE yet) (Closes: #930001)
+      XSA-287 CVE-2019-17342 (Closes: #930001)
     - Fix: x86: Inconsistent PV IOMMU discipline
-      XSA-288 (no CVE yet) (Closes: #929994)
+      XSA-288 CVE-2019-17343 (Closes: #929994)
     - Fix: missing preemption in x86 PV page table unvalidation
-      XSA-290 (no CVE yet) (Closes: #929996)
+      XSA-290 CVE-2019-17344 (Closes: #929996)
     - Fix: x86/PV: page type reference counting issue with failed IOMMU update
-      XSA-291 (no CVE yet) (Closes: #929995)
+      XSA-291 CVE-2019-17345 (Closes: #929995)
     - Fix: x86: insufficient TLB flushing when using PCID
-      XSA-292 (no CVE yet) (Closes: #929993)
+      XSA-292 CVE-2019-17346 (Closes: #929993)
     - Fix: x86: PV kernel context switch corruption
-      XSA-293 (no CVE yet) (Closes: #929999)
+      XSA-293 CVE-2019-17347 (Closes: #929999)
     - Fix: x86 shadow: Insufficient TLB flushing when using PCID
-      XSA-294 (no CVE yet) (Closes: #929992)
+      XSA-294 CVE-2019-17348 (Closes: #929992)
     - Fix: Microarchitectural Data Sampling speculative side channel
       XSA-297 CVE-2018-12126 CVE-2018-12127 CVE-2018-12130 CVE-2019-11091
       (Closes: #929129)
@@ -368,19 +368,19 @@ xen (4.8.2+xsa245-0+deb9u1) stretch-security; urgency=high
        (235 already included in 4.8.1-1+deb9u3)
        XSA-236 CVE-2017-15597
        XSA-237 CVE-2017-15590
-       XSA-238 (no CVE yet)
+       XSA-238 CVE-2017-15591
        XSA-239 CVE-2017-15589
        XSA-240 CVE-2017-15595
        XSA-241 CVE-2017-15588
        XSA-242 CVE-2017-15593
        XSA-243 CVE-2017-15592
        XSA-244 CVE-2017-15594
-       XSA-245 (no CVE yet)
+       XSA-245 CVE-2017-17046
     and a number of upstream functionality fixes, which are not easily
     disentangled from the security fixes.
   * Apply two more security fixes:
-       XSA-246 (no CVE yet)
-       XSA-247 (no CVE yet)
+       XSA-246 CVE-2017-17044
+       XSA-247 CVE-2017-17045
 
  -- Ian Jackson <ijackson@chiark.greenend.org.uk>  Sat, 25 Nov 2017 11:26:37 +0000
 
@@ -391,7 +391,7 @@ xen (4.8.1-1+deb9u3) stretch-security; urgency=high
       XSA-227 CVE-2017-12137
       XSA-228 CVE-2017-12136
       XSA-230 CVE-2017-12855
-      XSA-235 (no CVE yet)
+      XSA-235 CVE-2017-15596
   * Adjust changelog entry for 4.8.1-1+deb9u2 to record
     that XSA-225 fix was indeed included.
   * Security fix for XSA-229 not included as that bug is in Linux, not Xen.
