@@ -497,6 +497,15 @@ struct hvm_intack hvm_vcpu_has_pending_irq(struct vcpu *v)
     struct hvm_domain *plat = &v->domain->arch.hvm_domain;
     int vector;
 
+    /*
+     * Always call vlapic_sync_pir_to_irr so that PIR is synced into IRR when
+     * using posted interrupts. Note this is also done by
+     * vlapic_has_pending_irq but depending on which interrupts are pending
+     * hvm_vcpu_has_pending_irq will return early without calling
+     * vlapic_has_pending_irq.
+     */
+    vlapic_sync_pir_to_irr(v);
+
     if ( unlikely(v->nmi_pending) )
         return hvm_intack_nmi;
 
@@ -560,12 +569,6 @@ int hvm_local_events_need_delivery(struct vcpu *v)
         return 0;
 
     return !hvm_interrupt_blocked(v, intack);
-}
-
-void arch_evtchn_inject(struct vcpu *v)
-{
-    if ( is_hvm_vcpu(v) )
-        hvm_assert_evtchn_irq(v);
 }
 
 static void irq_dump(struct domain *d)

@@ -209,7 +209,6 @@ struct hvm_function_table {
                                 bool_t access_w, bool_t access_x);
 
     void (*enable_msr_interception)(struct domain *d, uint32_t msr);
-    void (*set_icebp_interception)(struct domain *d, bool enable);
     bool_t (*is_singlestep_supported)(void);
 
     /* Alternate p2m */
@@ -484,7 +483,7 @@ static inline unsigned int hvm_get_insn_bytes(struct vcpu *v, uint8_t *buf)
 enum hvm_task_switch_reason { TSW_jmp, TSW_iret, TSW_call_or_int };
 void hvm_task_switch(
     uint16_t tss_sel, enum hvm_task_switch_reason taskswitch_reason,
-    int32_t errcode);
+    int32_t errcode, unsigned int insn_len);
 
 enum hvm_access_type {
     hvm_access_insn_fetch,
@@ -594,16 +593,6 @@ static inline bool_t hvm_enable_msr_interception(struct domain *d, uint32_t msr)
     }
 
     return 0;
-}
-
-static inline bool hvm_set_icebp_interception(struct domain *d, bool enable)
-{
-    if ( hvm_funcs.set_icebp_interception )
-    {
-        hvm_funcs.set_icebp_interception(d, enable);
-        return true;
-    }
-    return false;
 }
 
 static inline bool_t hvm_is_singlestep_supported(void)

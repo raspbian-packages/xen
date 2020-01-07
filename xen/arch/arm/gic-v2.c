@@ -353,6 +353,10 @@ static void __init gicv2_dist_init(void)
 
     type = readl_gicd(GICD_TYPER);
     nr_lines = 32 * ((type & GICD_TYPE_LINES) + 1);
+    /* Only 1020 interrupts are supported */
+    nr_lines = min(1020U, nr_lines);
+    gicv2_info.nr_lines = nr_lines;
+
     gic_cpus = 1 + ((type & GICD_TYPE_CPUS) >> 5);
     printk("GICv2: %d lines, %d cpu%s%s (IID %8.8x).\n",
            nr_lines, gic_cpus, (gic_cpus == 1) ? "" : "s",
@@ -375,10 +379,10 @@ static void __init gicv2_dist_init(void)
 
     /* Disable all global interrupts */
     for ( i = 32; i < nr_lines; i += 32 )
+    {
         writel_gicd(~0x0, GICD_ICENABLER + (i / 32) * 4);
-
-    /* Only 1020 interrupts are supported */
-    gicv2_info.nr_lines = min(1020U, nr_lines);
+        writel_gicd(~0x0, GICD_ICACTIVER + (i / 32) * 4);
+    }
 
     /* Turn on the distributor */
     writel_gicd(GICD_CTL_ENABLE, GICD_CTLR);
@@ -393,6 +397,7 @@ static void gicv2_cpu_init(void)
     /* The first 32 interrupts (PPI and SGI) are banked per-cpu, so
      * even though they are controlled with GICD registers, they must
      * be set up here with the other per-cpu state. */
+    writel_gicd(0xffffffff, GICD_ICACTIVER); /* Diactivate PPIs and SGIs */
     writel_gicd(0xffff0000, GICD_ICENABLER); /* Disable all PPI */
     writel_gicd(0x0000ffff, GICD_ISENABLER); /* Enable all SGI */
 

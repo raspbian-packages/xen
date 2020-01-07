@@ -828,7 +828,7 @@ effect the inverse meaning.
 >> set as UC.
 
 ### ept (Intel)
-> `= List of ( {no-}pml | {no-}ad )`
+> `= List of [ {no-}pml,  {no-}ad, {no-}exec-sp ]`
 
 Controls EPT related features.
 
@@ -851,6 +851,31 @@ Controls EPT related features.
 
 >> Have hardware keep accessed/dirty (A/D) bits updated.
 
+*   The `exec-sp` boolean controls whether EPT superpages with execute
+    permissions are permitted.  In general this is good for performance.
+
+    However, on processors vulnerable CVE-2018-12207, HVM guest kernels can
+    use executable superpages to crash the host.  By default, executable
+    superpages are disabled on affected hardware.
+
+    If HVM guest kernels are trusted not to mount a DoS against the system,
+    this option can enabled to regain performance.
+
+    This boolean may be modified at runtime using `xl set-parameters
+    ept=[no-]exec-sp` to switch between fast and secure.
+
+    *   When switching from secure to fast, preexisting HVM domains will run
+        at their current performance until they are rebooted; new domains will
+        run without any overhead.
+
+    *   When switching from fast to secure, all HVM domains will immediately
+        suffer a performance penalty.
+
+    **Warning: No guarantee is made that this runtime option will be retained
+      indefinitely, or that it will retain this exact behaviour.  It is
+      intended as an emergency option for people who first chose fast, then
+      change their minds to secure, and wish not to reboot.**
+
 ### extra\_guest\_irqs
 > `= [<domU number>][,<dom0 number>]`
 
@@ -864,6 +889,22 @@ versa.  For example to change dom0 without changing domU, use
 hardware domain is architecture dependent.
 Note that specifying zero as domU value means zero, while for dom0 it means
 to use the default.
+
+### xsm
+> `= dummy | flask | silo`
+
+> Default: `dummy`
+
+Specify which XSM module should be enabled.  This option is only available if
+the hypervisor was compiled with XSM support.
+
+* `dummy`: this is the default choice.  Basic restriction for common deployment
+  (the dummy module) will be applied.  It's also used when XSM is compiled out.
+* `flask`: this is the policy based access control.  To choose this, the
+  separated option in kconfig must also be enabled.
+* `silo`: this will deny any unmediated communication channels between
+  unprivileged VMs.  To choose this, the separated option in kconfig must also
+  be enabled.
 
 ### flask
 > `= permissive | enforcing | late | disabled`
@@ -1096,7 +1137,7 @@ detection of systems known to misbehave upon accesses to that port.
 > Default: `new` unless directed-EOI is supported
 
 ### iommu
-> `= List of [ <boolean> | force | required | intremap | intpost | qinval | snoop | sharept | dom0-passthrough | dom0-strict | amd-iommu-perdev-intremap | workaround_bios_bug | igfx | crash-disable | verbose | debug ]`
+> `= List of [ <boolean> | force | required | quarantine | intremap | intpost | qinval | snoop | sharept | dom0-passthrough | dom0-strict | amd-iommu-perdev-intremap | workaround_bios_bug | igfx | crash-disable | verbose | debug ]`
 
 > Sub-options:
 
@@ -1115,6 +1156,15 @@ detection of systems known to misbehave upon accesses to that port.
 
 >> Don't continue booting unless IOMMU support is found and can be initialized
 >> successfully.
+
+> `quarantine`
+
+> Default: `true`
+
+>> Control Xen's behavior when de-assigning devices from guests.  If enabled,
+>> Xen always quarantines such devices; they must be explicitly assigned back
+>> to Dom0 before they can be used there again.  If disabled, Xen will only
+>> quarantine devices the toolstack hass arranged for getting quarantined.
 
 > `intremap`
 
@@ -1815,7 +1865,7 @@ extreme care.**
 An overall boolean value, `spec-ctrl=no`, can be specified to turn off all
 mitigations, including pieces of infrastructure used to virtualise certain
 mitigation features for guests.  This also includes settings which `xpti`,
-`smt`, `pv-l1tf` control, unless the respective option(s) have been
+`smt`, `pv-l1tf`, `tsx` control, unless the respective option(s) have been
 specified earlier on the command line.
 
 Alternatively, a slightly more restricted `spec-ctrl=no-xen` can be used to
@@ -1921,6 +1971,33 @@ pages) must also be specified via the tbuf\_size parameter.
 
 ### tsc (x86)
 > `= unstable | skewed | stable:socket`
+
+### tsx
+    = <bool>
+
+    Applicability: x86
+    Default: false on parts vulnerable to TAA, true otherwise
+
+Controls for the use of Transactional Synchronization eXtensions.
+
+On Intel parts released in Q3 2019 (with updated microcode), and future parts,
+a control has been introduced which allows TSX to be turned off.
+
+On systems with the ability to turn TSX off, this boolean offers system wide
+control of whether TSX is enabled or disabled.
+
+On parts vulnerable to CVE-2019-11135 / TSX Asynchronous Abort, the following
+logic applies:
+
+ * An explicit `tsx=` choice is honoured, even if it is `true` and would
+   result in a vulnerable system.
+
+ * When no explicit `tsx=` choice is given, parts vulnerable to TAA will be
+   mitigated by disabling TSX, as this is the lowest overhead option.
+
+ * If the use of TSX is important, the more expensive TAA mitigations can be
+   opted in to with `smt=0 spec-ctrl=md-clear`, at which point TSX will remain
+   active by default.
 
 ### ucode (x86)
 > `= [<integer> | scan]`
