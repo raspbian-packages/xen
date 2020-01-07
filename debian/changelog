@@ -1,8 +1,40 @@
-xen (4.11.3+24-g14b62ab3e5-1) UNRELEASED; urgency=medium
+xen (4.11.3+24-g14b62ab3e5-1) unstable; urgency=high
 
-  * Update to new upstream version 4.11.3+24-g14b62ab3e5.
+  * Update to new upstream version 4.11.3+24-g14b62ab3e5, which also
+    contains the following security fixes: (Closes: #947944)
+    - Unlimited Arm Atomics Operations
+      XSA-295 CVE-2019-17349 CVE-2019-17350
+    - VCPUOP_initialise DoS
+      XSA-296 CVE-2019-18420
+    - missing descriptor table limit checking in x86 PV emulation
+      XSA-298 CVE-2019-18425
+    - Issues with restartable PV type change operations
+      XSA-299 CVE-2019-18421
+    - add-to-physmap can be abused to DoS Arm hosts
+      XSA-301 CVE-2019-18423
+    - passed through PCI devices may corrupt host memory after deassignment
+      XSA-302 CVE-2019-18424
+    - ARM: Interrupts are unconditionally unmasked in exception handlers
+      XSA-303 CVE-2019-18422
+    - x86: Machine Check Error on Page Size Change DoS
+      XSA-304 CVE-2018-12207
+    - TSX Asynchronous Abort speculative side channel
+      XSA-305 CVE-2019-11135
+    - Device quarantine for alternate pci assignment methods
+      XSA-306 CVE-2019-19579
+    - find_next_bit() issues
+      XSA-307 CVE-2019-19581 CVE-2019-19582
+    - VMX: VMentry failure with debug exceptions and blocked states
+      XSA-308 CVE-2019-19583
+    - Linear pagetable use / entry miscounts
+      XSA-309 CVE-2019-19578
+    - Further issues with restartable PV type change operations
+      XSA-310 CVE-2019-19580
+    - Bugs in dynamic height handling for AMD IOMMU pagetables
+      XSA-311 CVE-2019-19577
+  * Add missing CVE numbers to previous changelog entries
 
- -- Hans van Kranenburg <hans@knorrie.org>  Tue, 07 Jan 2020 20:23:17 +0100
+ -- Hans van Kranenburg <hans@knorrie.org>  Wed, 08 Jan 2020 12:41:42 +0100
 
 xen (4.11.1+92-g6c33308a8d-2) unstable; urgency=high
 
