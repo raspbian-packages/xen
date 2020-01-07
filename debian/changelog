@@ -1,3 +1,9 @@
+xen (4.11.3+24-g14b62ab3e5-1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.11.3+24-g14b62ab3e5.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Tue, 07 Jan 2020 20:23:17 +0100
+
 xen (4.11.1+92-g6c33308a8d-2) unstable; urgency=high
 
   * Mention MDS and the need for updated microcode and disabling
