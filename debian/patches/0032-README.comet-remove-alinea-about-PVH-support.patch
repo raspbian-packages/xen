@@ -1,0 +1,32 @@
+From: Hans van Kranenburg <hans@knorrie.org>
+Date: Wed, 23 Jan 2019 22:22:26 +0100
+Subject: README.comet: remove alinea about PVH support
+
+Xen 4.8 does not support running guests as PVH, except for the shim.
+
+(Closes: #908453)
+
+[git-debrebase split: mixed commit: upstream part]
+---
+ README.comet | 11 -----------
+ 1 file changed, 11 deletions(-)
+
+diff --git a/README.comet b/README.comet
+index 1f27f93..9ccebee 100644
+--- a/README.comet
++++ b/README.comet
+@@ -83,14 +83,3 @@ Usage instructions
+ - Add the following two lines:
+   type="pvh"
+   pvshim=1
+-
+-* Converting a PV config to a PVH config
+-
+-If you have a kernel capable of booting PVH, then PVH mode is both
+-faster and more secure than PV or PVH-shim mode.
+-
+-- Remove any reference to 'builder' (e.g., `builder="generic"`)
+-- Add the following line:
+-  type="pvh"
+-
+-* There is no need to reboot the host.

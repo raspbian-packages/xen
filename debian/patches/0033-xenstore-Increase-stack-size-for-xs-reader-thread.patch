@@ -1,0 +1,54 @@
+From: Ian Jackson <ian.jackson@citrix.com>
+Date: Fri, 22 Feb 2019 13:38:13 +0000
+Subject: xenstore: Increase stack size for xs reader thread
+
+Because of a glibc bug, PTHREAD_STACK_MIN can be too small for any
+thread.  Especially on Intel machines with AVX, as reported in
+Debian bug #900746.
+
+In recent Xen this is worked around more comprehensively in:
+   448c03b3cbe1487
+   tools/xenstore: try to get minimum thread stack size for watch thread
+but this is not a good candidate for an upstream stable
+backport because it introduces new linking dependencies etc.
+
+So bodge it by doubling the size.  This is almost entirely risk-free.
+Even if in theory someone might be using libxenstore in a very highly
+multithreaded program, we only steal one extra 16k of address space.
+
+Closes: #900746
+Reported-by: Christian Schwamborn <christian.schwamborn@nswit.de>
+Suggested-by: Damian Pietras <damianp@daper.net>
+Tested-by: Damian Pietras <damianp@daper.net>
+Signed-off-by: Ian Jackson <ian.jackson@citrix.com>
+---
+ shim/tools/xenstore/xs.c | 2 +-
+ tools/xenstore/xs.c      | 2 +-
+ 2 files changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/shim/tools/xenstore/xs.c b/shim/tools/xenstore/xs.c
+index abffd9c..3891e49 100644
+--- a/shim/tools/xenstore/xs.c
++++ b/shim/tools/xenstore/xs.c
+@@ -800,7 +800,7 @@ bool xs_watch(struct xs_handle *h, const char *path, const char *token)
+ 	struct iovec iov[2];
+ 
+ #ifdef USE_PTHREAD
+-#define DEFAULT_THREAD_STACKSIZE (16 * 1024)
++#define DEFAULT_THREAD_STACKSIZE (32 * 1024)
+ #define READ_THREAD_STACKSIZE 					\
+ 	((DEFAULT_THREAD_STACKSIZE < PTHREAD_STACK_MIN) ? 	\
+ 	PTHREAD_STACK_MIN : DEFAULT_THREAD_STACKSIZE)
+diff --git a/tools/xenstore/xs.c b/tools/xenstore/xs.c
+index be82927..f25ccd7 100644
+--- a/tools/xenstore/xs.c
++++ b/tools/xenstore/xs.c
+@@ -725,7 +725,7 @@ bool xs_watch(struct xs_handle *h, const char *path, const char *token)
+ 	struct iovec iov[2];
+ 
+ #ifdef USE_PTHREAD
+-#define DEFAULT_THREAD_STACKSIZE (16 * 1024)
++#define DEFAULT_THREAD_STACKSIZE (32 * 1024)
+ #define READ_THREAD_STACKSIZE 					\
+ 	((DEFAULT_THREAD_STACKSIZE < PTHREAD_STACK_MIN) ? 	\
+ 	PTHREAD_STACK_MIN : DEFAULT_THREAD_STACKSIZE)
