@@ -41,10 +41,10 @@ index 2eb8156..87c2537 100644
  /*
  * For little endian,reverse the low significant equal bits into MSB,then
 diff --git a/xen/arch/x86/hvm/hvm.c b/xen/arch/x86/hvm/hvm.c
-index 2d3c55a..73d8769 100644
+index aa7d747..4f16783 100644
 --- a/xen/arch/x86/hvm/hvm.c
 +++ b/xen/arch/x86/hvm/hvm.c
-@@ -1736,7 +1736,7 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
+@@ -1741,7 +1741,7 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
          case NESTEDHVM_PAGEFAULT_RETRY:
              return 1;
          case NESTEDHVM_PAGEFAULT_L1_ERROR:
@@ -93,7 +93,7 @@ index 05d3afb..8cf04df 100644
  **/
  typedef
 diff --git a/xen/include/public/xen.h b/xen/include/public/xen.h
-index fb1df8f..68ee098 100644
+index 6c180c4..5a5a2fb 100644
 --- a/xen/include/public/xen.h
 +++ b/xen/include/public/xen.h
 @@ -177,7 +177,7 @@ DEFINE_XEN_GUEST_HANDLE(xen_ulong_t);

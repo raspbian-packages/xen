@@ -112,7 +112,7 @@ static void play_dead(void)
      * this case, heap corruption or #PF can occur (when heap debugging is
      * enabled). For example, even printk() can involve tasklet scheduling,
      * which touches per-cpu vars.
-     * 
+     *
      * Consider very carefully when adding code to *dead_idle. Most hypervisor
      * subsystems are unsafe to call.
      */
@@ -405,9 +405,6 @@ void vcpu_destroy(struct vcpu *v)
 
     xfree(v->arch.msr);
     v->arch.msr = NULL;
-
-    if ( !is_idle_domain(v->domain) )
-        vpmu_destroy(v);
 
     if ( is_hvm_vcpu(v) )
         hvm_vcpu_destroy(v);
@@ -1074,9 +1071,15 @@ int arch_set_info_guest(
                     rc = -ERESTART;
                     /* Fallthrough */
                 case -ERESTART:
+                    /*
+                     * NB that we're putting the kernel-mode table
+                     * here, which we've already successfully
+                     * validated above; hence partial = false;
+                     */
                     v->arch.old_guest_ptpg = NULL;
                     v->arch.old_guest_table =
                         pagetable_get_page(v->arch.guest_table);
+                    v->arch.old_guest_table_partial = false;
                     v->arch.guest_table = pagetable_null();
                     break;
                 default:
@@ -1510,11 +1513,14 @@ bool update_runstate_area(struct vcpu *v)
     bool rc;
     struct guest_memory_policy policy = { .nested_guest_mode = false };
     void __user *guest_handle = NULL;
+    struct vcpu_runstate_info runstate;
 
     if ( guest_handle_is_null(runstate_guest(v)) )
         return true;
 
     update_guest_memory_policy(v, &policy);
+
+    memcpy(&runstate, &v->runstate, sizeof(runstate));
 
     if ( VM_ASSIST(v->domain, runstate_update_flag) )
     {
@@ -1522,9 +1528,9 @@ bool update_runstate_area(struct vcpu *v)
             ? &v->runstate_guest.compat.p->state_entry_time + 1
             : &v->runstate_guest.native.p->state_entry_time + 1;
         guest_handle--;
-        v->runstate.state_entry_time |= XEN_RUNSTATE_UPDATE;
+        runstate.state_entry_time |= XEN_RUNSTATE_UPDATE;
         __raw_copy_to_guest(guest_handle,
-                            (void *)(&v->runstate.state_entry_time + 1) - 1, 1);
+                            (void *)(&runstate.state_entry_time + 1) - 1, 1);
         smp_wmb();
     }
 
@@ -1532,20 +1538,20 @@ bool update_runstate_area(struct vcpu *v)
     {
         struct compat_vcpu_runstate_info info;
 
-        XLAT_vcpu_runstate_info(&info, &v->runstate);
+        XLAT_vcpu_runstate_info(&info, &runstate);
         __copy_to_guest(v->runstate_guest.compat, &info, 1);
         rc = true;
     }
     else
-        rc = __copy_to_guest(runstate_guest(v), &v->runstate, 1) !=
-             sizeof(v->runstate);
+        rc = __copy_to_guest(runstate_guest(v), &runstate, 1) !=
+             sizeof(runstate);
 
     if ( guest_handle )
     {
-        v->runstate.state_entry_time &= ~XEN_RUNSTATE_UPDATE;
+        runstate.state_entry_time &= ~XEN_RUNSTATE_UPDATE;
         smp_wmb();
         __raw_copy_to_guest(guest_handle,
-                            (void *)(&v->runstate.state_entry_time + 1) - 1, 1);
+                            (void *)(&runstate.state_entry_time + 1) - 1, 1);
     }
 
     update_guest_memory_policy(v, &policy);
@@ -1838,9 +1844,34 @@ static int relinquish_memory(
             break;
         case -ERESTART:
         case -EINTR:
+            /*
+             * -EINTR means PGT_validated has been re-set; re-set
+             * PGT_pinned again so that it gets picked up next time
+             * around.
+             *
+             * -ERESTART, OTOH, means PGT_partial is set instead.  Put
+             * it back on the list, but don't set PGT_pinned; the
+             * section below will finish off de-validation.  But we do
+             * need to drop the general ref associated with
+             * PGT_pinned, since put_page_and_type_preemptible()
+             * didn't do it.
+             *
+             * NB we can do an ASSERT for PGT_validated, since we
+             * "own" the type ref; but theoretically, the PGT_partial
+             * could be cleared by someone else.
+             */
+            if ( ret == -EINTR )
+            {
+                ASSERT(page->u.inuse.type_info & PGT_validated);
+                set_bit(_PGT_pinned, &page->u.inuse.type_info);
+            }
+            else
+                put_page(page);
+
             ret = -ERESTART;
+
+            /* Put the page back on the list and drop the ref we grabbed above */
             page_list_add(page, list);
-            set_bit(_PGT_pinned, &page->u.inuse.type_info);
             put_page(page);
             goto out;
         default:
@@ -1885,6 +1916,25 @@ static int relinquish_memory(
                     goto out;
                 case -ERESTART:
                     page_list_add(page, list);
+                    /*
+                     * PGT_partial holds a type ref and a general ref.
+                     * If we came in with PGT_partial set, then we 1)
+                     * don't need to grab an extra type count, and 2)
+                     * do need to drop the extra page ref we grabbed
+                     * at the top of the loop.  If we didn't come in
+                     * with PGT_partial set, we 1) do need to drab an
+                     * extra type count, but 2) can transfer the page
+                     * ref we grabbed above to it.
+                     *
+                     * Note that we must increment type_info before
+                     * setting PGT_partial.  Theoretically it should
+                     * be safe to drop the page ref before setting
+                     * PGT_partial, but do it afterwards just to be
+                     * extra safe.
+                     */
+                    if ( !(x & PGT_partial) )
+                        page->u.inuse.type_info++;
+                    smp_wmb();
                     page->u.inuse.type_info |= PGT_partial;
                     if ( x & PGT_partial )
                         put_page(page);
@@ -1939,12 +1989,17 @@ int domain_relinquish_resources(struct domain *d)
         if ( ret )
             return ret;
 
-        /* Drop the in-use references to page-table bases. */
+        /*
+         * Drop the in-use references to page-table bases and clean
+         * up vPMU instances.
+         */
         for_each_vcpu ( d, v )
         {
             ret = vcpu_destroy_pagetables(v);
             if ( ret )
                 return ret;
+
+            vpmu_destroy(v);
         }
 
         if ( is_pv_domain(d) )
@@ -2062,7 +2117,7 @@ void vcpu_kick(struct vcpu *v)
      * pending flag. These values may fluctuate (after all, we hold no
      * locks) but the key insight is that each change will cause
      * evtchn_upcall_pending to be polled.
-     * 
+     *
      * NB2. We save the running flag across the unblock to avoid a needless
      * IPI for domains that we IPI'd to unblock.
      */

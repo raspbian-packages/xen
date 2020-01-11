@@ -376,6 +376,8 @@ void start_secondary(void *unused)
     if ( boot_cpu_has(X86_FEATURE_IBRSB) )
         wrmsrl(MSR_SPEC_CTRL, default_xen_spec_ctrl);
 
+    tsx_init(); /* Needs microcode.  May change HLE/RTM feature bits. */
+
     if ( xen_guest )
         hypervisor_ap_setup();
 
@@ -829,7 +831,13 @@ static int setup_cpu_root_pgt(unsigned int cpu)
     if ( !rc )
         rc = clone_mapping(idt_tables[cpu], rpt);
     if ( !rc )
-        rc = clone_mapping(&per_cpu(init_tss, cpu), rpt);
+    {
+        struct tss_page *ptr = &per_cpu(tss_page, cpu);
+
+        BUILD_BUG_ON(sizeof(*ptr) != PAGE_SIZE);
+
+        rc = clone_mapping(&ptr->tss, rpt);
+    }
     if ( !rc )
         rc = clone_mapping((void *)per_cpu(stubs.addr, cpu), rpt);
 

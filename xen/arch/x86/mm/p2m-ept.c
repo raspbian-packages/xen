@@ -215,6 +215,12 @@ static void ept_p2m_type_to_flags(struct p2m_domain *p2m, ept_entry_t *entry,
             break;
     }
     
+    /*
+     * Don't create executable superpages if we need to shatter them to
+     * protect against CVE-2018-12207.
+     */
+    if ( !p2m->domain->arch.hvm_domain.vmx.exec_sp && is_epte_superpage(entry) )
+        entry->x = 0;
 }
 
 #define GUEST_TABLE_MAP_FAILED  0
@@ -389,7 +395,8 @@ static int ept_next_level(struct p2m_domain *p2m, bool_t read_only,
  * present entries in the given page table, optionally marking the entries
  * also for their subtrees needing P2M type re-calculation.
  */
-static bool_t ept_invalidate_emt(mfn_t mfn, bool_t recalc, int level)
+static bool_t ept_invalidate_emt(mfn_t mfn, bool_t recalc,
+                                 unsigned int parent_level)
 {
     int rc;
     ept_entry_t *epte = map_domain_page(mfn);
@@ -407,7 +414,7 @@ static bool_t ept_invalidate_emt(mfn_t mfn, bool_t recalc, int level)
         e.emt = MTRR_NUM_TYPES;
         if ( recalc )
             e.recalc = 1;
-        rc = atomic_write_ept_entry(&epte[i], e, level);
+        rc = atomic_write_ept_entry(&epte[i], e, parent_level - 1);
         ASSERT(rc == 0);
         changed = 1;
     }
