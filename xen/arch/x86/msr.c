@@ -153,8 +153,31 @@ int guest_rdmsr(const struct vcpu *v, uint32_t msr, uint64_t *val)
     case MSR_FLUSH_CMD:
         /* Write-only */
     case MSR_TSX_FORCE_ABORT:
+    case MSR_TSX_CTRL:
         /* Not offered to guests. */
         goto gp_fault;
+
+    case MSR_AMD_PATCHLEVEL:
+        BUILD_BUG_ON(MSR_IA32_UCODE_REV != MSR_AMD_PATCHLEVEL);
+        /*
+         * AMD and Intel use the same MSR for the current microcode version.
+         *
+         * There is no need to jump through the SDM-provided hoops for Intel.
+         * A guest might itself perform the "write 0, CPUID, read" sequence,
+         * but servicing the CPUID for the guest typically wont result in
+         * actually executing a CPUID instruction.
+         *
+         * As a guest can't influence the value of this MSR, the value will be
+         * from Xen's last microcode load, which can be forwarded straight to
+         * the guest.
+         */
+        if ( (cp->x86_vendor != X86_VENDOR_INTEL &&
+              cp->x86_vendor != X86_VENDOR_AMD) ||
+             (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL &&
+              boot_cpu_data.x86_vendor != X86_VENDOR_AMD) ||
+             rdmsr_safe(MSR_AMD_PATCHLEVEL, *val) )
+            goto gp_fault;
+        break;
 
     case MSR_SPEC_CTRL:
         if ( !cp->feat.ibrsb )
@@ -211,8 +234,22 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
     case MSR_ARCH_CAPABILITIES:
         /* Read-only */
     case MSR_TSX_FORCE_ABORT:
+    case MSR_TSX_CTRL:
         /* Not offered to guests. */
         goto gp_fault;
+
+    case MSR_AMD_PATCHLEVEL:
+        BUILD_BUG_ON(MSR_IA32_UCODE_REV != MSR_AMD_PATCHLEVEL);
+        /*
+         * AMD and Intel use the same MSR for the current microcode version.
+         *
+         * Both document it as read-only.  However Intel also document that,
+         * for backwards compatiblity, the OS should write 0 to it before
+         * trying to access the current microcode version.
+         */
+        if ( d->arch.cpuid->x86_vendor != X86_VENDOR_INTEL || val != 0 )
+            goto gp_fault;
+        break;
 
     case MSR_AMD_PATCHLOADER:
         /*

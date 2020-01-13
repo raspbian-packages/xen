@@ -429,6 +429,8 @@ static void hvm_set_guest_tsc_msr(struct vcpu *v, u64 guest_tsc)
     hvm_set_guest_tsc(v, guest_tsc);
     v->arch.hvm_vcpu.msr_tsc_adjust += v->arch.hvm_vcpu.cache_tsc_offset
                           - tsc_offset;
+    if ( v == current )
+        update_vcpu_system_time(v);
 }
 
 static void hvm_set_guest_tsc_adjust(struct vcpu *v, u64 tsc_adjust)
@@ -437,6 +439,8 @@ static void hvm_set_guest_tsc_adjust(struct vcpu *v, u64 tsc_adjust)
                             - v->arch.hvm_vcpu.msr_tsc_adjust;
     hvm_funcs.set_tsc_offset(v, v->arch.hvm_vcpu.cache_tsc_offset, 0);
     v->arch.hvm_vcpu.msr_tsc_adjust = tsc_adjust;
+    if ( v == current )
+        update_vcpu_system_time(v);
 }
 
 u64 hvm_get_guest_tsc_fixed(struct vcpu *v, uint64_t at_tsc)
@@ -1706,6 +1710,7 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
     struct p2m_domain *p2m, *hostp2m;
     int rc, fall_through = 0, paged = 0;
     int sharing_enomem = 0;
+    unsigned int page_order = 0;
     vm_event_request_t *req_ptr = NULL;
     bool_t ap2m_active, sync = 0;
 
@@ -1774,7 +1779,7 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
     hostp2m = p2m_get_hostp2m(currd);
     mfn = get_gfn_type_access(hostp2m, gfn, &p2mt, &p2ma,
                               P2M_ALLOC | (npfec.write_access ? P2M_UNSHARE : 0),
-                              NULL);
+                              &page_order);
 
     if ( ap2m_active )
     {
@@ -1786,7 +1791,7 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
             goto out;
         }
 
-        mfn = get_gfn_type_access(p2m, gfn, &p2mt, &p2ma, 0, NULL);
+        mfn = get_gfn_type_access(p2m, gfn, &p2mt, &p2ma, 0, &page_order);
     }
     else
         p2m = hostp2m;
@@ -1826,6 +1831,24 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
         case p2m_access_rwx:
             violation = 0;
             break;
+        }
+
+        /*
+         * Workaround for XSA-304 / CVE-2018-12207.  If we take an execution
+         * fault against a non-executable superpage, shatter it to regain
+         * execute permissions.
+         */
+        if ( page_order > 0 && npfec.insn_fetch && npfec.present && !violation )
+        {
+            int res = p2m_set_entry(p2m, _gfn(gfn), mfn, PAGE_ORDER_4K,
+                                    p2mt, p2ma);
+
+            if ( res )
+                printk(XENLOG_ERR "Failed to shatter gfn %"PRI_gfn": %d\n",
+                       gfn, res);
+
+            rc = !res;
+            goto out_put_gfn;
         }
 
         if ( violation )
@@ -2893,7 +2916,7 @@ void hvm_prepare_vm86_tss(struct vcpu *v, uint32_t base, uint32_t limit)
 
 void hvm_task_switch(
     uint16_t tss_sel, enum hvm_task_switch_reason taskswitch_reason,
-    int32_t errcode)
+    int32_t errcode, unsigned int insn_len)
 {
     struct vcpu *v = current;
     struct cpu_user_regs *regs = guest_cpu_user_regs();
@@ -2967,7 +2990,7 @@ void hvm_task_switch(
     if ( taskswitch_reason == TSW_iret )
         eflags &= ~X86_EFLAGS_NT;
 
-    tss.eip    = regs->eip;
+    tss.eip    = regs->eip + insn_len;
     tss.eflags = eflags;
     tss.eax    = regs->eax;
     tss.ecx    = regs->ecx;
@@ -4679,12 +4702,10 @@ static int do_altp2m_op(
         if ( rc > 0 )
         {
             a.u.set_mem_access_multi.opaque = rc;
+            rc = -ERESTART;
             if ( __copy_field_to_guest(guest_handle_cast(arg, xen_hvm_altp2m_op_t),
                                        &a, u.set_mem_access_multi.opaque) )
                 rc = -EFAULT;
-            else
-                rc = hypercall_create_continuation(__HYPERVISOR_hvm_op, "lh",
-                                                   HVMOP_altp2m, arg);
         }
         break;
 
@@ -4786,14 +4807,8 @@ static int compat_altp2m_op(
     switch ( a.cmd )
     {
     case HVMOP_altp2m_set_mem_access_multi:
-        /*
-         * The return code can be positive only if it is the return value
-         * of hypercall_create_continuation. In this case, the opaque value
-         * must be copied back to the guest.
-         */
-        if ( rc > 0 )
+        if ( rc == -ERESTART )
         {
-            ASSERT(rc == __HYPERVISOR_hvm_op);
             a.u.set_mem_access_multi.opaque =
                 nat.altp2m_op->u.set_mem_access_multi.opaque;
             if ( __copy_field_to_guest(guest_handle_cast(arg,

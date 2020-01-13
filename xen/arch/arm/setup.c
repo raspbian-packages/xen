@@ -37,6 +37,7 @@
 #include <xen/vmap.h>
 #include <xen/libfdt/libfdt.h>
 #include <xen/acpi.h>
+#include <xen/warning.h>
 #include <asm/alternative.h>
 #include <asm/page.h>
 #include <asm/current.h>
@@ -725,7 +726,7 @@ void __init start_xen(unsigned long boot_phys_offset,
     /* Register Xen's load address as a boot module. */
     xen_bootmodule = add_boot_module(BOOTMOD_XEN,
                              (paddr_t)(uintptr_t)(_start + boot_phys_offset),
-                             (paddr_t)(uintptr_t)(_end - _start + 1), NULL);
+                             (paddr_t)(uintptr_t)(_end - _start), NULL);
     BUG_ON(!xen_bootmodule);
 
     xen_paddr = get_xen_paddr();
@@ -787,8 +788,11 @@ void __init start_xen(unsigned long boot_phys_offset,
 
     tasklet_subsys_init();
 
-
-    xsm_dt_init();
+    if ( xsm_dt_init() != 1 )
+        warning_add("WARNING: SILO mode is not enabled.\n"
+                    "It has implications on the security of the system,\n"
+                    "unless the communications have been forbidden between\n"
+                    "untrusted domains.\n");
 
     init_maintenance_interrupt();
     init_timer_interrupt();

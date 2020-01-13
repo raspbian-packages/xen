@@ -93,7 +93,7 @@ config XENOPROF
 
 config XSM
 	bool "Xen Security Modules support"
-	default n
+	default ARM
 	---help---
 	  Enables the security framework known as Xen Security Modules which
 	  allows administrators fine-grained control over a Xen domain and
@@ -105,7 +105,7 @@ config XSM
 
 config FLASK
 	def_bool y
-	prompt "FLux Advanced Security Kernel support" if EXPERT = "y"
+	prompt "FLux Advanced Security Kernel support"
 	depends on XSM
 	---help---
 	  Enables FLASK (FLux Advanced Security Kernel) as the access control
@@ -130,7 +130,7 @@ config FLASK_AVC_STATS
 config XSM_POLICY
 	bool "Compile Xen with a built-in security policy"
 	default y if HAS_CHECKPOLICY = "y"
-	depends on XSM
+	depends on FLASK
 	---help---
 	  This includes a default XSM policy in the hypervisor so that the
 	  bootloader does not need to load a policy to get sane behavior from an
@@ -142,6 +142,33 @@ config XSM_POLICY
 	  available when compiling the hypervisor.
 
 	  If unsure, say Y.
+
+config SILO
+	def_bool y
+	prompt "SILO support"
+	depends on XSM
+	---help---
+	  Enables SILO as the access control mechanism used by the XSM framework.
+	  This is not the default module, add boot parameter xsm=silo to choose
+	  it. This will deny any unmediated communication channels (grant tables
+	  and event channels) between unprivileged VMs.
+
+	  If unsure, say Y.
+
+choice
+	prompt "Default XSM implementation"
+	depends on XSM
+	default XSM_SILO_DEFAULT if SILO && ARM
+	default XSM_FLASK_DEFAULT if FLASK
+	default XSM_SILO_DEFAULT if SILO
+	default XSM_DUMMY_DEFAULT
+	config XSM_DUMMY_DEFAULT
+		bool "Match non-XSM behavior"
+	config XSM_FLASK_DEFAULT
+		bool "FLux Advanced Security Kernel" if FLASK
+	config XSM_SILO_DEFAULT
+		bool "SILO" if SILO
+endchoice
 
 config LATE_HWDOM
 	bool "Dedicated hardware domain"

@@ -192,7 +192,7 @@ u64 alloc_pgtable_maddr(struct acpi_drhd_unit *drhd, unsigned long npages)
     nodeid_t node = NUMA_NO_NODE;
     unsigned int i;
 
-    rhsa = drhd_to_rhsa(drhd);
+    rhsa = drhd ? drhd_to_rhsa(drhd) : NULL;
     if ( rhsa )
         node =  pxm_to_node(rhsa->proximity_domain);
 
@@ -1210,6 +1210,8 @@ int __init iommu_alloc(struct acpi_drhd_unit *drhd)
     }
     if ( !(iommu->cap + 1) || !(iommu->ecap + 1) )
         return -ENODEV;
+
+    quirk_iommu_caps(iommu);
 
     if ( cap_fault_reg_offset(iommu->cap) +
          cap_num_fault_regs(iommu->cap) * PRIMARY_FAULT_REG_LEN >= PAGE_SIZE ||
@@ -2389,6 +2391,15 @@ static int reassign_device_ownership(
     if ( ret )
         return ret;
 
+    if ( devfn == pdev->devfn && pdev->domain != dom_io )
+    {
+        list_move(&pdev->domain_list, &dom_io->arch.pdev_list);
+        pdev->domain = dom_io;
+    }
+
+    if ( !has_arch_pdevs(source) )
+        vmx_pi_hooks_deassign(source);
+
     if ( !has_arch_pdevs(target) )
         vmx_pi_hooks_assign(target);
 
@@ -2401,14 +2412,11 @@ static int reassign_device_ownership(
         return ret;
     }
 
-    if ( devfn == pdev->devfn )
+    if ( devfn == pdev->devfn && pdev->domain != target )
     {
         list_move(&pdev->domain_list, &target->arch.pdev_list);
         pdev->domain = target;
     }
-
-    if ( !has_arch_pdevs(source) )
-        vmx_pi_hooks_deassign(source);
 
     return ret;
 }
@@ -2416,6 +2424,7 @@ static int reassign_device_ownership(
 static int intel_iommu_assign_device(
     struct domain *d, u8 devfn, struct pci_dev *pdev, u32 flag)
 {
+    struct domain *s = pdev->domain;
     struct acpi_rmrr_unit *rmrr;
     int ret = 0, i;
     u16 bdf, seg;
@@ -2458,8 +2467,8 @@ static int intel_iommu_assign_device(
         }
     }
 
-    ret = reassign_device_ownership(hardware_domain, d, devfn, pdev);
-    if ( ret )
+    ret = reassign_device_ownership(s, d, devfn, pdev);
+    if ( ret || d == dom_io )
         return ret;
 
     /* Setup rmrr identity mapping */
@@ -2472,11 +2481,20 @@ static int intel_iommu_assign_device(
             ret = rmrr_identity_mapping(d, 1, rmrr, flag);
             if ( ret )
             {
-                reassign_device_ownership(d, hardware_domain, devfn, pdev);
+                int rc;
+
+                rc = reassign_device_ownership(d, s, devfn, pdev);
                 printk(XENLOG_G_ERR VTDPREFIX
                        " cannot map reserved region (%"PRIx64",%"PRIx64"] for Dom%d (%d)\n",
                        rmrr->base_address, rmrr->end_address,
                        d->domain_id, ret);
+                if ( rc )
+                {
+                    printk(XENLOG_ERR VTDPREFIX
+                           " failed to reclaim %04x:%02x:%02x.%u from %pd (%d)\n",
+                           seg, bus, PCI_SLOT(devfn), PCI_FUNC(devfn), d, rc);
+                    domain_crash(d);
+                }
                 break;
             }
         }
@@ -2654,9 +2672,69 @@ static void vtd_dump_p2m_table(struct domain *d)
     vtd_dump_p2m_table_level(hd->arch.pgd_maddr, agaw_to_level(hd->arch.agaw), 0, 0);
 }
 
+static int __init intel_iommu_quarantine_init(struct domain *d)
+{
+    struct domain_iommu *hd = dom_iommu(d);
+    struct dma_pte *parent;
+    unsigned int agaw = width_to_agaw(DEFAULT_DOMAIN_ADDRESS_WIDTH);
+    unsigned int level = agaw_to_level(agaw);
+    int rc;
+
+    if ( hd->arch.pgd_maddr )
+    {
+        ASSERT_UNREACHABLE();
+        return 0;
+    }
+
+    spin_lock(&hd->arch.mapping_lock);
+
+    hd->arch.pgd_maddr = alloc_pgtable_maddr(NULL, 1);
+    if ( !hd->arch.pgd_maddr )
+        goto out;
+
+    parent = map_vtd_domain_page(hd->arch.pgd_maddr);
+    while ( level )
+    {
+        uint64_t maddr;
+        unsigned int offset;
+
+        /*
+         * The pgtable allocator is fine for the leaf page, as well as
+         * page table pages, and the resulting allocations are always
+         * zeroed.
+         */
+        maddr = alloc_pgtable_maddr(NULL, 1);
+        if ( !maddr )
+            break;
+
+        for ( offset = 0; offset < PTE_NUM; offset++ )
+        {
+            struct dma_pte *pte = &parent[offset];
+
+            dma_set_pte_addr(*pte, maddr);
+            dma_set_pte_readable(*pte);
+        }
+        iommu_flush_cache_page(parent, 1);
+
+        unmap_vtd_domain_page(parent);
+        parent = map_vtd_domain_page(maddr);
+        level--;
+    }
+    unmap_vtd_domain_page(parent);
+
+ out:
+    spin_unlock(&hd->arch.mapping_lock);
+
+    rc = iommu_flush_iotlb_all(d);
+
+    /* Pages leaked in failure case */
+    return level ? -ENOMEM : rc;
+}
+
 const struct iommu_ops intel_iommu_ops = {
     .init = intel_iommu_domain_init,
     .hwdom_init = intel_iommu_hwdom_init,
+    .quarantine_init = intel_iommu_quarantine_init,
     .add_device = intel_iommu_add_device,
     .enable_device = intel_iommu_enable_device,
     .remove_device = intel_iommu_remove_device,

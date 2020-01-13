@@ -29,7 +29,7 @@
 #include <asm/iommu.h>
 
 extern bool_t iommu_enable, iommu_enabled;
-extern bool_t force_iommu, iommu_verbose;
+extern bool force_iommu, iommu_quarantine, iommu_verbose;
 extern bool_t iommu_workaround_bios_bug, iommu_igfx, iommu_passthrough;
 extern bool_t iommu_snoop, iommu_qinval, iommu_intremap, iommu_intpost;
 extern bool_t iommu_hap_pt_share;
@@ -139,6 +139,7 @@ typedef int iommu_grdm_t(xen_pfn_t start, xen_ulong_t nr, u32 id, void *ctxt);
 struct iommu_ops {
     int (*init)(struct domain *d);
     void (*hwdom_init)(struct domain *d);
+    int (*quarantine_init)(struct domain *d);
     int (*add_device)(u8 devfn, device_t *dev);
     int (*enable_device)(device_t *dev);
     int (*remove_device)(u8 devfn, device_t *dev);

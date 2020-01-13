@@ -52,6 +52,7 @@ custom_param("iommu", parse_iommu_param);
 bool_t __initdata iommu_enable = 1;
 bool_t __read_mostly iommu_enabled;
 bool_t __read_mostly force_iommu;
+bool __read_mostly iommu_quarantine = true;
 bool_t __hwdom_initdata iommu_dom0_strict;
 bool_t __read_mostly iommu_verbose;
 bool_t __read_mostly iommu_workaround_bios_bug;
@@ -99,6 +100,8 @@ static int __init parse_iommu_param(const char *s)
         else if ( !cmdline_strcmp(s, "force") ||
                   !cmdline_strcmp(s, "required") )
             force_iommu = val;
+        else if ( !cmdline_strcmp(s, "quarantine") )
+            iommu_quarantine = val;
         else if ( !cmdline_strcmp(s, "workaround_bios_bug") )
             iommu_workaround_bios_bug = val;
         else if ( !cmdline_strcmp(s, "igfx") )
@@ -219,6 +222,9 @@ void iommu_teardown(struct domain *d)
 {
     const struct domain_iommu *hd = dom_iommu(d);
 
+    if ( d == dom_io )
+        return;
+
     d->need_iommu = 0;
     hd->platform_ops->teardown(d);
     tasklet_schedule(&iommu_pt_cleanup_tasklet);
@@ -227,6 +233,9 @@ void iommu_teardown(struct domain *d)
 int iommu_construct(struct domain *d)
 {
     if ( need_iommu(d) > 0 )
+        return 0;
+
+    if ( d == dom_io )
         return 0;
 
     if ( !iommu_use_hap_pt(d) )
@@ -371,6 +380,21 @@ int iommu_iotlb_flush_all(struct domain *d)
     return rc;
 }
 
+static int __init iommu_quarantine_init(void)
+{
+    const struct domain_iommu *hd = dom_iommu(dom_io);
+    int rc;
+
+    rc = iommu_domain_init(dom_io);
+    if ( rc )
+        return rc;
+
+    if ( !hd->platform_ops->quarantine_init )
+        return 0;
+
+    return hd->platform_ops->quarantine_init(dom_io);
+}
+
 int __init iommu_setup(void)
 {
     int rc = -ENODEV;
@@ -404,6 +428,9 @@ int __init iommu_setup(void)
     printk("I/O virtualisation %sabled\n", iommu_enabled ? "en" : "dis");
     if ( iommu_enabled )
     {
+        if ( iommu_quarantine_init() )
+            panic("Could not set up quarantine\n");
+
         printk(" - Dom0 mode: %s\n",
                iommu_passthrough ? "Passthrough" :
                iommu_dom0_strict ? "Strict" : "Relaxed");

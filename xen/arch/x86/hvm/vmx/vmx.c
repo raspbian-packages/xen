@@ -404,6 +404,12 @@ static int vmx_domain_initialise(struct domain *d)
 
     d->arch.ctxt_switch = &csw;
 
+    /*
+     * Work around CVE-2018-12207?  The hardware domain is already permitted
+     * to reboot the system, so doesn't need mitigating against DoS's.
+     */
+    d->arch.hvm_domain.vmx.exec_sp = is_hardware_domain(d) || opt_ept_exec_sp;
+
     if ( !has_vlapic(d) )
         return 0;
 
@@ -2174,7 +2180,14 @@ static void vmx_vcpu_update_vmfunc_ve(struct vcpu *v)
             mfn = get_gfn_query_unlocked(d, gfn_x(vcpu_altp2m(v).veinfo_gfn), &t);
 
             if ( !mfn_eq(mfn, INVALID_MFN) )
+            {
                 __vmwrite(VIRT_EXCEPTION_INFO, mfn_x(mfn) << PAGE_SHIFT);
+                /*
+                 * Make sure we have an up-to-date EPTP_INDEX when
+                 * setting SECONDARY_EXEC_ENABLE_VIRT_EXCEPTIONS.
+                 */
+                __vmwrite(EPTP_INDEX, vcpu_altp2m(v).p2midx);
+            }
             else
                 v->arch.hvm_vmx.secondary_exec_control &=
                     ~SECONDARY_EXEC_ENABLE_VIRT_EXCEPTIONS;
@@ -2406,7 +2419,103 @@ static void pi_notification_interrupt(struct cpu_user_regs *regs)
 }
 
 static void __init lbr_tsx_fixup_check(void);
-static void __init bdw_erratum_bdf14_fixup_check(void);
+static void __init bdf93_fixup_check(void);
+
+/*
+ * Calculate whether the CPU is vulnerable to Instruction Fetch page
+ * size-change MCEs.
+ */
+static bool __init has_if_pschange_mc(void)
+{
+    uint64_t caps = 0;
+
+    /*
+     * If we are virtualised, there is nothing we can do.  Our EPT tables are
+     * shadowed by our hypervisor, and not walked by hardware.
+     */
+    if ( cpu_has_hypervisor )
+        return false;
+
+    if ( boot_cpu_has(X86_FEATURE_ARCH_CAPS) )
+        rdmsrl(MSR_ARCH_CAPABILITIES, caps);
+
+    if ( caps & ARCH_CAPS_IF_PSCHANGE_MC_NO )
+        return false;
+
+    /*
+     * IF_PSCHANGE_MC is only known to affect Intel Family 6 processors at
+     * this time.
+     */
+    if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
+         boot_cpu_data.x86 != 6 )
+        return false;
+
+    switch ( boot_cpu_data.x86_model )
+    {
+        /*
+         * Core processors since at least Nehalem are vulnerable.
+         */
+    case 0x1f: /* Auburndale / Havendale */
+    case 0x1e: /* Nehalem */
+    case 0x1a: /* Nehalem EP */
+    case 0x2e: /* Nehalem EX */
+    case 0x25: /* Westmere */
+    case 0x2c: /* Westmere EP */
+    case 0x2f: /* Westmere EX */
+    case 0x2a: /* SandyBridge */
+    case 0x2d: /* SandyBridge EP/EX */
+    case 0x3a: /* IvyBridge */
+    case 0x3e: /* IvyBridge EP/EX */
+    case 0x3c: /* Haswell */
+    case 0x3f: /* Haswell EX/EP */
+    case 0x45: /* Haswell D */
+    case 0x46: /* Haswell H */
+    case 0x3d: /* Broadwell */
+    case 0x47: /* Broadwell H */
+    case 0x4f: /* Broadwell EP/EX */
+    case 0x56: /* Broadwell D */
+    case 0x4e: /* Skylake M */
+    case 0x5e: /* Skylake D */
+    case 0x55: /* Skylake-X / Cascade Lake */
+    case 0x8e: /* Kaby / Coffee / Whiskey Lake M */
+    case 0x9e: /* Kaby / Coffee / Whiskey Lake D */
+        return true;
+
+        /*
+         * Atom processors are not vulnerable.
+         */
+    case 0x1c: /* Pineview */
+    case 0x26: /* Lincroft */
+    case 0x27: /* Penwell */
+    case 0x35: /* Cloverview */
+    case 0x36: /* Cedarview */
+    case 0x37: /* Baytrail / Valleyview (Silvermont) */
+    case 0x4d: /* Avaton / Rangely (Silvermont) */
+    case 0x4c: /* Cherrytrail / Brasswell */
+    case 0x4a: /* Merrifield */
+    case 0x5a: /* Moorefield */
+    case 0x5c: /* Goldmont */
+    case 0x5d: /* SoFIA 3G Granite/ES2.1 */
+    case 0x65: /* SoFIA LTE AOSP */
+    case 0x5f: /* Denverton */
+    case 0x6e: /* Cougar Mountain */
+    case 0x75: /* Lightning Mountain */
+    case 0x7a: /* Gemini Lake */
+    case 0x86: /* Jacobsville */
+
+        /*
+         * Knights processors are not vulnerable.
+         */
+    case 0x57: /* Knights Landing */
+    case 0x85: /* Knights Mill */
+        return false;
+
+    default:
+        printk("Unrecognised CPU model %#x - assuming vulnerable to IF_PSCHANGE_MC\n",
+               boot_cpu_data.x86_model);
+        return true;
+    }
+}
 
 const struct hvm_function_table * __init start_vmx(void)
 {
@@ -2428,6 +2537,17 @@ const struct hvm_function_table * __init start_vmx(void)
      */
     if ( cpu_has_vmx_ept && (cpu_has_vmx_pat || opt_force_ept) )
     {
+        bool cpu_has_bug_pschange_mc = has_if_pschange_mc();
+
+        if ( opt_ept_exec_sp == -1 )
+        {
+            /* Default to non-executable superpages on vulnerable hardware. */
+            opt_ept_exec_sp = !cpu_has_bug_pschange_mc;
+
+            if ( cpu_has_bug_pschange_mc )
+                printk("VMX: Disabling executable EPT superpages due to CVE-2018-12207\n");
+        }
+
         vmx_function_table.hap_supported = 1;
         vmx_function_table.altp2m_supported = 1;
 
@@ -2473,7 +2593,7 @@ const struct hvm_function_table * __init start_vmx(void)
     setup_vmcs_dump();
 
     lbr_tsx_fixup_check();
-    bdw_erratum_bdf14_fixup_check();
+    bdf93_fixup_check();
 
     return &vmx_function_table;
 }
@@ -2641,14 +2761,6 @@ static int vmx_cr_access(cr_access_qual_t qual)
     return X86EMUL_OKAY;
 }
 
-/* This defines the layout of struct lbr_info[] */
-#define LBR_LASTINT_FROM_IDX    0
-#define LBR_LASTINT_TO_IDX      1
-#define LBR_LASTBRANCH_TOS_IDX  2
-#define LBR_LASTBRANCH_FROM_IDX 3
-#define LBR_LASTBRANCH_TO_IDX   4
-#define LBR_LASTBRANCH_INFO     5
-
 static const struct lbr_info {
     u32 base, count;
 } p4_lbr[] = {
@@ -2780,52 +2892,76 @@ enum
 
 #define LBR_MSRS_INSERTED      (1u << 0)
 #define LBR_FIXUP_TSX          (1u << 1)
-#define LBR_FIXUP_BDF14        (1u << 2)
-#define LBR_FIXUP_MASK         (LBR_FIXUP_TSX | LBR_FIXUP_BDF14)
+#define LBR_FIXUP_BDF93        (1u << 2)
+#define LBR_FIXUP_MASK         (LBR_FIXUP_TSX | LBR_FIXUP_BDF93)
 
 static bool __read_mostly lbr_tsx_fixup_needed;
-static bool __read_mostly bdw_erratum_bdf14_fixup_needed;
-static uint32_t __read_mostly lbr_from_start;
-static uint32_t __read_mostly lbr_from_end;
-static uint32_t __read_mostly lbr_lastint_from;
+static bool __read_mostly bdf93_fixup_needed;
 
 static void __init lbr_tsx_fixup_check(void)
 {
-    bool tsx_support = cpu_has_hle || cpu_has_rtm;
     uint64_t caps;
     uint32_t lbr_format;
 
-    /* Fixup is needed only when TSX support is disabled ... */
-    if ( tsx_support )
+    /*
+     * HSM182, HSD172, HSE117, BDM127, BDD117, BDF85, BDE105:
+     *
+     * On processors that do not support Intel Transactional Synchronization
+     * Extensions (Intel TSX) (CPUID.07H.EBX bits 4 and 11 are both zero),
+     * writes to MSR_LASTBRANCH_x_FROM_IP (MSR 680H to 68FH) may #GP unless
+     * bits[62:61] are equal to bit[47].
+     *
+     * Software should sign extend the MSRs.
+     *
+     * Experimentally, MSR_LER_FROM_LIP (1DDH) is similarly impacted, so is
+     * fixed up as well.
+     */
+    if ( cpu_has_hle || cpu_has_rtm ||
+         boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
+         boot_cpu_data.x86 != 6 )
         return;
 
+    switch ( boot_cpu_data.x86_model )
+    {
+    case 0x3c: /* HSM182, HSD172 - 4th gen Core */
+    case 0x3f: /* HSE117 - Xeon E5 v3 */
+    case 0x45: /* HSM182 - 4th gen Core */
+    case 0x46: /* HSM182, HSD172 - 4th gen Core (GT3) */
+    case 0x3d: /* BDM127 - 5th gen Core */
+    case 0x47: /* BDD117 - 5th gen Core (GT3) */
+    case 0x4f: /* BDF85  - Xeon E5-2600 v4 */
+    case 0x56: /* BDE105 - Xeon D-1500 */
+        break;
+    default:
+        return;
+    }
+
+    /*
+     * Fixup is needed only when TSX support is disabled and the address
+     * format of LBR includes TSX bits 61:62
+     */
     if ( !cpu_has_pdcm )
         return;
 
     rdmsrl(MSR_IA32_PERF_CAPABILITIES, caps);
     lbr_format = caps & MSR_IA32_PERF_CAP_LBR_FORMAT;
 
-    /* ... and the address format of LBR includes TSX bits 61:62 */
     if ( lbr_format == LBR_FORMAT_EIP_FLAGS_TSX )
-    {
-        const struct lbr_info *lbr = last_branch_msr_get();
-
-        if ( lbr == NULL )
-            return;
-
-        lbr_lastint_from = lbr[LBR_LASTINT_FROM_IDX].base;
-        lbr_from_start = lbr[LBR_LASTBRANCH_FROM_IDX].base;
-        lbr_from_end = lbr_from_start + lbr[LBR_LASTBRANCH_FROM_IDX].count;
-
         lbr_tsx_fixup_needed = true;
-    }
 }
 
-static void __init bdw_erratum_bdf14_fixup_check(void)
+static void __init bdf93_fixup_check(void)
 {
-    /* Broadwell E5-2600 v4 processors need to work around erratum BDF14. */
-    if ( boot_cpu_data.x86 == 6 && boot_cpu_data.x86_model == 79 )
-        bdw_erratum_bdf14_fixup_needed = true;
+    /*
+     * Broadwell erratum BDF93:
+     *
+     * Reads from MSR_LER_TO_LIP (MSR 1DEH) may return values for bits[63:61]
+     * that are not equal to bit[47].  Attempting to context switch this value
+     * may cause a #GP.  Software should sign extend the MSR.
+     */
+    if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL &&
+         boot_cpu_data.x86 == 6 && boot_cpu_data.x86_model == 0x4f )
+        bdf93_fixup_needed = true;
 }
 
 static int is_last_branch_msr(u32 ecx)
@@ -3190,8 +3326,8 @@ static int vmx_msr_write_intercept(unsigned int msr, uint64_t msr_content)
             v->arch.hvm_vmx.lbr_flags |= LBR_MSRS_INSERTED;
             if ( lbr_tsx_fixup_needed )
                 v->arch.hvm_vmx.lbr_flags |= LBR_FIXUP_TSX;
-            if ( bdw_erratum_bdf14_fixup_needed )
-                v->arch.hvm_vmx.lbr_flags |= LBR_FIXUP_BDF14;
+            if ( bdf93_fixup_needed )
+                v->arch.hvm_vmx.lbr_flags |= LBR_FIXUP_BDF93;
         }
 
         __vmwrite(GUEST_IA32_DEBUGCTL, msr_content);
@@ -3771,6 +3907,42 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
             HVMTRACE_1D(TRAP_DEBUG, exit_qualification);
             __restore_debug_registers(v);
             write_debugreg(6, exit_qualification | DR_STATUS_RESERVED_ONE);
+
+            /*
+             * Work around SingleStep + STI/MovSS VMEntry failures.
+             *
+             * We intercept #DB unconditionally to work around CVE-2015-8104 /
+             * XSA-156 (guest-kernel induced host DoS).
+             *
+             * STI/MovSS shadows block/defer interrupts/exceptions (exact
+             * details are complicated and poorly documented).  Debug
+             * exceptions delayed for any reason are stored in the
+             * PENDING_DBG_EXCEPTIONS field.
+             *
+             * The falling edge of PENDING_DBG causes #DB to be delivered,
+             * resulting in a VMExit, as #DB is intercepted.  The VMCS still
+             * reports blocked-by-STI/MovSS.
+             *
+             * The VMEntry checks when EFLAGS.TF is set don't like a VMCS in
+             * this state.  Despite a #DB queued in VMENTRY_INTR_INFO, the
+             * state is rejected as DR6.BS isn't pending.  Fix this up.
+             */
+            if ( unlikely(regs->eflags & X86_EFLAGS_TF) )
+            {
+                unsigned long int_info;
+
+                __vmread(GUEST_INTERRUPTIBILITY_INFO, &int_info);
+
+                if ( int_info & (VMX_INTR_SHADOW_STI | VMX_INTR_SHADOW_MOV_SS) )
+                {
+                    unsigned long pending_dbg;
+
+                    __vmread(GUEST_PENDING_DBG_EXCEPTIONS, &pending_dbg);
+                    __vmwrite(GUEST_PENDING_DBG_EXCEPTIONS,
+                              pending_dbg | DR_STEP);
+                }
+            }
+
             if ( !v->domain->debugger_attached )
             {
                 unsigned long insn_len = 0;
@@ -3911,8 +4083,8 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
             __vmread(IDT_VECTORING_ERROR_CODE, &ecode);
         else
              ecode = -1;
-        regs->rip += inst_len;
-        hvm_task_switch((uint16_t)exit_qualification, reasons[source], ecode);
+
+        hvm_task_switch(exit_qualification, reasons[source], ecode, inst_len);
         break;
     }
     case EXIT_REASON_CPUID:
@@ -4205,8 +4377,12 @@ static void lbr_tsx_fixup(void)
     struct vmx_msr_entry *msr_area = curr->arch.hvm_vmx.msr_area;
     struct vmx_msr_entry *msr;
 
-    if ( (msr = vmx_find_msr(curr, lbr_from_start, VMX_MSR_GUEST)) != NULL )
+    if ( (msr = vmx_find_msr(curr, MSR_P4_LASTBRANCH_0_FROM_LIP,
+                             VMX_MSR_GUEST)) != NULL )
     {
+        const unsigned int lbr_from_end =
+            MSR_P4_LASTBRANCH_0_FROM_LIP + NUM_MSR_P4_LASTBRANCH_FROM_TO;
+
         /*
          * Sign extend into bits 61:62 while preserving bit 63
          * The loop relies on the fact that MSR array is sorted.
@@ -4215,7 +4391,8 @@ static void lbr_tsx_fixup(void)
             msr->data |= ((LBR_FROM_SIGNEXT_2MSB & msr->data) << 2);
     }
 
-    if ( (msr = vmx_find_msr(curr, lbr_lastint_from, VMX_MSR_GUEST)) != NULL )
+    if ( (msr = vmx_find_msr(curr, MSR_IA32_LASTINTFROMIP,
+                             VMX_MSR_GUEST)) != NULL )
         msr->data |= ((LBR_FROM_SIGNEXT_2MSB & msr->data) << 2);
 }
 
@@ -4232,20 +4409,10 @@ static void sign_extend_msr(struct vcpu *v, u32 msr, int type)
     }
 }
 
-static void bdw_erratum_bdf14_fixup(void)
+static void bdf93_fixup(void)
 {
     struct vcpu *curr = current;
 
-    /*
-     * Occasionally, on certain Broadwell CPUs MSR_IA32_LASTINTTOIP has
-     * been observed to have the top three bits corrupted as though the
-     * MSR is using the LBR_FORMAT_EIP_FLAGS_TSX format. This is
-     * incorrect and causes a vmentry failure -- the MSR should contain
-     * an offset into the current code segment. This is assumed to be
-     * erratum BDF14. Fix up MSR_IA32_LASTINT{FROM,TO}IP by
-     * sign-extending into bits 48:63.
-     */
-    sign_extend_msr(curr, MSR_IA32_LASTINTFROMIP, VMX_MSR_GUEST);
     sign_extend_msr(curr, MSR_IA32_LASTINTTOIP, VMX_MSR_GUEST);
 }
 
@@ -4255,8 +4422,8 @@ static void lbr_fixup(void)
 
     if ( curr->arch.hvm_vmx.lbr_flags & LBR_FIXUP_TSX )
         lbr_tsx_fixup();
-    if ( curr->arch.hvm_vmx.lbr_flags & LBR_FIXUP_BDF14 )
-        bdw_erratum_bdf14_fixup();
+    if ( curr->arch.hvm_vmx.lbr_flags & LBR_FIXUP_BDF93 )
+        bdf93_fixup();
 }
 
 /* Returns false if the vmentry has to be restarted */

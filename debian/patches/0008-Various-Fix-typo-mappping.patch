@@ -22,10 +22,10 @@ index efb3729..f0878b7 100644
        " map_limitkb [int]: .\n"
        "Returns: [int] 0 on success; -1 on error.\n" },
 diff --git a/xen/drivers/passthrough/vtd/iommu.h b/xen/drivers/passthrough/vtd/iommu.h
-index 72c1a2e..5cd14b8 100644
+index e76b261..179b859 100644
 --- a/xen/drivers/passthrough/vtd/iommu.h
 +++ b/xen/drivers/passthrough/vtd/iommu.h
-@@ -510,7 +510,7 @@ struct qi_ctrl {
+@@ -509,7 +509,7 @@ struct qi_ctrl {
  struct ir_ctrl {
      u64 iremap_maddr;            /* interrupt remap table machine address */
      int iremap_num;              /* total num of used interrupt remap entry */
