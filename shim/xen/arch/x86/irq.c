@@ -70,12 +70,12 @@ static int __init parse_irq_vector_map_param(const char *s)
         if ( !ss )
             ss = strchr(s, '\0');
 
-        if ( !strncmp(s, "none", ss - s))
-            opt_irq_vector_map=OPT_IRQ_VECTOR_MAP_NONE;
-        else if ( !strncmp(s, "global", ss - s))
-            opt_irq_vector_map=OPT_IRQ_VECTOR_MAP_GLOBAL;
-        else if ( !strncmp(s, "per-device", ss - s))
-            opt_irq_vector_map=OPT_IRQ_VECTOR_MAP_PERDEV;
+        if ( !cmdline_strcmp(s, "none") )
+            opt_irq_vector_map = OPT_IRQ_VECTOR_MAP_NONE;
+        else if ( !cmdline_strcmp(s, "global") )
+            opt_irq_vector_map = OPT_IRQ_VECTOR_MAP_GLOBAL;
+        else if ( !cmdline_strcmp(s, "per-device") )
+            opt_irq_vector_map = OPT_IRQ_VECTOR_MAP_PERDEV;
         else
             rc = -EINVAL;
 
@@ -99,16 +99,19 @@ void unlock_vector_lock(void)
     spin_unlock(&vector_lock);
 }
 
-static void trace_irq_mask(u32 event, int irq, int vector, cpumask_t *mask)
+static void trace_irq_mask(uint32_t event, int irq, int vector,
+                           const cpumask_t *mask)
 {
     struct {
         unsigned int irq:16, vec:16;
         unsigned int mask[6];
-    } d;
-    d.irq = irq;
-    d.vec = vector;
-    memset(d.mask, 0, sizeof(d.mask));
-    memcpy(d.mask, mask, min(sizeof(d.mask), sizeof(cpumask_t)));
+    } d = {
+       .irq = irq,
+       .vec = vector,
+    };
+
+    memcpy(d.mask, mask,
+           min(sizeof(d.mask), BITS_TO_LONGS(nr_cpu_ids) * sizeof(long)));
     trace_var(event, 1, sizeof(d), &d);
 }
 

@@ -1153,7 +1153,6 @@ int map_vcpu_info(struct vcpu *v, unsigned long gfn, unsigned offset)
     void *mapping;
     vcpu_info_t *new_info;
     struct page_info *page;
-    int i;
 
     if ( offset > (PAGE_SIZE - sizeof(vcpu_info_t)) )
         return -EINVAL;
@@ -1206,10 +1205,13 @@ int map_vcpu_info(struct vcpu *v, unsigned long gfn, unsigned offset)
      * Mark everything as being pending just to make sure nothing gets
      * lost.  The domain will get a spurious event, but it can cope.
      */
-    vcpu_info(v, evtchn_upcall_pending) = 1;
-    for ( i = 0; i < BITS_PER_EVTCHN_WORD(d); i++ )
-        set_bit(i, &vcpu_info(v, evtchn_pending_sel));
-    arch_evtchn_inject(v);
+#ifdef CONFIG_COMPAT
+    if ( !has_32bit_shinfo(d) )
+        write_atomic(&new_info->native.evtchn_pending_sel, ~0);
+    else
+#endif
+        write_atomic(&vcpu_info(v, evtchn_pending_sel), ~0);
+    vcpu_mark_events_pending(v);
 
     return 0;
 }
@@ -1275,7 +1277,7 @@ long do_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) arg)
 
         rc = arch_initialise_vcpu(v, arg);
         if ( rc == -ERESTART )
-            rc = hypercall_create_continuation(__HYPERVISOR_vcpu_op, "iuh",
+            rc = hypercall_create_continuation(__HYPERVISOR_vcpu_op, "iih",
                                                cmd, vcpuid, arg);
 
         break;

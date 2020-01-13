@@ -162,7 +162,12 @@ static const char *str_7d0[32] =
 
     [ 2] = "avx512_4vnniw", [ 3] = "avx512_4fmaps",
 
-    [4 ... 25] = "REZ",
+    [4 ... 9] = "REZ",
+
+    [10] = "md-clear",      [11] = "REZ",
+    [12] = "REZ",           [13] = "tsx-force-abort",
+
+    [14 ... 25] = "REZ",
 
     [26] = "ibrsb",         [27] = "stibp",
     [28] = "l1d_flush",     [29] = "arch_caps",
@@ -244,7 +249,7 @@ static void get_featureset(xc_interface *xch, unsigned int idx)
 {
     struct fsinfo *f = &featuresets[idx];
 
-    f->len = xc_get_cpu_featureset_size();
+    f->len = nr_features;
     f->fs = calloc(nr_features, sizeof(*f->fs));
 
     if ( !f->fs )

@@ -133,6 +133,8 @@ int guest_rdmsr(const struct vcpu *v, uint32_t msr, uint64_t *val)
     case MSR_PRED_CMD:
     case MSR_FLUSH_CMD:
         /* Write-only */
+    case MSR_TSX_FORCE_ABORT:
+        /* Not offered to guests. */
         goto gp_fault;
 
     case MSR_SPEC_CTRL:
@@ -159,6 +161,10 @@ int guest_rdmsr(const struct vcpu *v, uint32_t msr, uint64_t *val)
                _MSR_MISC_FEATURES_CPUID_FAULTING;
         break;
 
+        /*
+         * TODO: Implement when we have better topology representation.
+    case MSR_INTEL_CORE_THREAD_COUNT:
+         */
     default:
         return X86EMUL_UNHANDLEABLE;
     }
@@ -181,9 +187,12 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
     {
         uint64_t rsvd;
 
+    case MSR_INTEL_CORE_THREAD_COUNT:
     case MSR_INTEL_PLATFORM_INFO:
     case MSR_ARCH_CAPABILITIES:
         /* Read-only */
+    case MSR_TSX_FORCE_ABORT:
+        /* Not offered to guests. */
         goto gp_fault;
 
     case MSR_AMD_PATCHLOADER:

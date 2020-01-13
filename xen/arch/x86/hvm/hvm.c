@@ -1781,6 +1781,7 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
     struct p2m_domain *p2m, *hostp2m;
     int rc, fall_through = 0, paged = 0;
     int sharing_enomem = 0;
+    unsigned int page_order = 0;
     vm_event_request_t *req_ptr = NULL;
     bool_t ap2m_active, sync = 0;
 
@@ -1851,7 +1852,7 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
     hostp2m = p2m_get_hostp2m(currd);
     mfn = get_gfn_type_access(hostp2m, gfn, &p2mt, &p2ma,
                               P2M_ALLOC | (npfec.write_access ? P2M_UNSHARE : 0),
-                              NULL);
+                              &page_order);
 
     if ( ap2m_active )
     {
@@ -1863,7 +1864,7 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
             goto out;
         }
 
-        mfn = get_gfn_type_access(p2m, gfn, &p2mt, &p2ma, 0, NULL);
+        mfn = get_gfn_type_access(p2m, gfn, &p2mt, &p2ma, 0, &page_order);
     }
     else
         p2m = hostp2m;
@@ -1903,6 +1904,23 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
         case p2m_access_rwx:
             violation = 0;
             break;
+        }
+
+        /*
+         * Workaround for XSA-304 / CVE-2018-12207.  If we take an execution
+         * fault against a non-executable superpage, shatter it to regain
+         * execute permissions.
+         */
+        if ( page_order > 0 && npfec.insn_fetch && npfec.present && !violation )
+        {
+            int res = p2m_set_entry(p2m, gfn, mfn, PAGE_ORDER_4K, p2mt, p2ma);
+
+            if ( res )
+                printk(XENLOG_ERR "Failed to shatter gfn %"PRI_gfn": %d\n",
+                       gfn, res);
+
+            rc = !res;
+            goto out_put_gfn;
         }
 
         if ( violation )
@@ -3582,9 +3600,22 @@ void hvm_cpuid(unsigned int input, unsigned int *eax, unsigned int *ebx,
     case 0x7:
         if ( count == 0 )
         {
-            /* Fold host's FDP_EXCP_ONLY and NO_FPU_SEL into guest's view. */
-            *ebx &= (hvm_featureset[FEATURESET_7b0] &
-                     ~special_features[FEATURESET_7b0]);
+            /*
+             * Fold host's FDP_EXCP_ONLY and NO_FPU_SEL into guest's view.
+             *
+             * On hardware with MSR_TSX_CTRL, the admin may have elected to
+             * disable TSX and hide the feature bits.  Migrating-in VMs may
+             * have been booted pre-mitigation when the TSX features were
+             * visbile.
+             *
+             * This situation is compatible (albeit with a perf hit to any TSX
+             * code in the guest), so allow the feature bits to remain set.
+             */
+            *ebx &= ((hvm_featureset[FEATURESET_7b0] &
+                      ~special_features[FEATURESET_7b0]) |
+                     (cpu_has_tsx_ctrl ?
+                      (cpufeat_mask(X86_FEATURE_HLE) |
+                       cpufeat_mask(X86_FEATURE_RTM)) : 0));
             *ebx |= (host_featureset[FEATURESET_7b0] &
                      special_features[FEATURESET_7b0]);
 
@@ -3936,6 +3967,9 @@ int hvm_msr_read_intercept(unsigned int msr, uint64_t *msr_content)
     case MSR_PRED_CMD:
     case MSR_FLUSH_CMD:
         /* Write-only */
+    case MSR_TSX_FORCE_ABORT:
+    case MSR_TSX_CTRL:
+        /* Not offered to guests. */
         goto gp_fault;
 
     case MSR_SPEC_CTRL:
@@ -4177,8 +4211,12 @@ int hvm_msr_write_intercept(unsigned int msr, uint64_t msr_content,
         wrmsrl(MSR_FLUSH_CMD, msr_content);
         break;
 
+    case MSR_INTEL_CORE_THREAD_COUNT:
     case MSR_ARCH_CAPABILITIES:
         /* Read-only */
+    case MSR_TSX_FORCE_ABORT:
+    case MSR_TSX_CTRL:
+        /* Not offered to guests. */
         goto gp_fault;
 
     case MSR_AMD64_NB_CFG:

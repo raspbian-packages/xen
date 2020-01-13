@@ -60,6 +60,7 @@ bool_t __read_mostly iommu_passthrough;
 bool_t __read_mostly iommu_snoop = 1;
 bool_t __read_mostly iommu_qinval = 1;
 bool_t __read_mostly iommu_intremap = 1;
+bool_t __read_mostly iommu_crash_disable;
 
 /*
  * In the current implementation of VT-d posted interrupts, in some extreme
@@ -95,36 +96,40 @@ static int __init parse_iommu_param(const char *s)
         b = parse_bool(s, ss);
         if ( b >= 0 )
             iommu_enable = b;
-        else if ( !strncmp(s, "force", ss - s) ||
-                  !strncmp(s, "required", ss - s) )
+        else if ( !cmdline_strcmp(s, "force") ||
+                  !cmdline_strcmp(s, "required") )
             force_iommu = val;
-        else if ( !strncmp(s, "workaround_bios_bug", ss - s) )
+        else if ( !cmdline_strcmp(s, "workaround_bios_bug") )
             iommu_workaround_bios_bug = val;
-        else if ( !strncmp(s, "igfx", ss - s) )
+        else if ( !cmdline_strcmp(s, "igfx") )
             iommu_igfx = val;
-        else if ( !strncmp(s, "verbose", ss - s) )
+        else if ( !cmdline_strcmp(s, "verbose") )
             iommu_verbose = val;
-        else if ( !strncmp(s, "snoop", ss - s) )
+        else if ( !cmdline_strcmp(s, "snoop") )
             iommu_snoop = val;
-        else if ( !strncmp(s, "qinval", ss - s) )
+        else if ( !cmdline_strcmp(s, "qinval") )
             iommu_qinval = val;
-        else if ( !strncmp(s, "intremap", ss - s) )
+        else if ( !cmdline_strcmp(s, "intremap") )
             iommu_intremap = val;
-        else if ( !strncmp(s, "intpost", ss - s) )
+        else if ( !cmdline_strcmp(s, "intpost") )
             iommu_intpost = val;
-        else if ( !strncmp(s, "debug", ss - s) )
+#ifdef CONFIG_KEXEC
+        else if ( !cmdline_strcmp(s, "crash-disable") )
+            iommu_crash_disable = val;
+#endif
+        else if ( !cmdline_strcmp(s, "debug") )
         {
             iommu_debug = val;
             if ( val )
                 iommu_verbose = 1;
         }
-        else if ( !strncmp(s, "amd-iommu-perdev-intremap", ss - s) )
+        else if ( !cmdline_strcmp(s, "amd-iommu-perdev-intremap") )
             amd_iommu_perdev_intremap = val;
-        else if ( !strncmp(s, "dom0-passthrough", ss - s) )
+        else if ( !cmdline_strcmp(s, "dom0-passthrough") )
             iommu_passthrough = val;
-        else if ( !strncmp(s, "dom0-strict", ss - s) )
+        else if ( !cmdline_strcmp(s, "dom0-strict") )
             iommu_dom0_strict = val;
-        else if ( !strncmp(s, "sharept", ss - s) )
+        else if ( !cmdline_strcmp(s, "sharept") )
             iommu_hap_pt_share = val;
         else
             rc = -EINVAL;
@@ -452,6 +457,9 @@ void iommu_share_p2m_table(struct domain* d)
 
 void iommu_crash_shutdown(void)
 {
+    if ( !iommu_crash_disable )
+        return;
+
     if ( iommu_enabled )
         iommu_get_ops()->crash_shutdown();
     iommu_enabled = iommu_intremap = iommu_intpost = 0;

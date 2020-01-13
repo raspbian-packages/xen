@@ -706,6 +706,11 @@ extern int xsm_multiboot_policy_init(unsigned long *module_map,
 #endif
 
 #ifdef CONFIG_HAS_DEVICE_TREE
+/*
+ * Initialize XSM
+ *
+ * On success, return 1 if using SILO mode else 0.
+ */
 extern int xsm_dt_init(void);
 extern int xsm_dt_policy_init(void **policy_buffer, size_t *policy_size);
 extern bool has_xsm_magic(paddr_t);
@@ -727,6 +732,12 @@ static inline void flask_init(const void *policy_buffer, size_t policy_size)
 #ifdef CONFIG_XSM_POLICY
 extern const unsigned char xsm_init_policy[];
 extern const unsigned int xsm_init_policy_size;
+#endif
+
+#ifdef CONFIG_SILO
+extern void silo_init(void);
+#else
+static inline void silo_init(void) {}
 #endif
 
 #else /* CONFIG_XSM */

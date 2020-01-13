@@ -159,7 +159,7 @@ static void play_dead(void)
      * this case, heap corruption or #PF can occur (when heap debugging is
      * enabled). For example, even printk() can involve tasklet scheduling,
      * which touches per-cpu vars.
-     * 
+     *
      * Consider very carefully when adding code to *dead_idle. Most hypervisor
      * subsystems are unsafe to call.
      */
@@ -377,6 +377,70 @@ static void release_compat_l4(struct vcpu *v)
     v->arch.guest_table_user = pagetable_null();
 }
 
+unsigned long pv_fixup_guest_cr4(const struct vcpu *v, unsigned long cr4)
+{
+    unsigned int leaf1_ecx = 0, leaf1_edx = 0;
+    unsigned int leaf7_0_ebx = 0;
+
+    pv_cpuid(1, 0, NULL, NULL, &leaf1_ecx, &leaf1_edx);
+    pv_cpuid(7, 0, NULL, &leaf7_0_ebx, NULL, NULL);
+
+    /* Discard attempts to set guest controllable bits outside of the policy. */
+    cr4 &= ~(((leaf1_edx & cpufeat_mask(X86_FEATURE_TSC))
+              ? 0 : X86_CR4_TSD) |
+             ((leaf1_edx & cpufeat_mask(X86_FEATURE_DE))
+              ? 0 : X86_CR4_DE) |
+             ((leaf7_0_ebx & cpufeat_mask(X86_FEATURE_FSGSBASE))
+              ? 0 : X86_CR4_FSGSBASE) |
+             ((leaf1_ecx & cpufeat_mask(X86_FEATURE_XSAVE))
+              ? 0 : X86_CR4_OSXSAVE));
+
+    /* Masks expected to be disjoint sets. */
+    BUILD_BUG_ON(PV_CR4_GUEST_MASK & PV_CR4_GUEST_VISIBLE_MASK);
+
+    /*
+     * A guest sees the policy subset of its own choice of guest controllable
+     * bits, and a subset of Xen's choice of certain hardware settings.
+     */
+    return ((cr4 & PV_CR4_GUEST_MASK) |
+            (mmu_cr4_features & PV_CR4_GUEST_VISIBLE_MASK));
+}
+
+unsigned long pv_make_cr4(const struct vcpu *v)
+{
+    const struct domain *d = v->domain;
+    unsigned long cr4 = mmu_cr4_features &
+        ~(X86_CR4_PCIDE | X86_CR4_PGE | X86_CR4_TSD);
+
+    /*
+     * PCIDE or PGE depends on the PCID/XPTI settings, but must not both be
+     * set, as it impacts the safety of TLB flushing.
+     */
+    if ( d->arch.pv_domain.pcid )
+        cr4 |= X86_CR4_PCIDE;
+    else if ( !d->arch.pv_domain.xpti )
+        cr4 |= X86_CR4_PGE;
+
+    /*
+     * TSD is needed if either the guest has elected to use it, or Xen is
+     * virtualising the TSC value the guest sees.
+     */
+    if ( d->arch.vtsc || (v->arch.pv_vcpu.ctrlreg[4] & X86_CR4_TSD) )
+        cr4 |= X86_CR4_TSD;
+
+    /*
+     * The {RD,WR}{FS,GS}BASE are only useable in 64bit code segments.  While
+     * we must not have CR4.FSGSBASE set behind the back of a 64bit PV kernel,
+     * we do leave it set in 32bit PV context to speed up Xen's context switch
+     * path.
+     */
+    if ( !is_pv_32bit_domain(d) &&
+         !(v->arch.pv_vcpu.ctrlreg[4] & X86_CR4_FSGSBASE) )
+        cr4 &= ~X86_CR4_FSGSBASE;
+
+    return cr4;
+}
+
 static void set_domain_xpti(struct domain *d)
 {
     if ( is_pv_32bit_domain(d) )
@@ -564,6 +628,8 @@ int vcpu_initialise(struct vcpu *v)
 
         /* PV guests by default have a 100Hz ticker. */
         v->periodic_period = MILLISECS(10);
+
+        v->arch.pv_vcpu.ctrlreg[4] = pv_fixup_guest_cr4(v, 0);
     }
 
     v->arch.schedule_tail = continue_nonidle_domain;
@@ -575,8 +641,6 @@ int vcpu_initialise(struct vcpu *v)
         v->arch.schedule_tail = continue_idle_domain;
         v->arch.cr3           = __pa(idle_pg_table);
     }
-
-    v->arch.pv_vcpu.ctrlreg[4] = real_cr4_to_pv_guest_cr4(mmu_cr4_features);
 
     if ( is_pv_32bit_domain(d) )
     {
@@ -955,49 +1019,6 @@ int arch_domain_soft_reset(struct domain *d)
     return ret;
 }
 
-/*
- * These are the masks of CR4 bits (subject to hardware availability) which a
- * PV guest may not legitimiately attempt to modify.
- */
-static unsigned long __read_mostly pv_cr4_mask, compat_pv_cr4_mask;
-
-static int __init init_pv_cr4_masks(void)
-{
-    unsigned long common_mask = ~X86_CR4_TSD;
-
-    /*
-     * All PV guests may attempt to modify TSD, DE and OSXSAVE.
-     */
-    if ( cpu_has_de )
-        common_mask &= ~X86_CR4_DE;
-    if ( cpu_has_xsave )
-        common_mask &= ~X86_CR4_OSXSAVE;
-
-    pv_cr4_mask = compat_pv_cr4_mask = common_mask;
-
-    /*
-     * 64bit PV guests may attempt to modify FSGSBASE.
-     */
-    if ( cpu_has_fsgsbase )
-        pv_cr4_mask &= ~X86_CR4_FSGSBASE;
-
-    return 0;
-}
-__initcall(init_pv_cr4_masks);
-
-unsigned long pv_guest_cr4_fixup(const struct vcpu *v, unsigned long guest_cr4)
-{
-    unsigned long hv_cr4 = real_cr4_to_pv_guest_cr4(read_cr4());
-    unsigned long mask = is_pv_32bit_vcpu(v) ? compat_pv_cr4_mask : pv_cr4_mask;
-
-    if ( (guest_cr4 & mask) != (hv_cr4 & mask) )
-        printk(XENLOG_G_WARNING
-               "d%d attempted to change %pv's CR4 flags %08lx -> %08lx\n",
-               current->domain->domain_id, v, hv_cr4, guest_cr4);
-
-    return (hv_cr4 & mask) | (guest_cr4 & ~mask);
-}
-
 #define xen_vcpu_guest_context vcpu_guest_context
 #define fpu_ctxt fpu_ctxt.x
 CHECK_FIELD_(struct, vcpu_guest_context, fpu_ctxt);
@@ -1011,7 +1032,7 @@ int arch_set_info_guest(
     struct domain *d = v->domain;
     unsigned long cr3_gfn;
     struct page_info *cr3_page;
-    unsigned long flags, cr4;
+    unsigned long flags;
     unsigned int i;
     int rc = 0, compat;
 
@@ -1228,9 +1249,8 @@ int arch_set_info_guest(
     v->arch.pv_vcpu.ctrlreg[0] &= X86_CR0_TS;
     v->arch.pv_vcpu.ctrlreg[0] |= read_cr0() & ~X86_CR0_TS;
 
-    cr4 = v->arch.pv_vcpu.ctrlreg[4];
-    v->arch.pv_vcpu.ctrlreg[4] = cr4 ? pv_guest_cr4_fixup(v, cr4) :
-        real_cr4_to_pv_guest_cr4(mmu_cr4_features);
+    v->arch.pv_vcpu.ctrlreg[4] =
+        pv_fixup_guest_cr4(v, v->arch.pv_vcpu.ctrlreg[4]);
 
     memset(v->arch.debugreg, 0, sizeof(v->arch.debugreg));
     for ( i = 0; i < 8; i++ )
@@ -1366,9 +1386,15 @@ int arch_set_info_guest(
                     rc = -ERESTART;
                     /* Fallthrough */
                 case -ERESTART:
+                    /*
+                     * NB that we're putting the kernel-mode table
+                     * here, which we've already successfully
+                     * validated above; hence partial = false;
+                     */
                     v->arch.old_guest_ptpg = NULL;
                     v->arch.old_guest_table =
                         pagetable_get_page(v->arch.guest_table);
+                    v->arch.old_guest_table_partial = false;
                     v->arch.guest_table = pagetable_null();
                     break;
                 default:
@@ -2012,7 +2038,8 @@ static void save_segments(struct vcpu *v)
     regs->fs = read_sreg(fs);
     regs->gs = read_sreg(gs);
 
-    if ( cpu_has_fsgsbase && !is_pv_32bit_vcpu(v) )
+    /* %fs/%gs bases can only be stale if WR{FS,GS}BASE are usable. */
+    if ( (read_cr4() & X86_CR4_FSGSBASE) && !is_pv_32bit_vcpu(v) )
     {
         v->arch.pv_vcpu.fs_base = __rdfsbase();
         if ( v->arch.flags & TF_kernel_mode )
@@ -2382,14 +2409,15 @@ void sync_vcpu_execstate(struct vcpu *v)
     flush_tlb_mask(v->vcpu_dirty_cpumask);
 }
 
-#define next_arg(fmt, args) ({                                              \
+#define NEXT_ARG(fmt, args)                                                 \
+({                                                                          \
     unsigned long __arg;                                                    \
     switch ( *(fmt)++ )                                                     \
     {                                                                       \
     case 'i': __arg = (unsigned long)va_arg(args, unsigned int);  break;    \
     case 'l': __arg = (unsigned long)va_arg(args, unsigned long); break;    \
     case 'h': __arg = (unsigned long)va_arg(args, void *);        break;    \
-    default:  __arg = 0; BUG();                                             \
+    default:  goto bad_fmt;                                                 \
     }                                                                       \
     __arg;                                                                  \
 })
@@ -2428,7 +2456,7 @@ unsigned long hypercall_create_continuation(
         __set_bit(_MCSF_call_preempted, &mcs->flags);
 
         for ( i = 0; *p != '\0'; i++ )
-            mcs->call.args[i] = next_arg(p, args);
+            mcs->call.args[i] = NEXT_ARG(p, args);
     }
     else
     {
@@ -2449,7 +2477,7 @@ unsigned long hypercall_create_continuation(
         {
             for ( i = 0; *p != '\0'; i++ )
             {
-                arg = next_arg(p, args);
+                arg = NEXT_ARG(p, args);
                 switch ( i )
                 {
                 case 0: regs->rdi = arg; break;
@@ -2465,7 +2493,7 @@ unsigned long hypercall_create_continuation(
         {
             for ( i = 0; *p != '\0'; i++ )
             {
-                arg = next_arg(p, args);
+                arg = NEXT_ARG(p, args);
                 switch ( i )
                 {
                 case 0: regs->ebx = arg; break;
@@ -2482,7 +2510,15 @@ unsigned long hypercall_create_continuation(
     va_end(args);
 
     return op;
+
+ bad_fmt:
+    gprintk(XENLOG_ERR, "Bad hypercall continuation format '%c'\n", *p);
+    ASSERT_UNREACHABLE();
+    domain_crash(current->domain);
+    return 0;
 }
+
+#undef NEXT_ARG
 
 int hypercall_xlat_continuation(unsigned int *id, unsigned int nr,
                                 unsigned int mask, ...)
@@ -2608,9 +2644,34 @@ static int relinquish_memory(
             break;
         case -ERESTART:
         case -EINTR:
+            /*
+             * -EINTR means PGT_validated has been re-set; re-set
+             * PGT_pinned again so that it gets picked up next time
+             * around.
+             *
+             * -ERESTART, OTOH, means PGT_partial is set instead.  Put
+             * it back on the list, but don't set PGT_pinned; the
+             * section below will finish off de-validation.  But we do
+             * need to drop the general ref associated with
+             * PGT_pinned, since put_page_and_type_preemptible()
+             * didn't do it.
+             *
+             * NB we can do an ASSERT for PGT_validated, since we
+             * "own" the type ref; but theoretically, the PGT_partial
+             * could be cleared by someone else.
+             */
+            if ( ret == -EINTR )
+            {
+                ASSERT(page->u.inuse.type_info & PGT_validated);
+                set_bit(_PGT_pinned, &page->u.inuse.type_info);
+            }
+            else
+                put_page(page);
+
             ret = -ERESTART;
+
+            /* Put the page back on the list and drop the ref we grabbed above */
             page_list_add(page, list);
-            set_bit(_PGT_pinned, &page->u.inuse.type_info);
             put_page(page);
             goto out;
         default:
@@ -2657,6 +2718,25 @@ static int relinquish_memory(
                     goto out;
                 case -ERESTART:
                     page_list_add(page, list);
+                    /*
+                     * PGT_partial holds a type ref and a general ref.
+                     * If we came in with PGT_partial set, then we 1)
+                     * don't need to grab an extra type count, and 2)
+                     * do need to drop the extra page ref we grabbed
+                     * at the top of the loop.  If we didn't come in
+                     * with PGT_partial set, we 1) do need to drab an
+                     * extra type count, but 2) can transfer the page
+                     * ref we grabbed above to it.
+                     *
+                     * Note that we must increment type_info before
+                     * setting PGT_partial.  Theoretically it should
+                     * be safe to drop the page ref before setting
+                     * PGT_partial, but do it afterwards just to be
+                     * extra safe.
+                     */
+                    if ( !(x & PGT_partial) )
+                        page->u.inuse.type_info++;
+                    smp_wmb();
                     page->u.inuse.type_info |= PGT_partial;
                     if ( x & PGT_partial )
                         put_page(page);
@@ -2873,7 +2953,7 @@ void vcpu_kick(struct vcpu *v)
      * pending flag. These values may fluctuate (after all, we hold no
      * locks) but the key insight is that each change will cause
      * evtchn_upcall_pending to be polled.
-     * 
+     *
      * NB2. We save the running flag across the unblock to avoid a needless
      * IPI for domains that we IPI'd to unblock.
      */

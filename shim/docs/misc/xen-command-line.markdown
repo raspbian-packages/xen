@@ -496,7 +496,7 @@ accounting for hardware capabilities as enumerated via CPUID.
 
 Currently accepted:
 
-The Speculation Control hardware features `ibrsb`, `stibp`, `ibpb`,
+The Speculation Control hardware features `md-clear`, `ibrsb`, `stibp`, `ibpb`,
 `l1d-flush` and `ssbd` are used by default if available and applicable.  They can
 be ignored, e.g. `no-ibrsb`, at which point Xen won't use them itself, and
 won't offer them to guests.
@@ -838,6 +838,22 @@ hardware domain is architecture dependent.
 Note that specifying zero as domU value means zero, while for dom0 it means
 to use the default.
 
+### xsm
+> `= dummy | flask | silo`
+
+> Default: `dummy`
+
+Specify which XSM module should be enabled.  This option is only available if
+the hypervisor was compiled with XSM support.
+
+* `dummy`: this is the default choice.  Basic restriction for common deployment
+  (the dummy module) will be applied.  It's also used when XSM is compiled out.
+* `flask`: this is the policy based access control.  To choose this, the
+  separated option in kconfig must also be enabled.
+* `silo`: this will deny any unmediated communication channels between
+  unprivileged VMs.  To choose this, the separated option in kconfig must also
+  be enabled.
+
 ### flask
 > `= permissive | enforcing | late | disabled`
 
@@ -1078,7 +1094,7 @@ debug hypervisor only).
 > Default: `new` unless directed-EOI is supported
 
 ### iommu
-> `= List of [ <boolean> | force | required | intremap | intpost | qinval | snoop | sharept | dom0-passthrough | dom0-strict | amd-iommu-perdev-intremap | workaround_bios_bug | igfx | verbose | debug ]`
+> `= List of [ <boolean> | force | required | intremap | intpost | qinval | snoop | sharept | dom0-passthrough | dom0-strict | amd-iommu-perdev-intremap | workaround_bios_bug | igfx | crash-disable | verbose | debug ]`
 
 > Sub-options:
 
@@ -1167,6 +1183,16 @@ debug hypervisor only).
 >> is `no-igfx`, which is similar to Linux `intel_iommu=igfx_off` option used
 >> to workaround graphics issues. If adding `no-igfx` fixes anything, you
 >> should file a bug reporting the problem.
+
+> `crash-disable`
+
+> Default: `false`
+
+>> This option controls disabling IOMMU functionality (DMAR/IR/QI) before
+>> switching to a crash kernel. This option is inactive by default and
+>> is for compatibility with older kdump kernels only. Modern kernels copy
+>> all the necessary tables from the previous one following kexec which makes
+>>  the transition transparent for them with IOMMU functions still on.
 
 > `verbose`
 
@@ -1772,7 +1798,7 @@ is being interpreted as a custom timeout in milliseconds. Zero or boolean
 false disable the quirk workaround, which is also the default.
 
 ### spec-ctrl (x86)
-> `= List of [ <bool>, xen=<bool>, {pv,hvm,msr-sc,rsb}=<bool>,
+> `= List of [ <bool>, xen=<bool>, {pv,hvm,msr-sc,rsb,md-clear}=<bool>,
 >              bti-thunk=retpoline|lfence|jmp, {ibrs,ibpb,ssbd,eager-fpu,
 >              l1d-flush}=<bool> ]`
 
@@ -1796,9 +1822,10 @@ in place for guests to use.
 
 Use of a positive boolean value for either of these options is invalid.
 
-The booleans `pv=`, `hvm=`, `msr-sc=` and `rsb=` offer fine grained control
-over the alternative blocks used by Xen.  These impact Xen's ability to
-protect itself, and Xen's ability to virtualise support for guests to use.
+The booleans `pv=`, `hvm=`, `msr-sc=`, `rsb=` and `md-clear=` offer fine
+grained control over the alternative blocks used by Xen.  These impact Xen's
+ability to protect itself, and Xen's ability to virtualise support for guests
+to use.
 
 * `pv=` and `hvm=` offer control over all suboptions for PV and HVM guests
   respectively.
@@ -1807,6 +1834,11 @@ protect itself, and Xen's ability to virtualise support for guests to use.
   guests and if disabled, guests will be unable to use IBRS/STIBP/SSBD/etc.
 * `rsb=` offers control over whether to overwrite the Return Stack Buffer /
   Return Address Stack on entry to Xen.
+* `md-clear=` offers control over whether to use VERW to flush
+  microarchitectural buffers on idle and exit from Xen.  *Note: For
+  compatibility with development versions of this fix, `mds=` is also accepted
+  on Xen 4.12 and earlier as an alias.  Consult vendor documentation in
+  preference to here.*
 
 If Xen was compiled with INDIRECT\_THUNK support, `bti-thunk=` can be used to
 select which of the thunks gets patched into the `__x86_indirect_thunk_%reg`
@@ -1980,7 +2012,7 @@ Use Virtual Processor ID support if available.  This prevents the need for TLB
 flushes on VM entry and exit, increasing performance.
 
 ### vpmu
-> `= ( <boolean> | { bts | ipc | arch [, ...] } )`
+> `= ( <boolean> | { bts | ipc | arch | rtm-abort=<bool> [, ...] } )`
 
 > Default: `off`
 
@@ -2005,6 +2037,21 @@ pre-defined architectural events only. These are exposed by cpuid, and listed
 in the Pre-Defined Architectural Performance Events table from the Intel 64
 and IA-32 Architectures Software Developer's Manual, Volume 3B, System
 Programming Guide, Part 2.
+
+vpmu=rtm-abort controls a trade-off between working Restricted Transactional
+Memory, and working performance counters.
+
+All processors released to date (Q1 2019) supporting Transactional Memory
+Extensions suffer an erratum which has been addressed in microcode.
+
+Processors based on the Skylake microarchitecture with up-to-date
+microcode internally use performance counter 3 to work around the erratum.
+A consequence is that the counter gets reprogrammed whenever an `XBEGIN`
+instruction is executed.
+
+An alternative mode exists where PCR3 behaves as before, at the cost of
+`XBEGIN` unconditionally aborting.  Enabling `rtm-abort` mode will
+activate this alternative mode.
 
 If a boolean is not used, combinations of flags are allowed, comma separated.
 For example, vpmu=arch,bts.

@@ -1205,6 +1205,8 @@ int __init iommu_alloc(struct acpi_drhd_unit *drhd)
     if ( !(iommu->cap + 1) || !(iommu->ecap + 1) )
         return -ENODEV;
 
+    quirk_iommu_caps(iommu);
+
     if ( cap_fault_reg_offset(iommu->cap) +
          cap_num_fault_regs(iommu->cap) * PRIMARY_FAULT_REG_LEN >= PAGE_SIZE ||
          ecap_iotlb_offset(iommu->ecap) >= PAGE_SIZE )
@@ -1331,6 +1333,10 @@ int domain_context_mapping_one(
     u16 seg = iommu->intel->drhd->segment;
     int agaw, rc, ret;
     bool_t flush_dev_iotlb;
+
+    /* dom_io is used as a sentinel for quarantined devices */
+    if ( domain == dom_io )
+        return 0;
 
     ASSERT(pcidevs_locked());
     spin_lock(&iommu->lock);
@@ -1567,6 +1573,10 @@ int domain_context_unmap_one(
     int iommu_domid, rc, ret;
     bool_t flush_dev_iotlb;
 
+    /* dom_io is used as a sentinel for quarantined devices */
+    if ( domain == dom_io )
+        return 0;
+
     ASSERT(pcidevs_locked());
     spin_lock(&iommu->lock);
 
@@ -1698,6 +1708,10 @@ static int domain_context_unmap(struct domain *domain, u8 devfn,
         ret = -EINVAL;
         goto out;
     }
+
+    /* dom_io is used as a sentinel for quarantined devices */
+    if ( domain == dom_io )
+        goto out;
 
     /*
      * if no other devices under the same iommu owned by this domain,
@@ -2381,6 +2395,15 @@ static int reassign_device_ownership(
     if ( ret )
         return ret;
 
+    if ( devfn == pdev->devfn && pdev->domain != dom_io )
+    {
+        list_move(&pdev->domain_list, &dom_io->arch.pdev_list);
+        pdev->domain = dom_io;
+    }
+
+    if ( !has_arch_pdevs(source) )
+        vmx_pi_hooks_deassign(source);
+
     if ( !has_arch_pdevs(target) )
         vmx_pi_hooks_assign(target);
 
@@ -2393,14 +2416,11 @@ static int reassign_device_ownership(
         return ret;
     }
 
-    if ( devfn == pdev->devfn )
+    if ( devfn == pdev->devfn && pdev->domain != target )
     {
         list_move(&pdev->domain_list, &target->arch.pdev_list);
         pdev->domain = target;
     }
-
-    if ( !has_arch_pdevs(source) )
-        vmx_pi_hooks_deassign(source);
 
     return ret;
 }
@@ -2408,6 +2428,7 @@ static int reassign_device_ownership(
 static int intel_iommu_assign_device(
     struct domain *d, u8 devfn, struct pci_dev *pdev, u32 flag)
 {
+    struct domain *s = pdev->domain;
     struct acpi_rmrr_unit *rmrr;
     int ret = 0, i;
     u16 bdf, seg;
@@ -2450,8 +2471,8 @@ static int intel_iommu_assign_device(
         }
     }
 
-    ret = reassign_device_ownership(hardware_domain, d, devfn, pdev);
-    if ( ret )
+    ret = reassign_device_ownership(s, d, devfn, pdev);
+    if ( ret || d == dom_io )
         return ret;
 
     /* Setup rmrr identity mapping */
@@ -2464,11 +2485,20 @@ static int intel_iommu_assign_device(
             ret = rmrr_identity_mapping(d, 1, rmrr, flag);
             if ( ret )
             {
-                reassign_device_ownership(d, hardware_domain, devfn, pdev);
+                int rc;
+
+                rc = reassign_device_ownership(d, s, devfn, pdev);
                 printk(XENLOG_G_ERR VTDPREFIX
                        " cannot map reserved region (%"PRIx64",%"PRIx64"] for Dom%d (%d)\n",
                        rmrr->base_address, rmrr->end_address,
                        d->domain_id, ret);
+                if ( rc )
+                {
+                    printk(XENLOG_ERR VTDPREFIX
+                           " failed to reclaim %04x:%02x:%02x.%u from %pd (%d)\n",
+                           seg, bus, PCI_SLOT(devfn), PCI_FUNC(devfn), d, rc);
+                    domain_crash(d);
+                }
                 break;
             }
         }

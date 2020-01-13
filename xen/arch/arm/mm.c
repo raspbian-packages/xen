@@ -41,6 +41,8 @@
 #include <xen/pfn.h>
 #include <xen/sizes.h>
 #include <xen/libfdt/libfdt.h>
+
+#include <asm/guest_atomics.h>
 #include <asm/setup.h>
 
 struct domain *dom_xen, *dom_io, *dom_cow;
@@ -1367,17 +1369,9 @@ void put_page_type(struct page_info *page)
     return;
 }
 
-void gnttab_clear_flag(unsigned long nr, uint16_t *addr)
+void gnttab_clear_flag(struct domain *d, unsigned long nr, uint16_t *addr)
 {
-    /*
-     * Note that this cannot be clear_bit(), as the access must be
-     * confined to the specified 2 bytes.
-     */
-    uint16_t mask = ~(1 << nr), old;
-
-    do {
-        old = *addr;
-    } while (cmpxchg(addr, old, old & mask) != old);
+    guest_clear_mask16(d, BIT(nr), addr);
 }
 
 void gnttab_mark_dirty(struct domain *d, unsigned long l)

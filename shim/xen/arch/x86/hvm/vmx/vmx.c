@@ -901,12 +901,18 @@ static void vmx_load_cpu_state(struct vcpu *v, struct hvm_hw_cpu *data)
 
 static void vmx_save_vmcs_ctxt(struct vcpu *v, struct hvm_hw_cpu *ctxt)
 {
+    if ( v == current )
+        vmx_save_guest_msrs(v);
+
     vmx_save_cpu_state(v, ctxt);
     vmx_vmcs_save(v, ctxt);
 }
 
 static int vmx_load_vmcs_ctxt(struct vcpu *v, struct hvm_hw_cpu *ctxt)
 {
+    /* Not currently safe to use in current context. */
+    ASSERT(v != current);
+
     vmx_load_cpu_state(v, ctxt);
 
     if ( vmx_vmcs_restore(v, ctxt) )
@@ -1981,17 +1987,14 @@ static int vmx_virtual_intr_delivery_enabled(void)
     return cpu_has_vmx_virtual_intr_delivery;
 }
 
-static void vmx_process_isr(int isr, struct vcpu *v)
+static u8 set_svi(int isr)
 {
     unsigned long status;
     u8 old;
-    unsigned int i;
-    const struct vlapic *vlapic = vcpu_vlapic(v);
 
     if ( isr < 0 )
         isr = 0;
 
-    vmx_vmcs_enter(v);
     __vmread(GUEST_INTR_STATUS, &status);
     old = status >> VMX_GUEST_INTR_STATUS_SVI_OFFSET;
     if ( isr != old )
@@ -2000,6 +2003,18 @@ static void vmx_process_isr(int isr, struct vcpu *v)
         status |= isr << VMX_GUEST_INTR_STATUS_SVI_OFFSET;
         __vmwrite(GUEST_INTR_STATUS, status);
     }
+
+    return old;
+}
+
+static void vmx_process_isr(int isr, struct vcpu *v)
+{
+    unsigned int i;
+    const struct vlapic *vlapic = vcpu_vlapic(v);
+
+    vmx_vmcs_enter(v);
+
+    set_svi(isr);
 
     /*
      * Theoretically, only level triggered interrupts can have their
@@ -2151,14 +2166,13 @@ static bool vmx_test_pir(const struct vcpu *v, uint8_t vec)
     return pi_test_pir(vec, &v->arch.hvm_vmx.pi_desc);
 }
 
-static void vmx_handle_eoi(u8 vector)
+static void vmx_handle_eoi(uint8_t vector, int isr)
 {
-    unsigned long status;
+    uint8_t old_svi = set_svi(isr);
+    static bool warned;
 
-    /* We need to clear the SVI field. */
-    __vmread(GUEST_INTR_STATUS, &status);
-    status &= VMX_GUEST_INTR_STATUS_SUBFIELD_BITMASK;
-    __vmwrite(GUEST_INTR_STATUS, status);
+    if ( vector != old_svi && !test_and_set_bool(warned) )
+        printk(XENLOG_WARNING "EOI for %02x but SVI=%02x\n", vector, old_svi);
 }
 
 static void vmx_enable_msr_interception(struct domain *d, uint32_t msr)
@@ -3587,6 +3601,7 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
     unsigned long exit_qualification, exit_reason, idtv_info, intr_info = 0;
     unsigned int vector = 0, mode;
     struct vcpu *v = current;
+    struct domain *currd = v->domain;
 
     __vmread(GUEST_RIP,    &regs->rip);
     __vmread(GUEST_RSP,    &regs->rsp);
@@ -3950,6 +3965,13 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
         vmx_invlpg_intercept(exit_qualification);
         break;
     case EXIT_REASON_RDTSCP:
+        if ( !currd->arch.cpuid->extd.rdtscp &&
+             currd->arch.tsc_mode != TSC_MODE_PVRDTSCP )
+        {
+            hvm_inject_hw_exception(TRAP_invalid_op, X86_EVENT_NO_EC);
+            break;
+        }
+
         regs->rcx = hvm_msr_tsc_aux(v);
         /* fall through */
     case EXIT_REASON_RDTSC:
@@ -4266,6 +4288,7 @@ static void lbr_fixup(void)
 bool vmx_vmenter_helper(const struct cpu_user_regs *regs)
 {
     struct vcpu *curr = current;
+    struct domain *currd = curr->domain;
     u32 new_asid, old_asid;
     struct hvm_vcpu_asid *p_asid;
     bool_t need_flush;
@@ -4312,17 +4335,42 @@ bool vmx_vmenter_helper(const struct cpu_user_regs *regs)
 
     if ( paging_mode_hap(curr->domain) )
     {
-        struct ept_data *ept = &p2m_get_hostp2m(curr->domain)->ept;
+        struct ept_data *ept = &p2m_get_hostp2m(currd)->ept;
         unsigned int cpu = smp_processor_id();
+        unsigned int inv = 0; /* None => Single => All */
+        struct ept_data *single = NULL; /* Single eptp, iff inv == 1 */
 
         if ( cpumask_test_cpu(cpu, ept->invalidate) )
         {
             cpumask_clear_cpu(cpu, ept->invalidate);
-            if ( nestedhvm_enabled(curr->domain) )
-                __invept(INVEPT_ALL_CONTEXT, 0, 0);
-            else
-                __invept(INVEPT_SINGLE_CONTEXT, ept->eptp, 0);
+
+            /* Automatically invalidate all contexts if nested. */
+            inv += 1 + nestedhvm_enabled(currd);
+            single = ept;
         }
+
+        if ( altp2m_active(currd) )
+        {
+            unsigned int i;
+
+            for ( i = 0; i < MAX_ALTP2M; ++i )
+            {
+                if ( currd->arch.altp2m_eptp[i] == mfn_x(INVALID_MFN) )
+                    continue;
+
+                ept = &currd->arch.altp2m_p2m[i]->ept;
+                if ( cpumask_test_cpu(cpu, ept->invalidate) )
+                {
+                    cpumask_clear_cpu(cpu, ept->invalidate);
+                    inv++;
+                    single = ept;
+                }
+            }
+        }
+
+        if ( inv )
+            __invept(inv == 1 ? INVEPT_SINGLE_CONTEXT : INVEPT_ALL_CONTEXT,
+                     inv == 1 ? single->eptp          : 0, 0);
     }
 
  out:

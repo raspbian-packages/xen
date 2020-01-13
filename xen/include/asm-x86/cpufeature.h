@@ -32,6 +32,9 @@ XEN_CPUFEATURE(SC_RSB_HVM,      (FSCAPINTS+0)*32+21) /* RSB overwrite needed for
 XEN_CPUFEATURE(NO_XPTI,         (FSCAPINTS+0)*32+22) /* XPTI mitigation not in use */
 XEN_CPUFEATURE(SC_MSR_IDLE,     (FSCAPINTS+0)*32+23) /* (SC_MSR_PV || SC_MSR_HVM) && default_xen_spec_ctrl */
 XEN_CPUFEATURE(XEN_LBR,         (FSCAPINTS+0)*32+24) /* Xen uses MSR_DEBUGCTL.LBR */
+XEN_CPUFEATURE(SC_VERW_PV,      (FSCAPINTS+0)*32+25) /* VERW used by Xen for PV */
+XEN_CPUFEATURE(SC_VERW_HVM,     (FSCAPINTS+0)*32+26) /* VERW used by Xen for HVM */
+XEN_CPUFEATURE(SC_VERW_IDLE,    (FSCAPINTS+0)*32+27) /* VERW used by Xen for idle */
 
 #define NCAPINTS (FSCAPINTS + 1) /* N 32-bit words worth of info */
 
@@ -80,10 +83,10 @@ XEN_CPUFEATURE(XEN_LBR,         (FSCAPINTS+0)*32+24) /* Xen uses MSR_DEBUGCTL.LB
 #define cpu_has_nx		boot_cpu_has(X86_FEATURE_NX)
 #define cpu_has_clflush		boot_cpu_has(X86_FEATURE_CLFLUSH)
 #define cpu_has_page1gb		boot_cpu_has(X86_FEATURE_PAGE1GB)
-#define cpu_has_fsgsbase	boot_cpu_has(X86_FEATURE_FSGSBASE)
 #define cpu_has_aperfmperf	boot_cpu_has(X86_FEATURE_APERFMPERF)
 #define cpu_has_smep            boot_cpu_has(X86_FEATURE_SMEP)
 #define cpu_has_invpcid         boot_cpu_has(X86_FEATURE_INVPCID)
+#define cpu_has_rtm             boot_cpu_has(X86_FEATURE_RTM)
 #define cpu_has_smap            boot_cpu_has(X86_FEATURE_SMAP)
 #define cpu_has_fpu_sel         (!boot_cpu_has(X86_FEATURE_NO_FPU_SEL))
 #define cpu_has_ffxsr           ((boot_cpu_data.x86_vendor == X86_VENDOR_AMD) \
@@ -94,6 +97,7 @@ XEN_CPUFEATURE(XEN_LBR,         (FSCAPINTS+0)*32+24) /* Xen uses MSR_DEBUGCTL.LB
 #define cpu_has_avx             boot_cpu_has(X86_FEATURE_AVX)
 #define cpu_has_lwp             boot_cpu_has(X86_FEATURE_LWP)
 #define cpu_has_mpx             boot_cpu_has(X86_FEATURE_MPX)
+#define cpu_has_tsx_force_abort boot_cpu_has(X86_FEATURE_TSX_FORCE_ABORT)
 #define cpu_has_arch_perfmon    boot_cpu_has(X86_FEATURE_ARCH_PERFMON)
 #define cpu_has_rdtscp          boot_cpu_has(X86_FEATURE_RDTSCP)
 #define cpu_has_svm		boot_cpu_has(X86_FEATURE_SVM)

@@ -118,6 +118,10 @@ static void amd_iommu_setup_domain_device(
     u8 bus = pdev->bus;
     const struct domain_iommu *hd = dom_iommu(domain);
 
+    /* dom_io is used as a sentinel for quarantined devices */
+    if ( domain == dom_io )
+        return;
+
     BUG_ON( !hd->arch.root_table || !hd->arch.paging_mode ||
             !iommu->dev_table.buffer );
 
@@ -267,11 +271,17 @@ static int amd_iommu_domain_init(struct domain *d)
         return -ENOMEM;
     }
 
-    /* For pv and dom0, stick with get_paging_mode(max_page)
-     * For HVM dom0, use 2 level page table at first */
-    hd->arch.paging_mode = is_hvm_domain(d) ?
-                      IOMMU_PAGING_MODE_LEVEL_2 :
-                      get_paging_mode(max_page);
+    /*
+     * Choose the number of levels for the IOMMU page tables.
+     * - PV needs 3 or 4, depending on whether there is RAM (including hotplug
+     *   RAM) above the 512G boundary.
+     * - HVM could in principle use 3 or 4 depending on how much guest
+     *   physical address space we give it, but this isn't known yet so use 4
+     *   unilaterally.
+     */
+    hd->arch.paging_mode = is_hvm_domain(d)
+        ? IOMMU_PAGING_MODE_LEVEL_4 : get_paging_mode(get_upper_mfn_bound());
+
     return 0;
 }
 
@@ -328,6 +338,10 @@ void amd_iommu_disable_domain_device(struct domain *domain,
     unsigned long flags;
     int req_id;
     u8 bus = pdev->bus;
+
+    /* dom_io is used as a sentinel for quarantined devices */
+    if ( domain == dom_io )
+        return;
 
     BUG_ON ( iommu->dev_table.buffer == NULL );
     req_id = get_dma_requestor_id(iommu->seg, PCI_BDF2(bus, devfn));
@@ -416,7 +430,7 @@ static int amd_iommu_assign_device(struct domain *d, u8 devfn,
             ivrs_mappings[req_id].read_permission);
     }
 
-    return reassign_device(hardware_domain, d, devfn, pdev);
+    return reassign_device(pdev->domain, d, devfn, pdev);
 }
 
 static void deallocate_next_page_table(struct page_info *pg, int level)

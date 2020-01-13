@@ -53,6 +53,7 @@ CHECK_pmu_params;
 static unsigned int __read_mostly opt_vpmu_enabled;
 unsigned int __read_mostly vpmu_mode = XENPMU_MODE_OFF;
 unsigned int __read_mostly vpmu_features = 0;
+bool __read_mostly opt_rtm_abort;
 static int parse_vpmu_params(const char *s);
 custom_param("vpmu", parse_vpmu_params);
 
@@ -61,42 +62,39 @@ static unsigned vpmu_count;
 
 static DEFINE_PER_CPU(struct vcpu *, last_vcpu);
 
-static int parse_vpmu_param(const char *s, unsigned int len)
-{
-    if ( !*s || !len )
-        return 0;
-    if ( !strncmp(s, "bts", len) )
-        vpmu_features |= XENPMU_FEATURE_INTEL_BTS;
-    else if ( !strncmp(s, "ipc", len) )
-        vpmu_features |= XENPMU_FEATURE_IPC_ONLY;
-    else if ( !strncmp(s, "arch", len) )
-        vpmu_features |= XENPMU_FEATURE_ARCH_ONLY;
-    else
-        return 1;
-    return 0;
-}
-
 static int __init parse_vpmu_params(const char *s)
 {
-    const char *sep, *p = s;
+    const char *ss;
 
     switch ( parse_bool(s, NULL) )
     {
     case 0:
         break;
     default:
-        for ( ; ; )
-        {
-            sep = strchr(p, ',');
-            if ( sep == NULL )
-                sep = strchr(p, 0);
-            if ( parse_vpmu_param(p, sep - p) )
-                goto error;
-            if ( !*sep )
-                /* reached end of flags */
-                break;
-            p = sep + 1;
-        }
+        do {
+            int val;
+
+            ss = strchr(s, ',');
+            if ( !ss )
+                ss = strchr(s, '\0');
+
+            if ( !cmdline_strcmp(s, "bts") )
+                vpmu_features |= XENPMU_FEATURE_INTEL_BTS;
+            else if ( !cmdline_strcmp(s, "ipc") )
+                vpmu_features |= XENPMU_FEATURE_IPC_ONLY;
+            else if ( !cmdline_strcmp(s, "arch") )
+                vpmu_features |= XENPMU_FEATURE_ARCH_ONLY;
+            else if ( (val = parse_boolean("rtm-abort", s, ss)) >= 0 )
+                opt_rtm_abort = val;
+            else
+                return -EINVAL;
+
+            s = ss + 1;
+        } while ( *ss );
+
+        if ( !vpmu_features ) /* rtm-abort doesn't imply vpmu=1 */
+            break;
+
         /* fall through */
     case 1:
         /* Default VPMU mode */
@@ -105,10 +103,6 @@ static int __init parse_vpmu_params(const char *s)
         break;
     }
     return 0;
-
- error:
-    printk("VPMU: unknown flags: %s - vpmu disabled!\n", s);
-    return -EINVAL;
 }
 
 void vpmu_lvtpc_update(uint32_t val)

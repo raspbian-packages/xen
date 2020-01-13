@@ -29,4 +29,6 @@ ubuntu-tools-libs-abiname.diff
 0029-Copy-README.pti-and-README.comet-from-the-XSA-254-ad.patch
 0030-tools-utility-to-dump-guest-grant-table-info.patch
 0031-gitignore-add-tools-misc-xen-diag-to-.gitignore.patch
+0032-README.comet-remove-alinea-about-PVH-support.patch
+0033-xenstore-Increase-stack-size-for-xs-reader-thread.patch
 armv6.diff

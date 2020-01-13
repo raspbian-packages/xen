@@ -966,22 +966,20 @@ static void _domain_cpuid(const struct domain *currd,
                           unsigned int *eax, unsigned int *ebx,
                           unsigned int *ecx, unsigned int *edx)
 {
-    if ( !is_control_domain(currd) && !is_hardware_domain(currd) )
+    if ( !is_control_domain(currd) && !is_hardware_domain(currd) &&
+         !is_idle_domain(currd) )
         domain_cpuid(currd, leaf, subleaf, eax, ebx, ecx, edx);
     else
         cpuid_count(leaf, subleaf, eax, ebx, ecx, edx);
 }
 
-void pv_cpuid(struct cpu_user_regs *regs)
+void pv_cpuid(uint32_t leaf, uint32_t subleaf,
+              uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx)
 {
-    uint32_t leaf, subleaf, a, b, c, d;
+    uint32_t a, b, c, d;
+    const struct cpu_user_regs *regs = guest_cpu_user_regs();
     struct vcpu *curr = current;
     struct domain *currd = curr->domain;
-
-    leaf = a = regs->eax;
-    b = regs->ebx;
-    subleaf = c = regs->ecx;
-    d = regs->edx;
 
     if ( cpuid_hypervisor_leaves(leaf, subleaf, &a, &b, &c, &d) )
         goto out;
@@ -997,13 +995,7 @@ void pv_cpuid(struct cpu_user_regs *regs)
 
         _domain_cpuid(currd, limit, 0, &limit, &dummy, &dummy, &dummy);
         if ( leaf > limit )
-        {
-            regs->eax = 0;
-            regs->ebx = 0;
-            regs->ecx = 0;
-            regs->edx = 0;
-            return;
-        }
+            goto unsupported;
     }
 
     _domain_cpuid(currd, leaf, subleaf, &a, &b, &c, &d);
@@ -1149,9 +1141,22 @@ void pv_cpuid(struct cpu_user_regs *regs)
     case 0x00000007:
         if ( subleaf == 0 )
         {
-            /* Fold host's FDP_EXCP_ONLY and NO_FPU_SEL into guest's view. */
-            b &= (pv_featureset[FEATURESET_7b0] &
-                  ~special_features[FEATURESET_7b0]);
+            /*
+             * Fold host's FDP_EXCP_ONLY and NO_FPU_SEL into guest's view.
+             *
+             * On hardware with MSR_TSX_CTRL, the admin may have elected to
+             * disable TSX and hide the feature bits.  Migrating-in VMs may
+             * have been booted pre-mitigation when the TSX features were
+             * visbile.
+             *
+             * This situation is compatible (albeit with a perf hit to any TSX
+             * code in the guest), so allow the feature bits to remain set.
+             */
+            b &= ((pv_featureset[FEATURESET_7b0] &
+                   ~special_features[FEATURESET_7b0]) |
+                  (cpu_has_tsx_ctrl ?
+                   (cpufeat_mask(X86_FEATURE_HLE) |
+                    cpufeat_mask(X86_FEATURE_RTM)) : 0));
             b |= (host_featureset[FEATURESET_7b0] &
                   special_features[FEATURESET_7b0]);
 
@@ -1284,17 +1289,21 @@ void pv_cpuid(struct cpu_user_regs *regs)
     case 0x8000001e: /* Extended topology reporting */
     unsupported:
         a = b = c = d = 0;
-        break;
+        goto out;
     }
 
- out:
     /* VPMU may decide to modify some of the leaves */
     vpmu_do_cpuid(leaf, &a, &b, &c, &d);
 
-    regs->eax = a;
-    regs->ebx = b;
-    regs->ecx = c;
-    regs->edx = d;
+ out:
+    if ( eax )
+        *eax = a;
+    if ( ebx )
+        *ebx = b;
+    if ( ecx )
+        *ecx = c;
+    if ( edx )
+        *edx = d;
 }
 
 static int emulate_invalid_rdtscp(struct cpu_user_regs *regs)
@@ -1353,7 +1362,7 @@ static int emulate_forced_invalid_op(struct cpu_user_regs *regs)
 
     eip += sizeof(instr);
 
-    pv_cpuid(regs);
+    pv_cpuid_regs(regs);
 
     instruction_done(regs, eip, 0);
 
@@ -1938,7 +1947,14 @@ static int read_descriptor(unsigned int sel,
 {
     struct desc_struct desc;
 
-    if ( sel < 4)
+    if ( sel < 4 ||
+         /*
+          * Don't apply the GDT limit here, as the selector may be a Xen
+          * provided one. __get_user() will fail (without taking further
+          * action) for ones falling in the gap between guest populated
+          * and Xen ones.
+          */
+         ((sel & 4) && (sel >> 3) >= v->arch.pv_vcpu.ldt_ents) )
         desc.b = desc.a = 0;
     else if ( __get_user(desc,
                          (const struct desc_struct *)(!(sel & 4)
@@ -1997,7 +2013,13 @@ static int read_gate_descriptor(unsigned int gate_sel,
         (!(gate_sel & 4) ? GDT_VIRT_START(v) : LDT_VIRT_START(v))
         + (gate_sel >> 3);
     if ( (gate_sel < 4) ||
-         ((gate_sel >= FIRST_RESERVED_GDT_BYTE) && !(gate_sel & 4)) ||
+         /*
+          * We're interested in call gates only, which occupy a single
+          * seg_desc_t for 32-bit and a consecutive pair of them for 64-bit.
+          */
+         ((gate_sel >> 3) + !is_pv_32bit_vcpu(v) >=
+          (gate_sel & 4 ? v->arch.pv_vcpu.ldt_ents
+                        : v->arch.pv_vcpu.gdt_ents)) ||
          __get_user(desc, pdesc) )
         return 0;
 
@@ -2016,7 +2038,7 @@ static int read_gate_descriptor(unsigned int gate_sel,
     if ( !is_pv_32bit_vcpu(v) )
     {
         if ( (*ar & 0x1f00) != 0x0c00 ||
-             (gate_sel >= FIRST_RESERVED_GDT_BYTE - 8 && !(gate_sel & 4)) ||
+             /* Limit check done above already. */
              __get_user(desc, pdesc + 1) ||
              (desc.b & 0x1f00) )
             return 0;
@@ -2377,8 +2399,19 @@ static int priv_op_write_cr(unsigned int reg, unsigned long val,
     }
 
     case 4: /* Write CR4 */
-        curr->arch.pv_vcpu.ctrlreg[4] = pv_guest_cr4_fixup(curr, val);
-        write_cr4(pv_guest_cr4_to_real_cr4(curr));
+        /*
+         * If this write will disable FSGSBASE, refresh Xen's idea of the
+         * guest bases now that they can no longer change.
+         */
+        if ( (curr->arch.pv_vcpu.ctrlreg[4] & X86_CR4_FSGSBASE) &&
+             !(val & X86_CR4_FSGSBASE) )
+        {
+            curr->arch.pv_vcpu.fs_base = __rdfsbase();
+            curr->arch.pv_vcpu.gs_base_kernel = __rdgsbase();
+        }
+
+        curr->arch.pv_vcpu.ctrlreg[4] = pv_fixup_guest_cr4(curr, val);
+        write_cr4(pv_make_cr4(curr));
         ctxt_switch_levelling(curr);
         return X86EMUL_OKAY;
     }
@@ -2437,14 +2470,15 @@ static int priv_op_read_msr(unsigned int reg, uint64_t *val,
     case MSR_FS_BASE:
         if ( is_pv_32bit_domain(currd) )
             break;
-        *val = cpu_has_fsgsbase ? __rdfsbase() : curr->arch.pv_vcpu.fs_base;
+        *val = (read_cr4() & X86_CR4_FSGSBASE) ? __rdfsbase()
+                                               : curr->arch.pv_vcpu.fs_base;
         return X86EMUL_OKAY;
 
     case MSR_GS_BASE:
         if ( is_pv_32bit_domain(currd) )
             break;
-        *val = cpu_has_fsgsbase ? __rdgsbase()
-                                : curr->arch.pv_vcpu.gs_base_kernel;
+        *val = (read_cr4() & X86_CR4_FSGSBASE) ? __rdgsbase()
+                                               : curr->arch.pv_vcpu.gs_base_kernel;
         return X86EMUL_OKAY;
 
     case MSR_SHADOW_GS_BASE:
@@ -2509,6 +2543,9 @@ static int priv_op_read_msr(unsigned int reg, uint64_t *val,
     case MSR_PRED_CMD:
     case MSR_FLUSH_CMD:
         /* Write-only */
+    case MSR_TSX_FORCE_ABORT:
+    case MSR_TSX_CTRL:
+        /* Not offered to guests. */
         break;
 
     case MSR_SPEC_CTRL:
@@ -2734,9 +2771,13 @@ static int priv_op_write_msr(unsigned int reg, uint64_t val,
             wrmsrl(reg, val);
         return X86EMUL_OKAY;
 
+    case MSR_INTEL_CORE_THREAD_COUNT:
     case MSR_INTEL_PLATFORM_INFO:
     case MSR_ARCH_CAPABILITIES:
         /* The MSR is read-only. */
+    case MSR_TSX_FORCE_ABORT:
+    case MSR_TSX_CTRL:
+        /* Not offered to guests. */
         break;
 
     case MSR_SPEC_CTRL:
@@ -2828,17 +2869,7 @@ static int priv_op_write_msr(unsigned int reg, uint64_t val,
 int pv_emul_cpuid(unsigned int *eax, unsigned int *ebx, unsigned int *ecx,
                   unsigned int *edx, struct x86_emulate_ctxt *ctxt)
 {
-    struct cpu_user_regs regs = *ctxt->regs;
-
-    regs._eax = *eax;
-    regs._ecx = *ecx;
-
-    pv_cpuid(&regs);
-
-    *eax = regs._eax;
-    *ebx = regs._ebx;
-    *ecx = regs._ecx;
-    *edx = regs._edx;
+    pv_cpuid(*eax, *ecx, eax, ebx, ecx, edx);
 
     return X86EMUL_OKAY;
 }
@@ -3329,7 +3360,7 @@ static int emulate_privileged_op(struct cpu_user_regs *regs)
         if ( v->arch.cpuid_faulting && !guest_kernel_mode(v, regs) )
             goto fail;
 
-        pv_cpuid(regs);
+        pv_cpuid_regs(regs);
         break;
 
     default:

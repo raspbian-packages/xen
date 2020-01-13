@@ -339,6 +339,16 @@ static always_inline unsigned int cpuid_edx(unsigned int op)
     return edx;
 }
 
+static always_inline unsigned int cpuid_count_edx(
+    unsigned int leaf, unsigned int subleaf)
+{
+    unsigned int edx, tmp;
+
+    cpuid_count(leaf, subleaf, &tmp, &tmp, &tmp, &edx);
+
+    return edx;
+}
+
 static inline unsigned long read_cr0(void)
 {
     unsigned long cr0;
@@ -380,11 +390,31 @@ static inline unsigned long read_cr4(void)
 
 static inline void write_cr4(unsigned long val)
 {
+    struct cpu_info *info = get_cpu_info();
+
     /* No global pages in case of PCIDs enabled! */
     ASSERT(!(val & X86_CR4_PGE) || !(val & X86_CR4_PCIDE));
 
-    get_cpu_info()->cr4 = val;
-    asm volatile ( "mov %0,%%cr4" : : "r" (val) );
+    /*
+     * On hardware supporting FSGSBASE, the value in %cr4 is the kernel's
+     * choice for 64bit PV guests, which impacts whether Xen can use the
+     * instructions.
+     *
+     * The {rd,wr}{fs,gs}base() helpers use info->cr4 to work out whether it
+     * is safe to execute the {RD,WR}{FS,GS}BASE instruction, falling back to
+     * the MSR path if not.  Some users require interrupt safety.
+     *
+     * If FSGSBASE is currently or about to become clear, reflect this in
+     * info->cr4 before updating %cr4, so an interrupt which hits in the
+     * middle won't observe FSGSBASE set in info->cr4 but clear in %cr4.
+     */
+    info->cr4 = val & (info->cr4 | ~X86_CR4_FSGSBASE);
+
+    asm volatile ( "mov %[val], %%cr4"
+                   : "+m" (info->cr4) /* Force ordering without a barrier. */
+                   : [val] "r" (val) );
+
+    info->cr4 = val;
 }
 
 /* Clear and set 'TS' bit respectively */
@@ -663,7 +693,17 @@ enum get_cpu_vendor {
 };
 
 int get_cpu_vendor(const char vendor_id[], enum get_cpu_vendor);
-void pv_cpuid(struct cpu_user_regs *regs);
+void pv_cpuid(uint32_t leaf, uint32_t subleaf,
+              uint32_t *eax, uint32_t *ebx, uint32_t *ecx, uint32_t *edx);
+
+static inline void pv_cpuid_regs(struct cpu_user_regs *regs)
+{
+    pv_cpuid(regs->_eax, regs->_ecx,
+             &regs->_eax, &regs->_ebx, &regs->_ecx, &regs->_edx);
+}
+
+extern int8_t opt_tsx, cpu_has_tsx_ctrl;
+void tsx_init(void);
 
 #endif /* !__ASSEMBLY__ */
 

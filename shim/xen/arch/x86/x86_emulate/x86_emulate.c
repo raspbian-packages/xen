@@ -4751,12 +4751,13 @@ x86_emulate(
             }
             break;
         case 5: /* imul */
+            dst.val = _regs.r(ax);
         imul:
             _regs.eflags &= ~(X86_EFLAGS_OF | X86_EFLAGS_CF);
             switch ( dst.bytes )
             {
             case 1:
-                dst.val = (int8_t)src.val * (int8_t)_regs.al;
+                dst.val = (int8_t)src.val * (int8_t)dst.val;
                 if ( (int8_t)dst.val != (int16_t)dst.val )
                     _regs.eflags |= X86_EFLAGS_OF | X86_EFLAGS_CF;
                 ASSERT(b > 0x6b);
@@ -4764,7 +4765,7 @@ x86_emulate(
                 break;
             case 2:
                 dst.val = ((uint32_t)(int16_t)src.val *
-                           (uint32_t)(int16_t)_regs.ax);
+                           (uint32_t)(int16_t)dst.val);
                 if ( (int16_t)dst.val != (int32_t)dst.val )
                     _regs.eflags |= X86_EFLAGS_OF | X86_EFLAGS_CF;
                 if ( b > 0x6b )
@@ -4773,7 +4774,7 @@ x86_emulate(
 #ifdef __x86_64__
             case 4:
                 dst.val = ((uint64_t)(int32_t)src.val *
-                           (uint64_t)(int32_t)_regs.eax);
+                           (uint64_t)(int32_t)dst.val);
                 if ( (int32_t)dst.val != dst.val )
                     _regs.eflags |= X86_EFLAGS_OF | X86_EFLAGS_CF;
                 if ( b > 0x6b )
@@ -4782,7 +4783,7 @@ x86_emulate(
 #endif
             default:
                 u[0] = src.val;
-                u[1] = _regs.r(ax);
+                u[1] = dst.val;
                 if ( imul_dbl(u) )
                     _regs.eflags |= X86_EFLAGS_OF | X86_EFLAGS_CF;
                 if ( b > 0x6b )
@@ -5646,9 +5647,11 @@ x86_emulate(
         else
         {
             generate_exception_if(vex.reg != 0xf, EXC_UD);
-            vex.l = 0;
             host_and_vcpu_must_have(avx);
             get_fpu(X86EMUL_FPU_ymm, &fic);
+
+            /* Work around erratum BT230. */
+            vex.l = 0;
         }
 
         opc = init_prefixes(stub);
@@ -6015,6 +6018,8 @@ x86_emulate(
     case X86EMUL_OPC_VEX_66(0x0f, 0xef): /* vpxor {x,y}mm/mem,{x,y}mm,{x,y}mm */
     case X86EMUL_OPC_66(0x0f, 0xf4):     /* pmuludq xmm/m128,xmm */
     case X86EMUL_OPC_VEX_66(0x0f, 0xf4): /* vpmuludq {x,y}mm/mem,{x,y}mm,{x,y}mm */
+    CASE_SIMD_PACKED_INT(0x0f, 0xf5):    /* pmaddwd {,x}mm/mem,{,x}mm */
+    case X86EMUL_OPC_VEX_66(0x0f, 0xf5): /* vpmaddwd {x,y}mm/mem,{x,y}mm,{x,y}mm */
     case X86EMUL_OPC_66(0x0f, 0xf6):     /* psadbw xmm/m128,xmm */
     case X86EMUL_OPC_VEX_66(0x0f, 0xf6): /* vpsadbw {x,y}mm/mem,{x,y}mm,{x,y}mm */
     CASE_SIMD_PACKED_INT(0x0f, 0xf8):    /* psubb {,x}mm/mem,{,x}mm */
@@ -6335,6 +6340,9 @@ x86_emulate(
             host_and_vcpu_must_have(mmx);
             get_fpu(X86EMUL_FPU_mmx, &fic);
         }
+
+        /* Work around erratum BT36. */
+        vex.w = 0;
 
         opc = init_prefixes(stub);
         opc[0] = b;
@@ -7629,6 +7637,11 @@ x86_emulate(
         generate_exception_if(vex.l || vex.reg != 0xf, EXC_UD);
         host_and_vcpu_must_have(avx);
         get_fpu(X86EMUL_FPU_ymm, &fic);
+
+        /* Work around erratum BT41. */
+        if ( !mode_64bit() )
+            vex.w = 0;
+
         opc = init_prefixes(stub);
         goto pextr;
 

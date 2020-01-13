@@ -27,6 +27,42 @@
 
 struct xsm_operations *xsm_ops;
 
+enum xsm_bootparam {
+    XSM_BOOTPARAM_DUMMY,
+    XSM_BOOTPARAM_FLASK,
+    XSM_BOOTPARAM_SILO,
+};
+
+static enum xsm_bootparam __initdata xsm_bootparam =
+#if defined(CONFIG_XSM_FLASK_DEFAULT)
+    XSM_BOOTPARAM_FLASK;
+#elif defined(CONFIG_XSM_SILO_DEFAULT)
+    XSM_BOOTPARAM_SILO;
+#else
+    XSM_BOOTPARAM_DUMMY;
+#endif
+
+static int __init parse_xsm_param(const char *s)
+{
+    int rc = 0;
+
+    if ( !strcmp(s, "dummy") )
+        xsm_bootparam = XSM_BOOTPARAM_DUMMY;
+#ifdef CONFIG_FLASK
+    else if ( !strcmp(s, "flask") )
+        xsm_bootparam = XSM_BOOTPARAM_FLASK;
+#endif
+#ifdef CONFIG_SILO
+    else if ( !strcmp(s, "silo") )
+        xsm_bootparam = XSM_BOOTPARAM_SILO;
+#endif
+    else
+        rc = -EINVAL;
+
+    return rc;
+}
+custom_param("xsm", parse_xsm_param);
+
 static inline int verify(struct xsm_operations *ops)
 {
     /* verify the security_operations structure exists */
@@ -53,7 +89,24 @@ static int __init xsm_core_init(const void *policy_buffer, size_t policy_size)
     }
 
     xsm_ops = &dummy_xsm_ops;
-    flask_init(policy_buffer, policy_size);
+
+    switch ( xsm_bootparam )
+    {
+    case XSM_BOOTPARAM_DUMMY:
+        break;
+
+    case XSM_BOOTPARAM_FLASK:
+        flask_init(policy_buffer, policy_size);
+        break;
+
+    case XSM_BOOTPARAM_SILO:
+        silo_init();
+        break;
+
+    default:
+        ASSERT_UNREACHABLE();
+        break;
+    }
 
     return 0;
 }
@@ -111,7 +164,7 @@ int __init xsm_dt_init(void)
 
     xfree(policy_buffer);
 
-    return ret;
+    return ret ?: (xsm_bootparam == XSM_BOOTPARAM_SILO);
 }
 
 /**

@@ -21,6 +21,7 @@
 #include <asm/event.h>
 #include <asm/msr.h>
 #include <asm/page.h>
+#include <asm/shadow.h>
 #include <asm/shared.h>
 #include <asm/hvm/hvm.h>
 #include <asm/hvm/support.h>
@@ -267,7 +268,9 @@ void toggle_guest_mode(struct vcpu *v)
 {
     if ( is_pv_32bit_vcpu(v) )
         return;
-    if ( cpu_has_fsgsbase )
+
+    /* %fs/%gs bases can only be stale if WR{FS,GS}BASE are usable. */
+    if ( read_cr4() & X86_CR4_FSGSBASE )
     {
         if ( v->arch.flags & TF_kernel_mode )
             v->arch.pv_vcpu.gs_base_kernel = __rdgsbase();
@@ -282,6 +285,8 @@ void toggle_guest_mode(struct vcpu *v)
 void toggle_guest_pt(struct vcpu *v)
 {
     const struct domain *d = v->domain;
+    struct cpu_info *cpu_info = get_cpu_info();
+    unsigned long cr3;
 
     if ( is_pv_32bit_vcpu(v) )
         return;
@@ -290,16 +295,28 @@ void toggle_guest_pt(struct vcpu *v)
     update_cr3(v);
     if ( d->arch.pv_domain.xpti )
     {
-        struct cpu_info *cpu_info = get_cpu_info();
-
         cpu_info->root_pgt_changed = true;
         cpu_info->pv_cr3 = __pa(this_cpu(root_pgt)) |
                            (d->arch.pv_domain.pcid
                             ? get_pcid_bits(v, true) : 0);
     }
 
-    /* Don't flush user global mappings from the TLB. Don't tick TLB clock. */
-    write_cr3(v->arch.cr3);
+    /*
+     * Don't flush user global mappings from the TLB. Don't tick TLB clock.
+     *
+     * In shadow mode, though, update_cr3() may need to be accompanied by a
+     * TLB flush (for just the incoming PCID), as the top level page table may
+     * have changed behind our backs. To be on the safe side, suppress the
+     * no-flush unconditionally in this case. The XPTI CR3 write, if enabled,
+     * will then need to be a flushing one too.
+     */
+    cr3 = v->arch.cr3;
+    if ( shadow_mode_enabled(d) )
+    {
+        cr3 &= ~X86_CR3_NOFLUSH;
+        cpu_info->pv_cr3 &= ~X86_CR3_NOFLUSH;
+    }
+    write_cr3(cr3);
 
     if ( !(v->arch.flags & TF_kernel_mode) )
         return;
