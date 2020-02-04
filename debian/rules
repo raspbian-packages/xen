@@ -232,10 +232,10 @@ override_dh_auto_install: $(TEMPLATED_FILES)
 	@# in the hotplug scripts.  We have a patch to drop that.
 	sed -i '/^libdir=/d' $t/etc/xen/scripts/hotplugpath.sh
 
-# libfsimage not only has an unstable ABI, but also a very poor name.
-# Our makefile patch puts it in a different directory and fixes up the
-# rpath; this rules code excludes the header files.
-dh_install_excludes += -Xinclude/fsimage
+# libxenfsimage has an unstable ABI.  Our makefile patch puts it in a
+# different directory and fixes up the rpath; this rules code excludes the
+# header files.
+dh_install_excludes += -Xinclude/xenfsimage
 
 # The upstream build produces these.
 dh_install_excludes += -X'*.pyc'
