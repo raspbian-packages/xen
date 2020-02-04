@@ -7,9 +7,9 @@ SHELL    := bash -e
 
 # This influences dpkg-buildflags to specify better linker
 # options.  See https://wiki.debian.org/Hardening
-# TBH it is not clear to me (Diziet, 2018) why this is not the
-# default but it is definitely appropriate for Xen, many of whose
-# users will care significantly about security.x
+# Apparently some of these might incur silent breakage
+#   https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=939560#5
+# but we don't think this is relevant to us.
 #
 # Note that we don't use the dpkg-buildflags output for the
 # hypervisor build.  This because I haven't investigated which
