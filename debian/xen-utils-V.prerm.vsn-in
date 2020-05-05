@@ -6,7 +6,15 @@ case "$1" in
     remove|upgrade)
         update-alternatives --remove xen-default /usr/lib/xen-@version@
         if [ -x "/etc/init.d/xen" ]; then
-            invoke-rc.d xen stop || exit $?
+            # Only call the init script when removing or while upgrading for
+            # the currently running version of Xen.
+            #
+            # Otherwise, for example after a Xen version upgrade, autoremoval
+            # of an obsolete xen-utils-V package would inadvertently stop
+            # running daemons like xenconsoled.
+            if [ "$(/usr/lib/xen-common/bin/xen-version)" = "@version@" ]; then
+                invoke-rc.d xen stop || exit $?
+            fi
         fi
     ;;
 
