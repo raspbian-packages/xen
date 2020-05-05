@@ -1,6 +1,17 @@
 xen (4.11.4-1) UNRELEASED; urgency=medium
 
-  * Update to new upstream version 4.11.4.
+  * Update to new upstream version 4.11.4, which also contains security fixes
+    for the following issues:
+    - arm: a CPU may speculate past the ERET instruction
+      XSA-312 (no CVE yet)
+    - multiple xenoprof issues
+      XSA-313 CVE-2020-11740 CVE-2020-11741
+    - Missing memory barriers in read-write unlock paths
+      XSA-314 CVE-2020-11739
+    - Bad error path in GNTTABOP_map_grant
+      XSA-316 CVE-2020-11743
+    - Bad continuation handling in GNTTABOP_copy
+      XSA-318 CVE-2020-11742
 
  -- Hans van Kranenburg <hans@knorrie.org>  Tue, 05 May 2020 18:03:26 +0200
 
