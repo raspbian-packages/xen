@@ -9,6 +9,27 @@
 # Description:       Xen daemons
 ### END INIT INFO
 
+# Important notes to keep in mind when changing this script:
+#
+# * This init script is part of the xen-utils-common package.
+# * It is *not* called from xen-utils-common maintscripts, but from the
+#   xen-utils-V package maintscripts instead, and only if V is equal to the
+#   currently running version of Xen.
+# * The xen-utils-V package has a dependency on xen-utils-common >= V.
+# * So, while there can be multiple xen-utils-V packages installed, there is
+#   still only a single xen-utils-common package installed, which matches the
+#   newest installed Xen version.
+# * This means that this script has to be compatible with the other packages
+#   for any older Xen version that was available in the current and previous
+#   Debian release.
+#
+# Example scenarios in which this is needed:
+#
+# * After upgrading to a new Xen version, the new init script will already be
+#   used for shutting down the system before reboot.
+# * If the user encounters problems and reboots back into the old Xen version,
+#   this init script will also be used.
+
 . /lib/init/vars.sh
 . /lib/lsb/init-functions
 
