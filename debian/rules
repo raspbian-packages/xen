@@ -282,7 +282,7 @@ override_dh_python2:
 
 # We have two init scripts.  (There used to be xend too.)
 override_dh_installinit:
-	dh_installinit --name xen -- defaults 20 21
+	dh_installinit --name xen --no-start -- defaults 20 21
 	dh_installinit --name xendomains --no-start -- defaults 21 20
 
 # dh_strip in dh compat 10 and earlier (which we are at so this
