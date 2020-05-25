@@ -1,4 +1,4 @@
-xen (4.11.4-1) UNRELEASED; urgency=medium
+xen (4.11.4-1) unstable; urgency=medium
 
   * Update to new upstream version 4.11.4, which also contains security fixes
     for the following issues:
@@ -12,8 +12,16 @@ xen (4.11.4-1) UNRELEASED; urgency=medium
       XSA-316 CVE-2020-11743
     - Bad continuation handling in GNTTABOP_copy
       XSA-318 CVE-2020-11742
+  * xen-utils and xen-utils-common maint scripts: Replace the previous fix in
+    the xen init script with a better fix in the xen-utils package instead, to
+    prevent calling the init script stop action (resulting in a disappeared
+    xenconsoled) when removing a xen-utils package that belongs to a previous
+    (not currently runing) Xen version. Also prevent the xen-utils-common
+    package from inadvertently calling stop and start actions because
+    dh_installinit would add code for that. (Closes: #932759)
+  * debian/NEWS: Mention fixing #932759 and how to deal with the bug
 
- -- Hans van Kranenburg <hans@knorrie.org>  Tue, 05 May 2020 18:03:26 +0200
+ -- Hans van Kranenburg <hans@knorrie.org>  Tue, 26 May 2020 13:33:17 +0200
 
 xen (4.11.3+24-g14b62ab3e5-1) unstable; urgency=high
 
