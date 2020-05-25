@@ -1,9 +1,10 @@
 include $(XEN_ROOT)/tools/Rules.mk
 
-FSDIR := $(libdir)/xenfsimage
+FSDIR := $(LIBEXEC_LIB)/xenfsimage
 CFLAGS += -Wno-unknown-pragmas -I$(XEN_ROOT)/tools/libfsimage/common/ $(CFLAGS_xeninclude) -DFSIMAGE_FSDIR=\"$(FSDIR)\"
 CFLAGS += -D_GNU_SOURCE
 LDFLAGS += -L../common/
+LDFLAGS += $(call LDFLAGS_RPATH,../..)
 
 PIC_OBJS = $(patsubst %.c,%.opic,$(LIB_SRCS-y))
 
