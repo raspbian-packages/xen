@@ -4,6 +4,8 @@ include $(XEN_ROOT)/tools/libfsimage/common.mk
 MAJOR := $(shell $(XEN_ROOT)/version.sh $(XEN_ROOT)/xen/Makefile)
 MINOR = 0
 
+CFLAGS += -DFSDIR="\"$(LIBEXEC_LIB)/fs\""
+
 LDFLAGS-$(CONFIG_SunOS) = -Wl,-M -Wl,mapfile-SunOS
 LDFLAGS-$(CONFIG_Linux) = -Wl,mapfile-GNU
 LDFLAGS += $(LDFLAGS-y)
@@ -20,11 +22,11 @@ all: $(TARGETS)
 
 .PHONY: install
 install: all
-	$(INSTALL_DIR) $(DESTDIR)$(libdir)
+	$(INSTALL_DIR) $(DESTDIR)$(LIBEXEC_LIB)
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)
-	$(INSTALL_PROG) libxenfsimage.so.$(MAJOR).$(MINOR) $(DESTDIR)$(libdir)
-	ln -sf libxenfsimage.so.$(MAJOR).$(MINOR) $(DESTDIR)$(libdir)/libxenfsimage.so.$(MAJOR)
-	ln -sf libxenfsimage.so.$(MAJOR) $(DESTDIR)$(libdir)/libxenfsimage.so
+	$(INSTALL_PROG) libxenfsimage.so.$(MAJOR).$(MINOR) $(DESTDIR)$(LIBEXEC_LIB)
+	ln -sf libxenfsimage.so.$(MAJOR).$(MINOR) $(DESTDIR)$(LIBEXEC_LIB)/libxenfsimage.so.$(MAJOR)
+	ln -sf libxenfsimage.so.$(MAJOR) $(DESTDIR)$(LIBEXEC_LIB)/libxenfsimage.so
 	$(INSTALL_DATA) xenfsimage.h $(DESTDIR)$(includedir)
 	$(INSTALL_DATA) xenfsimage_plugin.h $(DESTDIR)$(includedir)
 	$(INSTALL_DATA) xenfsimage_grub.h $(DESTDIR)$(includedir)
@@ -34,9 +36,9 @@ uninstall:
 	rm -f $(DESTDIR)$(includedir)/xenfsimage_grub.h
 	rm -f $(DESTDIR)$(includedir)/xenfsimage_plugin.h
 	rm -f $(DESTDIR)$(includedir)/xenfsimage.h
-	rm -f $(DESTDIR)$(libdir)/libxenfsimage.so
-	rm -f $(DESTDIR)$(libdir)/libxenfsimage.so.$(MAJOR)
-	rm -f $(DESTDIR)$(libdir)/libxenfsimage.so.$(MAJOR).$(MINOR)
+	rm -f $(DESTDIR)$(LIBEXEC_LIB)/libxenfsimage.so
+	rm -f $(DESTDIR)$(LIBEXEC_LIB)/libxenfsimage.so.$(MAJOR)
+	rm -f $(DESTDIR)$(LIBEXEC_LIB)/libxenfsimage.so.$(MAJOR).$(MINOR)
 
 libxenfsimage.so: libxenfsimage.so.$(MAJOR)
 	ln -sf $< $@

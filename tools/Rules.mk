@@ -16,6 +16,8 @@ INSTALL = $(XEN_ROOT)/tools/cross-install
 
 LDFLAGS += $(PREPEND_LDFLAGS_XEN_TOOLS)
 
+LDFLAGS_RPATH = -Wl,-rpath,'$${ORIGIN}$(if $(1),/$(1))'
+
 XEN_INCLUDE        = $(XEN_ROOT)/tools/include
 
 include $(XEN_ROOT)/tools/libs/uselibs.mk
