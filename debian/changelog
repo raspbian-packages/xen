@@ -1290,7 +1290,7 @@ xen (4.0.1-2) unstable; urgency=low
   * Check for MWAIT support before using it.
   * Fix endless loop on interrupts on Nehalem cpus.
   * Don't crash upon direct GDT/LDT access. (closes: #609531)
-    CVE-2010-4255  
+    CVE-2010-4255
   * Don't loose timer ticks after domain restore.
   * Reserve some space for IOMMU area in dom0. (closes: #608715)
   * Fix hypercall arguments after trace callout.
@@ -1645,7 +1645,7 @@ xen-3.0 (3.0.2+hg9656-1) unstable; urgency=low
 xen-3.0 (3.0.2+hg9651-1) unstable; urgency=low
 
   * Merge upstream fixes trunk
-  * Fix PAE disabled in pae build (Closes: #364875) 
+  * Fix PAE disabled in pae build (Closes: #364875)
 
  -- Julien Danjou <acid@debian.org>  Wed, 26 Apr 2006 13:19:39 +0200
 
