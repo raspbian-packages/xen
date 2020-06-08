@@ -128,7 +128,7 @@ export WGET=/bin/false GIT=/bin/false
 
 # Other build flags etc.
 
-t=$(PWD)/debian/tmp
+t=$(CURDIR)/debian/tmp
 
 dpkg_CFLAGS   := $(shell $(dbmo) dpkg-buildflags --get CFLAGS)
 dpkg_CPPFLAGS := $(shell $(dbmo) dpkg-buildflags --get CPPFLAGS)
