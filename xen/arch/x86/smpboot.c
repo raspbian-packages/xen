@@ -369,12 +369,14 @@ void start_secondary(void *unused)
         microcode_resume_cpu(cpu);
 
     /*
-     * If MSR_SPEC_CTRL is available, apply Xen's default setting and discard
-     * any firmware settings.  Note: MSR_SPEC_CTRL may only become available
-     * after loading microcode.
+     * If any speculative control MSRs are available, apply Xen's default
+     * settings.  Note: These MSRs may only become available after loading
+     * microcode.
      */
     if ( boot_cpu_has(X86_FEATURE_IBRSB) )
         wrmsrl(MSR_SPEC_CTRL, default_xen_spec_ctrl);
+    if ( boot_cpu_has(X86_FEATURE_SRBDS_CTRL) )
+        wrmsrl(MSR_MCU_OPT_CTRL, default_xen_mcu_opt_ctrl);
 
     tsx_init(); /* Needs microcode.  May change HLE/RTM feature bits. */
 
@@ -952,6 +954,8 @@ static void cpu_smpboot_free(unsigned int cpu, bool remove)
         unmap_domain_page(stub_page);
         destroy_xen_mappings(per_cpu(stubs.addr, cpu) & PAGE_MASK,
                              (per_cpu(stubs.addr, cpu) | ~PAGE_MASK) + 1);
+        per_cpu(stubs.addr, cpu) = 0;
+        per_cpu(stubs.mfn, cpu) = 0;
         if ( i == STUBS_PER_PAGE )
             free_domheap_page(mfn_to_page(mfn));
     }

@@ -1,4 +1,4 @@
-xen (4.11.3+24-g14b62ab3e5-1~deb10u1+rpi1) buster-staging; urgency=medium
+xen (4.11.4+24-gddaaccbbab-1~deb10u1+rpi1) buster-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,13 +9,59 @@ xen (4.11.3+24-g14b62ab3e5-1~deb10u1+rpi1) buster-staging; urgency=medium
   [changes introduced in 4.11.1+26-g87f51bf366-3+rpi1 by Peter Michael Green]
   * Do not fail on files that are not installed.
 
- -- Raspbian forward porter <root@raspbian.org>  Mon, 13 Jan 2020 23:38:27 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Thu, 16 Jul 2020 17:57:37 +0000
 
-xen (4.11.3+24-g14b62ab3e5-1~deb10u1) buster-security; urgency=high
+xen (4.11.4+24-gddaaccbbab-1~deb10u1) buster-security; urgency=high
 
-  * Rebuild for buster-security
+  * Rebuild as Buster security update.
 
- -- Hans van Kranenburg <hans@knorrie.org>  Wed, 08 Jan 2020 13:21:23 +0100
+ -- Hans van Kranenburg <hans@knorrie.org>  Fri, 10 Jul 2020 18:54:34 +0200
+
+xen (4.11.4+24-gddaaccbbab-1) unstable; urgency=medium
+
+  * Update to new upstream version 4.11.4+24-gddaaccbbab, which also contains
+    security fixes for the following issues:
+    - inverted code paths in x86 dirty VRAM tracking
+      XSA-319 CVE-2020-15563
+    - Special Register Buffer speculative side channel
+      XSA-320 CVE-2020-0543
+      N.B: To mitigate this issue, new cpu microcode is required. The changes
+      in Xen provide a workaround for affected hardware that is not receiving
+      a vendor microcode update. Please refer to the upstream XSA-320 Advisory
+      text for more details.
+    - insufficient cache write-back under VT-d
+      XSA-321 CVE-2020-15565
+    - Missing alignment check in VCPUOP_register_vcpu_info
+      XSA-327 CVE-2020-15564
+    - non-atomic modification of live EPT PTE
+      XSA-328 CVE-2020-15567
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Tue, 07 Jul 2020 16:07:39 +0200
+
+xen (4.11.4-1) unstable; urgency=medium
+
+  * Update to new upstream version 4.11.4, which also contains security fixes
+    for the following issues:
+    - arm: a CPU may speculate past the ERET instruction
+      XSA-312 (no CVE yet)
+    - multiple xenoprof issues
+      XSA-313 CVE-2020-11740 CVE-2020-11741
+    - Missing memory barriers in read-write unlock paths
+      XSA-314 CVE-2020-11739
+    - Bad error path in GNTTABOP_map_grant
+      XSA-316 CVE-2020-11743
+    - Bad continuation handling in GNTTABOP_copy
+      XSA-318 CVE-2020-11742
+  * xen-utils and xen-utils-common maint scripts: Replace the previous fix in
+    the xen init script with a better fix in the xen-utils package instead, to
+    prevent calling the init script stop action (resulting in a disappeared
+    xenconsoled) when removing a xen-utils package that belongs to a previous
+    (not currently runing) Xen version. Also prevent the xen-utils-common
+    package from inadvertently calling stop and start actions because
+    dh_installinit would add code for that. (Closes: #932759)
+  * debian/NEWS: Mention fixing #932759 and how to deal with the bug
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Tue, 26 May 2020 13:33:17 +0200
 
 xen (4.11.3+24-g14b62ab3e5-1) unstable; urgency=high
 

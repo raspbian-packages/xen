@@ -23,6 +23,7 @@
 #include <xen/domain.h>
 #include <xen/console.h>
 #include <xen/iommu.h>
+#include <xen/watchdog.h>
 #include <xen/cpu.h>
 #include <public/platform.h>
 #include <asm/tboot.h>
@@ -194,6 +195,7 @@ static int enter_state(u32 state)
 
     acpi_sleep_prepare(state);
 
+    watchdog_disable();
     console_start_sync();
     printk("Entering ACPI S%d state.\n", state);
 
@@ -206,6 +208,7 @@ static int enter_state(u32 state)
         system_state = SYS_STATE_resume;
         device_power_up(error);
         console_end_sync();
+        watchdog_enable();
         error = -EIO;
         goto done;
     }
@@ -252,6 +255,7 @@ static int enter_state(u32 state)
         tboot_s3_error(error);
 
     console_end_sync();
+    watchdog_enable();
 
     microcode_resume_cpu(0);
 
@@ -261,6 +265,9 @@ static int enter_state(u32 state)
     /* Re-enabled default NMI/#MC use of MSR_SPEC_CTRL. */
     ci->spec_ctrl_flags |= (default_spec_ctrl_flags & SCF_ist_wrmsr);
     spec_ctrl_exit_idle(ci);
+
+    if ( boot_cpu_has(X86_FEATURE_SRBDS_CTRL) )
+        wrmsrl(MSR_MCU_OPT_CTRL, default_xen_mcu_opt_ctrl);
 
  done:
     spin_debug_enable();

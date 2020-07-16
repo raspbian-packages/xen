@@ -8,10 +8,10 @@ Signed-off-by: Ian Jackson <ian.jackson@citrix.com>
  1 file changed, 4 insertions(+), 4 deletions(-)
 
 diff --git a/tools/xentrace/xenalyze.c b/tools/xentrace/xenalyze.c
-index 5ed0a12..aa89467 100644
+index eb77787..b7f4e2b 100644
 --- a/tools/xentrace/xenalyze.c
 +++ b/tools/xentrace/xenalyze.c
-@@ -9224,7 +9224,7 @@ void process_cpu_change(struct pcpu_info *p) {
+@@ -9221,7 +9221,7 @@ void process_cpu_change(struct pcpu_info *p) {
  
      /* File sanity check */
      if(p->file_offset != p->next_cpu_change_offset) {
@@ -20,7 +20,7 @@ index 5ed0a12..aa89467 100644
                  p->pid, (unsigned long long)p->next_cpu_change_offset,
                  (unsigned long long)p->file_offset);
      }
-@@ -9673,7 +9673,7 @@ ssize_t read_record(struct pcpu_info * p) {
+@@ -9670,7 +9670,7 @@ ssize_t read_record(struct pcpu_info * p) {
  }
  
  /*
@@ -29,7 +29,7 @@ index 5ed0a12..aa89467 100644
   * make it efficient by changing the minimum amount from the last
   * call.  Do this by:
   * - Keeping track of the last pcpu called, so we can just set that to -
-@@ -10629,7 +10629,7 @@ const struct argp_option cmd_opts[] =  {
+@@ -10626,7 +10626,7 @@ const struct argp_option cmd_opts[] =  {
        .key = OPT_SCATTERPLOT_EXTINT_CYCLES,
        .arg = "vector",
        .group = OPT_GROUP_EXTRA,
@@ -38,7 +38,7 @@ index 5ed0a12..aa89467 100644
  
      { .name = "scatterplot-unpin-promote",
        .key = OPT_SCATTERPLOT_UNPIN_PROMOTE,
-@@ -10756,7 +10756,7 @@ const struct argp_option cmd_opts[] =  {
+@@ -10753,7 +10753,7 @@ const struct argp_option cmd_opts[] =  {
        .key = OPT_MMIO_ENUMERATION_SKIP_VGA,
        .arg = "[0|1]",
        .group = OPT_GROUP_SUMMARY,

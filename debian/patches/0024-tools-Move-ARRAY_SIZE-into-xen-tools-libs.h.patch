@@ -68,7 +68,7 @@ index 03bdfca..a0b203e 100644
  ** Define max dirty page cache to permit during save/restore -- need to balance 
  ** keeping cache usage down with CPU impact of invalidating too often.
 diff --git a/tools/libxl/libxl_internal.h b/tools/libxl/libxl_internal.h
-index 90414ba..bf671a2 100644
+index 7885753..89e4eef 100644
 --- a/tools/libxl/libxl_internal.h
 +++ b/tools/libxl/libxl_internal.h
 @@ -57,6 +57,8 @@
@@ -90,7 +90,7 @@ index 90414ba..bf671a2 100644
      (((unsigned long)(_val)+(1UL<<(_order))-1) & ~((1UL<<(_order))-1))
  
 diff --git a/tools/misc/xen-cpuid.c b/tools/misc/xen-cpuid.c
-index 4c9af6b..02c17b1 100644
+index 8fb54c3..ee64692 100644
 --- a/tools/misc/xen-cpuid.c
 +++ b/tools/misc/xen-cpuid.c
 @@ -6,7 +6,8 @@
