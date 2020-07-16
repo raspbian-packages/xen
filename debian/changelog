@@ -1,4 +1,4 @@
-xen (4.11.4-1+rpi1) bullseye-staging; urgency=medium
+xen (4.11.4+24-gddaaccbbab-1+rpi1) bullseye-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,7 +9,28 @@ xen (4.11.4-1+rpi1) bullseye-staging; urgency=medium
   [changes introduced in 4.11.1+26-g87f51bf366-3+rpi1 by Peter Michael Green]
   * Do not fail on files that are not installed.
 
- -- Raspbian forward porter <root@raspbian.org>  Fri, 05 Jun 2020 23:20:39 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Thu, 16 Jul 2020 21:35:50 +0000
+
+xen (4.11.4+24-gddaaccbbab-1) unstable; urgency=medium
+
+  * Update to new upstream version 4.11.4+24-gddaaccbbab, which also contains
+    security fixes for the following issues:
+    - inverted code paths in x86 dirty VRAM tracking
+      XSA-319 CVE-2020-15563
+    - Special Register Buffer speculative side channel
+      XSA-320 CVE-2020-0543
+      N.B: To mitigate this issue, new cpu microcode is required. The changes
+      in Xen provide a workaround for affected hardware that is not receiving
+      a vendor microcode update. Please refer to the upstream XSA-320 Advisory
+      text for more details.
+    - insufficient cache write-back under VT-d
+      XSA-321 CVE-2020-15565
+    - Missing alignment check in VCPUOP_register_vcpu_info
+      XSA-327 CVE-2020-15564
+    - non-atomic modification of live EPT PTE
+      XSA-328 CVE-2020-15567
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Tue, 07 Jul 2020 16:07:39 +0200
 
 xen (4.11.4-1) unstable; urgency=medium
 
