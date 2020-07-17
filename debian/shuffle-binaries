@@ -20,7 +20,7 @@ cd=/usr/lib/xen-common/bin
 
 mkdir -p "$t/$vd"
 
-for binary in `find $t/usr/{bin,sbin} -type f`; do
+find "$t"/usr/*bin -type f | while read binary; do
 	# filter for executables (ignore scripts)
 	file "$binary" | grep -q -eELF.\\+version.\\+interpreter || continue
 
