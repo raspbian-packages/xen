@@ -1,6 +1,5 @@
-#!/bin/bash
+#!/bin/sh
 set -e
-set -o pipefail
 
 version="$1"; shift
 
