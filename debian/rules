@@ -135,6 +135,8 @@ dpkg_CPPFLAGS := $(shell $(dbmo) dpkg-buildflags --get CPPFLAGS)
 dpkg_LDFLAGS  := $(shell $(dbmo) dpkg-buildflags --get LDFLAGS)
 
 make_args_common := \
+	CC=$(DEB_HOST_GNU_TYPE)-gcc \
+	LD=$(DEB_HOST_GNU_TYPE)-ld \
 	XEN_COMPILE_ARCH=$(xen_arch_$(DEB_BUILD_ARCH)) \
 	V=1
 
