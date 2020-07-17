@@ -2,7 +2,7 @@
 set -e
 set -o pipefail
 
-version=$1; shift
+version="$1"; shift
 
 # We wrap all of the programs in /usr/bin with a script
 # (xen-utils-wrapper) which chooses the version corresponding to the
@@ -17,10 +17,10 @@ version=$1; shift
 list=debian/libxenmiscV.install.vsn-in
 
 t=debian/tmp
-vd=/usr/lib/xen-$version/bin
+vd="/usr/lib/xen-$version/bin"
 cd=/usr/lib/xen-common/bin
 
-mkdir -p $t/$vd
+mkdir -p "$t/$vd"
 
 for binary in `find $t/usr/{bin,sbin} -type f`; do
 	reason=''
