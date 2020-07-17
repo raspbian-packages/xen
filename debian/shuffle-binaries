@@ -47,4 +47,7 @@ for binary in `find $t/usr/{bin,sbin} -type f`; do
 	)
 done
 
-ls debian/shuffle-binaries.stamp
+if [ ! -e "$0.stamp" ]; then
+	echo "Failed to shuffle binaries!" 1>&2
+	exit 1
+fi
