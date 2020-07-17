@@ -247,10 +247,7 @@ override_dh_auto_install: $(TEMPLATED_FILES)
 		-C tools/firmware install-shim
 	:
 	@# Inexplicably, upstream puts the efi binares in usr/lib64
-	case $(flavour) in \
-		armhf) ;; \
-		*) mv $t/usr/lib64/efi/* $t/boot/. ;; \
-	esac
+	find "$t"/usr/lib*/efi -mindepth 1 -maxdepth 1 -print0 | xargs -r -0 mv -t "$t/boot"
 	:
 	@# This file contains an arch-specific path and we put it
 	@# in xen-utils-common, an arch-all package.  But the
