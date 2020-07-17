@@ -134,15 +134,15 @@ dpkg_CFLAGS   := $(shell $(dbmo) dpkg-buildflags --get CFLAGS)
 dpkg_CPPFLAGS := $(shell $(dbmo) dpkg-buildflags --get CPPFLAGS)
 dpkg_LDFLAGS  := $(shell $(dbmo) dpkg-buildflags --get LDFLAGS)
 
-make_args_xen= $(make_args_common) \
+make_args_common := \
 	XEN_COMPILE_ARCH=$(xen_arch_$(DEB_BUILD_ARCH)) \
-	XEN_TARGET_ARCH=$(xen_arch_$(flavour)) \
+	XEN_TARGET_ARCH=$(xen_arch_$(flavour))
+
+make_args_xen := $(make_args_common)
 # (Xen upstream does not offer a separate CPPFLAGS,
 # so we pass those in CFLAGS.)
 
-make_args_tools= $(make_args_common) \
-	XEN_COMPILE_ARCH=$(xen_arch_$(DEB_BUILD_ARCH)) \
-	XEN_TARGET_ARCH=$(xen_arch_$(DEB_HOST_ARCH)) \
+make_args_tools := $(make_args_common) \
 	EXTRA_CFLAGS_XEN_TOOLS='$(dpkg_CFLAGS) $(dpkg_CPPFLAGS)' \
 	PREPEND_LDFLAGS_XEN_TOOLS='$(dpkg_LDFLAGS)'
 
