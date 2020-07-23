@@ -169,7 +169,7 @@ void libxl_event_register_callbacks(libxl_ctx *ctx,
  *
  * Applications should ensure that they eventually retrieve every
  * event using libxl_event_check or libxl_event_wait, since events
- * which occur but are not retreived by the application will be queued
+ * which occur but are not retrieved by the application will be queued
  * inside libxl indefinitely.  libxl_event_check/_wait may be O(n)
  * where n is the number of queued events which do not match the
  * criteria specified in the arguments to check/wait.
@@ -548,6 +548,8 @@ typedef struct {
  * May not be called when libxl might have any child processes, or the
  * behaviour is undefined.  So it is best to call this at
  * initialisation.
+ *
+ * The value *hooks is not copied and must outlast the libxl_ctx.
  */
 void libxl_childproc_setmode(libxl_ctx *ctx, const libxl_childproc_hooks *hooks,
                              void *user);

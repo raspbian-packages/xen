@@ -19,12 +19,8 @@
 #ifndef __ASM_X86_HVM_IO_H__
 #define __ASM_X86_HVM_IO_H__
 
-#include <xen/mm.h>
 #include <xen/pci.h>
-#include <asm/hvm/vpic.h>
-#include <asm/hvm/vioapic.h>
 #include <public/hvm/ioreq.h>
-#include <public/event_channel.h>
 
 #define NR_IO_HANDLERS 32
 
@@ -112,7 +108,7 @@ void register_portio_handler(
     struct domain *d, unsigned int port, unsigned int size,
     portio_action_t action);
 
-void relocate_portio_handler(
+bool relocate_portio_handler(
     struct domain *d, unsigned int old_port, unsigned int new_port,
     unsigned int size);
 
@@ -125,7 +121,12 @@ void hvm_interrupt_post(struct vcpu *v, int vector, int type);
 void hvm_dpci_eoi(struct domain *d, unsigned int guest_irq,
                   const union vioapic_redir_entry *ent);
 void msix_write_completion(struct vcpu *);
+
+#ifdef CONFIG_HVM
 void msixtbl_init(struct domain *d);
+#else
+static inline void msixtbl_init(struct domain *d) {}
+#endif
 
 /* Arch-specific MSI data for vPCI. */
 struct vpci_arch_msi {
@@ -179,6 +180,9 @@ int register_vpci_mmcfg_handler(struct domain *d, paddr_t addr,
                                 unsigned int seg);
 /* Destroy tracked MMCFG areas. */
 void destroy_vpci_mmcfg(struct domain *d);
+
+/* Check if an address is between a MMCFG region for a domain. */
+bool vpci_is_mmcfg_address(const struct domain *d, paddr_t addr);
 
 #endif /* __ASM_X86_HVM_IO_H__ */
 

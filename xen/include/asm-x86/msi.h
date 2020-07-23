@@ -172,7 +172,6 @@ int msi_free_irq(struct msi_desc *entry);
 #define msix_enable(control)	 	control |= PCI_MSIX_FLAGS_ENABLE
 #define msix_disable(control)	 	control &= ~PCI_MSIX_FLAGS_ENABLE
 #define msix_table_size(control) 	((control & PCI_MSIX_FLAGS_QSIZE)+1)
-#define multi_msix_capable		msix_table_size
 #define msix_unmask(address)	 	(address & ~PCI_MSIX_VECTOR_BITMASK)
 #define msix_mask(address)		(address | PCI_MSIX_VECTOR_BITMASK)
 
@@ -251,7 +250,6 @@ void mask_msi_irq(struct irq_desc *);
 void unmask_msi_irq(struct irq_desc *);
 void guest_mask_msi_irq(struct irq_desc *, bool mask);
 void ack_nonmaskable_msi_irq(struct irq_desc *);
-void end_nonmaskable_msi_irq(struct irq_desc *, u8 vector);
 void set_msi_affinity(struct irq_desc *, const cpumask_t *);
 
 #endif /* __ASM_MSI_H */

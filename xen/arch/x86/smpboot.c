@@ -25,7 +25,6 @@
 #include <xen/domain.h>
 #include <xen/domain_page.h>
 #include <xen/sched.h>
-#include <xen/sched-if.h>
 #include <xen/irq.h>
 #include <xen/delay.h>
 #include <xen/softirq.h>
@@ -33,22 +32,21 @@
 #include <xen/serial.h>
 #include <xen/numa.h>
 #include <xen/cpu.h>
+#include <asm/cpuidle.h>
 #include <asm/current.h>
 #include <asm/mc146818rtc.h>
 #include <asm/desc.h>
 #include <asm/div64.h>
 #include <asm/flushtlb.h>
 #include <asm/guest.h>
+#include <asm/microcode.h>
 #include <asm/msr.h>
 #include <asm/mtrr.h>
 #include <asm/spec_ctrl.h>
 #include <asm/time.h>
 #include <asm/tboot.h>
+#include <irq_vectors.h>
 #include <mach_apic.h>
-#include <mach_wakecpu.h>
-#include <smpboot_hooks.h>
-
-#define setup_trampoline()    (bootsym_phys(trampoline_realmode_entry))
 
 unsigned long __read_mostly trampoline_phys;
 
@@ -59,6 +57,9 @@ DEFINE_PER_CPU_READ_MOSTLY(cpumask_var_t, cpu_core_mask);
 
 DEFINE_PER_CPU_READ_MOSTLY(cpumask_var_t, scratch_cpumask);
 static cpumask_t scratch_cpu0mask;
+
+DEFINE_PER_CPU_READ_MOSTLY(cpumask_var_t, send_ipi_cpumask);
+static cpumask_t send_ipi_cpu0mask;
 
 cpumask_t cpu_online_map __read_mostly;
 EXPORT_SYMBOL(cpu_online_map);
@@ -191,7 +192,7 @@ static void smp_callin(void)
      */
     Dprintk("CALLIN, before setup_local_APIC().\n");
     x2apic_ap_setup();
-    setup_local_APIC();
+    setup_local_APIC(false);
 
     /* Save our processor parameters. */
     if ( !smp_store_cpu_info(cpu) )
@@ -202,6 +203,13 @@ static void smp_callin(void)
         goto halt;
     }
 
+    if ( cpu_has_hypervisor && (rc = hypervisor_ap_setup()) != 0 )
+    {
+        printk("CPU%d: Failed to initialise hypervisor functions. Not coming online.\n", cpu);
+        cpu_error = rc;
+        goto halt;
+    }
+
     if ( (rc = hvm_cpu_up()) != 0 )
     {
         printk("CPU%d: Failed to initialise HVM. Not coming online.\n", cpu);
@@ -209,8 +217,7 @@ static void smp_callin(void)
     halt:
         clear_local_APIC();
         spin_debug_enable();
-        cpu_exit_clear(cpu);
-        (*dead_idle)();
+        play_dead();
     }
 
     /* Allow the master to continue. */
@@ -322,7 +329,6 @@ void start_secondary(void *unused)
 
     /* Critical region without IDT or TSS.  Any fault is deadly! */
 
-    set_processor_id(cpu);
     set_current(idle_vcpu[cpu]);
     this_cpu(curr_vcpu) = idle_vcpu[cpu];
     rdmsrl(MSR_EFER, this_cpu(efer));
@@ -363,10 +369,7 @@ void start_secondary(void *unused)
 
     initialize_cpu_data(cpu);
 
-    if ( system_state <= SYS_STATE_smp_boot )
-        early_microcode_update_cpu(false);
-    else
-        microcode_resume_cpu(cpu);
+    microcode_update_one();
 
     /*
      * If any speculative control MSRs are available, apply Xen's default
@@ -380,10 +383,9 @@ void start_secondary(void *unused)
 
     tsx_init(); /* Needs microcode.  May change HLE/RTM feature bits. */
 
-    if ( xen_guest )
-        hypervisor_ap_setup();
-
     smp_callin();
+
+    set_cpu_sibling_map(cpu);
 
     init_percpu_time();
 
@@ -397,7 +399,6 @@ void start_secondary(void *unused)
 
     /* This must be done before setting cpu_online_map */
     spin_debug_enable();
-    set_cpu_sibling_map(cpu);
     notify_cpu_starting(cpu);
 
     /*
@@ -551,23 +552,22 @@ static int do_boot_cpu(int apicid, int cpu)
 
     booting_cpu = cpu;
 
-    /* start_eip had better be page-aligned! */
-    start_eip = setup_trampoline();
+    start_eip = bootsym_phys(trampoline_realmode_entry);
+
+    /* start_eip needs be page aligned, and below the 1M boundary. */
+    if ( start_eip & ~0xff000 )
+        panic("AP trampoline %#lx not suitably positioned\n", start_eip);
 
     /* So we see what's up   */
     if ( opt_cpu_info )
         printk("Booting processor %d/%d eip %lx\n",
                cpu, apicid, start_eip);
 
-    stack_start = stack_base[cpu];
+    stack_start = stack_base[cpu] + STACK_SIZE - sizeof(struct cpu_info);
 
     /* This grunge runs the startup process for the targeted processor. */
 
     set_cpu_state(CPU_STATE_INIT);
-
-    Dprintk("Setting warm reset code and vector.\n");
-
-    smpboot_setup_warm_reset_vector(start_eip);
 
     /* Starting actual IPI sequence... */
     if ( !tboot_in_measured_env() || tboot_wake_ap(apicid, start_eip) )
@@ -623,8 +623,6 @@ static int do_boot_cpu(int apicid, int cpu)
     bootsym(trampoline_cpu_started) = 0;
     smp_mb();
 
-    smpboot_restore_warm_reset_vector();
-
     return rc;
 }
 
@@ -651,7 +649,7 @@ unsigned long alloc_stub_page(unsigned int cpu, unsigned long *mfn)
         unmap_domain_page(memset(__map_domain_page(pg), 0xcc, PAGE_SIZE));
     }
 
-    stub_va = XEN_VIRT_END - (cpu + 1) * PAGE_SIZE;
+    stub_va = XEN_VIRT_END - FIXADDR_X_SIZE - (cpu + 1) * PAGE_SIZE;
     if ( map_pages_to_xen(stub_va, page_to_mfn(pg), 1,
                           PAGE_HYPERVISOR_RX | MAP_SMALL_PAGES) )
     {
@@ -793,7 +791,7 @@ static int setup_cpu_root_pgt(unsigned int cpu)
     unsigned int off;
     int rc;
 
-    if ( cpu_has_no_xpti )
+    if ( !opt_xpti_hwdom && !opt_xpti_domu )
         return 0;
 
     rpt = alloc_xen_pagetable();
@@ -827,8 +825,7 @@ static int setup_cpu_root_pgt(unsigned int cpu)
 
     /* Install direct map page table entries for stack, IDT, and TSS. */
     for ( off = rc = 0; !rc && off < STACK_SIZE; off += PAGE_SIZE )
-        if ( !memguard_is_stack_guard_page(off) )
-            rc = clone_mapping(__va(__pa(stack_base[cpu])) + off, rpt);
+        rc = clone_mapping(__va(__pa(stack_base[cpu])) + off, rpt);
 
     if ( !rc )
         rc = clone_mapping(idt_tables[cpu], rpt);
@@ -861,23 +858,27 @@ static void cleanup_cpu_root_pgt(unsigned int cpu)
           r < root_table_offset(HYPERVISOR_VIRT_END); ++r )
     {
         l3_pgentry_t *l3t;
+        mfn_t l3mfn;
         unsigned int i3;
 
         if ( !(root_get_flags(rpt[r]) & _PAGE_PRESENT) )
             continue;
 
-        l3t = l4e_to_l3e(rpt[r]);
+        l3mfn = l4e_get_mfn(rpt[r]);
+        l3t = map_domain_page(l3mfn);
 
         for ( i3 = 0; i3 < L3_PAGETABLE_ENTRIES; ++i3 )
         {
             l2_pgentry_t *l2t;
+            mfn_t l2mfn;
             unsigned int i2;
 
             if ( !(l3e_get_flags(l3t[i3]) & _PAGE_PRESENT) )
                 continue;
 
             ASSERT(!(l3e_get_flags(l3t[i3]) & _PAGE_PSE));
-            l2t = l3e_to_l2e(l3t[i3]);
+            l2mfn = l3e_get_mfn(l3t[i3]);
+            l2t = map_domain_page(l2mfn);
 
             for ( i2 = 0; i2 < L2_PAGETABLE_ENTRIES; ++i2 )
             {
@@ -885,13 +886,15 @@ static void cleanup_cpu_root_pgt(unsigned int cpu)
                     continue;
 
                 ASSERT(!(l2e_get_flags(l2t[i2]) & _PAGE_PSE));
-                free_xen_pagetable(l2e_to_l1e(l2t[i2]));
+                free_xen_pagetable_new(l2e_get_mfn(l2t[i2]));
             }
 
-            free_xen_pagetable(l2t);
+            unmap_domain_page(l2t);
+            free_xen_pagetable_new(l2mfn);
         }
 
-        free_xen_pagetable(l3t);
+        unmap_domain_page(l3t);
+        free_xen_pagetable_new(l3mfn);
     }
 
     free_xen_pagetable(rpt);
@@ -899,11 +902,14 @@ static void cleanup_cpu_root_pgt(unsigned int cpu)
     /* Also zap the stub mapping for this CPU. */
     if ( stub_linear )
     {
-        l3_pgentry_t *l3t = l4e_to_l3e(common_pgt);
-        l2_pgentry_t *l2t = l3e_to_l2e(l3t[l3_table_offset(stub_linear)]);
-        l1_pgentry_t *l1t = l2e_to_l1e(l2t[l2_table_offset(stub_linear)]);
+        l3_pgentry_t l3e = l3e_from_l4e(common_pgt,
+                                        l3_table_offset(stub_linear));
+        l2_pgentry_t l2e = l2e_from_l3e(l3e, l2_table_offset(stub_linear));
+        l1_pgentry_t *l1t = map_l1t_from_l2e(l2e);
 
         l1t[l1_table_offset(stub_linear)] = l1e_empty();
+
+        unmap_domain_page(l1t);
     }
 }
 
@@ -916,7 +922,7 @@ static void cleanup_cpu_root_pgt(unsigned int cpu)
  */
 static void cpu_smpboot_free(unsigned int cpu, bool remove)
 {
-    unsigned int order, socket = cpu_to_socket(cpu);
+    unsigned int socket = cpu_to_socket(cpu);
     struct cpuinfo_x86 *c = cpu_data;
 
     if ( cpumask_empty(socket_cpumask[socket]) )
@@ -937,6 +943,8 @@ static void cpu_smpboot_free(unsigned int cpu, bool remove)
         FREE_CPUMASK_VAR(per_cpu(cpu_core_mask, cpu));
         if ( per_cpu(scratch_cpumask, cpu) != &scratch_cpu0mask )
             FREE_CPUMASK_VAR(per_cpu(scratch_cpumask, cpu));
+        if ( per_cpu(send_ipi_cpumask, cpu) != &send_ipi_cpu0mask )
+            FREE_CPUMASK_VAR(per_cpu(send_ipi_cpumask, cpu));
     }
 
     cleanup_cpu_root_pgt(cpu);
@@ -960,16 +968,13 @@ static void cpu_smpboot_free(unsigned int cpu, bool remove)
             free_domheap_page(mfn_to_page(mfn));
     }
 
-    order = get_order_from_pages(NR_RESERVED_GDT_PAGES);
-    if ( remove )
-        FREE_XENHEAP_PAGES(per_cpu(gdt_table, cpu), order);
-
-    free_xenheap_pages(per_cpu(compat_gdt_table, cpu), order);
+    if ( IS_ENABLED(CONFIG_PV32) )
+        FREE_XENHEAP_PAGE(per_cpu(compat_gdt, cpu));
 
     if ( remove )
     {
-        order = get_order_from_bytes(IDT_ENTRIES * sizeof(idt_entry_t));
-        FREE_XENHEAP_PAGES(idt_tables[cpu], order);
+        FREE_XENHEAP_PAGE(per_cpu(gdt, cpu));
+        FREE_XENHEAP_PAGE(idt_tables[cpu]);
 
         if ( stack_base[cpu] )
         {
@@ -981,9 +986,10 @@ static void cpu_smpboot_free(unsigned int cpu, bool remove)
 
 static int cpu_smpboot_alloc(unsigned int cpu)
 {
-    unsigned int i, order, memflags = 0;
+    struct cpu_info *info;
+    unsigned int i, memflags = 0;
     nodeid_t node = cpu_to_node(cpu);
-    struct desc_struct *gdt;
+    seg_desc_t *gdt;
     unsigned long stub_page;
     int rc = -ENOMEM;
 
@@ -994,26 +1000,35 @@ static int cpu_smpboot_alloc(unsigned int cpu)
         stack_base[cpu] = alloc_xenheap_pages(STACK_ORDER, memflags);
     if ( stack_base[cpu] == NULL )
         goto out;
+
+    info = get_cpu_info_from_stack((unsigned long)stack_base[cpu]);
+    info->processor_id = cpu;
+    info->per_cpu_offset = __per_cpu_offset[cpu];
+
     memguard_guard_stack(stack_base[cpu]);
 
-    order = get_order_from_pages(NR_RESERVED_GDT_PAGES);
-    gdt = per_cpu(gdt_table, cpu) ?: alloc_xenheap_pages(order, memflags);
+    gdt = per_cpu(gdt, cpu) ?: alloc_xenheap_pages(0, memflags);
     if ( gdt == NULL )
         goto out;
-    per_cpu(gdt_table, cpu) = gdt;
-    memcpy(gdt, boot_cpu_gdt_table, NR_RESERVED_GDT_PAGES * PAGE_SIZE);
+    per_cpu(gdt, cpu) = gdt;
+    per_cpu(gdt_l1e, cpu) =
+        l1e_from_pfn(virt_to_mfn(gdt), __PAGE_HYPERVISOR_RW);
+    memcpy(gdt, boot_gdt, NR_RESERVED_GDT_PAGES * PAGE_SIZE);
     BUILD_BUG_ON(NR_CPUS > 0x10000);
     gdt[PER_CPU_GDT_ENTRY - FIRST_RESERVED_GDT_ENTRY].a = cpu;
 
-    per_cpu(compat_gdt_table, cpu) = gdt = alloc_xenheap_pages(order, memflags);
+#ifdef CONFIG_PV32
+    per_cpu(compat_gdt, cpu) = gdt = alloc_xenheap_pages(0, memflags);
     if ( gdt == NULL )
         goto out;
-    memcpy(gdt, boot_cpu_compat_gdt_table, NR_RESERVED_GDT_PAGES * PAGE_SIZE);
+    per_cpu(compat_gdt_l1e, cpu) =
+        l1e_from_pfn(virt_to_mfn(gdt), __PAGE_HYPERVISOR_RW);
+    memcpy(gdt, boot_compat_gdt, NR_RESERVED_GDT_PAGES * PAGE_SIZE);
     gdt[PER_CPU_GDT_ENTRY - FIRST_RESERVED_GDT_ENTRY].a = cpu;
+#endif
 
-    order = get_order_from_bytes(IDT_ENTRIES * sizeof(idt_entry_t));
     if ( idt_tables[cpu] == NULL )
-        idt_tables[cpu] = alloc_xenheap_pages(order, memflags);
+        idt_tables[cpu] = alloc_xenheap_pages(0, memflags);
     if ( idt_tables[cpu] == NULL )
         goto out;
     memcpy(idt_tables[cpu], idt_table, IDT_ENTRIES * sizeof(idt_entry_t));
@@ -1043,7 +1058,8 @@ static int cpu_smpboot_alloc(unsigned int cpu)
 
     if ( !(cond_zalloc_cpumask_var(&per_cpu(cpu_sibling_mask, cpu)) &&
            cond_zalloc_cpumask_var(&per_cpu(cpu_core_mask, cpu)) &&
-           cond_alloc_cpumask_var(&per_cpu(scratch_cpumask, cpu))) )
+           cond_alloc_cpumask_var(&per_cpu(scratch_cpumask, cpu)) &&
+           cond_alloc_cpumask_var(&per_cpu(send_ipi_cpumask, cpu))) )
         goto out;
 
     rc = 0;
@@ -1097,7 +1113,7 @@ void __init smp_prepare_cpus(void)
     boot_cpu_physical_apicid = get_apic_id();
     x86_cpu_to_apicid[0] = boot_cpu_physical_apicid;
 
-    stack_base[0] = stack_start;
+    stack_base[0] = (void *)((unsigned long)stack_start & ~(STACK_SIZE - 1));
 
     rc = setup_cpu_root_pgt(0);
     if ( rc )
@@ -1106,12 +1122,14 @@ void __init smp_prepare_cpus(void)
     {
         get_cpu_info()->pv_cr3 = 0;
 
+#ifdef CONFIG_PV
         /*
          * All entry points which may need to switch page tables have to start
          * with interrupts off. Re-write what pv_trap_init() has put there.
          */
         _set_gate(idt_table + LEGACY_SYSCALL_VECTOR, SYS_DESC_irq_gate, 3,
                   &int80_direct_trap);
+#endif
     }
 
     set_nr_sockets();
@@ -1119,11 +1137,11 @@ void __init smp_prepare_cpus(void)
     socket_cpumask = xzalloc_array(cpumask_t *, nr_sockets);
     if ( socket_cpumask == NULL ||
          (socket_cpumask[cpu_to_socket(0)] = xzalloc(cpumask_t)) == NULL )
-        panic("No memory for socket CPU siblings map");
+        panic("No memory for socket CPU siblings map\n");
 
     if ( !zalloc_cpumask_var(&per_cpu(cpu_sibling_mask, 0)) ||
          !zalloc_cpumask_var(&per_cpu(cpu_core_mask, 0)) )
-        panic("No memory for boot CPU sibling/core maps");
+        panic("No memory for boot CPU sibling/core maps\n");
 
     set_cpu_sibling_map(0);
 
@@ -1166,9 +1184,10 @@ void __init smp_prepare_cpus(void)
     verify_local_APIC();
 
     connect_bsp_APIC();
-    setup_local_APIC();
+    setup_local_APIC(true);
 
-    smpboot_setup_io_apic();
+    if ( !skip_ioapic_setup && nr_ioapics )
+        setup_IO_APIC();
 
     setup_boot_APIC_clock();
 }
@@ -1181,6 +1200,7 @@ void __init smp_prepare_boot_cpu(void)
     cpumask_set_cpu(cpu, &cpu_present_map);
 #if NR_CPUS > 2 * BITS_PER_LONG
     per_cpu(scratch_cpumask, cpu) = &scratch_cpu0mask;
+    per_cpu(send_ipi_cpumask, cpu) = &send_ipi_cpu0mask;
 #endif
 
     get_cpu_info()->use_pv_cr3 = false;
@@ -1230,9 +1250,6 @@ void __cpu_disable(void)
     cpumask_clear_cpu(cpu, &cpu_online_map);
     fixup_irqs(&cpu_online_map, 1);
     fixup_eoi();
-
-    if ( cpu_disable_scheduler(cpu) )
-        BUG();
 }
 
 void __cpu_die(unsigned int cpu)
@@ -1264,8 +1281,7 @@ int cpu_add(uint32_t apic_id, uint32_t acpi_id, uint32_t pxm)
          (pxm >= 256) )
         return -EINVAL;
 
-    if ( !cpu_hotplug_begin() )
-        return -EBUSY;
+    cpu_hotplug_begin();
 
     /* Detect if the cpu has been added before */
     if ( x86_acpiid_to_apicid[acpi_id] != BAD_APICID )
@@ -1296,7 +1312,7 @@ int cpu_add(uint32_t apic_id, uint32_t acpi_id, uint32_t pxm)
                     "Setup node failed for pxm %x\n", pxm);
             x86_acpiid_to_apicid[acpi_id] = BAD_APICID;
             mp_unregister_lapic(apic_id, cpu);
-            cpu = node;
+            cpu = -ENOSPC;
             goto out;
         }
         if ( apic_id < MAX_LOCAL_APIC )
@@ -1306,14 +1322,11 @@ int cpu_add(uint32_t apic_id, uint32_t acpi_id, uint32_t pxm)
     /* Physically added CPUs do not have synchronised TSC. */
     if ( boot_cpu_has(X86_FEATURE_TSC_RELIABLE) )
     {
-        static bool once_only;
-
-        if ( !test_and_set_bool(once_only) )
-            printk(XENLOG_WARNING
-                   " ** New physical CPU %u may have skewed TSC and hence "
-                   "break assumed cross-CPU TSC coherency.\n"
-                   " ** Consider using boot parameter \"tsc=skewed\" "
-                   "which forces TSC emulation where appropriate.\n", cpu);
+        printk_once(
+            XENLOG_WARNING
+            "New CPU %u may have skewed TSC and break cross-CPU TSC coherency\n"
+            "Consider using \"tsc=skewed\" to force emulation where appropriate\n",
+            cpu);
         cpumask_set_cpu(cpu, &tsc_sync_cpu_mask);
     }
 
@@ -1332,6 +1345,14 @@ int __cpu_up(unsigned int cpu)
 
     if ( (apicid = x86_cpu_to_apicid[cpu]) == BAD_APICID )
         return -ENODEV;
+
+    if ( (!x2apic_enabled && apicid >= APIC_ALL_CPUS) ||
+         (iommu_intremap != iommu_intremap_full && (apicid >> 8)) )
+    {
+        printk("Unsupported: APIC ID %#x in xAPIC mode w/o interrupt remapping\n",
+               apicid);
+        return -EINVAL;
+    }
 
     if ( (ret = do_boot_cpu(apicid, cpu)) != 0 )
         return ret;

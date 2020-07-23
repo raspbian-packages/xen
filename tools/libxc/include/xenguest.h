@@ -26,9 +26,6 @@
 
 #define XCFLAGS_LIVE      (1 << 0)
 #define XCFLAGS_DEBUG     (1 << 1)
-#define XCFLAGS_HVM       (1 << 2)
-#define XCFLAGS_STDVGA    (1 << 3)
-#define XCFLAGS_CHECKPOINT_COMPRESS    (1 << 4)
 
 #define X86_64_B_SIZE   64 
 #define X86_32_B_SIZE   32
@@ -55,10 +52,11 @@ typedef int (*precopy_policy_t)(struct precopy_stats, void *);
 
 /* callbacks provided by xc_domain_save */
 struct save_callbacks {
-    /* Called after expiration of checkpoint interval,
+    /*
+     * Called after expiration of checkpoint interval,
      * to suspend the guest.
      */
-    int (*suspend)(void* data);
+    int (*suspend)(void *data);
 
     /*
      * Called before and after every batch of page data sent during
@@ -82,7 +80,7 @@ struct save_callbacks {
      * xc_domain_save then flushes the output buffer, while the
      *  guest continues to run.
      */
-    int (*postcopy)(void* data);
+    int (*postcopy)(void *data);
 
     /*
      * Called after the memory checkpoint has been flushed
@@ -97,7 +95,7 @@ struct save_callbacks {
      * 0: terminate checkpointing gracefully
      * 1: take another checkpoint
      */
-    int (*checkpoint)(void* data);
+    int (*checkpoint)(void *data);
 
     /*
      * Called after the checkpoint callback.
@@ -106,54 +104,70 @@ struct save_callbacks {
      * 0: terminate checkpointing gracefully
      * 1: take another checkpoint
      */
-    int (*wait_checkpoint)(void* data);
+    int (*wait_checkpoint)(void *data);
 
     /* Enable qemu-dm logging dirty pages to xen */
     int (*switch_qemu_logdirty)(uint32_t domid, unsigned enable, void *data); /* HVM only */
 
     /* to be provided as the last argument to each callback function */
-    void* data;
+    void *data;
 };
 
+/* Type of stream.  Plain, or using a continuous replication protocol? */
 typedef enum {
-    XC_MIG_STREAM_NONE, /* plain stream */
-    XC_MIG_STREAM_REMUS,
-    XC_MIG_STREAM_COLO,
-} xc_migration_stream_t;
+    XC_STREAM_PLAIN,
+    XC_STREAM_REMUS,
+    XC_STREAM_COLO,
+} xc_stream_type_t;
 
 /**
  * This function will save a running domain.
  *
- * @parm xch a handle to an open hypervisor interface
- * @parm fd the file descriptor to save a domain to
- * @parm dom the id of the domain
- * @param stream_type XC_MIG_STREAM_NONE if the far end of the stream
+ * @param xch a handle to an open hypervisor interface
+ * @param io_fd the file descriptor to save a domain to
+ * @param dom the id of the domain
+ * @param flags XCFLAGS_xxx
+ * @param stream_type XC_STREAM_PLAIN if the far end of the stream
  *        doesn't use checkpointing
+ * @param recv_fd Only used for XC_STREAM_COLO.  Contains backchannel from
+ *        the destination side.
  * @return 0 on success, -1 on failure
  */
 int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
-                   uint32_t flags /* XCFLAGS_xxx */,
-                   struct save_callbacks* callbacks, int hvm,
-                   xc_migration_stream_t stream_type, int recv_fd);
+                   uint32_t flags, struct save_callbacks *callbacks,
+                   xc_stream_type_t stream_type, int recv_fd);
 
 /* callbacks provided by xc_domain_restore */
 struct restore_callbacks {
-    /* Called after a new checkpoint to suspend the guest.
+    /*
+     * Called once the STATIC_DATA_END record has been received/inferred.
+     *
+     * For compatibility with older streams, provides a list of static data
+     * expected to be found in the stream, which was missing.  A higher level
+     * toolstack is responsible for providing any necessary compatibiltiy.
      */
-    int (*suspend)(void* data);
+#define XGR_SDD_MISSING_CPUID (1 << 0)
+#define XGR_SDD_MISSING_MSR   (1 << 1)
+    int (*static_data_done)(unsigned int missing, void *data);
 
-    /* Called after the secondary vm is ready to resume.
+    /* Called after a new checkpoint to suspend the guest. */
+    int (*suspend)(void *data);
+
+    /*
+     * Called after the secondary vm is ready to resume.
      * Callback function resumes the guest & the device model,
      * returns to xc_domain_restore.
      */
-    int (*postcopy)(void* data);
+    int (*postcopy)(void *data);
 
-    /* A checkpoint record has been found in the stream.
-     * returns: */
+    /*
+     * A checkpoint record has been found in the stream.
+     * returns:
+     */
 #define XGR_CHECKPOINT_ERROR    0 /* Terminate processing */
 #define XGR_CHECKPOINT_SUCCESS  1 /* Continue reading more data from the stream */
 #define XGR_CHECKPOINT_FAILOVER 2 /* Failover and resume VM */
-    int (*checkpoint)(void* data);
+    int (*checkpoint)(void *data);
 
     /*
      * Called after the checkpoint callback.
@@ -162,7 +176,7 @@ struct restore_callbacks {
      * 0: terminate checkpointing gracefully
      * 1: take another checkpoint
      */
-    int (*wait_checkpoint)(void* data);
+    int (*wait_checkpoint)(void *data);
 
     /*
      * callback to send store gfn and console gfn to xl
@@ -173,7 +187,7 @@ struct restore_callbacks {
                             void *data);
 
     /* to be provided as the last argument to each callback function */
-    void* data;
+    void *data;
 };
 
 /**
@@ -181,24 +195,28 @@ struct restore_callbacks {
  *
  * Domain is restored in a suspended state ready to be unpaused.
  *
- * @parm xch a handle to an open hypervisor interface
- * @parm fd the file descriptor to restore a domain from
- * @parm dom the id of the domain
- * @parm store_evtchn the store event channel for this domain to use
- * @parm store_mfn returned with the mfn of the store page
- * @parm hvm non-zero if this is a HVM restore
- * @parm pae non-zero if this HVM domain has PAE support enabled
- * @parm stream_type non-zero if the far end of the stream is using checkpointing
- * @parm callbacks non-NULL to receive a callback to restore toolstack
- *       specific data
+ * @param xch a handle to an open hypervisor interface
+ * @param io_fd the file descriptor to restore a domain from
+ * @param dom the id of the domain
+ * @param store_evtchn the xenstore event channel for this domain to use
+ * @param store_mfn filled with the gfn of the store page
+ * @param store_domid the backend domain for xenstore
+ * @param console_evtchn the console event channel for this domain to use
+ * @param console_mfn filled with the gfn of the console page
+ * @param console_domid the backend domain for xenconsole
+ * @param stream_type XC_STREAM_PLAIN if the far end of the stream is using
+ *        checkpointing
+ * @param callbacks non-NULL to receive a callback to restore toolstack
+ *        specific data
+ * @param send_back_fd Only used for XC_STREAM_COLO.  Contains backchannel to
+ *        the source side.
  * @return 0 on success, -1 on failure
  */
 int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
                       unsigned int store_evtchn, unsigned long *store_mfn,
                       uint32_t store_domid, unsigned int console_evtchn,
                       unsigned long *console_mfn, uint32_t console_domid,
-                      unsigned int hvm, unsigned int pae,
-                      xc_migration_stream_t stream_type,
+                      xc_stream_type_t stream_type,
                       struct restore_callbacks *callbacks, int send_back_fd);
 
 /**

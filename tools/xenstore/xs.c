@@ -680,6 +680,7 @@ char **xs_directory(struct xs_handle *h, xs_transaction_t t,
 /* Get the value of a single file, nul terminated.
  * Returns a malloced value: call free() on it after use.
  * len indicates length in bytes, not including the nul.
+ * Returns NULL on failure.
  */
 void *xs_read(struct xs_handle *h, xs_transaction_t t,
 	      const char *path, unsigned int *len)
@@ -793,6 +794,12 @@ unwind:
 	num_perms = i;
 	for (i = 0; i < num_perms; i++)
 		free_no_errno(iov[i+1].iov_base);
+	return false;
+}
+
+/* Always return false a functionality has been removed in Xen 4.9 */
+bool xs_restrict(struct xs_handle *h, unsigned domid)
+{
 	return false;
 }
 
@@ -1457,9 +1464,9 @@ void unsanitise_value(char *out, unsigned *out_len_r, const char *in)
 
 /*
  * Local variables:
+ *  mode: C
  *  c-file-style: "linux"
  *  indent-tabs-mode: t
- *  c-indent-level: 8
  *  c-basic-offset: 8
  *  tab-width: 8
  * End:

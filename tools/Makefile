@@ -19,8 +19,6 @@ SUBDIRS-$(CONFIG_X86) += firmware
 SUBDIRS-y += console
 SUBDIRS-y += xenmon
 SUBDIRS-y += xenstat
-SUBDIRS-$(CONFIG_Linux) += memshr 
-SUBDIRS-$(CONFIG_BLKTAP2) += blktap2
 SUBDIRS-$(CONFIG_NetBSD) += xenbackendd
 SUBDIRS-y += libfsimage
 SUBDIRS-$(CONFIG_Linux) += libvchan
@@ -232,6 +230,13 @@ subdir-all-qemu-xen-dir: qemu-xen-dir-find
 	else \
 		enable_trace_backend='' ; \
 	fi ; \
+	if [ "$(CONFIG_9PFS)" = "y" ]; then \
+		virtfs='--enable-virtfs' ; \
+	elif [ "$(CONFIG_9PFS)" = "n" ]; then \
+		virtfs='--disable-virtfs' ; \
+	else \
+		virtfs='' ; \
+	fi ; \
 	PKG_CONFIG_PATH=$(XEN_ROOT)/tools/pkg-config$${PKG_CONFIG_PATH:+:$${PKG_CONFIG_PATH}} \
 	$$source/configure --enable-xen --target-list=i386-softmmu \
 		$(QEMU_XEN_ENABLE_DEBUG) \
@@ -239,7 +244,6 @@ subdir-all-qemu-xen-dir: qemu-xen-dir-find
 		--prefix=$(LIBEXEC) \
 		--libdir=$(LIBEXEC_LIB) \
 		--includedir=$(LIBEXEC_INC) \
-		--source-path=$$source \
 		--extra-cflags="-DXC_WANT_COMPAT_EVTCHN_API=1 \
 		-DXC_WANT_COMPAT_GNTTAB_API=1 \
 		-DXC_WANT_COMPAT_MAP_FOREIGN_API=1 \
@@ -279,7 +283,8 @@ subdir-all-qemu-xen-dir: qemu-xen-dir-find
 		--python=$(PYTHON) \
 		$(CONFIG_QEMUU_EXTRA_ARGS) \
 		--cpu=$(IOEMU_CPU_ARCH) \
-		$(IOEMU_CONFIGURE_CROSS); \
+		$(IOEMU_CONFIGURE_CROSS) \
+		$$virtfs; \
 	$(MAKE) all
 
 subdir-install-qemu-xen-dir: subdir-all-qemu-xen-dir

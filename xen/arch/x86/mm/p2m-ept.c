@@ -17,6 +17,7 @@
 
 #include <xen/domain_page.h>
 #include <xen/sched.h>
+#include <asm/altp2m.h>
 #include <asm/current.h>
 #include <asm/paging.h>
 #include <asm/types.h>
@@ -45,48 +46,15 @@ static inline bool_t is_epte_valid(ept_entry_t *e)
 }
 
 /* returns : 0 for success, -errno otherwise */
-static int atomic_write_ept_entry(ept_entry_t *entryptr, ept_entry_t new,
+static int atomic_write_ept_entry(struct p2m_domain *p2m,
+                                  ept_entry_t *entryptr, ept_entry_t new,
                                   int level)
 {
-    int rc;
-    unsigned long oldmfn = mfn_x(INVALID_MFN);
-    bool_t check_foreign = (new.mfn != entryptr->mfn ||
-                            new.sa_p2mt != entryptr->sa_p2mt);
+    int rc = p2m_entry_modify(p2m, new.sa_p2mt, entryptr->sa_p2mt,
+                              _mfn(new.mfn), _mfn(entryptr->mfn), level + 1);
 
-    if ( level )
-    {
-        ASSERT(!is_epte_superpage(&new) || !p2m_is_foreign(new.sa_p2mt));
-        write_atomic(&entryptr->epte, new.epte);
-        return 0;
-    }
-
-    if ( unlikely(p2m_is_foreign(new.sa_p2mt)) )
-    {
-        rc = -EINVAL;
-        if ( !is_epte_present(&new) )
-                goto out;
-
-        if ( check_foreign )
-        {
-            struct domain *fdom;
-
-            if ( !mfn_valid(_mfn(new.mfn)) )
-                goto out;
-
-            rc = -ESRCH;
-            fdom = page_get_owner(mfn_to_page(_mfn(new.mfn)));
-            if ( fdom == NULL )
-                goto out;
-
-            /* get refcount on the page */
-            rc = -EBUSY;
-            if ( !get_page(mfn_to_page(_mfn(new.mfn)), fdom) )
-                goto out;
-        }
-    }
-
-    if ( unlikely(p2m_is_foreign(entryptr->sa_p2mt)) && check_foreign )
-        oldmfn = entryptr->mfn;
+    if ( rc )
+        return rc;
 
     write_atomic(&entryptr->epte, new.epte);
 
@@ -100,23 +68,14 @@ static int atomic_write_ept_entry(ept_entry_t *entryptr, ept_entry_t new,
      * before returning to guest context (see
      * XEN_DMOP_map_mem_type_to_ioreq_server).
      */
-    if ( !new.recalc && iommu_hap_pt_share )
+    if ( !new.recalc && iommu_use_hap_pt(p2m->domain) )
         iommu_sync_cache(entryptr, sizeof(*entryptr));
 
-    if ( unlikely(oldmfn != mfn_x(INVALID_MFN)) )
-        put_page(mfn_to_page(_mfn(oldmfn)));
-
-    rc = 0;
-
- out:
-    if ( rc )
-        gdprintk(XENLOG_ERR, "epte o:%"PRIx64" n:%"PRIx64" rc:%d\n",
-                 entryptr->epte, new.epte, rc);
-    return rc;
+    return 0;
 }
 
-static void ept_p2m_type_to_flags(struct p2m_domain *p2m, ept_entry_t *entry,
-                                  p2m_type_t type, p2m_access_t access)
+static void ept_p2m_type_to_flags(const struct p2m_domain *p2m,
+                                  ept_entry_t *entry)
 {
     /*
      * First apply type permissions.
@@ -129,7 +88,7 @@ static void ept_p2m_type_to_flags(struct p2m_domain *p2m, ept_entry_t *entry,
      * D bit is set for all writable types in EPT leaf entry, except for
      * log-dirty type with PML.
      */
-    switch(type)
+    switch ( entry->sa_p2mt )
     {
         case p2m_invalid:
         case p2m_mmio_dm:
@@ -197,9 +156,8 @@ static void ept_p2m_type_to_flags(struct p2m_domain *p2m, ept_entry_t *entry,
             break;
     }
 
-
     /* Then restrict with access permissions */
-    switch (access) 
+    switch ( entry->access )
     {
         case p2m_access_n:
         case p2m_access_n2rwx:
@@ -232,7 +190,7 @@ static void ept_p2m_type_to_flags(struct p2m_domain *p2m, ept_entry_t *entry,
      * Don't create executable superpages if we need to shatter them to
      * protect against CVE-2018-12207.
      */
-    if ( !p2m->domain->arch.hvm_domain.vmx.exec_sp && is_epte_superpage(entry) )
+    if ( !p2m->domain->arch.hvm.vmx.exec_sp && is_epte_superpage(entry) )
         entry->x = 0;
 }
 
@@ -319,9 +277,9 @@ static bool_t ept_split_super_page(struct p2m_domain *p2m,
         *epte = *ept_entry;
         epte->sp = (level > 1);
         epte->mfn += i * trunk;
-        epte->snp = (iommu_enabled && iommu_snoop);
+        epte->snp = is_iommu_enabled(p2m->domain) && iommu_snoop;
 
-        ept_p2m_type_to_flags(p2m, epte, epte->sa_p2mt, epte->access);
+        ept_p2m_type_to_flags(p2m, epte);
 
         if ( (level - 1) == target )
             continue;
@@ -332,7 +290,7 @@ static bool_t ept_split_super_page(struct p2m_domain *p2m,
             break;
     }
 
-    if ( iommu_hap_pt_share )
+    if ( iommu_use_hap_pt(p2m->domain) )
         iommu_sync_cache(table, EPT_PAGETABLE_ENTRIES * sizeof(ept_entry_t));
 
     unmap_domain_page(table);
@@ -347,8 +305,8 @@ static bool_t ept_split_super_page(struct p2m_domain *p2m,
  * and map the next table, if available.  If the entry is empty
  * and read_only is set, 
  * Return values:
- *  0: Failed to map.  Either read_only was set and the entry was
- *   empty, or allocating a new page failed.
+ *  GUEST_TABLE_MAP_FAILED: Failed to map.  Either read_only was set and the
+ *   entry was empty, or allocating a new page failed.
  *  GUEST_TABLE_NORMAL_PAGE: next level mapped normally
  *  GUEST_TABLE_SUPER_PAGE:
  *   The next entry points to a superpage, and caller indicates
@@ -394,10 +352,10 @@ static int ept_next_level(struct p2m_domain *p2m, bool_t read_only,
         if ( !next )
             return GUEST_TABLE_MAP_FAILED;
 
-        if ( iommu_hap_pt_share )
+        if ( iommu_use_hap_pt(p2m->domain) )
             iommu_sync_cache(next, EPT_PAGETABLE_ENTRIES * sizeof(ept_entry_t));
 
-        rc = atomic_write_ept_entry(ept_entry, e, next_level);
+        rc = atomic_write_ept_entry(p2m, ept_entry, e, next_level);
         ASSERT(rc == 0);
     }
     /* The only time sp would be set here is if we had hit a superpage */
@@ -415,13 +373,19 @@ static int ept_next_level(struct p2m_domain *p2m, bool_t read_only,
  * present entries in the given page table, optionally marking the entries
  * also for their subtrees needing P2M type re-calculation.
  */
-static bool_t ept_invalidate_emt(mfn_t mfn, bool_t recalc,
-                                 unsigned int parent_level)
+static bool ept_invalidate_emt_subtree(struct p2m_domain *p2m, mfn_t mfn,
+                                       bool recalc, unsigned int level)
 {
     int rc;
     ept_entry_t *epte = map_domain_page(mfn);
     unsigned int i;
-    bool_t changed = 0;
+    bool changed = false;
+
+    if ( !level )
+    {
+        ASSERT_UNREACHABLE();
+        return false;
+    }
 
     for ( i = 0; i < EPT_PAGETABLE_ENTRIES; i++ )
     {
@@ -434,9 +398,9 @@ static bool_t ept_invalidate_emt(mfn_t mfn, bool_t recalc,
         e.emt = MTRR_NUM_TYPES;
         if ( recalc )
             e.recalc = 1;
-        rc = atomic_write_ept_entry(&epte[i], e, parent_level - 1);
+        rc = atomic_write_ept_entry(p2m, &epte[i], e, level - 1);
         ASSERT(rc == 0);
-        changed = 1;
+        changed = true;
     }
 
     unmap_domain_page(epte);
@@ -445,7 +409,7 @@ static bool_t ept_invalidate_emt(mfn_t mfn, bool_t recalc,
 }
 
 /*
- * Just like ept_invalidate_emt() except that
+ * Just like ept_invalidate_emt_subtree() except that
  * - not all entries at the targeted level may need processing,
  * - the re-calculation flag gets always set.
  * The passed in range is guaranteed to not cross a page (table)
@@ -459,12 +423,13 @@ static int ept_invalidate_emt_range(struct p2m_domain *p2m,
     ept_entry_t *table;
     unsigned long gfn_remainder = first_gfn;
     unsigned int i, index;
-    int wrc, rc = 0, ret = GUEST_TABLE_MAP_FAILED;
+    int wrc, rc = 0;
 
     table = map_domain_page(pagetable_get_mfn(p2m_get_pagetable(p2m)));
     for ( i = p2m->ept.wl; i > target; --i )
     {
-        ret = ept_next_level(p2m, 1, &table, &gfn_remainder, i);
+        int ret = ept_next_level(p2m, 1, &table, &gfn_remainder, i);
+
         if ( ret == GUEST_TABLE_MAP_FAILED )
             goto out;
         if ( ret != GUEST_TABLE_NORMAL_PAGE )
@@ -485,12 +450,14 @@ static int ept_invalidate_emt_range(struct p2m_domain *p2m,
             rc = -ENOMEM;
             goto out;
         }
-        wrc = atomic_write_ept_entry(&table[index], split_ept_entry, i);
+        wrc = atomic_write_ept_entry(p2m, &table[index], split_ept_entry, i);
         ASSERT(wrc == 0);
 
         for ( ; i > target; --i )
-            if ( !ept_next_level(p2m, 1, &table, &gfn_remainder, i) )
+            if ( ept_next_level(p2m, 1, &table, &gfn_remainder, i) !=
+                 GUEST_TABLE_NORMAL_PAGE )
                 break;
+        /* We just installed the pages we need. */
         ASSERT(i == target);
     }
 
@@ -505,7 +472,7 @@ static int ept_invalidate_emt_range(struct p2m_domain *p2m,
         {
             e.emt = MTRR_NUM_TYPES;
             e.recalc = 1;
-            wrc = atomic_write_ept_entry(&table[index], e, target);
+            wrc = atomic_write_ept_entry(p2m, &table[index], e, target);
             ASSERT(wrc == 0);
             rc = 1;
         }
@@ -575,17 +542,11 @@ static int resolve_misconfig(struct p2m_domain *p2m, unsigned long gfn)
                     nt = p2m_recalc_type(e.recalc, e.sa_p2mt, p2m, gfn + i);
                     if ( nt != e.sa_p2mt )
                     {
-                        if ( e.sa_p2mt == p2m_ioreq_server )
-                        {
-                            ASSERT(p2m->ioreq.entry_count > 0);
-                            p2m->ioreq.entry_count--;
-                        }
-
                         e.sa_p2mt = nt;
-                        ept_p2m_type_to_flags(p2m, &e, e.sa_p2mt, e.access);
+                        ept_p2m_type_to_flags(p2m, &e);
                     }
                     e.recalc = 0;
-                    wrc = atomic_write_ept_entry(&epte[i], e, level);
+                    wrc = atomic_write_ept_entry(p2m, &epte[i], e, level);
                     ASSERT(wrc == 0);
                 }
             }
@@ -621,7 +582,7 @@ static int resolve_misconfig(struct p2m_domain *p2m, unsigned long gfn)
                 {
                     if ( ept_split_super_page(p2m, &e, level, level - 1) )
                     {
-                        wrc = atomic_write_ept_entry(&epte[i], e, level);
+                        wrc = atomic_write_ept_entry(p2m, &epte[i], e, level);
                         ASSERT(wrc == 0);
                         unmap_domain_page(epte);
                         mfn = e.mfn;
@@ -635,8 +596,8 @@ static int resolve_misconfig(struct p2m_domain *p2m, unsigned long gfn)
                 e.ipat = ipat;
                 e.recalc = 0;
                 if ( recalc && p2m_is_changeable(e.sa_p2mt) )
-                    ept_p2m_type_to_flags(p2m, &e, e.sa_p2mt, e.access);
-                wrc = atomic_write_ept_entry(&epte[i], e, level);
+                    ept_p2m_type_to_flags(p2m, &e);
+                wrc = atomic_write_ept_entry(p2m, &epte[i], e, level);
                 ASSERT(wrc == 0);
             }
 
@@ -647,11 +608,11 @@ static int resolve_misconfig(struct p2m_domain *p2m, unsigned long gfn)
         if ( e.emt == MTRR_NUM_TYPES )
         {
             ASSERT(is_epte_present(&e));
-            ept_invalidate_emt(_mfn(e.mfn), e.recalc, level);
+            ept_invalidate_emt_subtree(p2m, _mfn(e.mfn), e.recalc, level);
             smp_wmb();
             e.emt = 0;
             e.recalc = 0;
-            wrc = atomic_write_ept_entry(&epte[i], e, level);
+            wrc = atomic_write_ept_entry(p2m, &epte[i], e, level);
             ASSERT(wrc == 0);
             unmap_domain_page(epte);
             rc = 1;
@@ -670,7 +631,7 @@ static int resolve_misconfig(struct p2m_domain *p2m, unsigned long gfn)
         struct vcpu *v;
 
         for_each_vcpu ( p2m->domain, v )
-            v->arch.hvm_vmx.ept_spurious_misconfig = 1;
+            v->arch.hvm.vmx.ept_spurious_misconfig = 1;
     }
 
     return rc;
@@ -683,11 +644,14 @@ bool_t ept_handle_misconfig(uint64_t gpa)
     bool_t spurious;
     int rc;
 
+    if ( altp2m_active(curr->domain) )
+        p2m = p2m_get_altp2m(curr);
+
     p2m_lock(p2m);
 
-    spurious = curr->arch.hvm_vmx.ept_spurious_misconfig;
+    spurious = curr->arch.hvm.vmx.ept_spurious_misconfig;
     rc = resolve_misconfig(p2m, PFN_DOWN(gpa));
-    curr->arch.hvm_vmx.ept_spurious_misconfig = 0;
+    curr->arch.hvm.vmx.ept_spurious_misconfig = 0;
 
     p2m_unlock(p2m);
 
@@ -724,6 +688,7 @@ ept_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
     struct domain *d = p2m->domain;
 
     ASSERT(ept);
+
     /*
      * the caller must make sure:
      * 1. passing valid gfn and mfn at order boundary.
@@ -751,12 +716,12 @@ ept_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
     for ( i = ept->wl; i > target; i-- )
     {
         ret = ept_next_level(p2m, 0, &table, &gfn_remainder, i);
-        if ( !ret )
+        if ( ret == GUEST_TABLE_MAP_FAILED )
         {
-            rc = -ENOENT;
+            rc = -ENOMEM;
             goto out;
         }
-        else if ( ret != GUEST_TABLE_NORMAL_PAGE )
+        if ( ret != GUEST_TABLE_NORMAL_PAGE )
             break;
     }
 
@@ -808,12 +773,13 @@ ept_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
 
         /* now install the newly split ept sub-tree */
         /* NB: please make sure domian is paused and no in-fly VT-d DMA. */
-        rc = atomic_write_ept_entry(ept_entry, split_ept_entry, i);
+        rc = atomic_write_ept_entry(p2m, ept_entry, split_ept_entry, i);
         ASSERT(rc == 0);
 
         /* then move to the level we want to make real changes */
         for ( ; i > target; i-- )
-            if ( !ept_next_level(p2m, 0, &table, &gfn_remainder, i) )
+            if ( ept_next_level(p2m, 0, &table, &gfn_remainder, i) !=
+                 GUEST_TABLE_NORMAL_PAGE )
                 break;
         /* We just installed the pages we need. */
         ASSERT(i == target);
@@ -835,7 +801,7 @@ ept_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
         new_entry.sp = !!i;
         new_entry.sa_p2mt = p2mt;
         new_entry.access = p2ma;
-        new_entry.snp = (iommu_enabled && iommu_snoop);
+        new_entry.snp = is_iommu_enabled(d) && iommu_snoop;
 
         /* the caller should take care of the previous page */
         new_entry.mfn = mfn_x(mfn);
@@ -846,7 +812,7 @@ ept_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
              iommu_flags )
             need_modify_vtd_table = 0;
 
-        ept_p2m_type_to_flags(p2m, &new_entry, p2mt, p2ma);
+        ept_p2m_type_to_flags(p2m, &new_entry);
     }
 
     if ( sve != -1 )
@@ -855,24 +821,7 @@ ept_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
         new_entry.suppress_ve = is_epte_valid(&old_entry) ?
                                     old_entry.suppress_ve : 1;
 
-    /*
-     * p2m_ioreq_server is only used for 4K pages, so the
-     * count is only done on ept page table entries.
-     */
-    if ( p2mt == p2m_ioreq_server )
-    {
-        ASSERT(i == 0);
-        p2m->ioreq.entry_count++;
-    }
-
-    if ( ept_entry->sa_p2mt == p2m_ioreq_server )
-    {
-        ASSERT(i == 0);
-        ASSERT(p2m->ioreq.entry_count > 0);
-        p2m->ioreq.entry_count--;
-    }
-
-    rc = atomic_write_ept_entry(ept_entry, new_entry, target);
+    rc = atomic_write_ept_entry(p2m, ept_entry, new_entry, target);
     if ( unlikely(rc) )
         old_entry.epte = 0;
     else
@@ -890,35 +839,18 @@ out:
         ept_sync_domain(p2m);
 
     /* For host p2m, may need to change VT-d page table.*/
-    if ( rc == 0 && p2m_is_hostp2m(p2m) && need_iommu(d) &&
+    if ( rc == 0 && p2m_is_hostp2m(p2m) &&
          need_modify_vtd_table )
     {
-        if ( iommu_hap_pt_share )
-            rc = iommu_flush_iotlb(d, gfn, vtd_pte_present, 1u << order);
-        else
-        {
-            if ( iommu_flags )
-                for ( i = 0; i < (1 << order); i++ )
-                {
-                    rc = iommu_map_page(d, gfn + i, mfn_x(mfn) + i, iommu_flags);
-                    if ( unlikely(rc) )
-                    {
-                        while ( i-- )
-                            /* If statement to satisfy __must_check. */
-                            if ( iommu_unmap_page(p2m->domain, gfn + i) )
-                                continue;
-
-                        break;
-                    }
-                }
-            else
-                for ( i = 0; i < (1 << order); i++ )
-                {
-                    ret = iommu_unmap_page(d, gfn + i);
-                    if ( !rc )
-                        rc = ret;
-                }
-        }
+        if ( iommu_use_hap_pt(d) )
+            rc = iommu_iotlb_flush(d, _dfn(gfn), (1u << order),
+                                   (iommu_flags ? IOMMU_FLUSHF_added : 0) |
+                                   (vtd_pte_present ? IOMMU_FLUSHF_modified
+                                                    : 0));
+        else if ( need_iommu_pt_sync(d) )
+            rc = iommu_flags ?
+                iommu_legacy_map(d, _dfn(gfn), mfn, order, iommu_flags) :
+                iommu_legacy_unmap(d, _dfn(gfn), order);
     }
 
     unmap_domain_page(table);
@@ -953,7 +885,6 @@ static mfn_t ept_get_entry(struct p2m_domain *p2m,
     ept_entry_t *ept_entry;
     u32 index;
     int i;
-    int ret = 0;
     bool_t recalc = 0;
     mfn_t mfn = INVALID_MFN;
     struct ept_data *ept = &p2m->ept;
@@ -977,13 +908,15 @@ static mfn_t ept_get_entry(struct p2m_domain *p2m,
 
     for ( i = ept->wl; i > 0; i-- )
     {
+        int ret;
+
     retry:
         if ( table[gfn_remainder >> (i * EPT_TABLE_ORDER)].recalc )
             recalc = 1;
         ret = ept_next_level(p2m, 1, &table, &gfn_remainder, i);
-        if ( !ret )
+        if ( ret == GUEST_TABLE_MAP_FAILED )
             goto out;
-        else if ( ret == GUEST_TABLE_POD_PAGE )
+        if ( ret == GUEST_TABLE_POD_PAGE )
         {
             if ( !(q & P2M_ALLOC) )
             {
@@ -999,10 +932,9 @@ static mfn_t ept_get_entry(struct p2m_domain *p2m,
 
             if ( p2m_pod_demand_populate(p2m, gfn_, i * EPT_TABLE_ORDER) )
                 goto retry;
-            else
-                goto out;
+            goto out;
         }
-        else if ( ret == GUEST_TABLE_SUPER_PAGE )
+        if ( ret == GUEST_TABLE_SUPER_PAGE )
             break;
     }
 
@@ -1112,7 +1044,7 @@ static void ept_change_entry_type_global(struct p2m_domain *p2m,
     if ( !mfn )
         return;
 
-    if ( ept_invalidate_emt(_mfn(mfn), 1, p2m->ept.wl) )
+    if ( ept_invalidate_emt_subtree(p2m, _mfn(mfn), 1, p2m->ept.wl) )
         ept_sync_domain(p2m);
 }
 
@@ -1170,7 +1102,7 @@ static void ept_memory_type_changed(struct p2m_domain *p2m)
     if ( !mfn )
         return;
 
-    if ( ept_invalidate_emt(_mfn(mfn), 0, p2m->ept.wl) )
+    if ( ept_invalidate_emt_subtree(p2m, _mfn(mfn), 0, p2m->ept.wl) )
         ept_sync_domain(p2m);
 }
 
@@ -1234,6 +1166,34 @@ static void ept_tlb_flush(struct p2m_domain *p2m)
     ept_sync_domain_mask(p2m, p2m->domain->dirty_cpumask);
 }
 
+static void ept_set_ad_sync(struct domain *d, bool value)
+{
+    struct p2m_domain *hostp2m = p2m_get_hostp2m(d);
+
+    ASSERT(p2m_locked_by_me(hostp2m));
+
+    hostp2m->ept.ad = value;
+
+    if ( unlikely(altp2m_active(d)) )
+    {
+        unsigned int i;
+
+        for ( i = 0; i < MAX_ALTP2M; i++ )
+        {
+            struct p2m_domain *p2m;
+
+            if ( d->arch.altp2m_eptp[i] == mfn_x(INVALID_MFN) )
+                continue;
+
+            p2m = d->arch.altp2m_p2m[i];
+
+            p2m_lock(p2m);
+            p2m->ept.ad = value;
+            p2m_unlock(p2m);
+        }
+    }
+}
+
 static void ept_enable_pml(struct p2m_domain *p2m)
 {
     /* Domain must have been paused */
@@ -1248,7 +1208,7 @@ static void ept_enable_pml(struct p2m_domain *p2m)
         return;
 
     /* Enable EPT A/D bit for PML */
-    p2m->ept.ad = 1;
+    ept_set_ad_sync(p2m->domain, true);
     vmx_domain_update_eptp(p2m->domain);
 }
 
@@ -1260,8 +1220,26 @@ static void ept_disable_pml(struct p2m_domain *p2m)
     vmx_domain_disable_pml(p2m->domain);
 
     /* Disable EPT A/D bit */
-    p2m->ept.ad = 0;
+    ept_set_ad_sync(p2m->domain, false);
     vmx_domain_update_eptp(p2m->domain);
+}
+
+static void ept_enable_hardware_log_dirty(struct p2m_domain *p2m)
+{
+    struct p2m_domain *hostp2m = p2m_get_hostp2m(p2m->domain);
+
+    p2m_lock(hostp2m);
+    ept_enable_pml(hostp2m);
+    p2m_unlock(hostp2m);
+}
+
+static void ept_disable_hardware_log_dirty(struct p2m_domain *p2m)
+{
+    struct p2m_domain *hostp2m = p2m_get_hostp2m(p2m->domain);
+
+    p2m_lock(hostp2m);
+    ept_disable_pml(hostp2m);
+    p2m_unlock(hostp2m);
 }
 
 static void ept_flush_pml_buffers(struct p2m_domain *p2m)
@@ -1293,8 +1271,8 @@ int ept_p2m_init(struct p2m_domain *p2m)
 
     if ( cpu_has_vmx_pml )
     {
-        p2m->enable_hardware_log_dirty = ept_enable_pml;
-        p2m->disable_hardware_log_dirty = ept_disable_pml;
+        p2m->enable_hardware_log_dirty = ept_enable_hardware_log_dirty;
+        p2m->disable_hardware_log_dirty = ept_disable_hardware_log_dirty;
         p2m->flush_hardware_cached_dirty = ept_flush_pml_buffers;
     }
 
@@ -1337,11 +1315,12 @@ static void ept_dump_p2m_table(unsigned char key)
     ept_entry_t *table, *ept_entry;
     int order;
     int i;
-    int ret = 0;
     unsigned long gfn, gfn_remainder;
     unsigned long record_counter = 0;
     struct p2m_domain *p2m;
     struct ept_data *ept;
+
+    rcu_read_lock(&domlist_read_lock);
 
     for_each_domain(d)
     {
@@ -1355,6 +1334,7 @@ static void ept_dump_p2m_table(unsigned char key)
         for ( gfn = 0; gfn <= p2m->max_mapped_pfn; gfn += 1UL << order )
         {
             char c = 0;
+            int ret = GUEST_TABLE_MAP_FAILED;
 
             gfn_remainder = gfn;
             table = map_domain_page(pagetable_get_mfn(p2m_get_pagetable(p2m)));
@@ -1392,6 +1372,8 @@ static void ept_dump_p2m_table(unsigned char key)
             unmap_domain_page(table);
         }
     }
+
+    rcu_read_unlock(&domlist_read_lock);
 }
 
 void setup_ept_dump(void)
@@ -1401,14 +1383,15 @@ void setup_ept_dump(void)
 
 void p2m_init_altp2m_ept(struct domain *d, unsigned int i)
 {
-    struct p2m_domain *p2m = d->arch.altp2m_p2m[i];
+    struct p2m_domain *p2m = array_access_nospec(d->arch.altp2m_p2m, i);
+    struct p2m_domain *hostp2m = p2m_get_hostp2m(d);
     struct ept_data *ept;
 
-    p2m->min_remapped_gfn = gfn_x(INVALID_GFN);
-    p2m->max_remapped_gfn = 0;
+    p2m->ept.ad = hostp2m->ept.ad;
     ept = &p2m->ept;
     ept->mfn = pagetable_get_pfn(p2m_get_pagetable(p2m));
-    d->arch.altp2m_eptp[i] = ept->eptp;
+    d->arch.altp2m_eptp[array_index_nospec(i, MAX_EPTP)] = ept->eptp;
+    d->arch.altp2m_visible_eptp[array_index_nospec(i, MAX_EPTP)] = ept->eptp;
 }
 
 unsigned int p2m_find_altp2m_by_eptp(struct domain *d, uint64_t eptp)

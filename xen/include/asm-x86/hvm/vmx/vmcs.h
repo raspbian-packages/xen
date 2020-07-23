@@ -18,15 +18,13 @@
 #ifndef __ASM_X86_HVM_VMX_VMCS_H__
 #define __ASM_X86_HVM_VMX_VMCS_H__
 
-#include <asm/hvm/io.h>
-#include <irq_vectors.h>
+#include <xen/mm.h>
 
 extern void vmcs_dump_vcpu(struct vcpu *v);
-extern void setup_vmcs_dump(void);
+extern int vmx_vmcs_init(void);
 extern int  vmx_cpu_up_prepare(unsigned int cpu);
 extern void vmx_cpu_dead(unsigned int cpu);
 extern int  vmx_cpu_up(void);
-extern int  _vmx_cpu_up(bool bsp);
 extern void vmx_cpu_down(void);
 
 struct vmcs_struct {
@@ -60,7 +58,7 @@ struct ept_data {
 #define _VMX_DOMAIN_PML_ENABLED    0
 #define VMX_DOMAIN_PML_ENABLED     (1ul << _VMX_DOMAIN_PML_ENABLED)
 struct vmx_domain {
-    unsigned long apic_access_mfn;
+    mfn_t apic_access_mfn;
     /* VMX_DOMAIN_* */
     unsigned int status;
 
@@ -84,7 +82,7 @@ struct vmx_msr_bitmap {
 };
 
 struct pi_desc {
-    DECLARE_BITMAP(pir, NR_VECTORS);
+    DECLARE_BITMAP(pir, X86_NR_VECTORS);
     union {
         struct {
             u16     on     : 1,  /* bit 256 - Outstanding Notification */
@@ -106,7 +104,7 @@ struct pi_blocking_vcpu {
     spinlock_t           *lock;
 };
 
-struct arch_vmx_struct {
+struct vmx_vcpu {
     /* Physical address of VMCS. */
     paddr_t              vmcs_pa;
     /* VMCS shadow machine address. */
@@ -150,7 +148,7 @@ struct arch_vmx_struct {
     unsigned int         host_msr_count;
 
     unsigned long        eoi_exitmap_changed;
-    DECLARE_BITMAP(eoi_exit_bitmap, NR_VECTORS);
+    DECLARE_BITMAP(eoi_exit_bitmap, X86_NR_VECTORS);
     struct pi_desc       pi_desc;
 
     unsigned long        host_cr0;
@@ -312,10 +310,12 @@ extern u64 vmx_ept_vpid_cap;
     (vmx_cpu_based_exec_control & CPU_BASED_MONITOR_TRAP_FLAG)
 #define cpu_has_vmx_pat \
     (vmx_vmentry_control & VM_ENTRY_LOAD_GUEST_PAT)
+#define cpu_has_vmx_efer \
+    (vmx_vmentry_control & VM_ENTRY_LOAD_GUEST_EFER)
 #define cpu_has_vmx_unrestricted_guest \
     (vmx_secondary_exec_control & SECONDARY_EXEC_UNRESTRICTED_GUEST)
 #define vmx_unrestricted_guest(v)               \
-    ((v)->arch.hvm_vmx.secondary_exec_control & \
+    ((v)->arch.hvm.vmx.secondary_exec_control & \
      SECONDARY_EXEC_UNRESTRICTED_GUEST)
 #define cpu_has_vmx_ple \
     (vmx_secondary_exec_control & SECONDARY_EXEC_PAUSE_LOOP_EXITING)
@@ -533,15 +533,18 @@ enum vmx_insn_errno
 {
     VMX_INSN_SUCCEED                       = 0,
     VMX_INSN_VMCLEAR_INVALID_PHYADDR       = 2,
+    VMX_INSN_VMCLEAR_WITH_VMXON_PTR        = 3,
     VMX_INSN_VMLAUNCH_NONCLEAR_VMCS        = 4,
     VMX_INSN_VMRESUME_NONLAUNCHED_VMCS     = 5,
     VMX_INSN_INVALID_CONTROL_STATE         = 7,
     VMX_INSN_INVALID_HOST_STATE            = 8,
     VMX_INSN_VMPTRLD_INVALID_PHYADDR       = 9,
+    VMX_INSN_VMPTRLD_WITH_VMXON_PTR        = 10,
     VMX_INSN_VMPTRLD_INCORRECT_VMCS_ID     = 11,
     VMX_INSN_UNSUPPORTED_VMCS_COMPONENT    = 12,
     VMX_INSN_VMXON_IN_VMX_ROOT             = 15,
     VMX_INSN_VMENTRY_BLOCKED_BY_MOV_SS     = 26,
+    VMX_INSN_INVEPT_INVVPID_INVALID_OP     = 28,
     VMX_INSN_FAIL_INVALID                  = ~0,
 };
 
@@ -565,6 +568,12 @@ enum vmx_msr_list_type {
 int vmx_add_msr(struct vcpu *v, uint32_t msr, uint64_t val,
                 enum vmx_msr_list_type type);
 
+/**
+ * Remove an MSR entry from an MSR list.  Returns -ESRCH if the MSR was not
+ * found in the list.
+ */
+int vmx_del_msr(struct vcpu *v, uint32_t msr, enum vmx_msr_list_type type);
+
 static inline int vmx_add_guest_msr(struct vcpu *v, uint32_t msr, uint64_t val)
 {
     return vmx_add_msr(v, msr, val, VMX_MSR_GUEST);
@@ -584,7 +593,27 @@ static inline int vmx_read_guest_msr(const struct vcpu *v, uint32_t msr,
     const struct vmx_msr_entry *ent = vmx_find_msr(v, msr, VMX_MSR_GUEST);
 
     if ( !ent )
+    {
+        *val = 0;
         return -ESRCH;
+    }
+
+    *val = ent->data;
+
+    return 0;
+}
+
+static inline int vmx_read_guest_loadonly_msr(
+    const struct vcpu *v, uint32_t msr, uint64_t *val)
+{
+    const struct vmx_msr_entry *ent =
+        vmx_find_msr(v, msr, VMX_MSR_GUEST_LOADONLY);
+
+    if ( !ent )
+    {
+        *val = 0;
+        return -ESRCH;
+    }
 
     *val = ent->data;
 

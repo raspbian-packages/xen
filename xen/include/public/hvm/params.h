@@ -25,6 +25,21 @@
 
 #include "hvm_op.h"
 
+/* These parameters are deprecated and their meaning is undefined. */
+#if defined(__XEN__) || defined(__XEN_TOOLS__)
+
+#define HVM_PARAM_PAE_ENABLED                4
+#define HVM_PARAM_DM_DOMAIN                 13
+#define HVM_PARAM_MEMORY_EVENT_CR0          20
+#define HVM_PARAM_MEMORY_EVENT_CR3          21
+#define HVM_PARAM_MEMORY_EVENT_CR4          22
+#define HVM_PARAM_MEMORY_EVENT_INT3         23
+#define HVM_PARAM_MEMORY_EVENT_SINGLE_STEP  25
+#define HVM_PARAM_BUFIOREQ_EVTCHN           26
+#define HVM_PARAM_MEMORY_EVENT_MSR          30
+
+#endif /* defined(__XEN__) || defined(__XEN_TOOLS__) */
+
 /*
  * Parameter space for HVMOP_{set,get}_param.
  */
@@ -78,12 +93,9 @@
 #define HVM_PARAM_STORE_PFN    1
 #define HVM_PARAM_STORE_EVTCHN 2
 
-#define HVM_PARAM_PAE_ENABLED  4
-
 #define HVM_PARAM_IOREQ_PFN    5
 
 #define HVM_PARAM_BUFIOREQ_PFN 6
-#define HVM_PARAM_BUFIOREQ_EVTCHN 26
 
 #if defined(__i386__) || defined(__x86_64__)
 
@@ -139,6 +151,18 @@
 #define _HVMPV_crash_ctl 6
 #define HVMPV_crash_ctl (1 << _HVMPV_crash_ctl)
 
+/* Enable SYNIC MSRs */
+#define _HVMPV_synic 7
+#define HVMPV_synic (1 << _HVMPV_synic)
+
+/* Enable STIMER MSRs */
+#define _HVMPV_stimer 8
+#define HVMPV_stimer (1 << _HVMPV_stimer)
+
+/* Use Synthetic Cluster IPI Hypercall */
+#define _HVMPV_hcall_ipi 9
+#define HVMPV_hcall_ipi (1 << _HVMPV_hcall_ipi)
+
 #define HVMPV_feature_mask \
         (HVMPV_base_freq | \
          HVMPV_no_freq | \
@@ -146,7 +170,10 @@
          HVMPV_reference_tsc | \
          HVMPV_hcall_remote_tlb_flush | \
          HVMPV_apic_assist | \
-         HVMPV_crash_ctl)
+         HVMPV_crash_ctl | \
+         HVMPV_synic | \
+         HVMPV_stimer | \
+         HVMPV_hcall_ipi)
 
 #endif
 
@@ -181,9 +208,6 @@
 /* Identity-map page directory used by Intel EPT when CR0.PG=0. */
 #define HVM_PARAM_IDENT_PT     12
 
-/* Device Model domain, defaults to 0. */
-#define HVM_PARAM_DM_DOMAIN    13
-
 /* ACPI S state: currently support S0 and S3 on x86. */
 #define HVM_PARAM_ACPI_S_STATE 14
 
@@ -208,14 +232,6 @@
  */
 #define HVM_PARAM_ACPI_IOPORTS_LOCATION 19
 
-/* Deprecated */
-#define HVM_PARAM_MEMORY_EVENT_CR0          20
-#define HVM_PARAM_MEMORY_EVENT_CR3          21
-#define HVM_PARAM_MEMORY_EVENT_CR4          22
-#define HVM_PARAM_MEMORY_EVENT_INT3         23
-#define HVM_PARAM_MEMORY_EVENT_SINGLE_STEP  25
-#define HVM_PARAM_MEMORY_EVENT_MSR          30
-
 /* Boolean: Enable nestedhvm (hvm only) */
 #define HVM_PARAM_NESTEDHVM    24
 
@@ -239,6 +255,11 @@
  *  mixed: allow access to all altp2m ops for both in-guest and external tools
  *  external: allow access to external privileged tools only
  *  limited: guest only has limited access (ie. control VMFUNC and #VE)
+ *
+ * Note that 'mixed' mode has not been evaluated for safety from a
+ * security perspective.  Before using this mode in a
+ * security-critical environment, each subop should be evaluated for
+ * safety, with unsafe subops blacklisted in XSM.
  */
 #define HVM_PARAM_ALTP2M       35
 #define XEN_ALTP2M_disabled      0

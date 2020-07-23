@@ -12,7 +12,6 @@
 #include <public/sysctl.h>
 #include <public/platform.h>
 #include <public/event_channel.h>
-#include <public/tmem.h>
 #include <public/version.h>
 #include <public/pmu.h>
 #include <public/hvm/dm_op.h>
@@ -84,8 +83,8 @@ do_xen_version(
 
 extern long
 do_console_io(
-    int cmd,
-    int count,
+    unsigned int cmd,
+    unsigned int count,
     XEN_GUEST_HANDLE_PARAM(char) buffer);
 
 extern long
@@ -130,10 +129,13 @@ extern long
 do_xsm_op(
     XEN_GUEST_HANDLE_PARAM(xsm_op_t) u_xsm_op);
 
-#ifdef CONFIG_TMEM
-extern long
-do_tmem_op(
-    XEN_GUEST_HANDLE_PARAM(tmem_op_t) uops);
+#ifdef CONFIG_ARGO
+extern long do_argo_op(
+    unsigned int cmd,
+    XEN_GUEST_HANDLE_PARAM(void) arg1,
+    XEN_GUEST_HANDLE_PARAM(void) arg2,
+    unsigned long arg3,
+    unsigned long arg4);
 #endif
 
 extern long
@@ -147,6 +149,16 @@ do_dm_op(
     domid_t domid,
     unsigned int nr_bufs,
     XEN_GUEST_HANDLE_PARAM(xen_dm_op_buf_t) bufs);
+
+#ifdef CONFIG_HYPFS
+extern long
+do_hypfs_op(
+    unsigned int cmd,
+    XEN_GUEST_HANDLE_PARAM(const_char) arg1,
+    unsigned long arg2,
+    XEN_GUEST_HANDLE_PARAM(void) arg3,
+    unsigned long arg4);
+#endif
 
 #ifdef CONFIG_COMPAT
 
@@ -190,12 +202,19 @@ extern int compat_xsm_op(
 
 extern int compat_kexec_op(unsigned long op, XEN_GUEST_HANDLE_PARAM(void) uarg);
 
-extern int compat_vm_assist(unsigned int cmd, unsigned int type);
-
 DEFINE_XEN_GUEST_HANDLE(multicall_entry_compat_t);
 extern int compat_multicall(
     XEN_GUEST_HANDLE_PARAM(multicall_entry_compat_t) call_list,
     uint32_t nr_calls);
+
+#ifdef CONFIG_ARGO
+extern long compat_argo_op(
+    unsigned int cmd,
+    XEN_GUEST_HANDLE_PARAM(void) arg1,
+    XEN_GUEST_HANDLE_PARAM(void) arg2,
+    unsigned long arg3,
+    unsigned long arg4);
+#endif
 
 #include <compat/hvm/dm_op.h>
 

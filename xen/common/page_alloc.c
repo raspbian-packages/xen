@@ -1,21 +1,21 @@
 /******************************************************************************
  * page_alloc.c
- * 
+ *
  * Simple buddy heap allocator for Xen.
- * 
+ *
  * Copyright (c) 2002-2004 K A Fraser
  * Copyright (c) 2006 IBM Ryan Harper <ryanh@us.ibm.com>
- * 
+ *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
  * the Free Software Foundation; either version 2 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU General Public License
  * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
@@ -126,6 +126,7 @@
 #include <xen/sched.h>
 #include <xen/spinlock.h>
 #include <xen/mm.h>
+#include <xen/param.h>
 #include <xen/irq.h>
 #include <xen/softirq.h>
 #include <xen/domain_page.h>
@@ -135,8 +136,6 @@
 #include <xen/numa.h>
 #include <xen/nodemask.h>
 #include <xen/event.h>
-#include <xen/tmem.h>
-#include <xen/tmem_xen.h>
 #include <public/sysctl.h>
 #include <public/sched.h>
 #include <asm/page.h>
@@ -146,6 +145,7 @@
 #include <asm/guest.h>
 #include <asm/p2m.h>
 #include <asm/setup.h> /* for highmem_start only */
+#include <asm/paging.h>
 #else
 #define p2m_pod_offline_or_broken_hit(pg) 0
 #define p2m_pod_offline_or_broken_replace(pg) BUG_ON(pg != NULL)
@@ -161,8 +161,50 @@ string_param("badpage", opt_badpage);
 /*
  * no-bootscrub -> Free pages are not zeroed during boot.
  */
-static bool_t opt_bootscrub __initdata = 1;
-boolean_param("bootscrub", opt_bootscrub);
+enum bootscrub_mode {
+    BOOTSCRUB_OFF,
+    BOOTSCRUB_ON,
+    BOOTSCRUB_IDLE,
+};
+
+/*
+ * opt_bootscrub should live in the init section, since it's not accessed
+ * afterwards. However at least LLVM assumes there are no side effects of
+ * accessing the variable, and optimizes the condition in init_heap_pages() so
+ * opt_bootscrub is read regardless of the value of system_state:
+ * https://bugs.llvm.org/show_bug.cgi?id=39707
+ */
+static enum bootscrub_mode __read_mostly opt_bootscrub = BOOTSCRUB_IDLE;
+static int __init parse_bootscrub_param(const char *s)
+{
+    /* Interpret 'bootscrub' alone in its positive boolean form */
+    if ( *s == '\0' )
+    {
+        opt_bootscrub = BOOTSCRUB_ON;
+        return 0;
+    }
+
+    switch ( parse_bool(s, NULL) )
+    {
+    case 0:
+        opt_bootscrub = BOOTSCRUB_OFF;
+        break;
+
+    case 1:
+        opt_bootscrub = BOOTSCRUB_ON;
+        break;
+
+    default:
+        if ( !strcmp(s, "idle") )
+            opt_bootscrub = BOOTSCRUB_IDLE;
+        else
+            return -EINVAL;
+        break;
+    }
+
+    return 0;
+}
+custom_param("bootscrub", parse_bootscrub_param);
 
 /*
  * bootscrub_chunk -> Amount of bytes to scrub lockstep on non-SMT CPUs
@@ -170,6 +212,10 @@ boolean_param("bootscrub", opt_bootscrub);
  */
 static unsigned long __initdata opt_bootscrub_chunk = MB(128);
 size_param("bootscrub_chunk", opt_bootscrub_chunk);
+
+ /* scrub-domheap -> Domheap pages are scrubbed when freed */
+static bool __read_mostly opt_scrub_domheap;
+boolean_param("scrub-domheap", opt_scrub_domheap);
 
 #ifdef CONFIG_SCRUB_DEBUG
 static bool __read_mostly scrub_debug;
@@ -199,9 +245,12 @@ PAGE_LIST_HEAD(page_broken_list);
  */
 mfn_t first_valid_mfn = INVALID_MFN_INITIALIZER;
 
-static struct bootmem_region {
+struct bootmem_region {
     unsigned long s, e; /* MFNs @s through @e-1 inclusive are free */
-} *__initdata bootmem_region_list;
+};
+/* Statically allocate a page for bootmem_region_list. */
+static struct bootmem_region __initdata
+    bootmem_region_list[PAGE_SIZE / sizeof(struct bootmem_region)];
 static unsigned int __initdata nr_bootmem_regions;
 
 struct scrub_region {
@@ -217,9 +266,6 @@ static unsigned long __initdata chunk_size;
 static void __init bootmem_region_add(unsigned long s, unsigned long e)
 {
     unsigned int i;
-
-    if ( (bootmem_region_list == NULL) && (s < e) )
-        bootmem_region_list = mfn_to_virt(s++);
 
     if ( s >= e )
         return;
@@ -288,7 +334,7 @@ void __init init_boot_pages(paddr_t ps, paddr_t pe)
     bootmem_region_add(ps >> PAGE_SHIFT, pe >> PAGE_SHIFT);
 
 #ifdef CONFIG_X86
-    /* 
+    /*
      * Here we put platform-specific memory range workarounds, i.e.
      * memory known to be corrupt or otherwise in need to be reserved on
      * specific platforms.
@@ -300,20 +346,20 @@ void __init init_boot_pages(paddr_t ps, paddr_t pe)
         for ( i = 0; i < array_size; i++ )
         {
             bootmem_region_zap(badpage->mfn,
-                               badpage->mfn + (1U << badpage->order));
+                               badpage->mfn + (1UL << badpage->order));
             badpage++;
         }
     }
 
-    if ( xen_guest )
+    if ( pv_shim )
     {
-        badpage = hypervisor_reserved_pages(&array_size);
+        badpage = pv_shim_reserved_pages(&array_size);
         if ( badpage )
         {
             for ( i = 0; i < array_size; i++ )
             {
                 bootmem_region_zap(badpage->mfn,
-                                   badpage->mfn + (1U << badpage->order));
+                                   badpage->mfn + (1UL << badpage->order));
                 badpage++;
             }
         }
@@ -408,10 +454,6 @@ static unsigned long node_need_scrub[MAX_NUMNODES];
 static unsigned long *avail[MAX_NUMNODES];
 static long total_avail_pages;
 
-/* TMEM: Reserve a fraction of memory for mid-size (0<order<9) allocations.*/
-static long midsize_alloc_zone_pages;
-#define MIDSIZE_ALLOC_FRAC 128
-
 static DEFINE_SPINLOCK(heap_lock);
 static long outstanding_claims; /* total outstanding claims by all domains */
 
@@ -477,8 +519,8 @@ int domain_set_outstanding_pages(struct domain *d, unsigned long pages)
         goto out;
     }
 
-    /* disallow a claim not exceeding current tot_pages or above max_pages */
-    if ( (pages <= d->tot_pages) || (pages > d->max_pages) )
+    /* disallow a claim not exceeding domain_tot_pages() or above max_pages */
+    if ( (pages <= domain_tot_pages(d)) || (pages > d->max_pages) )
     {
         ret = -EINVAL;
         goto out;
@@ -487,23 +529,13 @@ int domain_set_outstanding_pages(struct domain *d, unsigned long pages)
     /* how much memory is available? */
     avail_pages = total_avail_pages;
 
-    /* Note: The usage of claim means that allocation from a guest *might*
-     * have to come from freeable memory. Using free memory is always better, if
-     * it is available, than using freeable memory.
-     *
-     * But that is OK as once the claim has been made, it still can take minutes
-     * before the claim is fully satisfied. Tmem can make use of the unclaimed
-     * pages during this time (to store ephemeral/freeable pages only,
-     * not persistent pages).
-     */
-    avail_pages += tmem_freeable_pages();
     avail_pages -= outstanding_claims;
 
     /*
      * Note, if domain has already allocated memory before making a claim
-     * then the claim must take tot_pages into account
+     * then the claim must take domain_tot_pages() into account
      */
-    claim = pages - d->tot_pages;
+    claim = pages - domain_tot_pages(d);
     if ( claim > avail_pages )
         goto out;
 
@@ -526,7 +558,7 @@ void get_outstanding_claims(uint64_t *free_pages, uint64_t *outstanding_pages)
     spin_unlock(&heap_lock);
 }
 
-static bool_t __read_mostly first_node_initialised;
+static bool __read_mostly first_node_initialised;
 #ifndef CONFIG_SEPARATE_XENHEAP
 static unsigned int __read_mostly xenheap_bits;
 #else
@@ -534,7 +566,7 @@ static unsigned int __read_mostly xenheap_bits;
 #endif
 
 static unsigned long init_node_heap(int node, unsigned long mfn,
-                                    unsigned long nr, bool_t *use_tail)
+                                    unsigned long nr, bool *use_tail)
 {
     /* First node to be discovered has its heap metadata statically alloced. */
     static heap_by_zone_and_order_t _heap_static;
@@ -548,7 +580,7 @@ static unsigned long init_node_heap(int node, unsigned long mfn,
     {
         _heap[node] = &_heap_static;
         avail[node] = avail_static;
-        first_node_initialised = 1;
+        first_node_initialised = true;
         needed = 0;
     }
     else if ( *use_tail && nr >= needed &&
@@ -568,7 +600,7 @@ static unsigned long init_node_heap(int node, unsigned long mfn,
         _heap[node] = mfn_to_virt(mfn);
         avail[node] = mfn_to_virt(mfn + needed - 1) +
                       PAGE_SIZE - sizeof(**avail) * NR_ZONES;
-        *use_tail = 0;
+        *use_tail = false;
     }
     else if ( get_order_from_bytes(sizeof(**_heap)) ==
               get_order_from_pages(needed) )
@@ -619,7 +651,7 @@ static void __init setup_low_mem_virq(void)
 {
     unsigned int order;
     paddr_t threshold;
-    bool_t halve;
+    bool halve;
 
     /* If the user specifies zero, then he/she doesn't want this virq
      * to ever trigger. */
@@ -668,8 +700,7 @@ static void __init setup_low_mem_virq(void)
 
 static void check_low_mem_virq(void)
 {
-    unsigned long avail_pages = total_avail_pages +
-        tmem_freeable_pages() - outstanding_claims;
+    unsigned long avail_pages = total_avail_pages - outstanding_claims;
 
     if ( unlikely(avail_pages <= low_mem_virq_th) )
     {
@@ -729,13 +760,12 @@ static void page_list_add_scrub(struct page_info *pg, unsigned int node,
 static void poison_one_page(struct page_info *pg)
 {
 #ifdef CONFIG_SCRUB_DEBUG
-    mfn_t mfn = page_to_mfn(pg);
     uint64_t *ptr;
 
     if ( !scrub_debug )
         return;
 
-    ptr = map_domain_page(mfn);
+    ptr = __map_domain_page(pg);
     *ptr = ~SCRUB_PATTERN;
     unmap_domain_page(ptr);
 #endif
@@ -744,14 +774,13 @@ static void poison_one_page(struct page_info *pg)
 static void check_one_page(struct page_info *pg)
 {
 #ifdef CONFIG_SCRUB_DEBUG
-    mfn_t mfn = page_to_mfn(pg);
     const uint64_t *ptr;
     unsigned int i;
 
     if ( !scrub_debug )
         return;
 
-    ptr = map_domain_page(mfn);
+    ptr = __map_domain_page(pg);
     for ( i = 0; i < PAGE_SIZE / sizeof (*ptr); i++ )
         BUG_ON(ptr[i] != SCRUB_PATTERN);
     unmap_domain_page(ptr);
@@ -782,20 +811,33 @@ static struct page_info *get_free_buddy(unsigned int zone_lo,
                                         unsigned int order, unsigned int memflags,
                                         const struct domain *d)
 {
-    nodeid_t first_node, node = MEMF_get_node(memflags), req_node = node;
-    nodemask_t nodemask = d ? d->node_affinity : node_online_map;
+    nodeid_t first, node = MEMF_get_node(memflags), req_node = node;
+    nodemask_t nodemask = node_online_map;
     unsigned int j, zone, nodemask_retry = 0;
     struct page_info *pg;
     bool use_unscrubbed = (memflags & MEMF_no_scrub);
 
+    /*
+     * d->node_affinity is our preferred allocation set if provided, but it
+     * may have bits set outside of node_online_map.  Clamp it.
+     */
+    if ( d )
+    {
+        /*
+         * It is the callers responsibility to ensure that d->node_affinity
+         * isn't complete junk.
+         */
+        if ( nodes_intersects(nodemask, d->node_affinity) )
+            nodes_and(nodemask, nodemask, d->node_affinity);
+        else
+            ASSERT_UNREACHABLE();
+    }
+
     if ( node == NUMA_NO_NODE )
     {
         if ( d != NULL )
-        {
-            node = next_node(d->last_alloc_node, nodemask);
-            if ( node >= MAX_NUMNODES )
-                node = first_node(nodemask);
-        }
+            node = cycle_node(d->last_alloc_node, nodemask);
+
         if ( node >= MAX_NUMNODES )
             node = cpu_to_node(smp_processor_id());
     }
@@ -804,11 +846,11 @@ static struct page_info *get_free_buddy(unsigned int zone_lo,
         ASSERT_UNREACHABLE();
         return NULL;
     }
-    first_node = node;
+    first = node;
 
     /*
-     * Start with requested node, but exhaust all node memory in requested 
-     * zone before failing, only calc new node value if we fail to find memory 
+     * Start with requested node, but exhaust all node memory in requested
+     * zone before failing, only calc new node value if we fail to find memory
      * in target node, this avoids needless computation on fast-path.
      */
     for ( ; ; )
@@ -846,23 +888,23 @@ static struct page_info *get_free_buddy(unsigned int zone_lo,
             return NULL;
 
         /* Pick next node. */
-        if ( !node_isset(node, nodemask) )
+        if ( !nodemask_test(node, &nodemask) )
         {
             /* Very first node may be caller-specified and outside nodemask. */
             ASSERT(!nodemask_retry);
-            first_node = node = first_node(nodemask);
+            first = node = first_node(nodemask);
             if ( node < MAX_NUMNODES )
                 continue;
         }
         else if ( (node = next_node(node, nodemask)) >= MAX_NUMNODES )
             node = first_node(nodemask);
-        if ( node == first_node )
+        if ( node == first )
         {
             /* When we have tried all in nodemask, we fall back to others. */
             if ( (memflags & MEMF_exact_node) || nodemask_retry++ )
                 return NULL;
             nodes_andnot(nodemask, node_online_map, nodemask);
-            first_node = node = first_node(nodemask);
+            first = node = first_node(nodemask);
             if ( node >= MAX_NUMNODES )
                 return NULL;
         }
@@ -898,29 +940,12 @@ static struct page_info *alloc_heap_pages(
      * Claimed memory is considered unavailable unless the request
      * is made by a domain with sufficient unclaimed pages.
      */
-    if ( (outstanding_claims + request >
-          total_avail_pages + tmem_freeable_pages()) &&
+    if ( (outstanding_claims + request > total_avail_pages) &&
           ((memflags & MEMF_no_refcount) ||
            !d || d->outstanding_pages < request) )
     {
         spin_unlock(&heap_lock);
         return NULL;
-    }
-
-    /*
-     * TMEM: When available memory is scarce due to tmem absorbing it, allow
-     * only mid-size allocations to avoid worst of fragmentation issues.
-     * Others try tmem pools then fail.  This is a workaround until all
-     * post-dom0-creation-multi-page allocations can be eliminated.
-     */
-    if ( ((order == 0) || (order >= 9)) &&
-         (total_avail_pages <= midsize_alloc_zone_pages) &&
-         tmem_freeable_pages() )
-    {
-        /* Try to free memory from tmem. */
-        pg = tmem_relinquish_pages(order, memflags);
-        spin_unlock(&heap_lock);
-        return pg;
     }
 
     pg = get_free_buddy(zone_lo, zone_hi, order, memflags, d);
@@ -973,7 +998,15 @@ static struct page_info *alloc_heap_pages(
     for ( i = 0; i < (1 << order); i++ )
     {
         /* Reference count must continuously be zero for free pages. */
-        BUG_ON((pg[i].count_info & ~PGC_need_scrub) != PGC_state_free);
+        if ( (pg[i].count_info & ~PGC_need_scrub) != PGC_state_free )
+        {
+            printk(XENLOG_ERR
+                   "pg[%u] MFN %"PRI_mfn" c=%#lx o=%u v=%#lx t=%#x\n",
+                   i, mfn_x(page_to_mfn(pg + i)),
+                   pg[i].count_info, pg[i].v.free.order,
+                   pg[i].u.free.val, pg[i].tlbflush_timestamp);
+            BUG();
+        }
 
         /* PGC_need_scrub can only be set if first_dirty is valid */
         ASSERT(first_dirty != INVALID_DIRTY_IDX || !(pg[i].count_info & PGC_need_scrub));
@@ -1226,11 +1259,11 @@ bool scrub_free_pages(void)
     bool preempt = false;
     nodeid_t node;
     unsigned int cnt = 0;
-  
+
     node = node_to_scrub(true);
     if ( node == NUMA_NO_NODE )
         return false;
- 
+
     spin_lock(&heap_lock);
 
     for ( zone = 0; zone < NR_ZONES; zone++ )
@@ -1277,7 +1310,7 @@ bool scrub_free_pages(void)
                         /* Someone wants this chunk. Drop everything. */
 
                         pg->u.free.first_dirty = (i == (1U << order) - 1) ?
-                            INVALID_DIRTY_IDX : i + 1; 
+                            INVALID_DIRTY_IDX : i + 1;
                         smp_wmb();
                         pg->u.free.scrub_state = BUDDY_NOT_SCRUBBING;
 
@@ -1368,13 +1401,27 @@ static void free_heap_pages(
          *     in its pseudophysical address space).
          * In all the above cases there can be no guest mappings of this page.
          */
-        ASSERT(!page_state_is(&pg[i], offlined));
-        pg[i].count_info =
-            ((pg[i].count_info & PGC_broken) |
-             (page_state_is(&pg[i], offlining)
-              ? PGC_state_offlined : PGC_state_free));
-        if ( page_state_is(&pg[i], offlined) )
+        switch ( pg[i].count_info & PGC_state )
+        {
+        case PGC_state_inuse:
+            BUG_ON(pg[i].count_info & PGC_broken);
+            pg[i].count_info = PGC_state_free;
+            break;
+
+        case PGC_state_offlining:
+            pg[i].count_info = (pg[i].count_info & PGC_broken) |
+                               PGC_state_offlined;
             tainted = 1;
+            break;
+
+        default:
+            printk(XENLOG_ERR
+                   "pg[%u] MFN %"PRI_mfn" c=%#lx o=%u v=%#lx t=%#x\n",
+                   i, mfn_x(page_to_mfn(pg + i)),
+                   pg[i].count_info, pg[i].v.free.order,
+                   pg[i].u.free.val, pg[i].tlbflush_timestamp);
+            BUG();
+        }
 
         /* If a page has no owner it will need no safety TLB flush. */
         pg[i].u.free.need_tlbflush = (page_get_owner(&pg[i]) != NULL);
@@ -1401,10 +1448,6 @@ static void free_heap_pages(
     }
     else
         pg->u.free.first_dirty = INVALID_DIRTY_IDX;
-
-    if ( tmem_enabled() )
-        midsize_alloc_zone_pages = max(
-            midsize_alloc_zone_pages, total_avail_pages / MIDSIZE_ALLOC_FRAC);
 
     /* Merge chunks as far as possible. */
     while ( order < MAX_ORDER )
@@ -1527,21 +1570,21 @@ static int reserve_heap_page(struct page_info *pg)
 
 }
 
-int offline_page(unsigned long mfn, int broken, uint32_t *status)
+int offline_page(mfn_t mfn, int broken, uint32_t *status)
 {
     unsigned long old_info = 0;
     struct domain *owner;
     struct page_info *pg;
 
-    if ( !mfn_valid(_mfn(mfn)) )
+    if ( !mfn_valid(mfn) )
     {
         dprintk(XENLOG_WARNING,
-                "try to offline page out of range %lx\n", mfn);
+                "try to offline out of range page %"PRI_mfn"\n", mfn_x(mfn));
         return -EINVAL;
     }
 
     *status = 0;
-    pg = mfn_to_page(_mfn(mfn));
+    pg = mfn_to_page(mfn);
 
     if ( is_xen_fixed_mfn(mfn) )
     {
@@ -1554,7 +1597,7 @@ int offline_page(unsigned long mfn, int broken, uint32_t *status)
      * N.B. xen's txt in x86_64 is marked reserved and handled already.
      * Also kexec range is reserved.
      */
-    if ( !page_is_ram_type(mfn, RAM_TYPE_CONVENTIONAL) )
+    if ( !page_is_ram_type(mfn_x(mfn), RAM_TYPE_CONVENTIONAL) )
     {
         *status = PG_OFFLINE_FAILED | PG_OFFLINE_NOT_CONV_RAM;
         return -EINVAL;
@@ -1636,19 +1679,19 @@ int offline_page(unsigned long mfn, int broken, uint32_t *status)
  *   The caller should make sure end_pfn <= max_page,
  *   if not, expand_pages() should be called prior to online_page().
  */
-unsigned int online_page(unsigned long mfn, uint32_t *status)
+unsigned int online_page(mfn_t mfn, uint32_t *status)
 {
     unsigned long x, nx, y;
     struct page_info *pg;
     int ret;
 
-    if ( !mfn_valid(_mfn(mfn)) )
+    if ( !mfn_valid(mfn) )
     {
         dprintk(XENLOG_WARNING, "call expand_pages() first\n");
         return -EINVAL;
     }
 
-    pg = mfn_to_page(_mfn(mfn));
+    pg = mfn_to_page(mfn);
 
     spin_lock(&heap_lock);
 
@@ -1689,11 +1732,11 @@ unsigned int online_page(unsigned long mfn, uint32_t *status)
     return ret;
 }
 
-int query_page_offline(unsigned long mfn, uint32_t *status)
+int query_page_offline(mfn_t mfn, uint32_t *status)
 {
     struct page_info *pg;
 
-    if ( !mfn_valid(_mfn(mfn)) || !page_is_ram_type(mfn, RAM_TYPE_CONVENTIONAL) )
+    if ( !mfn_valid(mfn) || !page_is_ram_type(mfn_x(mfn), RAM_TYPE_CONVENTIONAL) )
     {
         dprintk(XENLOG_WARNING, "call expand_pages() first\n");
         return -EINVAL;
@@ -1702,7 +1745,7 @@ int query_page_offline(unsigned long mfn, uint32_t *status)
     *status = 0;
     spin_lock(&heap_lock);
 
-    pg = mfn_to_page(_mfn(mfn));
+    pg = mfn_to_page(mfn);
 
     if ( page_state_is(pg, offlining) )
         *status |= PG_OFFLINE_STATUS_OFFLINE_PENDING;
@@ -1726,6 +1769,7 @@ static void init_heap_pages(
     struct page_info *pg, unsigned long nr_pages)
 {
     unsigned long i;
+    bool idle_scrub = false;
 
     /*
      * Keep MFN 0 away from the buddy allocator to avoid crossing zone
@@ -1749,6 +1793,9 @@ static void init_heap_pages(
     first_valid_mfn = mfn_min(page_to_mfn(pg), first_valid_mfn);
     spin_unlock(&heap_lock);
 
+    if ( system_state < SYS_STATE_active && opt_bootscrub == BOOTSCRUB_IDLE )
+        idle_scrub = true;
+
     for ( i = 0; i < nr_pages; i++ )
     {
         unsigned int nid = phys_to_nid(page_to_maddr(pg+i));
@@ -1757,9 +1804,9 @@ static void init_heap_pages(
         {
             unsigned long s = mfn_x(page_to_mfn(pg + i));
             unsigned long e = mfn_x(mfn_add(page_to_mfn(pg + nr_pages - 1), 1));
-            bool_t use_tail = (nid == phys_to_nid(pfn_to_paddr(e - 1))) &&
-                              !(s & ((1UL << MAX_ORDER) - 1)) &&
-                              (find_first_set_bit(e) <= find_first_set_bit(s));
+            bool use_tail = (nid == phys_to_nid(pfn_to_paddr(e - 1))) &&
+                            !(s & ((1UL << MAX_ORDER) - 1)) &&
+                            (find_first_set_bit(e) <= find_first_set_bit(s));
             unsigned long n;
 
             n = init_node_heap(nid, mfn_x(page_to_mfn(pg + i)), nr_pages - i,
@@ -1775,7 +1822,7 @@ static void init_heap_pages(
             nr_pages -= n;
         }
 
-        free_heap_pages(pg + i, 0, scrub_debug);
+        free_heap_pages(pg + i, 0, scrub_debug || idle_scrub);
     }
 }
 
@@ -1798,11 +1845,6 @@ static unsigned long avail_heap_pages(
     }
 
     return free_pages;
-}
-
-unsigned long total_free_pages(void)
-{
-    return total_avail_pages - midsize_alloc_zone_pages;
 }
 
 void __init end_boot_allocator(void)
@@ -1828,7 +1870,6 @@ void __init end_boot_allocator(void)
             init_heap_pages(mfn_to_page(_mfn(r->s)), r->e - r->s);
     }
     nr_bootmem_regions = 0;
-    init_heap_pages(virt_to_page(bootmem_region_list), 1);
 
     if ( !dma_bitsize && (num_online_nodes() > 1) )
         dma_bitsize = arch_get_dma_bitsize();
@@ -2051,8 +2092,23 @@ void __init heap_init_late(void)
      */
     setup_low_mem_virq();
 
-    if ( opt_bootscrub )
+    switch ( opt_bootscrub )
+    {
+    default:
+        ASSERT_UNREACHABLE();
+        /* Fall through */
+
+    case BOOTSCRUB_IDLE:
+        printk("Scrubbing Free RAM in background\n");
+        break;
+
+    case BOOTSCRUB_ON:
         scrub_heap_pages();
+        break;
+
+    case BOOTSCRUB_OFF:
+        break;
+    }
 }
 
 
@@ -2073,9 +2129,9 @@ void init_xenheap_pages(paddr_t ps, paddr_t pe)
      * Yuk! Ensure there is a one-page buffer between Xen and Dom zones, to
      * prevent merging of power-of-two blocks across the zone boundary.
      */
-    if ( ps && !is_xen_heap_mfn(paddr_to_pfn(ps)-1) )
+    if ( ps && !is_xen_heap_mfn(mfn_add(maddr_to_mfn(ps), -1)) )
         ps += PAGE_SIZE;
-    if ( !is_xen_heap_mfn(paddr_to_pfn(pe)) )
+    if ( !is_xen_heap_mfn(maddr_to_mfn(pe)) )
         pe -= PAGE_SIZE;
 
     memguard_guard_range(maddr_to_virt(ps), pe - ps);
@@ -2113,7 +2169,7 @@ void free_xenheap_pages(void *v, unsigned int order)
     free_heap_pages(virt_to_page(v), order, false);
 }
 
-#else
+#else  /* !CONFIG_SEPARATE_XENHEAP */
 
 void __init xenheap_max_mfn(unsigned long mfn)
 {
@@ -2169,7 +2225,7 @@ void free_xenheap_pages(void *v, unsigned int order)
     free_heap_pages(pg, order, true);
 }
 
-#endif
+#endif  /* CONFIG_SEPARATE_XENHEAP */
 
 
 
@@ -2212,32 +2268,53 @@ int assign_pages(
         goto out;
     }
 
-    if ( !(memflags & MEMF_no_refcount) )
+#ifndef NDEBUG
     {
-        if ( unlikely((d->tot_pages + (1 << order)) > d->max_pages) )
+        unsigned int extra_pages = 0;
+
+        for ( i = 0; i < (1ul << order); i++ )
         {
-            if ( !tmem_enabled() || order != 0 || d->tot_pages != d->max_pages )
-                gprintk(XENLOG_INFO, "Over-allocation for domain %u: "
-                        "%u > %u\n", d->domain_id,
-                        d->tot_pages + (1 << order), d->max_pages);
+            ASSERT(!(pg[i].count_info & ~PGC_extra));
+            if ( pg[i].count_info & PGC_extra )
+                extra_pages++;
+        }
+
+        ASSERT(!extra_pages ||
+               ((memflags & MEMF_no_refcount) &&
+                extra_pages == 1u << order));
+    }
+#endif
+
+    if ( pg[0].count_info & PGC_extra )
+    {
+        d->extra_pages += 1u << order;
+        memflags &= ~MEMF_no_refcount;
+    }
+    else if ( !(memflags & MEMF_no_refcount) )
+    {
+        unsigned int tot_pages = domain_tot_pages(d) + (1 << order);
+
+        if ( unlikely(tot_pages > d->max_pages) )
+        {
+            gprintk(XENLOG_INFO, "Over-allocation for domain %u: "
+                    "%u > %u\n", d->domain_id, tot_pages, d->max_pages);
             rc = -E2BIG;
             goto out;
         }
-
-        if ( unlikely(d->tot_pages == 0) )
-            get_knownalive_domain(d);
-
-        domain_adjust_tot_pages(d, 1 << order);
     }
+
+    if ( !(memflags & MEMF_no_refcount) &&
+         unlikely(domain_adjust_tot_pages(d, 1 << order) == (1 << order)) )
+        get_knownalive_domain(d);
 
     for ( i = 0; i < (1 << order); i++ )
     {
         ASSERT(page_get_owner(&pg[i]) == NULL);
-        ASSERT(!pg[i].count_info);
         page_set_owner(&pg[i], d);
         smp_wmb(); /* Domain pointer must be visible before updating refcnt. */
-        pg[i].count_info = PGC_allocated | 1;
-        page_list_add_tail(&pg[i], &d->page_list);
+        pg[i].count_info =
+            (pg[i].count_info & PGC_extra) | PGC_allocated | 1;
+        page_list_add_tail(&pg[i], page_to_list(d, &pg[i]));
     }
 
  out:
@@ -2274,13 +2351,25 @@ struct page_info *alloc_domheap_pages(
                                   memflags, d)) == NULL)) )
          return NULL;
 
-    if ( d && !(memflags & MEMF_no_owner) &&
-         assign_pages(d, pg, order, memflags) )
+    if ( d && !(memflags & MEMF_no_owner) )
     {
-        free_heap_pages(pg, order, memflags & MEMF_no_scrub);
-        return NULL;
+        if ( memflags & MEMF_no_refcount )
+        {
+            unsigned long i;
+
+            for ( i = 0; i < (1ul << order); i++ )
+            {
+                ASSERT(!pg[i].count_info);
+                pg[i].count_info = PGC_extra;
+            }
+        }
+        if ( assign_pages(d, pg, order, memflags) )
+        {
+            free_heap_pages(pg, order, memflags & MEMF_no_scrub);
+            return NULL;
+        }
     }
-    
+
     return pg;
 }
 
@@ -2288,7 +2377,7 @@ void free_domheap_pages(struct page_info *pg, unsigned int order)
 {
     struct domain *d = page_get_owner(pg);
     unsigned int i;
-    bool_t drop_dom_ref;
+    bool drop_dom_ref;
 
     ASSERT(!in_irq());
 
@@ -2307,7 +2396,7 @@ void free_domheap_pages(struct page_info *pg, unsigned int order)
     }
     else
     {
-        bool_t scrub;
+        bool scrub;
 
         if ( likely(d) && likely(d != dom_cow) )
         {
@@ -2316,8 +2405,21 @@ void free_domheap_pages(struct page_info *pg, unsigned int order)
 
             for ( i = 0; i < (1 << order); i++ )
             {
-                BUG_ON((pg[i].u.inuse.type_info & PGT_count_mask) != 0);
+                if ( pg[i].u.inuse.type_info & PGT_count_mask )
+                {
+                    printk(XENLOG_ERR
+                           "pg[%u] MFN %"PRI_mfn" c=%#lx o=%u v=%#lx t=%#x\n",
+                           i, mfn_x(page_to_mfn(pg + i)),
+                           pg[i].count_info, pg[i].v.free.order,
+                           pg[i].u.free.val, pg[i].tlbflush_timestamp);
+                    BUG();
+                }
                 arch_free_heap_page(d, &pg[i]);
+                if ( pg[i].count_info & PGC_extra )
+                {
+                    ASSERT(d->extra_pages);
+                    d->extra_pages--;
+                }
             }
 
             drop_dom_ref = !domain_adjust_tot_pages(d, -(1 << order));
@@ -2327,9 +2429,10 @@ void free_domheap_pages(struct page_info *pg, unsigned int order)
             /*
              * Normally we expect a domain to clear pages before freeing them,
              * if it cares about the secrecy of their contents. However, after
-             * a domain has died we assume responsibility for erasure.
+             * a domain has died we assume responsibility for erasure. We do
+             * scrub regardless if option scrub_domheap is set.
              */
-            scrub = d->is_dying || scrub_debug;
+            scrub = d->is_dying || scrub_debug || opt_scrub_domheap;
         }
         else
         {
@@ -2341,7 +2444,7 @@ void free_domheap_pages(struct page_info *pg, unsigned int order)
              * check here, don't check d != dom_cow for now.
              */
             ASSERT(!d || !order);
-            drop_dom_ref = 0;
+            drop_dom_ref = false;
             scrub = 1;
         }
 
@@ -2434,8 +2537,8 @@ static void dump_heap(unsigned char key)
     s_time_t      now = NOW();
     int           i, j;
 
-    printk("'%c' pressed -> dumping heap info (now-0x%X:%08X)\n", key,
-           (u32)(now>>32), (u32)now);
+    printk("'%c' pressed -> dumping heap info (now = %"PRI_stime")\n", key,
+           now);
 
     for ( i = 0; i < MAX_NUMNODES; i++ )
     {
@@ -2460,6 +2563,42 @@ static __init int register_heap_trigger(void)
     return 0;
 }
 __initcall(register_heap_trigger);
+
+struct domain *get_pg_owner(domid_t domid)
+{
+    struct domain *pg_owner = NULL, *curr = current->domain;
+
+    if ( likely(domid == DOMID_SELF) )
+    {
+        pg_owner = rcu_lock_current_domain();
+        goto out;
+    }
+
+    if ( unlikely(domid == curr->domain_id) )
+    {
+        gdprintk(XENLOG_WARNING, "Cannot specify itself as foreign domain\n");
+        goto out;
+    }
+
+    switch ( domid )
+    {
+    case DOMID_IO:
+        pg_owner = rcu_lock_domain(dom_io);
+        break;
+
+    case DOMID_XEN:
+        pg_owner = rcu_lock_domain(dom_xen);
+        break;
+
+    default:
+        if ( (pg_owner = rcu_lock_domain_by_id(domid)) == NULL )
+            gdprintk(XENLOG_WARNING, "Unknown domain d%d\n", domid);
+        break;
+    }
+
+ out:
+    return pg_owner;
+}
 
 /*
  * Local variables:

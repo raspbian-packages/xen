@@ -3,6 +3,7 @@
 #include <xen/lib.h>
 #include <xen/init.h>
 #include <xen/mm.h>
+#include <xen/param.h>
 #include <xen/stdbool.h>
 #include <asm/flushtlb.h>
 #include <asm/invpcid.h>
@@ -51,6 +52,38 @@ get_fixed_ranges(mtrr_type * frs)
 	}
 }
 
+bool is_var_mtrr_overlapped(const struct mtrr_state *m)
+{
+    unsigned int seg, i;
+    unsigned int num_var_ranges = MASK_EXTR(m->mtrr_cap, MTRRcap_VCNT);
+
+    for ( i = 0; i < num_var_ranges; i++ )
+    {
+        uint64_t base1 = m->var_ranges[i].base >> PAGE_SHIFT;
+        uint64_t mask1 = m->var_ranges[i].mask >> PAGE_SHIFT;
+
+        if ( !(m->var_ranges[i].mask & MTRR_PHYSMASK_VALID) )
+            continue;
+
+        for ( seg = i + 1; seg < num_var_ranges; seg++ )
+        {
+            uint64_t base2 = m->var_ranges[seg].base >> PAGE_SHIFT;
+            uint64_t mask2 = m->var_ranges[seg].mask >> PAGE_SHIFT;
+
+            if ( !(m->var_ranges[seg].mask & MTRR_PHYSMASK_VALID) )
+                continue;
+
+            if ( (base1 & mask1 & mask2) == (base2 & mask2 & mask1) )
+            {
+                /* MTRRs overlap. */
+                return true;
+            }
+        }
+    }
+
+    return false;
+}
+
 void mtrr_save_fixed_ranges(void *info)
 {
 	get_fixed_ranges(mtrr_state.fixed_ranges);
@@ -80,7 +113,8 @@ void __init get_mtrr_state(void)
 
 	rdmsrl(MSR_MTRRdefType, msr_content);
 	mtrr_state.def_type = (msr_content & 0xff);
-	mtrr_state.enabled = (msr_content & 0xc00) >> 10;
+	mtrr_state.enabled = MASK_EXTR(msr_content, MTRRdefType_E);
+	mtrr_state.fixed_enabled = MASK_EXTR(msr_content, MTRRdefType_FE);
 
 	/* Store mtrr_cap for HVM MTRR virtualisation. */
 	rdmsrl(MSR_MTRRcap, mtrr_state.mtrr_cap);
@@ -159,7 +193,7 @@ static void __init print_mtrr_state(const char *level)
 		unsigned int base = 0, step = 0x10000;
 
 		printk("%sMTRR fixed ranges %sabled:\n", level,
-		       mtrr_state.enabled & 1 ? "en" : "dis");
+		       mtrr_state.fixed_enabled ? "en" : "dis");
 		for (; block->ranges; ++block, step >>= 2) {
 			for (i = 0; i < block->ranges; ++i, fr += 8) {
 				print_fixed(base, step, fr, level);
@@ -169,7 +203,7 @@ static void __init print_mtrr_state(const char *level)
 		print_fixed_last(level);
 	}
 	printk("%sMTRR variable ranges %sabled:\n", level,
-	       mtrr_state.enabled & 2 ? "en" : "dis");
+	       mtrr_state.enabled ? "en" : "dis");
 	width = (paddr_bits - PAGE_SHIFT + 3) / 4;
 
 	for (i = 0; i < num_var_ranges; ++i) {
@@ -184,8 +218,9 @@ static void __init print_mtrr_state(const char *level)
 			printk("%s  %u disabled\n", level, i);
 	}
 
-	if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD
-	    && boot_cpu_data.x86 >= 0xf) {
+	if ((boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
+	     boot_cpu_data.x86 >= 0xf) ||
+	     boot_cpu_data.x86_vendor == X86_VENDOR_HYGON) {
 		uint64_t syscfg, tom2;
 
 		rdmsrl(MSR_K8_SYSCFG, syscfg);
@@ -383,8 +418,11 @@ static unsigned long set_mtrr_state(void)
 	/*  Set_mtrr_restore restores the old value of MTRRdefType,
 	   so to set it we fiddle with the saved value  */
 	if ((deftype & 0xff) != mtrr_state.def_type
-	    || ((deftype & 0xc00) >> 10) != mtrr_state.enabled) {
-		deftype = (deftype & ~0xcff) | mtrr_state.def_type | (mtrr_state.enabled << 10);
+	    || MASK_EXTR(deftype, MTRRdefType_E) != mtrr_state.enabled
+	    || MASK_EXTR(deftype, MTRRdefType_FE) != mtrr_state.fixed_enabled) {
+		deftype = (deftype & ~0xcff) | mtrr_state.def_type |
+		          MASK_INSR(mtrr_state.enabled, MTRRdefType_E) |
+		          MASK_INSR(mtrr_state.fixed_enabled, MTRRdefType_FE);
 		change_mask |= MTRR_CHANGE_MASK_DEFTYPE;
 	}
 
@@ -413,7 +451,14 @@ static bool prepare_set(void)
 
 	/*  Enter the no-fill (CD=1, NW=0) cache mode and flush caches. */
 	write_cr0(read_cr0() | X86_CR0_CD);
-	wbinvd();
+
+	/*
+	 * Cache flushing is the most time-consuming step when programming
+	 * the MTRRs. Fortunately, as per the Intel Software Development
+	 * Manual, we can skip it if the processor supports cache self-
+	 * snooping.
+	 */
+	alternative("wbinvd", "", X86_FEATURE_XEN_SELFSNOOP);
 
 	cr4 = read_cr4();
 	if (cr4 & X86_CR4_PGE)
@@ -428,6 +473,9 @@ static bool prepare_set(void)
 
 	/*  Disable MTRRs, and set the default type to uncached  */
 	mtrr_wrmsr(MSR_MTRRdefType, deftype & ~0xcff);
+
+	/* Again, only flush caches if we have to. */
+	alternative("wbinvd", "", X86_FEATURE_XEN_SELFSNOOP);
 
 	return cr4 & X86_CR4_PGE;
 }

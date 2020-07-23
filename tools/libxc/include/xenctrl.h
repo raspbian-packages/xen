@@ -44,7 +44,6 @@
 #include <xen/hvm/dm_op.h>
 #include <xen/hvm/params.h>
 #include <xen/xsm/flask_op.h>
-#include <xen/tmem.h>
 #include <xen/kexec.h>
 #include <xen/platform.h>
 
@@ -182,6 +181,16 @@ enum xc_open_flags {
  * @return 0 on success, -1 otherwise.
  */
 int xc_interface_close(xc_interface *xch);
+
+/**
+ * Return the handles which xch has opened and will use for
+ * hypercalls, foreign memory accesses and device model operations.
+ * These may be used with the corresponding libraries so long as the
+ * xch itself remains open.
+ */
+struct xencall_handle *xc_interface_xcall_handle(xc_interface *xch);
+struct xenforeignmemory_handle *xc_interface_fmem_handle(xc_interface *xch);
+struct xendevicemodel_handle *xc_interface_dmod_handle(xc_interface *xch);
 
 /*
  * HYPERCALL SAFE MEMORY BUFFER
@@ -494,10 +503,8 @@ typedef struct xc_vcpu_extstate {
     void *buffer;
 } xc_vcpu_extstate_t;
 
-typedef struct xen_arch_domainconfig xc_domain_configuration_t;
-int xc_domain_create(xc_interface *xch, uint32_t ssidref,
-                     xen_domain_handle_t handle, uint32_t flags,
-                     uint32_t *pdomid, xc_domain_configuration_t *config);
+int xc_domain_create(xc_interface *xch, uint32_t *pdomid,
+                     struct xen_domctl_createdomain *config);
 
 
 /* Functions to produce a dump of a given domain
@@ -1073,31 +1080,6 @@ int xc_domain_set_access_required(xc_interface *xch,
  */
 int xc_domain_set_virq_handler(xc_interface *xch, uint32_t domid, int virq);
 
-/**
- * Set the maximum event channel port a domain may bind.
- *
- * This does not affect ports that are already bound.
- *
- * @param xch a handle to an open hypervisor interface
- * @param domid the domain id
- * @param max_port maximum port number
- */
-int xc_domain_set_max_evtchn(xc_interface *xch, uint32_t domid,
-                             uint32_t max_port);
-
-/**
- * Set the maximum number of grant frames and maptrack frames a domain
- * can have. Must be used at domain setup time and only then.
- *
- * @param xch a handle to an open hypervisor interface
- * @param domid the domain id
- * @param grant_frames max. number of grant frames
- * @param maptrack_frames max. number of maptrack frames
- */
-int xc_domain_set_gnttab_limits(xc_interface *xch, uint32_t domid,
-                                uint32_t grant_frames,
-                                uint32_t maptrack_frames);
-
 /*
  * CPUPOOL MANAGEMENT FUNCTIONS
  */
@@ -1243,8 +1225,7 @@ int xc_readconsolering(xc_interface *xch,
                        unsigned int *pnr_chars,
                        int clear, int incremental, uint32_t *pindex);
 
-int xc_send_debug_keys(xc_interface *xch, char *keys);
-int xc_set_parameters(xc_interface *xch, char *params);
+int xc_send_debug_keys(xc_interface *xch, const char *keys);
 
 typedef struct xen_sysctl_physinfo xc_physinfo_t;
 typedef struct xen_sysctl_cputopo xc_cputopo_t;
@@ -1262,6 +1243,7 @@ typedef uint32_t xc_node_to_node_dist_t;
 int xc_physinfo(xc_interface *xch, xc_physinfo_t *info);
 int xc_cputopoinfo(xc_interface *xch, unsigned *max_cpus,
                    xc_cputopo_t *cputopo);
+int xc_microcode_update(xc_interface *xch, const void *buf, size_t len);
 int xc_numainfo(xc_interface *xch, unsigned *max_nodes,
                 xc_meminfo_t *meminfo, uint32_t *distance);
 int xc_pcitopoinfo(xc_interface *xch, unsigned num_devs,
@@ -1798,15 +1780,6 @@ int xc_domain_unbind_pt_spi_irq(xc_interface *xch,
                                 uint16_t vspi,
                                 uint16_t spi);
 
-int xc_domain_set_machine_address_size(xc_interface *xch,
-				       uint32_t domid,
-				       unsigned int width);
-int xc_domain_get_machine_address_size(xc_interface *xch,
-				       uint32_t domid);
-
-int xc_domain_suppress_spurious_page_faults(xc_interface *xch,
-					  uint32_t domid);
-
 /* Set the target domain */
 int xc_domain_set_target(xc_interface *xch,
                          uint32_t domid,
@@ -1819,17 +1792,51 @@ int xc_domain_debug_control(xc_interface *xch,
                             uint32_t vcpu);
 
 #if defined(__i386__) || defined(__x86_64__)
-int xc_cpuid_set(xc_interface *xch,
-                 uint32_t domid,
-                 const unsigned int *input,
-                 const char **config,
-                 char **config_transformed);
+
+/*
+ * CPUID policy data, expressed in the legacy XEND format.
+ *
+ * Policy is an array of strings, 32 chars long:
+ *   policy[0] = eax
+ *   policy[1] = ebx
+ *   policy[2] = ecx
+ *   policy[3] = edx
+ *
+ * The format of the string is the following:
+ *   '1' -> force to 1
+ *   '0' -> force to 0
+ *   'x' -> we don't care (use default)
+ *   'k' -> pass through host value
+ *   's' -> legacy alias for 'k'
+ */
+struct xc_xend_cpuid {
+    union {
+        struct {
+            uint32_t leaf, subleaf;
+        };
+        uint32_t input[2];
+    };
+    char *policy[4];
+};
+
+/*
+ * Make adjustments to the CPUID settings for a domain.
+ *
+ * This path is used in two cases.  First, for fresh boots of the domain, and
+ * secondly for migrate-in/restore of pre-4.14 guests (where CPUID data was
+ * missing from the stream).  The @restore parameter distinguishes these
+ * cases, and the generated policy must be compatible with a 4.13.
+ *
+ * Either pass a full new @featureset (and @nr_features), or adjust individual
+ * features (@pae).
+ *
+ * Then (optionally) apply legacy XEND overrides (@xend) to the result.
+ */
 int xc_cpuid_apply_policy(xc_interface *xch,
-                          uint32_t domid,
-                          uint32_t *featureset,
-                          unsigned int nr_features);
-void xc_cpuid_to_str(const unsigned int *regs,
-                     char **strs); /* some strs[] may be NULL if ENOMEM */
+                          uint32_t domid, bool restore,
+                          const uint32_t *featureset,
+                          unsigned int nr_features, bool pae,
+                          const struct xc_xend_cpuid *xend);
 int xc_mca_op(xc_interface *xch, struct xen_mc *mc);
 int xc_mca_op_inject_v2(xc_interface *xch, unsigned int flags,
                         xc_cpumap_t cpumap, unsigned int nr_cpus);
@@ -1873,6 +1880,8 @@ int xc_pm_reset_cxstat(xc_interface *xch, int cpuid);
 
 int xc_cpu_online(xc_interface *xch, int cpu);
 int xc_cpu_offline(xc_interface *xch, int cpu);
+int xc_smt_enable(xc_interface *xch);
+int xc_smt_disable(xc_interface *xch);
 
 /* 
  * cpufreq para name of this structure named 
@@ -1924,24 +1933,11 @@ int xc_set_sched_opt_smt(xc_interface *xch, uint32_t value);
 int xc_get_cpuidle_max_cstate(xc_interface *xch, uint32_t *value);
 int xc_set_cpuidle_max_cstate(xc_interface *xch, uint32_t value);
 
+int xc_get_cpuidle_max_csubstate(xc_interface *xch, uint32_t *value);
+int xc_set_cpuidle_max_csubstate(xc_interface *xch, uint32_t value);
+
 int xc_enable_turbo(xc_interface *xch, int cpuid);
 int xc_disable_turbo(xc_interface *xch, int cpuid);
-/**
- * tmem operations
- */
-
-int xc_tmem_control_oid(xc_interface *xch, int32_t pool_id, uint32_t subop,
-                        uint32_t cli_id, uint32_t len, uint32_t arg,
-                        struct xen_tmem_oid oid, void *buf);
-int xc_tmem_control(xc_interface *xch,
-                    int32_t pool_id, uint32_t subop, uint32_t cli_id,
-                    uint32_t len, uint32_t arg, void *buf);
-int xc_tmem_auth(xc_interface *xch, int cli_id, char *uuid_str, int enable);
-int xc_tmem_save(xc_interface *xch, uint32_t domid, int live, int fd, int field_marker);
-int xc_tmem_save_extra(xc_interface *xch, uint32_t domid, int fd, int field_marker);
-void xc_tmem_save_done(xc_interface *xch, uint32_t domid);
-int xc_tmem_restore(xc_interface *xch, uint32_t domid, int fd);
-int xc_tmem_restore_extra(xc_interface *xch, uint32_t domid, int fd);
 
 /**
  * altp2m operations
@@ -1951,6 +1947,8 @@ int xc_altp2m_get_domain_state(xc_interface *handle, uint32_t dom, bool *state);
 int xc_altp2m_set_domain_state(xc_interface *handle, uint32_t dom, bool state);
 int xc_altp2m_set_vcpu_enable_notify(xc_interface *handle, uint32_t domid,
                                      uint32_t vcpuid, xen_pfn_t gfn);
+int xc_altp2m_set_vcpu_disable_notify(xc_interface *handle, uint32_t domid,
+                                      uint32_t vcpuid);
 int xc_altp2m_create_view(xc_interface *handle, uint32_t domid,
                           xenmem_access_t default_access, uint16_t *view_id);
 int xc_altp2m_destroy_view(xc_interface *handle, uint32_t domid,
@@ -1958,15 +1956,35 @@ int xc_altp2m_destroy_view(xc_interface *handle, uint32_t domid,
 /* Switch all vCPUs of the domain to the specified altp2m view */
 int xc_altp2m_switch_to_view(xc_interface *handle, uint32_t domid,
                              uint16_t view_id);
+int xc_altp2m_set_suppress_ve(xc_interface *handle, uint32_t domid,
+                              uint16_t view_id, xen_pfn_t gfn, bool sve);
+int xc_altp2m_set_supress_ve_multi(xc_interface *handle, uint32_t domid,
+                                   uint16_t view_id, xen_pfn_t first_gfn,
+                                   xen_pfn_t last_gfn, bool sve,
+                                   xen_pfn_t *error_gfn, int32_t *error_code);
+int xc_altp2m_get_suppress_ve(xc_interface *handle, uint32_t domid,
+                              uint16_t view_id, xen_pfn_t gfn, bool *sve);
 int xc_altp2m_set_mem_access(xc_interface *handle, uint32_t domid,
                              uint16_t view_id, xen_pfn_t gfn,
                              xenmem_access_t access);
 int xc_altp2m_set_mem_access_multi(xc_interface *handle, uint32_t domid,
                                    uint16_t view_id, uint8_t *access,
                                    uint64_t *gfns, uint32_t nr);
+int xc_altp2m_get_mem_access(xc_interface *handle, uint32_t domid,
+                             uint16_t view_id, xen_pfn_t gfn,
+                             xenmem_access_t *access);
 int xc_altp2m_change_gfn(xc_interface *handle, uint32_t domid,
                          uint16_t view_id, xen_pfn_t old_gfn,
                          xen_pfn_t new_gfn);
+int xc_altp2m_get_vcpu_p2m_idx(xc_interface *handle, uint32_t domid,
+                               uint32_t vcpuid, uint16_t *p2midx);
+/*
+ * Set view visibility for xc_altp2m_switch_to_view and vmfunc.
+ * Note: If altp2m mode is set to mixed the guest is able to change the view
+ * visibility and then call vmfunc.
+ */
+int xc_altp2m_set_visibility(xc_interface *handle, uint32_t domid,
+                             uint16_t view_id, bool visible);
 
 /** 
  * Mem paging operations.
@@ -2013,6 +2031,11 @@ int xc_set_mem_access_multi(xc_interface *xch, uint32_t domain_id,
 int xc_get_mem_access(xc_interface *xch, uint32_t domain_id,
                       uint64_t pfn, xenmem_access_t *access);
 
+/*
+ * Returns the VM_EVENT_INTERFACE version.
+ */
+int xc_vm_event_get_version(xc_interface *xch);
+
 /***
  * Monitor control operations.
  *
@@ -2049,6 +2072,13 @@ int xc_monitor_descriptor_access(xc_interface *xch, uint32_t domain_id,
                                  bool enable);
 int xc_monitor_guest_request(xc_interface *xch, uint32_t domain_id,
                              bool enable, bool sync, bool allow_userspace);
+/*
+ * Disables page-walk mem_access events by emulating. If the
+ * emulation can not be performed then a VM_EVENT_REASON_EMUL_UNIMPLEMENTED
+ * event will be issued.
+ */
+int xc_monitor_inguest_pagefault(xc_interface *xch, uint32_t domain_id,
+                                 bool disable);
 int xc_monitor_debug_exceptions(xc_interface *xch, uint32_t domain_id,
                                 bool enable, bool sync);
 int xc_monitor_cpuid(xc_interface *xch, uint32_t domain_id, bool enable);
@@ -2076,7 +2106,7 @@ int xc_monitor_emulate_each_rep(xc_interface *xch, uint32_t domain_id,
  *
  * Sharing is supported only on the x86 architecture in 64 bit mode, with
  * Hardware-Assisted Paging (i.e. Intel EPT, AMD NPT). Moreover, AMD NPT
- * support is considered experimental. 
+ * support is considered experimental.
 
  * Calls below return ENOSYS if not in the x86_64 architecture.
  * Calls below return ENODEV if the domain does not support HAP.
@@ -2123,13 +2153,13 @@ int xc_memshr_control(xc_interface *xch,
  *  EINVAL or EACCESS if the request is denied by the security policy
  */
 
-int xc_memshr_ring_enable(xc_interface *xch, 
+int xc_memshr_ring_enable(xc_interface *xch,
                           uint32_t domid,
                           uint32_t *port);
 /* Disable the ring for ENOMEM communication.
  * May fail with EINVAL if the ring was not enabled in the first place.
  */
-int xc_memshr_ring_disable(xc_interface *xch, 
+int xc_memshr_ring_disable(xc_interface *xch,
                            uint32_t domid);
 
 /*
@@ -2142,7 +2172,7 @@ int xc_memshr_ring_disable(xc_interface *xch,
 int xc_memshr_domain_resume(xc_interface *xch,
                             uint32_t domid);
 
-/* Select a page for sharing. 
+/* Select a page for sharing.
  *
  * A 64 bit opaque handle will be stored in handle.  The hypervisor ensures
  * that if the page is modified, the handle will be invalidated, and future
@@ -2171,7 +2201,7 @@ int xc_memshr_nominate_gref(xc_interface *xch,
 
 /* The three calls below may fail with
  * 10 (or -XENMEM_SHARING_OP_S_HANDLE_INVALID) if the handle passed as source
- * is invalid.  
+ * is invalid.
  * 9 (or -XENMEM_SHARING_OP_C_HANDLE_INVALID) if the handle passed as client is
  * invalid.
  */
@@ -2184,7 +2214,7 @@ int xc_memshr_nominate_gref(xc_interface *xch,
  *
  * After successful sharing, the client handle becomes invalid. Both <domain,
  * gfn> tuples point to the same mfn with the same handle, the one specified as
- * source. Either 3-tuple can be specified later for further re-sharing. 
+ * source. Either 3-tuple can be specified later for further re-sharing.
  */
 int xc_memshr_share_gfns(xc_interface *xch,
                     uint32_t source_domain,
@@ -2209,7 +2239,7 @@ int xc_memshr_share_grefs(xc_interface *xch,
 /* Allows to add to the guest physmap of the client domain a shared frame
  * directly.
  *
- * May additionally fail with 
+ * May additionally fail with
  *  9 (-XENMEM_SHARING_OP_C_HANDLE_INVALID) if the physmap entry for the gfn is
  *  not suitable.
  *  ENOMEM if internal data structures cannot be allocated.
@@ -2237,8 +2267,23 @@ int xc_memshr_range_share(xc_interface *xch,
                           uint64_t first_gfn,
                           uint64_t last_gfn);
 
+int xc_memshr_fork(xc_interface *xch,
+                   uint32_t source_domain,
+                   uint32_t client_domain,
+                   bool allow_with_iommu,
+                   bool block_interrupts);
+
+/*
+ * Note: this function is only intended to be used on short-lived forks that
+ * haven't yet aquired a lot of memory. In case the fork has a lot of memory
+ * it is likely more performant to create a new fork with xc_memshr_fork.
+ *
+ * With VMs that have a lot of memory this call may block for a long time.
+ */
+int xc_memshr_fork_reset(xc_interface *xch, uint32_t forked_domain);
+
 /* Debug calls: return the number of pages referencing the shared frame backing
- * the input argument. Should be one or greater. 
+ * the input argument. Should be one or greater.
  *
  * May fail with EINVAL if there is no backing shared frame for the input
  * argument.
@@ -2251,9 +2296,9 @@ int xc_memshr_debug_gref(xc_interface *xch,
                          uint32_t domid,
                          grant_ref_t gref);
 
-/* Audits the share subsystem. 
- * 
- * Returns ENOSYS if not supported (may not be compiled into the hypervisor). 
+/* Audits the share subsystem.
+ *
+ * Returns ENOSYS if not supported (may not be compiled into the hypervisor).
  *
  * Returns the number of errors found during auditing otherwise. May be (should
  * be!) zero.
@@ -2289,7 +2334,7 @@ long xc_sharing_freed_pages(xc_interface *xch);
  * should return 1. (And dominfo(d) for each of the two domains should return 1
  * as well).
  *
- * Note that some of these sharing_used_frames may be referenced by 
+ * Note that some of these sharing_used_frames may be referenced by
  * a single domain page, and thus not realize any savings. The same
  * applies to some of the pages counted in dominfo(d)->shr_pages.
  */
@@ -2330,66 +2375,6 @@ struct elf_binary;
 void xc_elf_set_logfile(xc_interface *xch, struct elf_binary *elf,
                         int verbose);
 /* Useful for callers who also use libelf. */
-
-/**
- * Checkpoint Compression
- */
-typedef struct compression_ctx comp_ctx;
-comp_ctx *xc_compression_create_context(xc_interface *xch,
-					unsigned long p2m_size);
-void xc_compression_free_context(xc_interface *xch, comp_ctx *ctx);
-
-/**
- * Add a page to compression page buffer, to be compressed later.
- *
- * returns 0 if the page was successfully added to the page buffer
- *
- * returns -1 if there is no space in buffer. In this case, the
- *  application should call xc_compression_compress_pages to compress
- *  the buffer (or atleast part of it), thereby freeing some space in
- *  the page buffer.
- *
- * returns -2 if the pfn is out of bounds, where the bound is p2m_size
- *  parameter passed during xc_compression_create_context.
- */
-int xc_compression_add_page(xc_interface *xch, comp_ctx *ctx, char *page,
-			    unsigned long pfn, int israw);
-
-/**
- * Delta compress pages in the compression buffer and inserts the
- * compressed data into the supplied compression buffer compbuf, whose
- * size is compbuf_size.
- * After compression, the pages are copied to the internal LRU cache.
- *
- * This function compresses as many pages as possible into the
- * supplied compression buffer. It maintains an internal iterator to
- * keep track of pages in the input buffer that are yet to be compressed.
- *
- * returns -1 if the compression buffer has run out of space.  
- * returns 1 on success.
- * returns 0 if no more pages are left to be compressed.
- *  When the return value is non-zero, compbuf_len indicates the actual
- *  amount of data present in compbuf (<=compbuf_size).
- */
-int xc_compression_compress_pages(xc_interface *xch, comp_ctx *ctx,
-				  char *compbuf, unsigned long compbuf_size,
-				  unsigned long *compbuf_len);
-
-/**
- * Resets the internal page buffer that holds dirty pages before compression.
- * Also resets the iterators.
- */
-void xc_compression_reset_pagebuf(xc_interface *xch, comp_ctx *ctx);
-
-/**
- * Caller must supply the compression buffer (compbuf),
- * its size (compbuf_size) and a reference to index variable (compbuf_pos)
- * that is used internally. Each call pulls out one page from the compressed
- * chunk and copies it to dest.
- */
-int xc_compression_uncompress_page(xc_interface *xch, char *compbuf,
-				   unsigned long compbuf_size,
-				   unsigned long *compbuf_pos, char *dest);
 
 /*
  * Execute an image previously loaded with xc_kexec_load().
@@ -2538,18 +2523,33 @@ int xc_get_cpu_levelling_caps(xc_interface *xch, uint32_t *caps);
 int xc_get_cpu_featureset(xc_interface *xch, uint32_t index,
                           uint32_t *nr_features, uint32_t *featureset);
 
+int xc_get_cpu_policy_size(xc_interface *xch, uint32_t *nr_leaves,
+                           uint32_t *nr_msrs);
+int xc_get_system_cpu_policy(xc_interface *xch, uint32_t index,
+                             uint32_t *nr_leaves, xen_cpuid_leaf_t *leaves,
+                             uint32_t *nr_msrs, xen_msr_entry_t *msrs);
+int xc_get_domain_cpu_policy(xc_interface *xch, uint32_t domid,
+                             uint32_t *nr_leaves, xen_cpuid_leaf_t *leaves,
+                             uint32_t *nr_msrs, xen_msr_entry_t *msrs);
+int xc_set_domain_cpu_policy(xc_interface *xch, uint32_t domid,
+                             uint32_t nr_leaves, xen_cpuid_leaf_t *leaves,
+                             uint32_t nr_msrs, xen_msr_entry_t *msrs,
+                             uint32_t *err_leaf_p, uint32_t *err_subleaf_p,
+                             uint32_t *err_msr_p);
+
 uint32_t xc_get_cpu_featureset_size(void);
 
 enum xc_static_cpu_featuremask {
     XC_FEATUREMASK_KNOWN,
     XC_FEATUREMASK_SPECIAL,
-    XC_FEATUREMASK_PV,
-    XC_FEATUREMASK_HVM_SHADOW,
-    XC_FEATUREMASK_HVM_HAP,
-    XC_FEATUREMASK_DEEP_FEATURES,
+    XC_FEATUREMASK_PV_MAX,
+    XC_FEATUREMASK_PV_DEF,
+    XC_FEATUREMASK_HVM_SHADOW_MAX,
+    XC_FEATUREMASK_HVM_SHADOW_DEF,
+    XC_FEATUREMASK_HVM_HAP_MAX,
+    XC_FEATUREMASK_HVM_HAP_DEF,
 };
 const uint32_t *xc_get_static_cpu_featuremask(enum xc_static_cpu_featuremask);
-const uint32_t *xc_get_feature_deep_deps(uint32_t feature);
 
 #endif
 
@@ -2561,7 +2561,28 @@ int xc_livepatch_get(xc_interface *xch,
                      xen_livepatch_status_t *status);
 
 /*
- * The heart of this function is to get an array of xen_livepatch_status_t.
+ * Get a number of available payloads and get actual total size of
+ * the payloads' name and metadata arrays.
+ *
+ * This functions is typically executed first before the xc_livepatch_list()
+ * to obtain the sizes and correctly allocate all necessary data resources.
+ *
+ * The return value is zero if the hypercall completed successfully.
+ *
+ * If there was an error performing the sysctl operation, the return value
+ * will contain the hypercall error code value.
+ */
+int xc_livepatch_list_get_sizes(xc_interface *xch, unsigned int *nr,
+                                uint32_t *name_total_size,
+                                uint32_t *metadata_total_size);
+
+/*
+ * The heart of this function is to get an array of the following objects:
+ *   - xen_livepatch_status_t: states and return codes of payloads
+ *   - name: names of payloads
+ *   - len: lengths of corresponding payloads' names
+ *   - metadata: payloads' metadata
+ *   - metadata_len: lengths of corresponding payloads' metadata
  *
  * However it is complex because it has to deal with the hypervisor
  * returning some of the requested data or data being stale
@@ -2572,22 +2593,26 @@ int xc_livepatch_get(xc_interface *xch,
  * 'left' are also updated with the number of entries filled out
  * and respectively the number of entries left to get from hypervisor.
  *
- * It is expected that the caller of this function will take the
- * 'left' and use the value for 'start'. This way we have an
- * cursor in the array. Note that the 'info','name', and 'len' will
- * be updated at the subsequent calls.
+ * It is expected that the caller of this function will first issue the
+ * xc_livepatch_list_get_sizes() in order to obtain total sizes of names
+ * and all metadata as well as the current number of payload entries.
+ * The total sizes are required and supplied via the 'name_total_size' and
+ * 'metadata_total_size' parameters.
  *
- * The 'max' is to be provided by the caller with the maximum
- * number of entries that 'info', 'name', and 'len' arrays can
- * be filled up with.
- *
- * Each entry in the 'name' array is expected to be of XEN_LIVEPATCH_NAME_SIZE
- * length.
+ * The 'max' is to be provided by the caller with the maximum number of
+ * entries that 'info', 'name', 'len', 'metadata' and 'metadata_len' arrays
+ * can be filled up with.
  *
  * Each entry in the 'info' array is expected to be of xen_livepatch_status_t
  * structure size.
  *
+ * Each entry in the 'name' array may have an arbitrary size.
+ *
  * Each entry in the 'len' array is expected to be of uint32_t size.
+ *
+ * Each entry in the 'metadata' array may have an arbitrary size.
+ *
+ * Each entry in the 'metadata_len' array is expected to be of uint32_t size.
  *
  * The return value is zero if the hypercall completed successfully.
  * Note that the return value is _not_ the amount of entries filled
@@ -2598,21 +2623,26 @@ int xc_livepatch_get(xc_interface *xch,
  * will contain the number of entries that had been succesfully
  * retrieved (if any).
  */
-int xc_livepatch_list(xc_interface *xch, unsigned int max, unsigned int start,
-                      xen_livepatch_status_t *info, char *name,
-                      uint32_t *len, unsigned int *done,
-                      unsigned int *left);
+int xc_livepatch_list(xc_interface *xch, const unsigned int max,
+                      const unsigned int start,
+                      struct xen_livepatch_status *info,
+                      char *name, uint32_t *len,
+                      const uint32_t name_total_size,
+                      char *metadata, uint32_t *metadata_len,
+                      const uint32_t metadata_total_size,
+                      unsigned int *done, unsigned int *left);
 
 /*
  * The operations are asynchronous and the hypervisor may take a while
  * to complete them. The `timeout` offers an option to expire the
  * operation if it could not be completed within the specified time
  * (in ns). Value of 0 means let hypervisor decide the best timeout.
+ * The `flags` allows to pass extra parameters to the actions.
  */
-int xc_livepatch_apply(xc_interface *xch, char *name, uint32_t timeout);
-int xc_livepatch_revert(xc_interface *xch, char *name, uint32_t timeout);
-int xc_livepatch_unload(xc_interface *xch, char *name, uint32_t timeout);
-int xc_livepatch_replace(xc_interface *xch, char *name, uint32_t timeout);
+int xc_livepatch_apply(xc_interface *xch, char *name, uint32_t timeout, uint32_t flags);
+int xc_livepatch_revert(xc_interface *xch, char *name, uint32_t timeout, uint32_t flags);
+int xc_livepatch_unload(xc_interface *xch, char *name, uint32_t timeout, uint32_t flags);
+int xc_livepatch_replace(xc_interface *xch, char *name, uint32_t timeout, uint32_t flags);
 
 /*
  * Ensure cache coherency after memory modifications. A call to this function

@@ -26,6 +26,11 @@
  *   A linear idea of a guest physical address space. For an auto-translated
  *   guest, pfn == gfn while for a non-translated guest, pfn != gfn.
  *
+ * dfn: Device DMA Frame Number (definitions in include/xen/iommu.h)
+ *   The linear frame numbers of device DMA address space. All initiators for
+ *   (i.e. all devices assigned to) a guest share a single DMA address space
+ *   and, by default, Xen will ensure dfn == pfn.
+ *
  * WARNING: Some of these terms have changed over time while others have been
  * used inconsistently, meaning that a lot of existing code does not match the
  * definitions above.  New code should use these terms as described here, and
@@ -185,7 +190,8 @@ int destroy_xen_mappings(unsigned long v, unsigned long e);
  */
 int populate_pt_range(unsigned long virt, unsigned long nr_mfns);
 /* Claim handling */
-unsigned long domain_adjust_tot_pages(struct domain *d, long pages);
+unsigned long __must_check domain_adjust_tot_pages(struct domain *d,
+    long pages);
 int domain_set_outstanding_pages(struct domain *d, unsigned long pages);
 void get_outstanding_claims(uint64_t *free_pages, uint64_t *outstanding_pages);
 
@@ -200,10 +206,9 @@ unsigned long avail_domheap_pages(void);
 unsigned long avail_node_heap_pages(unsigned int);
 #define alloc_domheap_page(d,f) (alloc_domheap_pages(d,0,f))
 #define free_domheap_page(p)  (free_domheap_pages(p,0))
-unsigned int online_page(unsigned long mfn, uint32_t *status);
-int offline_page(unsigned long mfn, int broken, uint32_t *status);
-int query_page_offline(unsigned long mfn, uint32_t *status);
-unsigned long total_free_pages(void);
+unsigned int online_page(mfn_t mfn, uint32_t *status);
+int offline_page(mfn_t mfn, int broken, uint32_t *status);
+int query_page_offline(mfn_t mfn, uint32_t *status);
 
 void heap_init_late(void);
 
@@ -243,8 +248,6 @@ struct npfec {
 #define  MEMF_no_refcount (1U<<_MEMF_no_refcount)
 #define _MEMF_populate_on_demand 1
 #define  MEMF_populate_on_demand (1U<<_MEMF_populate_on_demand)
-#define _MEMF_tmem        2
-#define  MEMF_tmem        (1U<<_MEMF_tmem)
 #define _MEMF_no_dma      3
 #define  MEMF_no_dma      (1U<<_MEMF_no_dma)
 #define _MEMF_exact_node  4
@@ -270,9 +273,22 @@ struct npfec {
 #define MAX_ORDER 20 /* 2^20 contiguous pages */
 #endif
 
+/* Private domain structs for DOMID_XEN, DOMID_IO, etc. */
+extern struct domain *dom_xen, *dom_io;
+#ifdef CONFIG_MEM_SHARING
+extern struct domain *dom_cow;
+#else
+# define dom_cow NULL
+#endif
+
 #define page_list_entry list_head
 
 #include <asm/mm.h>
+
+static inline bool is_special_page(const struct page_info *page)
+{
+    return is_xen_heap_page(page) || (page->count_info & PGC_extra);
+}
 
 #ifndef page_list_entry
 struct page_list_head
@@ -572,9 +588,8 @@ static inline unsigned int get_order_from_pages(unsigned long nr_pages)
 void scrub_one_page(struct page_info *);
 
 #ifndef arch_free_heap_page
-#define arch_free_heap_page(d, pg)                      \
-    page_list_del(pg, is_xen_heap_page(pg) ?            \
-                      &(d)->xenpage_list : &(d)->page_list)
+#define arch_free_heap_page(d, pg) \
+    page_list_del(pg, page_to_list(d, pg))
 #endif
 
 int xenmem_add_to_physmap_one(struct domain *d, unsigned int space,
@@ -588,15 +603,16 @@ int xenmem_add_to_physmap(struct domain *d, struct xen_add_to_physmap *xatp,
 int __must_check guest_remove_page(struct domain *d, unsigned long gmfn);
 int __must_check steal_page(struct domain *d, struct page_info *page,
                             unsigned int memflags);
-int __must_check donate_page(struct domain *d, struct page_info *page,
-                             unsigned int memflags);
 
 #define RAM_TYPE_CONVENTIONAL 0x00000001
 #define RAM_TYPE_RESERVED     0x00000002
 #define RAM_TYPE_UNUSABLE     0x00000004
 #define RAM_TYPE_ACPI         0x00000008
+#define RAM_TYPE_UNKNOWN      0x00000010
 /* TRUE if the whole page at @mfn is of the requested RAM type(s) above. */
 int page_is_ram_type(unsigned long mfn, unsigned long mem_type);
+/* Returns the page type(s). */
+unsigned int page_get_ram_type(mfn_t mfn);
 
 /* Prepare/destroy a ring for a dom0 helper. Helper with talk
  * with Xen on behalf of this domain. */
@@ -632,7 +648,7 @@ static inline void filtered_flush_tlb_mask(uint32_t tlbflush_timestamp)
     if ( !cpumask_empty(&mask) )
     {
         perfc_incr(need_flush_tlb_flush);
-        flush_tlb_mask(&mask);
+        arch_flush_tlb_mask(&mask);
     }
 }
 
@@ -642,12 +658,31 @@ enum XENSHARE_flags {
 };
 void share_xen_page_with_guest(struct page_info *page, struct domain *d,
                                enum XENSHARE_flags flags);
-int unshare_xen_page_with_guest(struct page_info *page, struct domain *d);
 
 static inline void share_xen_page_with_privileged_guests(
     struct page_info *page, enum XENSHARE_flags flags)
 {
     share_xen_page_with_guest(page, dom_xen, flags);
+}
+
+static inline void put_page_alloc_ref(struct page_info *page)
+{
+    /*
+     * Whenever a page is assigned to a domain then the _PGC_allocated
+     * bit is set and the reference count is set to at least 1. This
+     * function clears that 'allocation reference' but it is unsafe to
+     * do so to domheap pages without the caller holding an additional
+     * reference. I.e. the allocation reference must never be the last
+     * reference held.
+     *
+     * (It's safe for xenheap pages, because put_page() will not cause
+     * them to be freed.)
+     */
+    if ( test_and_clear_bit(_PGC_allocated, &page->count_info) )
+    {
+        BUG_ON((page->count_info & (PGC_xen_heap | PGC_count_mask)) <= 1);
+        put_page(page);
+    }
 }
 
 #endif /* __XEN_MM_H__ */

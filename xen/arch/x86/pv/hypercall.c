@@ -23,6 +23,7 @@
 #include <xen/hypercall.h>
 #include <xen/nospec.h>
 #include <xen/trace.h>
+#include <irq_vectors.h>
 
 #define HYPERCALL(x)                                                \
     [ __HYPERVISOR_ ## x ] = { (hypercall_fn_t *) do_ ## x,         \
@@ -53,8 +54,10 @@ const hypercall_table_t pv_hypercall_table[] = {
     COMPAT_CALL(xen_version),
     HYPERCALL(console_io),
     COMPAT_CALL(physdev_op_compat),
+#ifdef CONFIG_GRANT_TABLE
     COMPAT_CALL(grant_table_op),
-    COMPAT_CALL(vm_assist),
+#endif
+    HYPERCALL(vm_assist),
     COMPAT_CALL(update_va_mapping_otherdomain),
     COMPAT_CALL(iret),
     COMPAT_CALL(vcpu_op),
@@ -69,17 +72,22 @@ const hypercall_table_t pv_hypercall_table[] = {
 #endif
     HYPERCALL(event_channel_op),
     COMPAT_CALL(physdev_op),
-    HYPERCALL(hvm_op),
     HYPERCALL(sysctl),
     HYPERCALL(domctl),
 #ifdef CONFIG_KEXEC
     COMPAT_CALL(kexec_op),
 #endif
-#ifdef CONFIG_TMEM
-    HYPERCALL(tmem_op),
+#ifdef CONFIG_ARGO
+    COMPAT_CALL(argo_op),
 #endif
     HYPERCALL(xenpmu_op),
+#ifdef CONFIG_HVM
+    HYPERCALL(hvm_op),
     COMPAT_CALL(dm_op),
+#endif
+#ifdef CONFIG_HYPFS
+    HYPERCALL(hypfs_op),
+#endif
     HYPERCALL(mca),
     HYPERCALL(arch_1),
 };
@@ -263,16 +271,28 @@ enum mc_disposition arch_do_multicall_call(struct mc_state *state)
              ? mc_continue : mc_preempt;
 }
 
-void hypercall_page_initialise_ring3_kernel(void *hypercall_page)
+void pv_ring3_init_hypercall_page(void *p)
 {
-    void *p = hypercall_page;
     unsigned int i;
 
-    /* Fill in all the transfer points with template machine code. */
     for ( i = 0; i < (PAGE_SIZE / 32); i++, p += 32 )
     {
-        if ( i == __HYPERVISOR_iret )
+        if ( unlikely(i == __HYPERVISOR_iret) )
+        {
+            /*
+             * HYPERVISOR_iret is special because it doesn't return and
+             * expects a special stack frame. Guests jump at this transfer
+             * point instead of calling it.
+             */
+            *(u8  *)(p+ 0) = 0x51;    /* push %rcx */
+            *(u16 *)(p+ 1) = 0x5341;  /* push %r11 */
+            *(u8  *)(p+ 3) = 0x50;    /* push %rax */
+            *(u8  *)(p+ 4) = 0xb8;    /* mov  $__HYPERVISOR_iret, %eax */
+            *(u32 *)(p+ 5) = __HYPERVISOR_iret;
+            *(u16 *)(p+ 9) = 0x050f;  /* syscall */
+
             continue;
+        }
 
         *(u8  *)(p+ 0) = 0x51;    /* push %rcx */
         *(u16 *)(p+ 1) = 0x5341;  /* push %r11 */
@@ -283,50 +303,37 @@ void hypercall_page_initialise_ring3_kernel(void *hypercall_page)
         *(u8  *)(p+12) = 0x59;    /* pop  %rcx */
         *(u8  *)(p+13) = 0xc3;    /* ret */
     }
-
-    /*
-     * HYPERVISOR_iret is special because it doesn't return and expects a
-     * special stack frame. Guests jump at this transfer point instead of
-     * calling it.
-     */
-    p = hypercall_page + (__HYPERVISOR_iret * 32);
-    *(u8  *)(p+ 0) = 0x51;    /* push %rcx */
-    *(u16 *)(p+ 1) = 0x5341;  /* push %r11 */
-    *(u8  *)(p+ 3) = 0x50;    /* push %rax */
-    *(u8  *)(p+ 4) = 0xb8;    /* mov  $__HYPERVISOR_iret,%eax */
-    *(u32 *)(p+ 5) = __HYPERVISOR_iret;
-    *(u16 *)(p+ 9) = 0x050f;  /* syscall */
 }
 
-void hypercall_page_initialise_ring1_kernel(void *hypercall_page)
+#ifdef CONFIG_PV32
+void pv_ring1_init_hypercall_page(void *p)
 {
-    void *p = hypercall_page;
     unsigned int i;
-
-    /* Fill in all the transfer points with template machine code. */
 
     for ( i = 0; i < (PAGE_SIZE / 32); i++, p += 32 )
     {
-        if ( i == __HYPERVISOR_iret )
+        if ( unlikely(i == __HYPERVISOR_iret) )
+        {
+            /*
+             * HYPERVISOR_iret is special because it doesn't return and
+             * expects a special stack frame. Guests jump at this transfer
+             * point instead of calling it.
+             */
+            *(u8  *)(p+ 0) = 0x50;    /* push %eax */
+            *(u8  *)(p+ 1) = 0xb8;    /* mov  $__HYPERVISOR_iret, %eax */
+            *(u32 *)(p+ 2) = __HYPERVISOR_iret;
+            *(u16 *)(p+ 6) = (HYPERCALL_VECTOR << 8) | 0xcd; /* int  $xx */
+
             continue;
+        }
 
         *(u8  *)(p+ 0) = 0xb8;    /* mov  $<i>,%eax */
         *(u32 *)(p+ 1) = i;
         *(u16 *)(p+ 5) = (HYPERCALL_VECTOR << 8) | 0xcd; /* int  $xx */
         *(u8  *)(p+ 7) = 0xc3;    /* ret */
     }
-
-    /*
-     * HYPERVISOR_iret is special because it doesn't return and expects a
-     * special stack frame. Guests jump at this transfer point instead of
-     * calling it.
-     */
-    p = hypercall_page + (__HYPERVISOR_iret * 32);
-    *(u8  *)(p+ 0) = 0x50;    /* push %eax */
-    *(u8  *)(p+ 1) = 0xb8;    /* mov  $__HYPERVISOR_iret,%eax */
-    *(u32 *)(p+ 2) = __HYPERVISOR_iret;
-    *(u16 *)(p+ 6) = (HYPERCALL_VECTOR << 8) | 0xcd; /* int  $xx */
 }
+#endif
 
 /*
  * Local variables:

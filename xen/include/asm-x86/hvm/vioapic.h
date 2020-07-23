@@ -25,7 +25,6 @@
 #define __ASM_X86_HVM_VIOAPIC_H__
 
 #include <xen/types.h>
-#include <xen/smp.h>
 #include <public/hvm/save.h>
 
 #define VIOAPIC_VERSION_ID 0x11 /* IOAPIC version */
@@ -58,7 +57,7 @@ struct hvm_vioapic {
 };
 
 #define hvm_vioapic_size(cnt) offsetof(struct hvm_vioapic, redirtbl[cnt])
-#define domain_vioapic(d, i) ((d)->arch.hvm_domain.vioapic[i])
+#define domain_vioapic(d, i) ((d)->arch.hvm.vioapic[i])
 #define vioapic_domain(v) ((v)->domain)
 
 int vioapic_init(struct domain *d);

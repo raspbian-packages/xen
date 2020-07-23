@@ -59,7 +59,7 @@
 int hap_track_dirty_vram(struct domain *d,
                          unsigned long begin_pfn,
                          unsigned long nr,
-                         XEN_GUEST_HANDLE_PARAM(void) guest_dirty_bitmap)
+                         XEN_GUEST_HANDLE(void) guest_dirty_bitmap)
 {
     long rc = 0;
     struct sh_dirty_vram *dirty_vram;
@@ -71,7 +71,7 @@ int hap_track_dirty_vram(struct domain *d,
 
         if ( !paging_mode_log_dirty(d) )
         {
-            rc = paging_log_dirty_enable(d, 0);
+            rc = paging_log_dirty_enable(d, false);
             if ( rc )
                 goto out;
         }
@@ -83,7 +83,7 @@ int hap_track_dirty_vram(struct domain *d,
 
         paging_lock(d);
 
-        dirty_vram = d->arch.hvm_domain.dirty_vram;
+        dirty_vram = d->arch.hvm.dirty_vram;
         if ( !dirty_vram )
         {
             rc = -ENOMEM;
@@ -93,7 +93,7 @@ int hap_track_dirty_vram(struct domain *d,
                 goto out;
             }
 
-            d->arch.hvm_domain.dirty_vram = dirty_vram;
+            d->arch.hvm.dirty_vram = dirty_vram;
         }
 
         if ( begin_pfn != dirty_vram->begin_pfn ||
@@ -118,7 +118,7 @@ int hap_track_dirty_vram(struct domain *d,
             p2m_change_type_range(d, begin_pfn, begin_pfn + nr,
                                   p2m_ram_rw, p2m_ram_logdirty);
 
-            flush_tlb_mask(d->dirty_cpumask);
+            guest_flush_tlb_mask(d, d->dirty_cpumask);
 
             memset(dirty_bitmap, 0xff, size); /* consider all pages dirty */
         }
@@ -145,7 +145,7 @@ int hap_track_dirty_vram(struct domain *d,
     {
         paging_lock(d);
 
-        dirty_vram = d->arch.hvm_domain.dirty_vram;
+        dirty_vram = d->arch.hvm.dirty_vram;
         if ( dirty_vram )
         {
             /*
@@ -155,7 +155,7 @@ int hap_track_dirty_vram(struct domain *d,
             begin_pfn = dirty_vram->begin_pfn;
             nr = dirty_vram->end_pfn - dirty_vram->begin_pfn;
             xfree(dirty_vram);
-            d->arch.hvm_domain.dirty_vram = NULL;
+            d->arch.hvm.dirty_vram = NULL;
         }
 
         paging_unlock(d);
@@ -205,7 +205,7 @@ static int hap_enable_log_dirty(struct domain *d, bool_t log_global)
          * to be read-only, or via hardware-assisted log-dirty.
          */
         p2m_change_entry_type_global(d, p2m_ram_rw, p2m_ram_logdirty);
-        flush_tlb_mask(d->dirty_cpumask);
+        guest_flush_tlb_mask(d, d->dirty_cpumask);
     }
     return 0;
 }
@@ -234,7 +234,7 @@ static void hap_clean_dirty_bitmap(struct domain *d)
      * be read-only, or via hardware-assisted log-dirty.
      */
     p2m_change_entry_type_global(d, p2m_ram_rw, p2m_ram_logdirty);
-    flush_tlb_mask(d->dirty_cpumask);
+    guest_flush_tlb_mask(d, d->dirty_cpumask);
 }
 
 /************************************************/
@@ -304,10 +304,11 @@ static void hap_free_p2m_page(struct domain *d, struct page_info *pg)
     /* Should still have no owner and count zero. */
     if ( owner || (pg->count_info & PGC_count_mask) )
     {
-        HAP_ERROR("d%d: Odd p2m page %"PRI_mfn" d=%d c=%lx t=%"PRtype_info"\n",
-                  d->domain_id, mfn_x(page_to_mfn(pg)),
-                  owner ? owner->domain_id : DOMID_INVALID,
-                  pg->count_info, pg->u.inuse.type_info);
+        printk(XENLOG_WARNING
+               "d%d: Odd p2m page %"PRI_mfn" d=%d c=%lx t=%"PRtype_info"\n",
+               d->domain_id, mfn_x(page_to_mfn(pg)),
+               owner ? owner->domain_id : DOMID_INVALID,
+               pg->count_info, pg->u.inuse.type_info);
         WARN();
         pg->count_info &= ~PGC_count_mask;
         page_set_owner(pg, NULL);
@@ -320,8 +321,7 @@ static void hap_free_p2m_page(struct domain *d, struct page_info *pg)
 }
 
 /* Return the size of the pool, rounded up to the nearest MB */
-static unsigned int
-hap_get_allocation(struct domain *d)
+unsigned int hap_get_allocation(struct domain *d)
 {
     unsigned int pg = d->arch.paging.hap.total_pages
         + d->arch.paging.hap.p2m_pages;
@@ -393,7 +393,7 @@ static mfn_t hap_make_monitor_table(struct vcpu *v)
     l4_pgentry_t *l4e;
     mfn_t m4mfn;
 
-    ASSERT(pagetable_get_pfn(v->arch.monitor_table) == 0);
+    ASSERT(pagetable_get_pfn(v->arch.hvm.monitor_table) == 0);
 
     if ( (pg = hap_alloc(d)) == NULL )
         goto oom;
@@ -407,7 +407,7 @@ static mfn_t hap_make_monitor_table(struct vcpu *v)
     return m4mfn;
 
  oom:
-    HAP_ERROR("out of memory building monitor pagetable\n");
+    printk(XENLOG_G_ERR "out of memory building monitor pagetable\n");
     domain_crash(d);
     return INVALID_MFN;
 }
@@ -444,6 +444,13 @@ int hap_enable(struct domain *d, u32 mode)
     unsigned int i;
     int rv = 0;
 
+    if ( mode != (PG_external | PG_translate | PG_refcounts) )
+        return -EINVAL;
+
+    /* The function can only be called once per domain. */
+    if ( d->arch.paging.mode != 0 )
+        return -EEXIST;
+
     domain_pause(d);
 
     old_pages = d->arch.paging.hap.total_pages;
@@ -464,15 +471,13 @@ int hap_enable(struct domain *d, u32 mode)
     d->arch.paging.alloc_page = hap_alloc_p2m_page;
     d->arch.paging.free_page = hap_free_p2m_page;
 
-    /* allocate P2m table */
-    if ( mode & PG_translate )
-    {
-        rv = p2m_alloc_table(p2m_get_hostp2m(d));
-        if ( rv != 0 )
-            goto out;
-    }
+    /* allocate P2M table */
+    rv = p2m_alloc_table(p2m_get_hostp2m(d));
+    if ( rv != 0 )
+        goto out;
 
-    for (i = 0; i < MAX_NESTEDP2M; i++) {
+    for ( i = 0; i < MAX_NESTEDP2M; i++ )
+    {
         rv = p2m_alloc_table(d->arch.nested_p2m[i]);
         if ( rv != 0 )
            goto out;
@@ -487,8 +492,17 @@ int hap_enable(struct domain *d, u32 mode)
             goto out;
         }
 
+        if ( (d->arch.altp2m_visible_eptp = alloc_xenheap_page()) == NULL )
+        {
+            rv = -ENOMEM;
+            goto out;
+        }
+
         for ( i = 0; i < MAX_EPTP; i++ )
+        {
             d->arch.altp2m_eptp[i] = mfn_x(INVALID_MFN);
+            d->arch.altp2m_visible_eptp[i] = mfn_x(INVALID_MFN);
+        }
 
         for ( i = 0; i < MAX_ALTP2M; i++ )
         {
@@ -520,6 +534,12 @@ void hap_final_teardown(struct domain *d)
         {
             free_xenheap_page(d->arch.altp2m_eptp);
             d->arch.altp2m_eptp = NULL;
+        }
+
+        if ( d->arch.altp2m_visible_eptp )
+        {
+            free_xenheap_page(d->arch.altp2m_visible_eptp);
+            d->arch.altp2m_visible_eptp = NULL;
         }
 
         for ( i = 0; i < MAX_ALTP2M; i++ )
@@ -559,10 +579,10 @@ void hap_teardown(struct domain *d, bool *preempted)
         {
             if ( paging_get_hostmode(v) && paging_mode_external(d) )
             {
-                mfn = pagetable_get_mfn(v->arch.monitor_table);
+                mfn = pagetable_get_mfn(v->arch.hvm.monitor_table);
                 if ( mfn_valid(mfn) && (mfn_x(mfn) != 0) )
                     hap_destroy_monitor_table(v, mfn);
-                v->arch.monitor_table = pagetable_null();
+                v->arch.hvm.monitor_table = pagetable_null();
             }
         }
     }
@@ -579,8 +599,7 @@ void hap_teardown(struct domain *d, bool *preempted)
 
     d->arch.paging.mode &= ~PG_log_dirty;
 
-    xfree(d->arch.hvm_domain.dirty_vram);
-    d->arch.hvm_domain.dirty_vram = NULL;
+    XFREE(d->arch.hvm.dirty_vram);
 
 out:
     paging_unlock(d);
@@ -640,7 +659,7 @@ static int hap_page_fault(struct vcpu *v, unsigned long va,
 {
     struct domain *d = v->domain;
 
-    HAP_ERROR("Intercepted a guest #PF (%pv) with HAP enabled\n", v);
+    printk(XENLOG_G_ERR "Intercepted #PF from %pv with HAP enabled\n", v);
     domain_crash(d);
     return 0;
 }
@@ -650,7 +669,7 @@ static int hap_page_fault(struct vcpu *v, unsigned long va,
  * should not be intercepting it.  However, we need to correctly handle
  * getting here from instruction emulation.
  */
-static bool_t hap_invlpg(struct vcpu *v, unsigned long va)
+static bool_t hap_invlpg(struct vcpu *v, unsigned long linear)
 {
     /*
      * Emulate INVLPGA:
@@ -665,8 +684,54 @@ static bool_t hap_invlpg(struct vcpu *v, unsigned long va)
 
 static void hap_update_cr3(struct vcpu *v, int do_locking, bool noflush)
 {
-    v->arch.hvm_vcpu.hw_cr[3] = v->arch.hvm_vcpu.guest_cr[3];
+    v->arch.hvm.hw_cr[3] = v->arch.hvm.guest_cr[3];
     hvm_update_guest_cr3(v, noflush);
+}
+
+/*
+ * Dummy function to use with on_selected_cpus in order to trigger a vmexit on
+ * selected pCPUs. When the VM resumes execution it will get a new ASID/VPID
+ * and thus a clean TLB.
+ */
+static void dummy_flush(void *data)
+{
+}
+
+static bool flush_tlb(bool (*flush_vcpu)(void *ctxt, struct vcpu *v),
+                      void *ctxt)
+{
+    static DEFINE_PER_CPU(cpumask_t, flush_cpumask);
+    cpumask_t *mask = &this_cpu(flush_cpumask);
+    struct domain *d = current->domain;
+    unsigned int this_cpu = smp_processor_id();
+    struct vcpu *v;
+
+    cpumask_clear(mask);
+
+    /* Flush paging-mode soft state (e.g., va->gfn cache; PAE PDPE cache). */
+    for_each_vcpu ( d, v )
+    {
+        unsigned int cpu;
+
+        if ( !flush_vcpu(ctxt, v) )
+            continue;
+
+        hvm_asid_flush_vcpu(v);
+
+        cpu = read_atomic(&v->dirty_cpu);
+        if ( cpu != this_cpu && is_vcpu_dirty_cpu(cpu) && v->is_running )
+            __cpumask_set_cpu(cpu, mask);
+    }
+
+    /*
+     * Trigger a vmexit on all pCPUs with dirty vCPU state in order to force an
+     * ASID/VPID change and hence accomplish a guest TLB flush. Note that vCPUs
+     * not currently running will already be flushed when scheduled because of
+     * the ASID tickle done in the loop above.
+     */
+    on_selected_cpus(mask, dummy_flush, NULL, 0);
+
+    return true;
 }
 
 const struct paging_mode *
@@ -681,7 +746,7 @@ hap_paging_get_mode(struct vcpu *v)
 static void hap_update_paging_modes(struct vcpu *v)
 {
     struct domain *d = v->domain;
-    unsigned long cr3_gfn = v->arch.hvm_vcpu.guest_cr[3] >> PAGE_SHIFT;
+    unsigned long cr3_gfn = v->arch.hvm.guest_cr[3] >> PAGE_SHIFT;
     p2m_type_t t;
 
     /* We hold onto the cr3 as it may be modified later, and
@@ -693,10 +758,10 @@ static void hap_update_paging_modes(struct vcpu *v)
 
     v->arch.paging.mode = hap_paging_get_mode(v);
 
-    if ( pagetable_is_null(v->arch.monitor_table) )
+    if ( pagetable_is_null(v->arch.hvm.monitor_table) )
     {
         mfn_t mmfn = hap_make_monitor_table(v);
-        v->arch.monitor_table = pagetable_from_mfn(mmfn);
+        v->arch.hvm.monitor_table = pagetable_from_mfn(mmfn);
         make_cr3(v, mmfn);
         hvm_update_host_cr3(v);
     }
@@ -708,12 +773,14 @@ static void hap_update_paging_modes(struct vcpu *v)
     put_gfn(d, cr3_gfn);
 }
 
-static void
-hap_write_p2m_entry(struct domain *d, unsigned long gfn, l1_pgentry_t *p,
+static int
+hap_write_p2m_entry(struct p2m_domain *p2m, unsigned long gfn, l1_pgentry_t *p,
                     l1_pgentry_t new, unsigned int level)
 {
+    struct domain *d = p2m->domain;
     uint32_t old_flags;
     bool_t flush_nestedp2m = 0;
+    int rc;
 
     /* We know always use the host p2m here, regardless if the vcpu
      * is in host or guest mode. The vcpu can be in guest mode by
@@ -729,18 +796,30 @@ hap_write_p2m_entry(struct domain *d, unsigned long gfn, l1_pgentry_t *p,
          * unless the only change is an increase in access rights. */
         mfn_t omfn = l1e_get_mfn(*p);
         mfn_t nmfn = l1e_get_mfn(new);
-        flush_nestedp2m = !( mfn_x(omfn) == mfn_x(nmfn)
+
+        flush_nestedp2m = !(mfn_eq(omfn, nmfn)
             && perms_strictly_increased(old_flags, l1e_get_flags(new)) );
+    }
+
+    rc = p2m_entry_modify(p2m, p2m_flags_to_type(l1e_get_flags(new)),
+                          p2m_flags_to_type(old_flags), l1e_get_mfn(new),
+                          l1e_get_mfn(*p), level);
+    if ( rc )
+    {
+        paging_unlock(d);
+        return rc;
     }
 
     safe_write_pte(p, new);
     if ( old_flags & _PAGE_PRESENT )
-        flush_tlb_mask(d->dirty_cpumask);
+        guest_flush_tlb_mask(d, d->dirty_cpumask);
 
     paging_unlock(d);
 
     if ( flush_nestedp2m )
         p2m_flush_nestedp2m(d);
+
+    return 0;
 }
 
 static unsigned long hap_gva_to_gfn_real_mode(
@@ -767,6 +846,7 @@ static const struct paging_mode hap_paging_real_mode = {
     .update_cr3             = hap_update_cr3,
     .update_paging_modes    = hap_update_paging_modes,
     .write_p2m_entry        = hap_write_p2m_entry,
+    .flush_tlb              = flush_tlb,
     .guest_levels           = 1
 };
 
@@ -778,6 +858,7 @@ static const struct paging_mode hap_paging_protected_mode = {
     .update_cr3             = hap_update_cr3,
     .update_paging_modes    = hap_update_paging_modes,
     .write_p2m_entry        = hap_write_p2m_entry,
+    .flush_tlb              = flush_tlb,
     .guest_levels           = 2
 };
 
@@ -789,6 +870,7 @@ static const struct paging_mode hap_paging_pae_mode = {
     .update_cr3             = hap_update_cr3,
     .update_paging_modes    = hap_update_paging_modes,
     .write_p2m_entry        = hap_write_p2m_entry,
+    .flush_tlb              = flush_tlb,
     .guest_levels           = 3
 };
 
@@ -800,6 +882,7 @@ static const struct paging_mode hap_paging_long_mode = {
     .update_cr3             = hap_update_cr3,
     .update_paging_modes    = hap_update_paging_modes,
     .write_p2m_entry        = hap_write_p2m_entry,
+    .flush_tlb              = flush_tlb,
     .guest_levels           = 4
 };
 

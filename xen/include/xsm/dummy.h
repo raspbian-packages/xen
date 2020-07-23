@@ -17,6 +17,7 @@
 
 #include <xen/sched.h>
 #include <xsm/xsm.h>
+#include <public/hvm/params.h>
 
 /* Cannot use BUILD_BUG_ON here because the expressions we check are not
  * considered constant at compile time. Instead, rely on constant propagation to
@@ -79,7 +80,7 @@ static always_inline int xsm_default_action(
         {
             return 0;
     case XSM_XS_PRIV:
-            if ( src->is_xenstore )
+            if ( is_xenstore_domain(src) )
                 return 0;
         }
         /* fall through */
@@ -231,6 +232,8 @@ static XSM_INLINE int xsm_memory_stat_reservation(XSM_DEFAULT_ARG struct domain 
 static XSM_INLINE int xsm_console_io(XSM_DEFAULT_ARG struct domain *d, int cmd)
 {
     XSM_ASSERT_ACTION(XSM_OTHER);
+    if ( d->is_console )
+        return xsm_default_action(XSM_HOOK, d, NULL);
 #ifdef CONFIG_VERBOSE_DEBUG
     if ( cmd == CONSOLEIO_write )
         return xsm_default_action(XSM_HOOK, d, NULL);
@@ -431,9 +434,9 @@ static XSM_INLINE int xsm_page_offline(XSM_DEFAULT_ARG uint32_t cmd)
     return xsm_default_action(action, current->domain, NULL);
 }
 
-static XSM_INLINE int xsm_tmem_op(XSM_DEFAULT_VOID)
+static XSM_INLINE int xsm_hypfs_op(XSM_DEFAULT_VOID)
 {
-    XSM_ASSERT_ACTION(XSM_HOOK);
+    XSM_ASSERT_ACTION(XSM_PRIV);
     return xsm_default_action(action, current->domain, NULL);
 }
 
@@ -585,7 +588,7 @@ static XSM_INLINE int xsm_vm_event_control(XSM_DEFAULT_ARG struct domain *d, int
     return xsm_default_action(action, current->domain, d);
 }
 
-#ifdef CONFIG_HAS_MEM_ACCESS
+#ifdef CONFIG_MEM_ACCESS
 static XSM_INLINE int xsm_mem_access(XSM_DEFAULT_ARG struct domain *d)
 {
     XSM_ASSERT_ACTION(XSM_DM_PRIV);
@@ -601,7 +604,7 @@ static XSM_INLINE int xsm_mem_paging(XSM_DEFAULT_ARG struct domain *d)
 }
 #endif
 
-#ifdef CONFIG_HAS_MEM_SHARING
+#ifdef CONFIG_MEM_SHARING
 static XSM_INLINE int xsm_mem_sharing(XSM_DEFAULT_ARG struct domain *d)
 {
     XSM_ASSERT_ACTION(XSM_DM_PRIV);
@@ -717,6 +720,31 @@ static XSM_INLINE int xsm_dm_op(XSM_DEFAULT_ARG struct domain *d)
 }
 
 #endif /* CONFIG_X86 */
+
+#ifdef CONFIG_ARGO
+static XSM_INLINE int xsm_argo_enable(const struct domain *d)
+{
+    return 0;
+}
+
+static XSM_INLINE int xsm_argo_register_single_source(const struct domain *d,
+                                                      const struct domain *t)
+{
+    return 0;
+}
+
+static XSM_INLINE int xsm_argo_register_any_source(const struct domain *d)
+{
+    return 0;
+}
+
+static XSM_INLINE int xsm_argo_send(const struct domain *d,
+                                    const struct domain *t)
+{
+    return 0;
+}
+
+#endif /* CONFIG_ARGO */
 
 #include <public/version.h>
 static XSM_INLINE int xsm_xen_version (XSM_DEFAULT_ARG uint32_t op)

@@ -30,6 +30,7 @@
 #include <xen/errno.h>
 #include <acpi/actables.h>
 #include <xen/mm.h>
+#include <xen/param.h>
 #include <xen/device_tree.h>
 
 #include <asm/acpi.h>
@@ -246,9 +247,11 @@ int __init acpi_boot_table_init(void)
      * - the device tree is not empty (it has more than just a /chosen node)
      *   and ACPI has not been force enabled (acpi=force)
      */
-    if ( param_acpi_off || ( !param_acpi_force
-                             && device_tree_for_each_node(device_tree_flattened,
-                                                   dt_scan_depth1_nodes, NULL)))
+    if ( param_acpi_off)
+        goto disable;
+    if ( !param_acpi_force &&
+         device_tree_for_each_node(device_tree_flattened, 0,
+                                   dt_scan_depth1_nodes, NULL) )
         goto disable;
 
     /*

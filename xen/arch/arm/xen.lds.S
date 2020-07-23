@@ -4,7 +4,6 @@
 
 #include <xen/cache.h>
 #include <asm/page.h>
-#include <asm/percpu.h>
 #undef ENTRY
 #undef ALIGN
 
@@ -55,16 +54,9 @@ SECTIONS
        *(.data.rel.ro)
        *(.data.rel.ro.*)
 
-#ifdef CONFIG_LOCK_PROFILE
-       . = ALIGN(POINTER_ALIGN);
-       __lock_profile_start = .;
-       *(.lockprofile.data)
-       __lock_profile_end = .;
-#endif
-       . = ALIGN(POINTER_ALIGN);
-       __param_start = .;
-       *(.data.param)
-       __param_end = .;
+       __proc_info_start = .;
+       *(.proc.info)
+       __proc_info_end = .;
 
 #if defined(CONFIG_HAS_VPCI) && defined(CONFIG_LATE_HWDOM)
        . = ALIGN(POINTER_ALIGN);
@@ -92,6 +84,14 @@ SECTIONS
        __start_schedulers_array = .;
        *(.data.schedulers)
        __end_schedulers_array = .;
+
+#ifdef CONFIG_HYPFS
+       . = ALIGN(8);
+       __paramhypfs_start = .;
+       *(.data.paramhypfs)
+       __paramhypfs_end = .;
+#endif
+
        *(.data.rel)
        *(.data.rel.*)
        CONSTRUCTORS
@@ -133,6 +133,13 @@ SECTIONS
       _aedevice = .;
   } :text
 
+  . = ALIGN(8);
+  .teemediator.info : {
+      _steemediator = .;
+      *(.teemediator.info)
+      _eteemediator = .;
+  } :text
+
   . = ALIGN(PAGE_SIZE);             /* Init code and data */
   __init_begin = .;
   .init.text : {
@@ -143,17 +150,12 @@ SECTIONS
   . = ALIGN(PAGE_SIZE);
   .init.data : {
        *(.init.rodata)
-       *(.init.rodata.rel)
-       *(.init.rodata.str*)
+       *(.init.rodata.*)
 
        . = ALIGN(POINTER_ALIGN);
        __setup_start = .;
        *(.init.setup)
        __setup_end = .;
-
-       __proc_info_start = .;
-       *(.init.proc.info)
-       __proc_info_end = .;
 
        __initcall_start = .;
        *(.initcallpresmp.init)
@@ -167,6 +169,13 @@ SECTIONS
        __alt_instructions_end = .;
        . = ALIGN(4);
        *(.altinstr_replacement)
+
+#ifdef CONFIG_DEBUG_LOCK_PROFILE
+       . = ALIGN(POINTER_ALIGN);
+       __lock_profile_start = .;
+       *(.lockprofile.data)
+       __lock_profile_end = .;
+#endif
 
        *(.init.data)
        *(.init.data.rel)

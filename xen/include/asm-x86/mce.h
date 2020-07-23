@@ -1,7 +1,8 @@
-#include <xen/types.h>
-#include <public/arch-x86/xen-mca.h>
 #ifndef _XEN_X86_MCE_H
 #define _XEN_X86_MCE_H
+
+#include <xen/spinlock.h>
+#include <xen/types.h>
 
 /*
  * Emulate 2 banks for guest
@@ -32,6 +33,9 @@ struct vmce {
     struct vmce_bank bank[GUEST_MC_BANK_NUM];
 };
 
+struct domain;
+struct vcpu;
+
 /* Guest vMCE MSRs virtualization */
 extern void vmce_init_vcpu(struct vcpu *);
 extern int vmce_restore_vcpu(struct vcpu *, const struct hvm_vmce_vcpu *);
@@ -40,6 +44,6 @@ extern int vmce_rdmsr(uint32_t msr, uint64_t *val);
 extern bool vmce_has_lmce(const struct vcpu *v);
 extern int vmce_enable_mca_cap(struct domain *d, uint64_t cap);
 
-extern unsigned int nr_mce_banks;
+DECLARE_PER_CPU(unsigned int, nr_mce_banks);
 
 #endif

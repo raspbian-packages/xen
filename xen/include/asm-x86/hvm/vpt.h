@@ -19,16 +19,10 @@
 #ifndef __ASM_X86_HVM_VPT_H__
 #define __ASM_X86_HVM_VPT_H__
 
-#include <xen/init.h>
-#include <xen/lib.h>
-#include <xen/time.h>
-#include <xen/errno.h>
-#include <xen/time.h>
 #include <xen/timer.h>
 #include <xen/list.h>
-#include <asm/hvm/vpic.h>
-#include <asm/hvm/irq.h>
-#include <public/hvm/save.h>
+#include <xen/rwlock.h>
+#include <asm/hvm/hvm.h>
 
 /*
  * Abstract layer of periodic time, one short time.
@@ -37,11 +31,12 @@ typedef void time_cb(struct vcpu *v, void *opaque);
 
 struct periodic_time {
     struct list_head list;
-    bool_t on_list;
-    bool_t one_shot;
-    bool_t do_not_freeze;
-    bool_t irq_issued;
-    bool_t warned_timeout_too_short;
+    bool on_list;
+    bool one_shot;
+    bool do_not_freeze;
+    bool irq_issued;
+    bool warned_timeout_too_short;
+    bool level;
 #define PTSRC_isa    1 /* ISA time source */
 #define PTSRC_lapic  2 /* LAPIC time source */
 #define PTSRC_ioapic 3 /* IOAPIC time source */
@@ -144,13 +139,14 @@ struct pl_time {    /* platform time */
 void pt_save_timer(struct vcpu *v);
 void pt_restore_timer(struct vcpu *v);
 int pt_update_irq(struct vcpu *v);
+struct hvm_intack;
 void pt_intr_post(struct vcpu *v, struct hvm_intack intack);
 void pt_migrate(struct vcpu *v);
 
 void pt_adjust_global_vcpu_target(struct vcpu *v);
 #define pt_global_vcpu_target(d) \
-    (is_hvm_domain(d) && (d)->arch.hvm_domain.i8259_target ? \
-     (d)->arch.hvm_domain.i8259_target : \
+    (is_hvm_domain(d) && (d)->arch.hvm.i8259_target ? \
+     (d)->arch.hvm.i8259_target : \
      (d)->vcpu ? (d)->vcpu[0] : NULL)
 
 void pt_may_unmask_irq(struct domain *d, struct periodic_time *vlapic_pt);
@@ -169,7 +165,7 @@ void pt_may_unmask_irq(struct domain *d, struct periodic_time *vlapic_pt);
  */
 void create_periodic_time(
     struct vcpu *v, struct periodic_time *pt, uint64_t delta,
-    uint64_t period, uint8_t irq, time_cb *cb, void *data);
+    uint64_t period, uint8_t irq, time_cb *cb, void *data, bool level);
 void destroy_periodic_time(struct periodic_time *pt);
 
 int pv_pit_handler(int port, int data, int write);
@@ -187,7 +183,7 @@ void rtc_update_clock(struct domain *d);
 void pmtimer_init(struct vcpu *v);
 void pmtimer_deinit(struct domain *d);
 void pmtimer_reset(struct domain *d);
-int pmtimer_change_ioport(struct domain *d, unsigned int version);
+int pmtimer_change_ioport(struct domain *d, uint64_t version);
 
 void hpet_init(struct domain *d);
 void hpet_deinit(struct domain *d);

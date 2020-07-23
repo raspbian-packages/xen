@@ -19,25 +19,7 @@
  * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <xen/errno.h>
-#include <xen/event.h>
-#include <xen/guest_access.h>
-#include <xen/iocap.h>
-#include <xen/spinlock.h>
-#include <xen/trace.h>
-
-#include <asm/apic.h>
-#include <asm/debugreg.h>
-#include <asm/hpet.h>
-#include <asm/hypercall.h>
-#include <asm/mc146818rtc.h>
-#include <asm/p2m.h>
-#include <asm/pv/traps.h>
-#include <asm/shared.h>
-#include <asm/traps.h>
-#include <asm/x86_emulate.h>
-
-#include <xsm/xsm.h>
+#include <xen/err.h>
 
 #include "emulate.h"
 
@@ -47,8 +29,8 @@ static int read_gate_descriptor(unsigned int gate_sel,
                                 unsigned long *off,
                                 unsigned int *ar)
 {
-    struct desc_struct desc;
-    const struct desc_struct *pdesc = gdt_ldt_desc_ptr(gate_sel);
+    seg_desc_t desc;
+    const seg_desc_t *pdesc = gdt_ldt_desc_ptr(gate_sel);
 
     if ( (gate_sel < 4) ||
          /*
@@ -56,8 +38,8 @@ static int read_gate_descriptor(unsigned int gate_sel,
           * seg_desc_t for 32-bit and a consecutive pair of them for 64-bit.
           */
          ((gate_sel >> 3) + !is_pv_32bit_vcpu(v) >=
-          (gate_sel & 4 ? v->arch.pv_vcpu.ldt_ents
-                        : v->arch.pv_vcpu.gdt_ents)) ||
+          (gate_sel & 4 ? v->arch.pv.ldt_ents
+                        : v->arch.pv.gdt_ents)) ||
          __get_user(desc, pdesc) )
         return 0;
 
@@ -330,8 +312,8 @@ void pv_emulate_gate_op(struct cpu_user_regs *regs)
                 pv_inject_hw_exception(TRAP_gp_fault, regs->error_code);
                 return;
             }
-            esp = v->arch.pv_vcpu.kernel_sp;
-            ss = v->arch.pv_vcpu.kernel_ss;
+            esp = v->arch.pv.kernel_sp;
+            ss = v->arch.pv.kernel_ss;
             if ( (ss & 3) != (sel & 3) ||
                  !pv_emul_read_descriptor(ss, v, &base, &limit, &ar, 0) ||
                  ((ar >> 13) & 3) != (sel & 3) ||

@@ -24,6 +24,7 @@ const
 char *libxl_basename(const char *name); /* returns string from strdup */
 
 unsigned long libxl_get_required_shadow_memory(unsigned long maxmem_kb, unsigned int smp_cpus);
+  /* deprecated; see LIBXL_HAVE_DOMAIN_NEED_MEMORY_CONFIG in libxl.h */
 int libxl_name_to_domid(libxl_ctx *ctx, const char *name, uint32_t *domid);
 int libxl_domain_qualifier_to_domid(libxl_ctx *ctx, const char *name, uint32_t *domid);
 char *libxl_domid_to_name(libxl_ctx *ctx, uint32_t domid);
@@ -79,8 +80,14 @@ int libxl_devid_to_device_vtpm(libxl_ctx *ctx, uint32_t domid,
 int libxl_devid_to_device_usbctrl(libxl_ctx *ctx, uint32_t domid,
                                   int devid, libxl_device_usbctrl *usbctrl);
 
+int libxl_devid_to_device_vkb(libxl_ctx *ctx, uint32_t domid,
+                              int devid, libxl_device_vkb *vkb);
+
 int libxl_devid_to_device_vdispl(libxl_ctx *ctx, uint32_t domid,
                                  int devid, libxl_device_vdispl *vdispl);
+
+int libxl_devid_to_device_vsnd(libxl_ctx *ctx, uint32_t domid,
+                               int devid, libxl_device_vsnd *vsnd);
 
 int libxl_ctrlport_to_device_usbdev(libxl_ctx *ctx, uint32_t domid,
                                     int ctrl, int port,

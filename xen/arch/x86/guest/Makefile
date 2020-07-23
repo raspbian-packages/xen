@@ -1,4 +1,4 @@
-obj-y += hypercall_page.o
-obj-y += xen.o
+obj-y += hypervisor.o
 
-obj-bin-$(CONFIG_PVH_GUEST) += pvh-boot.init.o
+obj-$(CONFIG_HYPERV_GUEST) += hyperv/
+obj-$(CONFIG_XEN_GUEST) += xen/

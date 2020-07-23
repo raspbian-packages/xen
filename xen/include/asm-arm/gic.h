@@ -166,7 +166,7 @@
 
 #define DT_MATCH_GIC_V3 DT_MATCH_COMPATIBLE("arm,gic-v3")
 
-#ifdef CONFIG_HAS_GICV3
+#ifdef CONFIG_GICV3
 /*
  * GICv3 registers that needs to be saved/restored
  */
@@ -194,7 +194,7 @@ struct gic_v2 {
  */
 union gic_state_data {
     struct gic_v2 v2;
-#ifdef CONFIG_HAS_GICV3
+#ifdef CONFIG_GICV3
     struct gic_v3 v3;
 #endif
 };
@@ -249,9 +249,7 @@ extern int gic_route_irq_to_guest(struct domain *, unsigned int virq,
 int gic_remove_irq_from_guest(struct domain *d, unsigned int virq,
                               struct irq_desc *desc);
 
-extern void vgic_sync_to_lrs(void);
 extern void gic_clear_pending_irqs(struct vcpu *v);
-extern int vgic_vcpu_pending_irq(struct vcpu *v);
 
 extern void init_maintenance_interrupt(void);
 extern void gic_raise_guest_irq(struct vcpu *v, unsigned int irq,
@@ -279,9 +277,10 @@ extern void gic_restore_state(struct vcpu *v);
 
 /* SGI (AKA IPIs) */
 enum gic_sgi {
-    GIC_SGI_EVENT_CHECK = 0,
-    GIC_SGI_DUMP_STATE  = 1,
-    GIC_SGI_CALL_FUNCTION = 2,
+    GIC_SGI_EVENT_CHECK,
+    GIC_SGI_DUMP_STATE,
+    GIC_SGI_CALL_FUNCTION,
+    GIC_SGI_MAX,
 };
 
 /* SGI irq mode types */
@@ -306,7 +305,6 @@ extern unsigned int gic_number_lines(void);
 /* IRQ translation function for the device tree */
 int gic_irq_xlate(const u32 *intspec, unsigned int intsize,
                   unsigned int *out_hwirq, unsigned int *out_type);
-void vgic_sync_from_lrs(struct vcpu *v);
 
 struct gic_info {
     /* GIC version */
@@ -403,9 +401,14 @@ static inline unsigned int gic_get_nr_lrs(void)
  * Set the active state of an IRQ. This should be used with care, as this
  * directly forces the active bit, without considering the GIC state machine.
  * For private IRQs this only works for those of the current CPU.
+ *
+ * This function should only be called for interrupts routed to the
+ * guest. The flow of interrupts routed to Xen is not able cope with
+ * software changes to the active state.
  */
 static inline void gic_set_active_state(struct irq_desc *irqd, bool state)
 {
+    ASSERT(test_bit(_IRQ_GUEST, &irqd->status));
     gic_hw_ops->set_active_state(irqd, state);
 }
 

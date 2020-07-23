@@ -16,7 +16,7 @@
  * with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
-asm(".file \"" __FILE__ "\"");
+EMIT_FILE;
 
 #include <xen/lib.h>
 #include <xen/init.h>
@@ -129,14 +129,13 @@ static mfn_t alloc_hotadd_mfn(struct mem_hotadd_info *info)
 static int m2p_mapped(unsigned long spfn)
 {
     unsigned long va;
-    l3_pgentry_t *l3_ro_mpt;
-    l2_pgentry_t *l2_ro_mpt;
+    l3_pgentry_t l3e;
+    l2_pgentry_t l2e;
 
     va = RO_MPT_VIRT_START + spfn * sizeof(*machine_to_phys_mapping);
-    l3_ro_mpt = l4e_to_l3e(idle_pg_table[l4_table_offset(va)]);
+    l3e = l3e_from_l4e(idle_pg_table[l4_table_offset(va)], l3_table_offset(va));
 
-    switch ( l3e_get_flags(l3_ro_mpt[l3_table_offset(va)]) &
-             (_PAGE_PRESENT |_PAGE_PSE))
+    switch ( l3e_get_flags(l3e) & (_PAGE_PRESENT | _PAGE_PSE) )
     {
         case _PAGE_PSE|_PAGE_PRESENT:
             return M2P_1G_MAPPED;
@@ -146,9 +145,9 @@ static int m2p_mapped(unsigned long spfn)
         default:
             return M2P_NO_MAPPED;
     }
-    l2_ro_mpt = l3e_to_l2e(l3_ro_mpt[l3_table_offset(va)]);
+    l2e = l2e_from_l3e(l3e, l2_table_offset(va));
 
-    if (l2e_get_flags(l2_ro_mpt[l2_table_offset(va)]) & _PAGE_PRESENT)
+    if ( l2e_get_flags(l2e) & _PAGE_PRESENT )
         return M2P_2M_MAPPED;
 
     return M2P_NO_MAPPED;
@@ -167,14 +166,14 @@ static int share_hotadd_m2p_table(struct mem_hotadd_info *info)
           v += n << PAGE_SHIFT )
     {
         n = L2_PAGETABLE_ENTRIES * L1_PAGETABLE_ENTRIES;
-        l3e = l4e_to_l3e(idle_pg_table[l4_table_offset(v)])[
-            l3_table_offset(v)];
+        l3e = l3e_from_l4e(idle_pg_table[l4_table_offset(v)],
+                           l3_table_offset(v));
         if ( !(l3e_get_flags(l3e) & _PAGE_PRESENT) )
             continue;
         if ( !(l3e_get_flags(l3e) & _PAGE_PSE) )
         {
             n = L1_PAGETABLE_ENTRIES;
-            l2e = l3e_to_l2e(l3e)[l2_table_offset(v)];
+            l2e = l2e_from_l3e(l3e, l2_table_offset(v));
             if ( !(l2e_get_flags(l2e) & _PAGE_PRESENT) )
                 continue;
             m2p_start_mfn = l2e_get_mfn(l2e);
@@ -195,11 +194,11 @@ static int share_hotadd_m2p_table(struct mem_hotadd_info *info)
           v != RDWR_COMPAT_MPT_VIRT_END;
           v += 1 << L2_PAGETABLE_SHIFT )
     {
-        l3e = l4e_to_l3e(idle_pg_table[l4_table_offset(v)])[
-            l3_table_offset(v)];
+        l3e = l3e_from_l4e(idle_pg_table[l4_table_offset(v)],
+                           l3_table_offset(v));
         if ( !(l3e_get_flags(l3e) & _PAGE_PRESENT) )
             continue;
-        l2e = l3e_to_l2e(l3e)[l2_table_offset(v)];
+        l2e = l2e_from_l3e(l3e, l2_table_offset(v));
         if ( !(l2e_get_flags(l2e) & _PAGE_PRESENT) )
             continue;
         m2p_start_mfn = l2e_get_mfn(l2e);
@@ -217,11 +216,7 @@ static int share_hotadd_m2p_table(struct mem_hotadd_info *info)
 
 static void destroy_compat_m2p_mapping(struct mem_hotadd_info *info)
 {
-    unsigned long i, va, rwva, pt_pfn;
-    unsigned long smap = info->spfn, emap = info->spfn;
-
-    l3_pgentry_t *l3_ro_mpt;
-    l2_pgentry_t *l2_ro_mpt;
+    unsigned long i, smap = info->spfn, emap = info->spfn;
 
     if ( smap > ((RDWR_COMPAT_MPT_VIRT_END - RDWR_COMPAT_MPT_VIRT_START) >> 2) )
         return;
@@ -229,26 +224,21 @@ static void destroy_compat_m2p_mapping(struct mem_hotadd_info *info)
     if ( emap > ((RDWR_COMPAT_MPT_VIRT_END - RDWR_COMPAT_MPT_VIRT_START) >> 2) )
         emap = (RDWR_COMPAT_MPT_VIRT_END - RDWR_COMPAT_MPT_VIRT_START) >> 2;
 
-    l3_ro_mpt = l4e_to_l3e(idle_pg_table[l4_table_offset(HIRO_COMPAT_MPT_VIRT_START)]);
-
-    ASSERT(l3e_get_flags(l3_ro_mpt[l3_table_offset(HIRO_COMPAT_MPT_VIRT_START)]) & _PAGE_PRESENT);
-
-    l2_ro_mpt = l3e_to_l2e(l3_ro_mpt[l3_table_offset(HIRO_COMPAT_MPT_VIRT_START)]);
-
     for ( i = smap; i < emap; )
     {
-        va = HIRO_COMPAT_MPT_VIRT_START +
-              i * sizeof(*compat_machine_to_phys_mapping);
-        rwva = RDWR_COMPAT_MPT_VIRT_START +
-             i * sizeof(*compat_machine_to_phys_mapping);
-        if ( l2e_get_flags(l2_ro_mpt[l2_table_offset(va)]) & _PAGE_PRESENT )
+        unsigned int off = i * sizeof(*compat_machine_to_phys_mapping);
+        l2_pgentry_t *pl2e = compat_idle_pg_table_l2 + l2_table_offset(off);
+
+        if ( l2e_get_flags(*pl2e) & _PAGE_PRESENT )
         {
-            pt_pfn = l2e_get_pfn(l2_ro_mpt[l2_table_offset(va)]);
+            unsigned long pt_pfn = l2e_get_pfn(*pl2e);
+
             if ( hotadd_mem_valid(pt_pfn, info) )
             {
-                destroy_xen_mappings(rwva, rwva +
-                        (1UL << L2_PAGETABLE_SHIFT));
-                l2e_write(&l2_ro_mpt[l2_table_offset(va)], l2e_empty());
+                unsigned long rwva = RDWR_COMPAT_MPT_VIRT_START + off;
+
+                destroy_xen_mappings(rwva, rwva + (1UL << L2_PAGETABLE_SHIFT));
+                l2e_write(pl2e, l2e_empty());
             }
         }
 
@@ -264,7 +254,8 @@ static void destroy_m2p_mapping(struct mem_hotadd_info *info)
     unsigned long i, va, rwva;
     unsigned long smap = info->spfn, emap = info->epfn;
 
-    l3_ro_mpt = l4e_to_l3e(idle_pg_table[l4_table_offset(RO_MPT_VIRT_START)]);
+    l3_ro_mpt = map_l3t_from_l4e(
+                    idle_pg_table[l4_table_offset(RO_MPT_VIRT_START)]);
 
     /*
      * No need to clean m2p structure existing before the hotplug
@@ -272,7 +263,7 @@ static void destroy_m2p_mapping(struct mem_hotadd_info *info)
     for (i = smap; i < emap;)
     {
         unsigned long pt_pfn;
-        l2_pgentry_t *l2_ro_mpt;
+        l2_pgentry_t *pl2e;
 
         va = RO_MPT_VIRT_START + i * sizeof(*machine_to_phys_mapping);
         rwva = RDWR_MPT_VIRT_START + i * sizeof(*machine_to_phys_mapping);
@@ -286,25 +277,29 @@ static void destroy_m2p_mapping(struct mem_hotadd_info *info)
             continue;
         }
 
-        l2_ro_mpt = l3e_to_l2e(l3_ro_mpt[l3_table_offset(va)]);
-        if (!(l2e_get_flags(l2_ro_mpt[l2_table_offset(va)]) & _PAGE_PRESENT))
+        pl2e = map_l2t_from_l3e(l3_ro_mpt[l3_table_offset(va)]) +
+                    l2_table_offset(va);
+        if ( !(l2e_get_flags(*pl2e) & _PAGE_PRESENT) )
         {
             i = ( i & ~((1UL << (L2_PAGETABLE_SHIFT - 3)) - 1)) +
                     (1UL << (L2_PAGETABLE_SHIFT - 3)) ;
+            UNMAP_DOMAIN_PAGE(pl2e);
             continue;
         }
 
-        pt_pfn = l2e_get_pfn(l2_ro_mpt[l2_table_offset(va)]);
+        pt_pfn = l2e_get_pfn(*pl2e);
         if ( hotadd_mem_valid(pt_pfn, info) )
         {
             destroy_xen_mappings(rwva, rwva + (1UL << L2_PAGETABLE_SHIFT));
 
-            l2_ro_mpt = l3e_to_l2e(l3_ro_mpt[l3_table_offset(va)]);
-            l2e_write(&l2_ro_mpt[l2_table_offset(va)], l2e_empty());
+            l2e_write(pl2e, l2e_empty());
         }
         i = ( i & ~((1UL << (L2_PAGETABLE_SHIFT - 3)) - 1)) +
               (1UL << (L2_PAGETABLE_SHIFT - 3));
+        unmap_domain_page(pl2e);
     }
+
+    UNMAP_DOMAIN_PAGE(l3_ro_mpt);
 
     destroy_compat_m2p_mapping(info);
 
@@ -320,11 +315,9 @@ static void destroy_m2p_mapping(struct mem_hotadd_info *info)
  */
 static int setup_compat_m2p_table(struct mem_hotadd_info *info)
 {
-    unsigned long i, va, smap, emap, rwva, epfn = info->epfn;
+    unsigned long i, smap, emap, epfn = info->epfn;
     mfn_t mfn;
     unsigned int n;
-    l3_pgentry_t *l3_ro_mpt = NULL;
-    l2_pgentry_t *l2_ro_mpt = NULL;
     int err = 0;
 
     smap = info->spfn & (~((1UL << (L2_PAGETABLE_SHIFT - 2)) -1));
@@ -342,14 +335,6 @@ static int setup_compat_m2p_table(struct mem_hotadd_info *info)
     emap = ( (epfn + ((1UL << (L2_PAGETABLE_SHIFT - 2)) - 1 )) &
                 ~((1UL << (L2_PAGETABLE_SHIFT - 2)) - 1) );
 
-    va = HIRO_COMPAT_MPT_VIRT_START +
-         smap * sizeof(*compat_machine_to_phys_mapping);
-    l3_ro_mpt = l4e_to_l3e(idle_pg_table[l4_table_offset(va)]);
-
-    ASSERT(l3e_get_flags(l3_ro_mpt[l3_table_offset(va)]) & _PAGE_PRESENT);
-
-    l2_ro_mpt = l3e_to_l2e(l3_ro_mpt[l3_table_offset(va)]);
-
 #define MFN(x) (((x) << L2_PAGETABLE_SHIFT) / sizeof(unsigned int))
 #define CNT ((sizeof(*frame_table) & -sizeof(*frame_table)) / \
              sizeof(*compat_machine_to_phys_mapping))
@@ -358,13 +343,11 @@ static int setup_compat_m2p_table(struct mem_hotadd_info *info)
 
     for ( i = smap; i < emap; i += (1UL << (L2_PAGETABLE_SHIFT - 2)) )
     {
-        va = HIRO_COMPAT_MPT_VIRT_START +
-              i * sizeof(*compat_machine_to_phys_mapping);
+        unsigned int off = i * sizeof(*compat_machine_to_phys_mapping);
+        l2_pgentry_t *pl2e = compat_idle_pg_table_l2 + l2_table_offset(off);
+        unsigned long rwva = RDWR_COMPAT_MPT_VIRT_START + off;
 
-        rwva = RDWR_COMPAT_MPT_VIRT_START +
-                i * sizeof(*compat_machine_to_phys_mapping);
-
-        if (l2e_get_flags(l2_ro_mpt[l2_table_offset(va)]) & _PAGE_PRESENT)
+        if ( l2e_get_flags(*pl2e) & _PAGE_PRESENT )
             continue;
 
         for ( n = 0; n < CNT; ++n)
@@ -381,8 +364,7 @@ static int setup_compat_m2p_table(struct mem_hotadd_info *info)
         /* Fill with INVALID_M2P_ENTRY. */
         memset((void *)rwva, 0xFF, 1UL << L2_PAGETABLE_SHIFT);
         /* NB. Cannot be GLOBAL as the ptes get copied into per-VM space. */
-        l2e_write(&l2_ro_mpt[l2_table_offset(va)],
-                  l2e_from_mfn(mfn, _PAGE_PSE|_PAGE_PRESENT));
+        l2e_write(pl2e, l2e_from_mfn(mfn, _PAGE_PSE|_PAGE_PRESENT));
     }
 #undef CNT
 #undef MFN
@@ -627,17 +609,10 @@ void __init paging_init(void)
 #undef MFN
 
     /* Create user-accessible L2 directory to map the MPT for compat guests. */
-    BUILD_BUG_ON(l4_table_offset(RDWR_MPT_VIRT_START) !=
-                 l4_table_offset(HIRO_COMPAT_MPT_VIRT_START));
-    l3_ro_mpt = l4e_to_l3e(idle_pg_table[l4_table_offset(
-        HIRO_COMPAT_MPT_VIRT_START)]);
     if ( (l2_ro_mpt = alloc_xen_pagetable()) == NULL )
         goto nomem;
     compat_idle_pg_table_l2 = l2_ro_mpt;
     clear_page(l2_ro_mpt);
-    l3e_write(&l3_ro_mpt[l3_table_offset(HIRO_COMPAT_MPT_VIRT_START)],
-              l3e_from_paddr(__pa(l2_ro_mpt), __PAGE_HYPERVISOR_RO));
-    l2_ro_mpt += l2_table_offset(HIRO_COMPAT_MPT_VIRT_START);
     /* Allocate and map the compatibility mode machine-to-phys table. */
     mpt_size = (mpt_size >> 1) + (1UL << (L2_PAGETABLE_SHIFT - 1));
     if ( mpt_size > RDWR_COMPAT_MPT_VIRT_END - RDWR_COMPAT_MPT_VIRT_START )
@@ -685,7 +660,7 @@ void __init paging_init(void)
     return;
 
  nomem:
-    panic("Not enough memory for m2p table");
+    panic("Not enough memory for m2p table\n");
 }
 
 void __init zap_low_mappings(void)
@@ -699,7 +674,7 @@ void __init zap_low_mappings(void)
     /* Replace with mapping of the boot trampoline only. */
     map_pages_to_xen(trampoline_phys, maddr_to_mfn(trampoline_phys),
                      PFN_UP(trampoline_end - trampoline_start),
-                     __PAGE_HYPERVISOR);
+                     __PAGE_HYPERVISOR_RX);
 }
 
 int setup_compat_arg_xlat(struct vcpu *v)
@@ -733,8 +708,8 @@ static void cleanup_frame_table(struct mem_hotadd_info *info)
 
     while (sva < eva)
     {
-        l3e = l4e_to_l3e(idle_pg_table[l4_table_offset(sva)])[
-          l3_table_offset(sva)];
+        l3e = l3e_from_l4e(idle_pg_table[l4_table_offset(sva)],
+                           l3_table_offset(sva));
         if ( !(l3e_get_flags(l3e) & _PAGE_PRESENT) ||
              (l3e_get_flags(l3e) & _PAGE_PSE) )
         {
@@ -743,7 +718,7 @@ static void cleanup_frame_table(struct mem_hotadd_info *info)
             continue;
         }
 
-        l2e = l3e_to_l2e(l3e)[l2_table_offset(sva)];
+        l2e = l2e_from_l3e(l3e, l2_table_offset(sva));
         ASSERT(l2e_get_flags(l2e) & _PAGE_PRESENT);
 
         if ( (l2e_get_flags(l2e) & (_PAGE_PRESENT | _PAGE_PSE)) ==
@@ -759,10 +734,10 @@ static void cleanup_frame_table(struct mem_hotadd_info *info)
             continue;
         }
 
-        ASSERT(l1e_get_flags(l2e_to_l1e(l2e)[l1_table_offset(sva)]) &
-                _PAGE_PRESENT);
-         sva = (sva & ~((1UL << PAGE_SHIFT) - 1)) +
-                    (1UL << PAGE_SHIFT);
+        ASSERT(l1e_get_flags(l1e_from_l2e(l2e, l1_table_offset(sva))) &
+               _PAGE_PRESENT);
+
+        sva = (sva & PAGE_MASK) + PAGE_SIZE;
     }
 
     /* Brute-Force flush all TLB */
@@ -801,7 +776,7 @@ static int extend_frame_table(struct mem_hotadd_info *info)
     spfn = _mfn(info->spfn);
     epfn = _mfn(info->epfn);
 
-    eidx = (mfn_to_pdx(epfn) + PDX_GROUP_COUNT - 1) / PDX_GROUP_COUNT;
+    eidx = DIV_ROUND_UP(mfn_to_pdx(epfn), PDX_GROUP_COUNT);
     nidx = cidx = mfn_to_pdx(spfn)/PDX_GROUP_COUNT;
 
     ASSERT( mfn_to_pdx(epfn) <= (DIRECTMAP_SIZE >> PAGE_SHIFT) &&
@@ -848,14 +823,14 @@ void __init subarch_init_memory(void)
           v += n << PAGE_SHIFT )
     {
         n = L2_PAGETABLE_ENTRIES * L1_PAGETABLE_ENTRIES;
-        l3e = l4e_to_l3e(idle_pg_table[l4_table_offset(v)])[
-            l3_table_offset(v)];
+        l3e = l3e_from_l4e(idle_pg_table[l4_table_offset(v)],
+                           l3_table_offset(v));
         if ( !(l3e_get_flags(l3e) & _PAGE_PRESENT) )
             continue;
         if ( !(l3e_get_flags(l3e) & _PAGE_PSE) )
         {
             n = L1_PAGETABLE_ENTRIES;
-            l2e = l3e_to_l2e(l3e)[l2_table_offset(v)];
+            l2e = l2e_from_l3e(l3e, l2_table_offset(v));
             if ( !(l2e_get_flags(l2e) & _PAGE_PRESENT) )
                 continue;
             m2p_start_mfn = l2e_get_pfn(l2e);
@@ -874,11 +849,11 @@ void __init subarch_init_memory(void)
           v != RDWR_COMPAT_MPT_VIRT_END;
           v += 1 << L2_PAGETABLE_SHIFT )
     {
-        l3e = l4e_to_l3e(idle_pg_table[l4_table_offset(v)])[
-            l3_table_offset(v)];
+        l3e = l3e_from_l4e(idle_pg_table[l4_table_offset(v)],
+                           l3_table_offset(v));
         if ( !(l3e_get_flags(l3e) & _PAGE_PRESENT) )
             continue;
-        l2e = l3e_to_l2e(l3e)[l2_table_offset(v)];
+        l2e = l2e_from_l3e(l3e, l2_table_offset(v));
         if ( !(l2e_get_flags(l2e) & _PAGE_PRESENT) )
             continue;
         m2p_start_mfn = l2e_get_pfn(l2e);
@@ -928,13 +903,13 @@ long subarch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
               (v < (unsigned long)(machine_to_phys_mapping + max_page));
               i++, v += 1UL << L2_PAGETABLE_SHIFT )
         {
-            l3e = l4e_to_l3e(idle_pg_table[l4_table_offset(v)])[
-                l3_table_offset(v)];
+            l3e = l3e_from_l4e(idle_pg_table[l4_table_offset(v)],
+                               l3_table_offset(v));
             if ( !(l3e_get_flags(l3e) & _PAGE_PRESENT) )
                 mfn = last_mfn;
             else if ( !(l3e_get_flags(l3e) & _PAGE_PSE) )
             {
-                l2e = l3e_to_l2e(l3e)[l2_table_offset(v)];
+                l2e = l2e_from_l3e(l3e, l2_table_offset(v));
                 if ( l2e_get_flags(l2e) & _PAGE_PRESENT )
                     mfn = l2e_get_pfn(l2e);
                 else
@@ -994,8 +969,10 @@ long subarch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     case XENMEM_paging_op:
         return mem_paging_memop(guest_handle_cast(arg, xen_mem_paging_op_t));
 
+#ifdef CONFIG_MEM_SHARING
     case XENMEM_sharing_op:
         return mem_sharing_memop(guest_handle_cast(arg, xen_mem_sharing_op_t));
+#endif
 
     default:
         rc = -ENOSYS;
@@ -1008,8 +985,8 @@ long subarch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 long do_stack_switch(unsigned long ss, unsigned long esp)
 {
     fixup_guest_stack_selector(current->domain, ss);
-    current->arch.pv_vcpu.kernel_ss = ss;
-    current->arch.pv_vcpu.kernel_sp = esp;
+    current->arch.pv.kernel_ss = ss;
+    current->arch.pv.kernel_sp = esp;
     return 0;
 }
 
@@ -1027,7 +1004,7 @@ long do_set_segment_base(unsigned int which, unsigned long base)
         if ( is_canonical_address(base) )
         {
             wrfsbase(base);
-            v->arch.pv_vcpu.fs_base = base;
+            v->arch.pv.fs_base = base;
         }
         else
             ret = -EINVAL;
@@ -1037,7 +1014,7 @@ long do_set_segment_base(unsigned int which, unsigned long base)
         if ( is_canonical_address(base) )
         {
             wrgsshadow(base);
-            v->arch.pv_vcpu.gs_base_user = base;
+            v->arch.pv.gs_base_user = base;
         }
         else
             ret = -EINVAL;
@@ -1047,7 +1024,7 @@ long do_set_segment_base(unsigned int which, unsigned long base)
         if ( is_canonical_address(base) )
         {
             wrgsbase(base);
-            v->arch.pv_vcpu.gs_base_kernel = base;
+            v->arch.pv.gs_base_kernel = base;
         }
         else
             ret = -EINVAL;
@@ -1076,7 +1053,7 @@ long do_set_segment_base(unsigned int which, unsigned long base)
 
 
 /* Returns TRUE if given descriptor is valid for GDT or LDT. */
-int check_descriptor(const struct domain *dom, struct desc_struct *d)
+int check_descriptor(const struct domain *dom, seg_desc_t *d)
 {
     u32 a = d->a, b = d->b;
     u16 cs;
@@ -1427,16 +1404,26 @@ int memory_add(unsigned long spfn, unsigned long epfn, unsigned int pxm)
     if ( ret )
         goto destroy_m2p;
 
-    if ( iommu_enabled && !iommu_passthrough && !need_iommu(hardware_domain) )
+    /*
+     * If hardware domain has IOMMU mappings but page tables are not
+     * shared or being kept in sync then newly added memory needs to be
+     * mapped here.
+     */
+    if ( is_iommu_enabled(hardware_domain) &&
+         !iommu_use_hap_pt(hardware_domain) &&
+         !need_iommu_pt_sync(hardware_domain) )
     {
         for ( i = spfn; i < epfn; i++ )
-            if ( iommu_map_page(hardware_domain, i, i, IOMMUF_readable|IOMMUF_writable) )
+            if ( iommu_legacy_map(hardware_domain, _dfn(i), _mfn(i),
+                                  PAGE_ORDER_4K,
+                                  IOMMUF_readable | IOMMUF_writable) )
                 break;
         if ( i != epfn )
         {
             while (i-- > old_max)
                 /* If statement to satisfy __must_check. */
-                if ( iommu_unmap_page(hardware_domain, i) )
+                if ( iommu_legacy_unmap(hardware_domain, _dfn(i),
+                                        PAGE_ORDER_4K) )
                     continue;
 
             goto destroy_m2p;

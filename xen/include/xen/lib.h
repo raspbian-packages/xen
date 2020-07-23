@@ -1,6 +1,20 @@
 #ifndef __LIB_H__
 #define __LIB_H__
 
+#define ROUNDUP(x, a) (((x) + (a) - 1) & ~((a) - 1))
+
+#define DIV_ROUND(n, d) (((n) + (d) / 2) / (d))
+#define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
+
+#define MASK_EXTR(v, m) (((v) & (m)) / ((m) & -(m)))
+#define MASK_INSR(v, m) (((v) * ((m) & -(m))) & (m))
+
+#define count_args_(dot, a1, a2, a3, a4, a5, a6, a7, a8, x, ...) x
+#define count_args(args...) \
+    count_args_(., ## args, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+
+#ifndef __ASSEMBLY__
+
 #include <xen/inttypes.h>
 #include <xen/stdarg.h>
 #include <xen/types.h>
@@ -11,7 +25,9 @@
 #define BUG_ON(p)  do { if (unlikely(p)) BUG();  } while (0)
 #define WARN_ON(p) do { if (unlikely(p)) WARN(); } while (0)
 
-#if __GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 6)
+/* All clang versions supported by Xen have _Static_assert. */
+#if defined(__clang__) || \
+    (__GNUC__ > 4 || (__GNUC__ == 4 && __GNUC_MINOR__ >= 6))
 /* Force a compilation error if condition is true */
 #define BUILD_BUG_ON(cond) ({ _Static_assert(!(cond), "!(" #cond ")"); })
 
@@ -51,9 +67,6 @@
 #define SWAP(_a, _b) \
    do { typeof(_a) _t = (_a); (_a) = (_b); (_b) = _t; } while ( 0 )
 
-#define DIV_ROUND(n, d) (((n) + (d) / 2) / (d))
-#define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
-
 #define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]) + __must_be_array(x))
 
 #define __ACCESS_ONCE(x) ({                             \
@@ -61,17 +74,9 @@
             (volatile typeof(x) *)&(x); })
 #define ACCESS_ONCE(x) (*__ACCESS_ONCE(x))
 
-#define MASK_EXTR(v, m) (((v) & (m)) / ((m) & -(m)))
-#define MASK_INSR(v, m) (((v) * ((m) & -(m))) & (m))
-
-#define ROUNDUP(x, a) (((x) + (a) - 1) & ~((a) - 1))
-
-#define reserve_bootmem(_p,_l) ((void)0)
-
 struct domain;
 
 void cmdline_parse(const char *cmdline);
-int runtime_parse(const char *line);
 int parse_bool(const char *s, const char *e);
 
 /**
@@ -83,13 +88,12 @@ int parse_boolean(const char *name, const char *s, const char *e);
 
 /**
  * Very similar to strcmp(), but will declare a match if the NUL in 'name'
- * lines up with comma, colon or semicolon in 'frag'.  Designed for picking
- * exact string matches out of a delimited command line list.
+ * lines up with comma, colon, semicolon or equals in 'frag'.  Designed for
+ * picking exact string matches out of a delimited command line list.
  */
 int cmdline_strcmp(const char *frag, const char *name);
 
-/*#define DEBUG_TRACE_DUMP*/
-#ifdef DEBUG_TRACE_DUMP
+#ifdef CONFIG_DEBUG_TRACE
 extern void debugtrace_dump(void);
 extern void debugtrace_printk(const char *fmt, ...)
     __attribute__ ((format (printf, 1, 2)));
@@ -104,17 +108,6 @@ debugtrace_printk(const char *fmt, ...) {}
 #define _p(_x) ((void *)(unsigned long)(_x))
 extern void printk(const char *format, ...)
     __attribute__ ((format (printf, 1, 2)));
-extern void guest_printk(const struct domain *d, const char *format, ...)
-    __attribute__ ((format (printf, 2, 3)));
-extern void noreturn panic(const char *format, ...)
-    __attribute__ ((format (printf, 1, 2)));
-extern long vm_assist(struct domain *, unsigned int cmd, unsigned int type,
-                      unsigned long valid);
-extern int __printk_ratelimit(int ratelimit_ms, int ratelimit_burst);
-extern int printk_ratelimit(void);
-
-#define gprintk(lvl, fmt, args...) \
-    printk(XENLOG_GUEST lvl "%pv " fmt, current, ## args)
 
 #define printk_once(fmt, args...)               \
 ({                                              \
@@ -125,6 +118,16 @@ extern int printk_ratelimit(void);
         printk(fmt, ## args);                   \
     }                                           \
 })
+
+extern void guest_printk(const struct domain *d, const char *format, ...)
+    __attribute__ ((format (printf, 2, 3)));
+extern void noreturn panic(const char *format, ...)
+    __attribute__ ((format (printf, 1, 2)));
+extern int __printk_ratelimit(int ratelimit_ms, int ratelimit_burst);
+extern int printk_ratelimit(void);
+
+#define gprintk(lvl, fmt, args...) \
+    printk(XENLOG_GUEST lvl "%pv " fmt, current, ## args)
 
 #ifdef NDEBUG
 
@@ -191,5 +194,7 @@ void init_constructors(void);
 
 void *bsearch(const void *key, const void *base, size_t num, size_t size,
               int (*cmp)(const void *key, const void *elt));
+
+#endif /* __ASSEMBLY__ */
 
 #endif /* __LIB_H__ */

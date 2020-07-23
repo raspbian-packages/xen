@@ -30,6 +30,7 @@
 #include <xen/err.h>
 #include <xen/errno.h>
 #include <xen/mm.h>
+#include <xen/param.h>
 #include <xen/console.h>
 #include <xen/shutdown.h>
 #include <xen/guest_access.h>
@@ -75,6 +76,7 @@
 #include <asm/hpet.h>
 #include <asm/vpmu.h>
 #include <public/arch-x86/cpuid.h>
+#include <public/hvm/params.h>
 #include <asm/cpuid.h>
 #include <xsm/xsm.h>
 #include <asm/pv/traps.h>
@@ -96,8 +98,12 @@ string_param("nmi", opt_nmi);
 DEFINE_PER_CPU(uint64_t, efer);
 static DEFINE_PER_CPU(unsigned long, last_extable_addr);
 
-DEFINE_PER_CPU_READ_MOSTLY(struct desc_struct *, gdt_table);
-DEFINE_PER_CPU_READ_MOSTLY(struct desc_struct *, compat_gdt_table);
+DEFINE_PER_CPU_READ_MOSTLY(seg_desc_t *, gdt);
+DEFINE_PER_CPU_READ_MOSTLY(l1_pgentry_t, gdt_l1e);
+#ifdef CONFIG_PV32
+DEFINE_PER_CPU_READ_MOSTLY(seg_desc_t *, compat_gdt);
+DEFINE_PER_CPU_READ_MOSTLY(l1_pgentry_t, compat_gdt_l1e);
+#endif
 
 /* Master table, used by CPU0. */
 idt_entry_t __section(".bss.page_aligned") __aligned(PAGE_SIZE)
@@ -112,9 +118,6 @@ idt_entry_t *idt_tables[NR_CPUS] __read_mostly;
  */
 DEFINE_PER_CPU_PAGE_ALIGNED(struct tss_page, tss_page);
 
-bool (*ioemul_handle_quirk)(
-    u8 opcode, char *io_emul_stub, struct cpu_user_regs *regs);
-
 static int debug_stack_lines = 20;
 integer_param("debug_stack_lines", debug_stack_lines);
 
@@ -123,6 +126,8 @@ boolean_param("ler", opt_ler);
 
 /* LastExceptionFromIP on this hardware.  Zero if LER is not in use. */
 unsigned int __read_mostly ler_msr;
+
+const unsigned int nmi_cpu;
 
 #define stack_words_per_line 4
 #define ESP_BEFORE_EXCEPTION(regs) ((unsigned long *)regs->rsp)
@@ -151,7 +156,9 @@ void (* const exception_table[TRAP_nr])(struct cpu_user_regs *regs) = {
     [TRAP_alignment_check]              = do_trap,
     [TRAP_machine_check]                = (void *)do_machine_check,
     [TRAP_simd_error]                   = do_trap,
-    [TRAP_virtualisation ...
+    [TRAP_virtualisation]               = do_reserved_trap,
+    [X86_EXC_CP]                        = do_entry_CP,
+    [X86_EXC_CP + 1 ...
      (ARRAY_SIZE(exception_table) - 1)] = do_reserved_trap,
 };
 
@@ -228,6 +235,7 @@ static void compat_show_guest_stack(struct vcpu *v,
                                     int debug_stack_lines)
 {
     unsigned int i, *stack, addr, mask = STACK_SIZE;
+    void *stack_page = NULL;
 
     stack = (unsigned int *)(unsigned long)regs->esp;
     printk("Guest stack trace from esp=%08lx:\n ", (unsigned long)stack);
@@ -250,7 +258,7 @@ static void compat_show_guest_stack(struct vcpu *v,
                 break;
         if ( !vcpu )
         {
-            stack = do_page_walk(v, (unsigned long)stack);
+            stack_page = stack = do_page_walk(v, (unsigned long)stack);
             if ( (unsigned long)stack < PAGE_SIZE )
             {
                 printk("Inaccessible guest memory.\n");
@@ -277,11 +285,9 @@ static void compat_show_guest_stack(struct vcpu *v,
         printk(" %08x", addr);
         stack++;
     }
-    if ( mask == PAGE_SIZE )
-    {
-        BUILD_BUG_ON(PAGE_SIZE == STACK_SIZE);
-        unmap_domain_page(stack);
-    }
+
+    UNMAP_DOMAIN_PAGE(stack_page);
+
     if ( i == 0 )
         printk("Stack empty.");
     printk("\n");
@@ -292,6 +298,7 @@ static void show_guest_stack(struct vcpu *v, const struct cpu_user_regs *regs)
     int i;
     unsigned long *stack, addr;
     unsigned long mask = STACK_SIZE;
+    void *stack_page = NULL;
 
     /* Avoid HVM as we don't know what the stack looks like. */
     if ( is_hvm_vcpu(v) )
@@ -320,7 +327,7 @@ static void show_guest_stack(struct vcpu *v, const struct cpu_user_regs *regs)
         vcpu = maddr_get_owner(read_cr3()) == v->domain ? v : NULL;
         if ( !vcpu )
         {
-            stack = do_page_walk(v, (unsigned long)stack);
+            stack_page = stack = do_page_walk(v, (unsigned long)stack);
             if ( (unsigned long)stack < PAGE_SIZE )
             {
                 printk("Inaccessible guest memory.\n");
@@ -347,33 +354,26 @@ static void show_guest_stack(struct vcpu *v, const struct cpu_user_regs *regs)
         printk(" %p", _p(addr));
         stack++;
     }
-    if ( mask == PAGE_SIZE )
-    {
-        BUILD_BUG_ON(PAGE_SIZE == STACK_SIZE);
-        unmap_domain_page(stack);
-    }
+
+    UNMAP_DOMAIN_PAGE(stack_page);
+
     if ( i == 0 )
         printk("Stack empty.");
     printk("\n");
 }
 
 /*
- * Notes for get_stack_trace_bottom() and get_stack_dump_bottom()
+ * Notes for get_{stack,shstk}*_bottom() helpers
  *
- * Stack pages 0 - 3:
+ * Stack pages 1 - 4:
  *   These are all 1-page IST stacks.  Each of these stacks have an exception
  *   frame and saved register state at the top.  The interesting bound for a
  *   trace is the word adjacent to this, while the bound for a dump is the
  *   very top, including the exception frame.
  *
- * Stack pages 4 and 5:
- *   None of these are particularly interesting.  With MEMORY_GUARD, page 5 is
- *   explicitly not present, so attempting to dump or trace it is
- *   counterproductive.  Without MEMORY_GUARD, it is possible for a call chain
- *   to use the entire primary stack and wander into page 5.  In this case,
- *   consider these pages an extension of the primary stack to aid debugging
- *   hopefully rare situations where the primary stack has effective been
- *   overflown.
+ * Stack pages 0 and 5:
+ *   Shadow stacks.  These are mapped read-only, and used by CET-SS capable
+ *   processors.  They will never contain regular stack data.
  *
  * Stack pages 6 and 7:
  *   These form the primary stack, and have a cpu_info at the top.  For a
@@ -387,13 +387,10 @@ unsigned long get_stack_trace_bottom(unsigned long sp)
 {
     switch ( get_stack_page(sp) )
     {
-    case 0 ... 3:
+    case 1 ... 4:
         return ROUNDUP(sp, PAGE_SIZE) -
             offsetof(struct cpu_user_regs, es) - sizeof(unsigned long);
 
-#ifndef MEMORY_GUARD
-    case 4 ... 5:
-#endif
     case 6 ... 7:
         return ROUNDUP(sp, STACK_SIZE) -
             sizeof(struct cpu_info) - sizeof(unsigned long);
@@ -403,16 +400,25 @@ unsigned long get_stack_trace_bottom(unsigned long sp)
     }
 }
 
+static unsigned long get_shstk_bottom(unsigned long sp)
+{
+    switch ( get_stack_page(sp) )
+    {
+#ifdef CONFIG_XEN_SHSTK
+    case 0:  return ROUNDUP(sp, IST_SHSTK_SIZE) - sizeof(unsigned long);
+    case 5:  return ROUNDUP(sp, PAGE_SIZE)      - sizeof(unsigned long);
+#endif
+    default: return sp - sizeof(unsigned long);
+    }
+}
+
 unsigned long get_stack_dump_bottom(unsigned long sp)
 {
     switch ( get_stack_page(sp) )
     {
-    case 0 ... 3:
+    case 1 ... 4:
         return ROUNDUP(sp, PAGE_SIZE) - sizeof(unsigned long);
 
-#ifndef MEMORY_GUARD
-    case 4 ... 5:
-#endif
     case 6 ... 7:
         return ROUNDUP(sp, STACK_SIZE) - sizeof(unsigned long);
 
@@ -437,7 +443,7 @@ static void _show_trace(unsigned long sp, unsigned long __maybe_unused bp)
     {
         addr = *stack++;
         if ( is_active_kernel_text(addr) )
-            printk("   [<%p>] %pS\n", _p(addr), _p(addr));
+            printk("   [<%p>] S %pS\n", _p(addr), _p(addr));
     }
 }
 
@@ -480,7 +486,7 @@ static void _show_trace(unsigned long sp, unsigned long bp)
             addr  = frame[1];
         }
 
-        printk("   [<%p>] %pS\n", _p(addr), _p(addr));
+        printk("   [<%p>] F %pS\n", _p(addr), _p(addr));
 
         low = (unsigned long)&frame[2];
     }
@@ -490,26 +496,45 @@ static void _show_trace(unsigned long sp, unsigned long bp)
 
 static void show_trace(const struct cpu_user_regs *regs)
 {
-    unsigned long *sp = ESP_BEFORE_EXCEPTION(regs);
+    unsigned long *sp = ESP_BEFORE_EXCEPTION(regs), tos = 0;
+    bool fault = false;
 
     printk("Xen call trace:\n");
+
+    /* Guarded read of the stack top. */
+    asm ( "1: mov %[data], %[tos]; 2:\n"
+          ".pushsection .fixup,\"ax\"\n"
+          "3: movb $1, %[fault]; jmp 2b\n"
+          ".popsection\n"
+          _ASM_EXTABLE(1b, 3b)
+          : [tos] "+r" (tos), [fault] "+qm" (fault) : [data] "m" (*sp) );
 
     /*
      * If RIP looks sensible, or the top of the stack doesn't, print RIP at
      * the top of the stack trace.
      */
     if ( is_active_kernel_text(regs->rip) ||
-         !is_active_kernel_text(*sp) )
-        printk("   [<%p>] %pS\n", _p(regs->rip), _p(regs->rip));
+         !is_active_kernel_text(tos) )
+        printk("   [<%p>] R %pS\n", _p(regs->rip), _p(regs->rip));
+
+    if ( fault )
+    {
+        printk("   [Fault on access]\n");
+        return;
+    }
+
     /*
-     * Else RIP looks bad but the top of the stack looks good.  Perhaps we
-     * followed a wild function pointer? Lets assume the top of the stack is a
+     * If RIP looks bad or the top of the stack looks good, log the top of
+     * stack as well.  Perhaps we followed a wild function pointer, or we're
+     * in a function without frame pointer, or in a function prologue before
+     * the frame pointer gets set up?  Let's assume the top of the stack is a
      * return address; print it and skip past so _show_trace() doesn't print
      * it again.
      */
-    else
+    if ( !is_active_kernel_text(regs->rip) ||
+         is_active_kernel_text(tos) )
     {
-        printk("   [<%p>] %pS\n", _p(*sp), _p(*sp));
+        printk("   [<%p>] S %pS\n", _p(tos), _p(tos));
         sp++;
     }
 
@@ -660,6 +685,22 @@ const char *trapstr(unsigned int trapnr)
     return trapnr < ARRAY_SIZE(strings) ? strings[trapnr] : "???";
 }
 
+static const char *vec_name(unsigned int vec)
+{
+    static const char names[][4] = {
+#define P(x) [X86_EXC_ ## x] = "#" #x
+#define N(x) [X86_EXC_ ## x] = #x
+        P(DE),  P(DB),  N(NMI), P(BP),  P(OF),  P(BR),  P(UD),  P(NM),
+        P(DF),  N(CSO), P(TS),  P(NP),  P(SS),  P(GP),  P(PF),  N(SPV),
+        P(MF),  P(AC),  P(MC),  P(XM),  P(VE),  P(CP),
+                                        P(HV),  P(VC),  P(SX),
+#undef N
+#undef P
+    };
+
+    return (vec < ARRAY_SIZE(names) && names[vec][0]) ? names[vec] : "???";
+}
+
 /*
  * This is called for faults at very unexpected times (e.g., when interrupts
  * are disabled). In such situations we can't do much that is safe. We try to
@@ -717,10 +758,9 @@ void fatal_trap(const struct cpu_user_regs *regs, bool show_remote)
         }
     }
 
-    panic("FATAL TRAP: vector = %d (%s)\n"
-          "[error_code=%04x] %s",
-          trapnr, trapstr(trapnr), regs->error_code,
-          (regs->eflags & X86_EFLAGS_IF) ? "" : ", IN INTERRUPT CONTEXT");
+    panic("FATAL TRAP: vec %u, %s[%04x]%s\n",
+          trapnr, vec_name(trapnr), regs->error_code,
+          (regs->eflags & X86_EFLAGS_IF) ? "" : " IN INTERRUPT CONTEXT");
 }
 
 static void do_reserved_trap(struct cpu_user_regs *regs)
@@ -731,13 +771,87 @@ static void do_reserved_trap(struct cpu_user_regs *regs)
         return;
 
     show_execution_state(regs);
-    panic("FATAL RESERVED TRAP %#x: %s", trapnr, trapstr(trapnr));
+    panic("FATAL RESERVED TRAP: vec %u, %s[%04x]\n",
+          trapnr, vec_name(trapnr), regs->error_code);
+}
+
+static void extable_shstk_fixup(struct cpu_user_regs *regs, unsigned long fixup)
+{
+    unsigned long ssp, *ptr, *base;
+
+    asm ( "rdsspq %0" : "=r" (ssp) : "0" (1) );
+    if ( ssp == 1 )
+        return;
+
+    ptr = _p(ssp);
+    base = _p(get_shstk_bottom(ssp));
+
+    for ( ; ptr < base; ++ptr )
+    {
+        /*
+         * Search for %rip.  The shstk currently looks like this:
+         *
+         *   ...  [Likely pointed to by SSP]
+         *   %cs  [== regs->cs]
+         *   %rip [== regs->rip]
+         *   SSP  [Likely points to 3 slots higher, above %cs]
+         *   ...  [call tree to this function, likely 2/3 slots]
+         *
+         * and we want to overwrite %rip with fixup.  There are two
+         * complications:
+         *   1) We cant depend on SSP values, because they won't differ by 3
+         *      slots if the exception is taken on an IST stack.
+         *   2) There are synthetic (unrealistic but not impossible) scenarios
+         *      where %rip can end up in the call tree to this function, so we
+         *      can't check against regs->rip alone.
+         *
+         * Check for both regs->rip and regs->cs matching.
+         */
+        if ( ptr[0] == regs->rip && ptr[1] == regs->cs )
+        {
+            asm ( "wrssq %[fix], %[stk]"
+                  : [stk] "=m" (ptr[0])
+                  : [fix] "r" (fixup) );
+            return;
+        }
+    }
+
+    /*
+     * We failed to locate and fix up the shadow IRET frame.  This could be
+     * due to shadow stack corruption, or bad logic above.  We cannot continue
+     * executing the interrupted context.
+     */
+    BUG();
+}
+
+static bool extable_fixup(struct cpu_user_regs *regs, bool print)
+{
+    unsigned long fixup = search_exception_table(regs);
+
+    if ( unlikely(fixup == 0) )
+        return false;
+
+    /*
+     * Don't use dprintk() because the __FILE__ reference is unhelpful.
+     * Can currently be triggered by guests.  Make sure we ratelimit.
+     */
+    if ( IS_ENABLED(CONFIG_DEBUG) && print )
+        printk(XENLOG_GUEST XENLOG_WARNING "Fixup %s[%04x]: %p [%ps] -> %p\n",
+               vec_name(regs->entry_vector), regs->error_code,
+               _p(regs->rip), _p(regs->rip), _p(fixup));
+
+    if ( IS_ENABLED(CONFIG_XEN_SHSTK) )
+        extable_shstk_fixup(regs, fixup);
+
+    regs->rip = fixup;
+    this_cpu(last_extable_addr) = regs->rip;
+
+    return true;
 }
 
 static void do_trap(struct cpu_user_regs *regs)
 {
     unsigned int trapnr = regs->entry_vector;
-    unsigned long fixup;
 
     if ( regs->error_code & X86_XEC_EXT )
         goto hardware_trap;
@@ -755,14 +869,8 @@ static void do_trap(struct cpu_user_regs *regs)
         return;
     }
 
-    if ( likely((fixup = search_exception_table(regs)) != 0) )
-    {
-        dprintk(XENLOG_ERR, "Trap %u: %p [%ps] -> %p\n",
-                trapnr, _p(regs->rip), _p(regs->rip), _p(fixup));
-        this_cpu(last_extable_addr) = regs->rip;
-        regs->rip = fixup;
+    if ( likely(extable_fixup(regs, true)) )
         return;
-    }
 
  hardware_trap:
     if ( debugger_trap_fatal(trapnr, regs) )
@@ -770,33 +878,29 @@ static void do_trap(struct cpu_user_regs *regs)
 
     show_execution_state(regs);
     panic("FATAL TRAP: vector = %d (%s)\n"
-          "[error_code=%04x]",
+          "[error_code=%04x]\n",
           trapnr, trapstr(trapnr), regs->error_code);
 }
 
-/* Returns 0 if not handled, and non-0 for success. */
-int rdmsr_hypervisor_regs(uint32_t idx, uint64_t *val)
+int guest_rdmsr_xen(const struct vcpu *v, uint32_t idx, uint64_t *val)
 {
-    struct domain *d = current->domain;
+    const struct domain *d = v->domain;
     /* Optionally shift out of the way of Viridian architectural MSRs. */
     uint32_t base = is_viridian_domain(d) ? 0x40000200 : 0x40000000;
 
     switch ( idx - base )
     {
     case 0: /* Write hypercall page MSR.  Read as zero. */
-    {
         *val = 0;
-        return 1;
-    }
+        return X86EMUL_OKAY;
     }
 
-    return 0;
+    return X86EMUL_EXCEPTION;
 }
 
-/* Returns 1 if handled, 0 if not and -Exx for error. */
-int wrmsr_hypervisor_regs(uint32_t idx, uint64_t val)
+int guest_wrmsr_xen(struct vcpu *v, uint32_t idx, uint64_t val)
 {
-    struct domain *d = current->domain;
+    struct domain *d = v->domain;
     /* Optionally shift out of the way of Viridian architectural MSRs. */
     uint32_t base = is_viridian_domain(d) ? 0x40000200 : 0x40000000;
 
@@ -815,7 +919,7 @@ int wrmsr_hypervisor_regs(uint32_t idx, uint64_t val)
             gdprintk(XENLOG_WARNING,
                      "wrmsr hypercall page index %#x unsupported\n",
                      page_index);
-            return 0;
+            return X86EMUL_EXCEPTION;
         }
 
         page = get_page_from_gfn(d, gmfn, &t, P2M_ALLOC);
@@ -827,26 +931,27 @@ int wrmsr_hypervisor_regs(uint32_t idx, uint64_t val)
 
             if ( p2m_is_paging(t) )
             {
-                p2m_mem_paging_populate(d, gmfn);
-                return -ERESTART;
+                p2m_mem_paging_populate(d, _gfn(gmfn));
+                return X86EMUL_RETRY;
             }
 
             gdprintk(XENLOG_WARNING,
                      "Bad GMFN %lx (MFN %#"PRI_mfn") to MSR %08x\n",
                      gmfn, mfn_x(page ? page_to_mfn(page) : INVALID_MFN), base);
-            return 0;
+            return X86EMUL_EXCEPTION;
         }
 
         hypercall_page = __map_domain_page(page);
-        hypercall_page_initialise(d, hypercall_page);
+        init_hypercall_page(d, hypercall_page);
         unmap_domain_page(hypercall_page);
 
         put_page_and_type(page);
-        return 1;
-    }
+        return X86EMUL_OKAY;
     }
 
-    return 0;
+    default:
+        return X86EMUL_EXCEPTION;
+    }
 }
 
 void cpuid_hypervisor_leaves(const struct vcpu *v, uint32_t leaf,
@@ -1053,7 +1158,7 @@ void do_invalid_op(struct cpu_user_regs *regs)
             return;
 
         show_execution_state(regs);
-        panic("Xen BUG at %s%s:%d", prefix, filename, lineno);
+        panic("Xen BUG at %s%s:%d\n", prefix, filename, lineno);
 
     case BUGFRAME_assert:
         /* ASSERT: decode the predicate string pointer. */
@@ -1068,23 +1173,19 @@ void do_invalid_op(struct cpu_user_regs *regs)
             return;
 
         show_execution_state(regs);
-        panic("Assertion '%s' failed at %s%s:%d",
+        panic("Assertion '%s' failed at %s%s:%d\n",
               predicate, prefix, filename, lineno);
     }
 
  die:
-    if ( (fixup = search_exception_table(regs)) != 0 )
-    {
-        this_cpu(last_extable_addr) = regs->rip;
-        regs->rip = fixup;
+    if ( likely(extable_fixup(regs, true)) )
         return;
-    }
 
     if ( debugger_trap_fatal(TRAP_invalid_op, regs) )
         return;
 
     show_execution_state(regs);
-    panic("FATAL TRAP: vector = %d (invalid opcode)", TRAP_invalid_op);
+    panic("FATAL TRAP: vector = %d (invalid opcode)\n", TRAP_invalid_op);
 }
 
 void do_int3(struct cpu_user_regs *regs)
@@ -1094,16 +1195,8 @@ void do_int3(struct cpu_user_regs *regs)
 
     if ( !guest_mode(regs) )
     {
-        unsigned long fixup;
-
-        if ( (fixup = search_exception_table(regs)) != 0 )
-        {
-            this_cpu(last_extable_addr) = regs->rip;
-            dprintk(XENLOG_DEBUG, "Trap %u: %p [%ps] -> %p\n",
-                    TRAP_int3, _p(regs->rip), _p(regs->rip), _p(fixup));
-            regs->rip = fixup;
+        if ( likely(extable_fixup(regs, true)) )
             return;
-        }
 
         if ( !debugger_trap_fatal(TRAP_int3, regs) )
             printk(XENLOG_DEBUG "Hit embedded breakpoint at %p [%ps]\n",
@@ -1115,15 +1208,7 @@ void do_int3(struct cpu_user_regs *regs)
     pv_inject_hw_exception(TRAP_int3, X86_EVENT_NO_EC);
 }
 
-static void reserved_bit_page_fault(unsigned long addr,
-                                    struct cpu_user_regs *regs)
-{
-    printk("%pv: reserved bit in page table (ec=%04X)\n",
-           current, regs->error_code);
-    show_page_walk(addr);
-    show_execution_state(regs);
-}
-
+#ifdef CONFIG_PV
 static int handle_ldt_mapping_fault(unsigned int offset,
                                     struct cpu_user_regs *regs)
 {
@@ -1150,8 +1235,7 @@ static int handle_ldt_mapping_fault(unsigned int offset,
             return 0;
 
         /* Access would have become non-canonical? Pass #GP[sel] back. */
-        if ( unlikely(!is_canonical_address(
-                          curr->arch.pv_vcpu.ldt_base + offset)) )
+        if ( unlikely(!is_canonical_address(curr->arch.pv.ldt_base + offset)) )
         {
             uint16_t ec = (offset & ~(X86_XEC_EXT | X86_XEC_IDT)) | X86_XEC_TI;
 
@@ -1160,7 +1244,7 @@ static int handle_ldt_mapping_fault(unsigned int offset,
         else
             /* else pass the #PF back, with adjusted %cr2. */
             pv_inject_page_fault(regs->error_code,
-                                 curr->arch.pv_vcpu.ldt_base + offset);
+                                 curr->arch.pv.ldt_base + offset);
     }
 
     return EXCRET_fault_fixed;
@@ -1195,6 +1279,7 @@ static int handle_gdt_ldt_mapping_fault(unsigned long offset,
 
     return EXCRET_fault_fixed;
 }
+#endif
 
 #define IN_HYPERVISOR_RANGE(va) \
     (((va) >= HYPERVISOR_VIRT_START) && ((va) < HYPERVISOR_VIRT_END))
@@ -1223,10 +1308,6 @@ static enum pf_type __page_fault_type(unsigned long addr,
      * map_domain_page() is not IRQ-safe.
      */
     if ( in_irq() )
-        return real_fault;
-
-    /* Reserved bit violations are never spurious faults. */
-    if ( error_code & PFEC_reserved_bit )
         return real_fault;
 
     required_flags  = _PAGE_PRESENT;
@@ -1345,10 +1426,12 @@ static int fixup_page_fault(unsigned long addr, struct cpu_user_regs *regs)
 
     if ( unlikely(IN_HYPERVISOR_RANGE(addr)) )
     {
+#ifdef CONFIG_PV
         if ( !(regs->error_code & (PFEC_user_mode | PFEC_reserved_bit)) &&
              (addr >= GDT_LDT_VIRT_START) && (addr < GDT_LDT_VIRT_END) )
             return handle_gdt_ldt_mapping_fault(
                 addr - GDT_LDT_VIRT_START, regs);
+#endif
         return 0;
     }
 
@@ -1388,19 +1471,10 @@ static int fixup_page_fault(unsigned long addr, struct cpu_user_regs *regs)
     return 0;
 }
 
-/*
- * #PF error code:
- *  Bit 0: Protection violation (=1) ; Page not present (=0)
- *  Bit 1: Write access
- *  Bit 2: User mode (=1) ; Supervisor mode (=0)
- *  Bit 3: Reserved bit violation
- *  Bit 4: Instruction fetch
- */
 void do_page_fault(struct cpu_user_regs *regs)
 {
-    unsigned long addr, fixup;
+    unsigned long addr;
     unsigned int error_code;
-    enum pf_type pf_type;
 
     addr = read_cr2();
 
@@ -1412,12 +1486,32 @@ void do_page_fault(struct cpu_user_regs *regs)
 
     perfc_incr(page_faults);
 
+    /* Any shadow stack access fault is a bug in Xen. */
+    if ( error_code & PFEC_shstk )
+        goto fatal;
+
     if ( unlikely(fixup_page_fault(addr, regs) != 0) )
         return;
 
+    /*
+     * Xen doesn't have reserved bits set in its pagetables, nor do we permit
+     * PV guests to write any.  Such entries would generally be vulnerable to
+     * the L1TF sidechannel.
+     *
+     * The shadow pagetable logic may use reserved bits as part of
+     * SHOPT_FAST_FAULT_PATH.  Pagefaults arising from these will be resolved
+     * via the fixup_page_fault() path.
+     *
+     * Anything remaining is an error, constituting corruption of the
+     * pagetables and probably an L1TF vulnerable gadget.
+     */
+    if ( error_code & PFEC_reserved_bit )
+        goto fatal;
+
     if ( unlikely(!guest_mode(regs)) )
     {
-        pf_type = spurious_page_fault(addr, regs);
+        enum pf_type pf_type = spurious_page_fault(addr, regs);
+
         if ( (pf_type == smep_fault) || (pf_type == smap_fault) )
         {
             console_start_sync();
@@ -1429,16 +1523,13 @@ void do_page_fault(struct cpu_user_regs *regs)
         if ( pf_type != real_fault )
             return;
 
-        if ( likely((fixup = search_exception_table(regs)) != 0) )
+        if ( likely(extable_fixup(regs, false)) )
         {
             perfc_incr(copy_user_faults);
-            if ( unlikely(regs->error_code & PFEC_reserved_bit) )
-                reserved_bit_page_fault(addr, regs);
-            this_cpu(last_extable_addr) = regs->rip;
-            regs->rip = fixup;
             return;
         }
 
+    fatal:
         if ( debugger_trap_fatal(TRAP_page_fault, regs) )
             return;
 
@@ -1446,26 +1537,9 @@ void do_page_fault(struct cpu_user_regs *regs)
         show_page_walk(addr);
         panic("FATAL PAGE FAULT\n"
               "[error_code=%04x]\n"
-              "Faulting linear address: %p",
+              "Faulting linear address: %p\n",
               error_code, _p(addr));
     }
-
-    if ( unlikely(current->domain->arch.suppress_spurious_page_faults) )
-    {
-        pf_type = spurious_page_fault(addr, regs);
-        if ( (pf_type == smep_fault) || (pf_type == smap_fault))
-        {
-            printk(XENLOG_G_ERR "%pv fatal SM%cP violation\n",
-                   current, (pf_type == smep_fault) ? 'E' : 'A');
-
-            domain_crash(current->domain);
-        }
-        if ( pf_type != real_fault )
-            return;
-    }
-
-    if ( unlikely(regs->error_code & PFEC_reserved_bit) )
-        reserved_bit_page_fault(addr, regs);
 
     pv_inject_page_fault(regs->error_code, addr);
 }
@@ -1504,8 +1578,9 @@ void __init do_early_page_fault(struct cpu_user_regs *regs)
 
 void do_general_protection(struct cpu_user_regs *regs)
 {
+#ifdef CONFIG_PV
     struct vcpu *v = current;
-    unsigned long fixup;
+#endif
 
     if ( debugger_trap_entry(TRAP_gp_fault, regs) )
         return;
@@ -1516,6 +1591,7 @@ void do_general_protection(struct cpu_user_regs *regs)
     if ( !guest_mode(regs) )
         goto gp_in_kernel;
 
+#ifdef CONFIG_PV
     /*
      * Cunning trick to allow arbitrary "INT n" handling.
      *
@@ -1540,9 +1616,9 @@ void do_general_protection(struct cpu_user_regs *regs)
     if ( regs->error_code & X86_XEC_IDT )
     {
         /* This fault must be due to <INT n> instruction. */
-        const struct trap_info *ti;
-        unsigned char vector = regs->error_code >> 3;
-        ti = &v->arch.pv_vcpu.trap_ctxt[vector];
+        uint8_t vector = regs->error_code >> 3;
+        const struct trap_info *ti = &v->arch.pv.trap_ctxt[vector];
+
         if ( permit_softint(TI_GET_DPL(ti), v, regs) )
         {
             regs->rip += 2;
@@ -1567,62 +1643,25 @@ void do_general_protection(struct cpu_user_regs *regs)
     /* Pass on GPF as is. */
     pv_inject_hw_exception(TRAP_gp_fault, regs->error_code);
     return;
+#endif
 
  gp_in_kernel:
 
-    if ( likely((fixup = search_exception_table(regs)) != 0) )
-    {
-        dprintk(XENLOG_INFO, "GPF (%04x): %p [%ps] -> %p\n",
-                regs->error_code, _p(regs->rip), _p(regs->rip), _p(fixup));
-        this_cpu(last_extable_addr) = regs->rip;
-        regs->rip = fixup;
+    if ( likely(extable_fixup(regs, true)) )
         return;
-    }
 
  hardware_gp:
     if ( debugger_trap_fatal(TRAP_gp_fault, regs) )
         return;
 
     show_execution_state(regs);
-    panic("GENERAL PROTECTION FAULT\n[error_code=%04x]", regs->error_code);
+    panic("GENERAL PROTECTION FAULT\n[error_code=%04x]\n", regs->error_code);
 }
 
 static void pci_serr_softirq(void)
 {
     printk("\n\nNMI - PCI system error (SERR)\n");
     outb(inb(0x61) & 0x0b, 0x61); /* re-enable the PCI SERR error line. */
-}
-
-void async_exception_cleanup(struct vcpu *curr)
-{
-    int trap;
-
-    if ( !curr->async_exception_mask )
-        return;
-
-    /* Restore affinity.  */
-    if ( !cpumask_empty(curr->cpu_hard_affinity_tmp) &&
-         !cpumask_equal(curr->cpu_hard_affinity_tmp, curr->cpu_hard_affinity) )
-    {
-        vcpu_set_hard_affinity(curr, curr->cpu_hard_affinity_tmp);
-        cpumask_clear(curr->cpu_hard_affinity_tmp);
-    }
-
-    if ( !(curr->async_exception_mask & (curr->async_exception_mask - 1)) )
-        trap = __scanbit(curr->async_exception_mask, VCPU_TRAP_NONE);
-    else
-        for ( trap = VCPU_TRAP_NONE + 1; trap <= VCPU_TRAP_LAST; ++trap )
-            if ( (curr->async_exception_mask ^
-                  curr->async_exception_state(trap).old_mask) == (1 << trap) )
-                break;
-    if ( unlikely(trap > VCPU_TRAP_LAST) )
-    {
-        ASSERT_UNREACHABLE();
-        return;
-    }
-
-    /* Restore previous asynchronous exception mask. */
-    curr->async_exception_mask = curr->async_exception_state(trap).old_mask;
 }
 
 static void nmi_hwdom_report(unsigned int reason_idx)
@@ -1634,7 +1673,7 @@ static void nmi_hwdom_report(unsigned int reason_idx)
 
     set_bit(reason_idx, nmi_reason(d));
 
-    pv_raise_interrupt(d->vcpu[0], TRAP_nmi);
+    pv_raise_nmi(d->vcpu[0]);
 }
 
 static void pci_serr_error(const struct cpu_user_regs *regs)
@@ -1701,16 +1740,22 @@ static int dummy_nmi_callback(const struct cpu_user_regs *regs, int cpu)
 
 static nmi_callback_t *nmi_callback = dummy_nmi_callback;
 
+DEFINE_PER_CPU(unsigned int, nmi_count);
+
 void do_nmi(const struct cpu_user_regs *regs)
 {
     unsigned int cpu = smp_processor_id();
     unsigned char reason = 0;
     bool handle_unknown = false;
 
-    ++nmi_count(cpu);
+    this_cpu(nmi_count)++;
+    nmi_enter();
 
     if ( nmi_callback(regs, cpu) )
+    {
+        nmi_exit();
         return;
+    }
 
     /*
      * Accessing port 0x61 may trap to SMM which has been actually
@@ -1719,7 +1764,7 @@ void do_nmi(const struct cpu_user_regs *regs)
      * this port before we re-arm the NMI watchdog, we reduce the chance
      * of having an NMI watchdog expire while in the SMI handler.
      */
-    if ( cpu == 0 )
+    if ( cpu == nmi_cpu )
         reason = inb(0x61);
 
     if ( (nmi_watchdog == NMI_NONE) ||
@@ -1727,7 +1772,7 @@ void do_nmi(const struct cpu_user_regs *regs)
         handle_unknown = true;
 
     /* Only the BSP gets external NMIs from the system. */
-    if ( cpu == 0 )
+    if ( cpu == nmi_cpu )
     {
         if ( reason & 0x80 )
             pci_serr_error(regs);
@@ -1736,6 +1781,8 @@ void do_nmi(const struct cpu_user_regs *regs)
         if ( !(reason & 0xc0) && handle_unknown )
             unknown_nmi_error(regs, reason);
     }
+
+    nmi_exit();
 }
 
 nmi_callback_t *set_nmi_callback(nmi_callback_t *callback)
@@ -1754,35 +1801,38 @@ void unset_nmi_callback(void)
 
 void do_device_not_available(struct cpu_user_regs *regs)
 {
+#ifdef CONFIG_PV
     struct vcpu *curr = current;
+#endif
 
     if ( !guest_mode(regs) )
     {
-        unsigned long fixup = search_exception_table(regs);
-
-        gprintk(XENLOG_ERR, "#NM: %p [%ps] -> %p\n",
-                _p(regs->rip), _p(regs->rip), _p(fixup));
         /*
          * We shouldn't be able to reach here, but for release builds have
          * the recovery logic in place nevertheless.
          */
-        ASSERT_UNREACHABLE();
-        BUG_ON(!fixup);
-        regs->rip = fixup;
-        return;
+        if ( extable_fixup(regs, true) )
+        {
+            ASSERT_UNREACHABLE();
+            return;
+        }
+
+        fatal_trap(regs, false);
     }
 
+#ifdef CONFIG_PV
     vcpu_restore_fpu_lazy(curr);
 
-    if ( curr->arch.pv_vcpu.ctrlreg[0] & X86_CR0_TS )
+    if ( curr->arch.pv.ctrlreg[0] & X86_CR0_TS )
     {
         pv_inject_hw_exception(TRAP_no_device, X86_EVENT_NO_EC);
-        curr->arch.pv_vcpu.ctrlreg[0] &= ~X86_CR0_TS;
+        curr->arch.pv.ctrlreg[0] &= ~X86_CR0_TS;
     }
     else
         TRACE_0D(TRC_PV_MATH_STATE_RESTORE);
-
-    return;
+#else
+    ASSERT_UNREACHABLE();
+#endif
 }
 
 void do_debug(struct cpu_user_regs *regs)
@@ -1832,6 +1882,7 @@ void do_debug(struct cpu_user_regs *regs)
 
         if ( regs->eflags & X86_EFLAGS_TF )
         {
+#ifdef CONFIG_PV
             /* In SYSENTER entry path we can't zap TF until EFLAGS is saved. */
             if ( (regs->rip >= (unsigned long)sysenter_entry) &&
                  (regs->rip <= (unsigned long)sysenter_eflags_saved) )
@@ -1840,6 +1891,7 @@ void do_debug(struct cpu_user_regs *regs)
                     regs->eflags &= ~X86_EFLAGS_TF;
                 return;
             }
+#endif
             if ( !debugger_trap_fatal(TRAP_debug, regs) )
             {
                 WARN();
@@ -1899,10 +1951,47 @@ void do_debug(struct cpu_user_regs *regs)
     }
 
     /* Save debug status register where guest OS can peek at it */
-    v->arch.debugreg[6] |= (dr6 & ~X86_DR6_DEFAULT);
-    v->arch.debugreg[6] &= (dr6 | ~X86_DR6_DEFAULT);
+    v->arch.dr6 |= (dr6 & ~X86_DR6_DEFAULT);
+    v->arch.dr6 &= (dr6 | ~X86_DR6_DEFAULT);
 
     pv_inject_hw_exception(TRAP_debug, X86_EVENT_NO_EC);
+}
+
+void do_entry_CP(struct cpu_user_regs *regs)
+{
+    static const char errors[][10] = {
+        [1] = "near ret",
+        [2] = "far/iret",
+        [3] = "endbranch",
+        [4] = "rstorssp",
+        [5] = "setssbsy",
+    };
+    const char *err = "??";
+    unsigned int ec = regs->error_code;
+
+    if ( debugger_trap_entry(TRAP_debug, regs) )
+        return;
+
+    /* Decode ec if possible */
+    if ( ec < ARRAY_SIZE(errors) && errors[ec][0] )
+        err = errors[ec];
+
+    /*
+     * For now, only supervisors shadow stacks should be active.  A #CP from
+     * guest context is probably a Xen bug, but kill the guest in an attempt
+     * to recover.
+     */
+    if ( guest_mode(regs) )
+    {
+        gprintk(XENLOG_ERR, "Hit #CP[%04x] in guest context %04x:%p\n",
+                ec, regs->cs, _p(regs->rip));
+        ASSERT_UNREACHABLE();
+        domain_crash(current->domain);
+        return;
+    }
+
+    show_execution_state(regs);
+    panic("CONTROL-FLOW PROTECTION FAULT: #CP[%04x] %s\n", ec, err);
 }
 
 static void __init noinline __set_intr_gate(unsigned int n,
@@ -1919,27 +2008,6 @@ static void __init set_swint_gate(unsigned int n, void *addr)
 static void __init set_intr_gate(unsigned int n, void *addr)
 {
     __set_intr_gate(n, 0, addr);
-}
-
-void load_TR(void)
-{
-    struct tss64 *tss = &this_cpu(tss_page).tss;
-    struct desc_ptr old_gdt, tss_gdt = {
-        .base = (long)(this_cpu(gdt_table) - FIRST_RESERVED_GDT_ENTRY),
-        .limit = LAST_RESERVED_GDT_BYTE
-    };
-
-    _set_tssldt_desc(
-        this_cpu(gdt_table) + TSS_ENTRY - FIRST_RESERVED_GDT_ENTRY,
-        (unsigned long)tss, sizeof(*tss) - 1, SYS_DESC_tss_avail);
-    _set_tssldt_desc(
-        this_cpu(compat_gdt_table) + TSS_ENTRY - FIRST_RESERVED_GDT_ENTRY,
-        (unsigned long)tss, sizeof(*tss) - 1, SYS_DESC_tss_busy);
-
-    /* Switch to non-compat GDT (which has B bit clear) to execute LTR. */
-    asm volatile (
-        "sgdt %0; lgdt %2; ltr %w1; lgdt %0"
-        : "=m" (old_gdt) : "rm" (TSS_ENTRY << 3), "m" (tss_gdt) : "memory" );
 }
 
 static unsigned int calc_ler_msr(void)
@@ -1961,10 +2029,13 @@ static unsigned int calc_ler_msr(void)
         switch ( boot_cpu_data.x86 )
         {
         case 6:
-        case 0xf ... 0x17:
+        case 0xf ... 0x19:
             return MSR_IA32_LASTINTFROMIP;
         }
         break;
+
+    case X86_VENDOR_HYGON:
+        return MSR_IA32_LASTINTFROMIP;
     }
 
     return 0;
@@ -2012,6 +2083,7 @@ void __init init_idt_traps(void)
     set_intr_gate(TRAP_alignment_check,&alignment_check);
     set_intr_gate(TRAP_machine_check,&machine_check);
     set_intr_gate(TRAP_simd_error,&simd_coprocessor_error);
+    set_intr_gate(X86_EXC_CP, entry_CP);
 
     /* Specify dedicated interrupt stacks for NMI, #DF, and #MC. */
     enable_each_ist(idt_table);
@@ -2019,11 +2091,12 @@ void __init init_idt_traps(void)
     /* CPU0 uses the master IDT. */
     idt_tables[0] = idt_table;
 
-    this_cpu(gdt_table) = boot_cpu_gdt_table;
-    this_cpu(compat_gdt_table) = boot_cpu_compat_gdt_table;
+    this_cpu(gdt) = boot_gdt;
+    if ( IS_ENABLED(CONFIG_PV32) )
+        this_cpu(compat_gdt) = boot_compat_gdt;
 }
 
-extern void (*const autogen_entrypoints[NR_VECTORS])(void);
+extern void (*const autogen_entrypoints[X86_NR_VECTORS])(void);
 void __init trap_init(void)
 {
     unsigned int vector;
@@ -2033,7 +2106,7 @@ void __init trap_init(void)
 
     pv_trap_init();
 
-    for ( vector = 0; vector < NR_VECTORS; ++vector )
+    for ( vector = 0; vector < X86_NR_VECTORS; ++vector )
     {
         if ( autogen_entrypoints[vector] )
         {
@@ -2048,6 +2121,13 @@ void __init trap_init(void)
         }
     }
 
+    /* Cache {,compat_}gdt_l1e now that physically relocation is done. */
+    this_cpu(gdt_l1e) =
+        l1e_from_pfn(virt_to_mfn(boot_gdt), __PAGE_HYPERVISOR_RW);
+    if ( IS_ENABLED(CONFIG_PV32) )
+        this_cpu(compat_gdt_l1e) =
+            l1e_from_pfn(virt_to_mfn(boot_compat_gdt), __PAGE_HYPERVISOR_RW);
+
     percpu_traps_init();
 
     cpu_init();
@@ -2059,142 +2139,27 @@ void activate_debugregs(const struct vcpu *curr)
 {
     ASSERT(curr == current);
 
-    write_debugreg(0, curr->arch.debugreg[0]);
-    write_debugreg(1, curr->arch.debugreg[1]);
-    write_debugreg(2, curr->arch.debugreg[2]);
-    write_debugreg(3, curr->arch.debugreg[3]);
-    write_debugreg(6, curr->arch.debugreg[6]);
+    write_debugreg(0, curr->arch.dr[0]);
+    write_debugreg(1, curr->arch.dr[1]);
+    write_debugreg(2, curr->arch.dr[2]);
+    write_debugreg(3, curr->arch.dr[3]);
+    write_debugreg(6, curr->arch.dr6);
 
     /*
      * Avoid writing the subsequently getting replaced value when getting
      * called from set_debugreg() below. Eventual future callers will need
      * to take this into account.
      */
-    if ( curr->arch.debugreg[7] & DR7_ACTIVE_MASK )
-        write_debugreg(7, curr->arch.debugreg[7]);
+    if ( curr->arch.dr7 & DR7_ACTIVE_MASK )
+        write_debugreg(7, curr->arch.dr7);
 
     if ( boot_cpu_has(X86_FEATURE_DBEXT) )
     {
-        wrmsrl(MSR_AMD64_DR0_ADDRESS_MASK, curr->arch.pv_vcpu.dr_mask[0]);
-        wrmsrl(MSR_AMD64_DR1_ADDRESS_MASK, curr->arch.pv_vcpu.dr_mask[1]);
-        wrmsrl(MSR_AMD64_DR2_ADDRESS_MASK, curr->arch.pv_vcpu.dr_mask[2]);
-        wrmsrl(MSR_AMD64_DR3_ADDRESS_MASK, curr->arch.pv_vcpu.dr_mask[3]);
+        wrmsrl(MSR_AMD64_DR0_ADDRESS_MASK, curr->arch.msrs->dr_mask[0]);
+        wrmsrl(MSR_AMD64_DR1_ADDRESS_MASK, curr->arch.msrs->dr_mask[1]);
+        wrmsrl(MSR_AMD64_DR2_ADDRESS_MASK, curr->arch.msrs->dr_mask[2]);
+        wrmsrl(MSR_AMD64_DR3_ADDRESS_MASK, curr->arch.msrs->dr_mask[3]);
     }
-}
-
-/*
- * Used by hypercalls and the emulator.
- *  -ENODEV => #UD
- *  -EINVAL => #GP Invalid bit
- *  -EPERM  => #GP Valid bit, but not permitted to use
- */
-long set_debugreg(struct vcpu *v, unsigned int reg, unsigned long value)
-{
-    struct vcpu *curr = current;
-
-    switch ( reg )
-    {
-    case 0 ... 3:
-        if ( !access_ok(value, sizeof(long)) )
-            return -EPERM;
-
-        if ( v == curr )
-        {
-            switch ( reg )
-            {
-            case 0: write_debugreg(0, value); break;
-            case 1: write_debugreg(1, value); break;
-            case 2: write_debugreg(2, value); break;
-            case 3: write_debugreg(3, value); break;
-            }
-        }
-        break;
-
-    case 4:
-        if ( v->arch.pv_vcpu.ctrlreg[4] & X86_CR4_DE )
-            return -ENODEV;
-
-        /* Fallthrough */
-    case 6:
-        /* The upper 32 bits are strictly reserved. */
-        if ( value != (uint32_t)value )
-            return -EINVAL;
-
-        /*
-         * DR6: Bits 4-11,16-31 reserved (set to 1).
-         *      Bit 12 reserved (set to 0).
-         */
-        value &= ~DR_STATUS_RESERVED_ZERO; /* reserved bits => 0 */
-        value |=  DR_STATUS_RESERVED_ONE;  /* reserved bits => 1 */
-        if ( v == curr )
-            write_debugreg(6, value);
-        break;
-
-    case 5:
-        if ( v->arch.pv_vcpu.ctrlreg[4] & X86_CR4_DE )
-            return -ENODEV;
-
-        /* Fallthrough */
-    case 7:
-        /* The upper 32 bits are strictly reserved. */
-        if ( value != (uint32_t)value )
-            return -EINVAL;
-
-        /*
-         * DR7: Bit 10 reserved (set to 1).
-         *      Bits 11-12,14-15 reserved (set to 0).
-         */
-        value &= ~DR_CONTROL_RESERVED_ZERO; /* reserved bits => 0 */
-        value |=  DR_CONTROL_RESERVED_ONE;  /* reserved bits => 1 */
-        /*
-         * Privileged bits:
-         *      GD (bit 13): must be 0.
-         */
-        if ( value & DR_GENERAL_DETECT )
-            return -EPERM;
-
-        /* DR7.{G,L}E = 0 => debugging disabled for this domain. */
-        if ( value & DR7_ACTIVE_MASK )
-        {
-            unsigned int i, io_enable = 0;
-
-            for ( i = DR_CONTROL_SHIFT; i < 32; i += DR_CONTROL_SIZE )
-            {
-                if ( ((value >> i) & 3) == DR_IO )
-                {
-                    if ( !(v->arch.pv_vcpu.ctrlreg[4] & X86_CR4_DE) )
-                        return -EPERM;
-                    io_enable |= value & (3 << ((i - 16) >> 1));
-                }
-            }
-
-            /* Guest DR5 is a handy stash for I/O intercept information. */
-            v->arch.debugreg[5] = io_enable;
-            value &= ~io_enable;
-
-            /*
-             * If DR7 was previously clear then we need to load all other
-             * debug registers at this point as they were not restored during
-             * context switch.  Updating DR7 itself happens later.
-             */
-            if ( (v == curr) &&
-                 !(v->arch.debugreg[7] & DR7_ACTIVE_MASK) )
-                activate_debugregs(v);
-        }
-        else
-            /* Zero the emulated controls if %dr7 isn't active. */
-            v->arch.debugreg[5] = 0;
-
-        if ( v == curr )
-            write_debugreg(7, value);
-        break;
-
-    default:
-        return -ENODEV;
-    }
-
-    v->arch.debugreg[reg] = value;
-    return 0;
 }
 
 void asm_domain_crash_synchronous(unsigned long addr)
@@ -2217,7 +2182,10 @@ void asm_domain_crash_synchronous(unsigned long addr)
     printk("domain_crash_sync called from entry.S: fault at %p %pS\n",
            _p(addr), _p(addr));
 
-    __domain_crash_synchronous();
+    __domain_crash(current->domain);
+
+    for ( ; ; )
+        do_softirq();
 }
 
 /*

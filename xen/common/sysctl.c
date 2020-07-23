@@ -13,7 +13,6 @@
 #include <xen/domain.h>
 #include <xen/event.h>
 #include <xen/domain_page.h>
-#include <xen/tmem.h>
 #include <xen/trace.h>
 #include <xen/console.h>
 #include <xen/iocap.h>
@@ -120,7 +119,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
         break;
 #endif
 
-#ifdef CONFIG_LOCK_PROFILE
+#ifdef CONFIG_DEBUG_LOCK_PROFILE
     case XEN_SYSCTL_lockprof_op:
         ret = spinlock_profile_control(&op->u.lockprof_op);
         break;
@@ -186,15 +185,19 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
     case XEN_SYSCTL_page_offline_op:
     {
         uint32_t *status, *ptr;
-        unsigned long pfn;
+        mfn_t mfn;
+
+        ret = -EINVAL;
+        if ( op->u.page_offline.end < op->u.page_offline.start )
+            break;
 
         ret = xsm_page_offline(XSM_HOOK, op->u.page_offline.cmd);
         if ( ret )
             break;
 
-        ptr = status = xmalloc_bytes( sizeof(uint32_t) *
-                                (op->u.page_offline.end -
-                                  op->u.page_offline.start + 1));
+        ptr = status = xmalloc_array(uint32_t,
+                                     (op->u.page_offline.end -
+                                      op->u.page_offline.start + 1));
         if ( !status )
         {
             dprintk(XENLOG_WARNING, "Out of memory for page offline op\n");
@@ -205,21 +208,21 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
         memset(status, PG_OFFLINE_INVALID, sizeof(uint32_t) *
                       (op->u.page_offline.end - op->u.page_offline.start + 1));
 
-        for ( pfn = op->u.page_offline.start;
-              pfn <= op->u.page_offline.end;
-              pfn ++ )
+        for ( mfn = _mfn(op->u.page_offline.start);
+              mfn_x(mfn) <= op->u.page_offline.end;
+              mfn = mfn_add(mfn, 1) )
         {
             switch ( op->u.page_offline.cmd )
             {
                 /* Shall revert her if failed, or leave caller do it? */
                 case sysctl_page_offline:
-                    ret = offline_page(pfn, 0, ptr++);
+                    ret = offline_page(mfn, 0, ptr++);
                     break;
                 case sysctl_page_online:
-                    ret = online_page(pfn, ptr++);
+                    ret = online_page(mfn, ptr++);
                     break;
                 case sysctl_query_page_offline:
-                    ret = query_page_offline(pfn, ptr++);
+                    ret = query_page_offline(mfn, ptr++);
                     break;
                 default:
                     ret = -EINVAL;
@@ -268,6 +271,12 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
         pi->cpu_khz = cpu_khz;
         pi->max_mfn = get_upper_mfn_bound();
         arch_do_physinfo(pi);
+        if ( iommu_enabled )
+        {
+            pi->capabilities |= XEN_SYSCTL_PHYSCAP_directio;
+            if ( iommu_hap_pt_share )
+                pi->capabilities |= XEN_SYSCTL_PHYSCAP_iommu_hap_pt_share;
+        }
 
         if ( copy_to_guest(u_sysctl, op, 1) )
             ret = -EFAULT;
@@ -349,7 +358,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
         unsigned int i, num_cpus;
         struct xen_sysctl_cputopoinfo *ti = &op->u.cputopoinfo;
 
-        num_cpus = cpumask_last(&cpu_online_map) + 1;
+        num_cpus = cpumask_last(&cpu_present_map) + 1;
         if ( !guest_handle_is_null(ti->cputopo) )
         {
             struct xen_sysctl_cputopo cputopo = { };
@@ -456,51 +465,11 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
     }
 #endif
 
-    case XEN_SYSCTL_tmem_op:
-        ret = tmem_control(&op->u.tmem_op);
-        break;
-
     case XEN_SYSCTL_livepatch_op:
         ret = livepatch_op(&op->u.livepatch);
         if ( ret != -ENOSYS && ret != -EOPNOTSUPP )
             copyback = 1;
         break;
-
-    case XEN_SYSCTL_set_parameter:
-    {
-#define XEN_SET_PARAMETER_MAX_SIZE 1023
-        char *params;
-
-        if ( op->u.set_parameter.pad[0] || op->u.set_parameter.pad[1] ||
-             op->u.set_parameter.pad[2] )
-        {
-            ret = -EINVAL;
-            break;
-        }
-        if ( op->u.set_parameter.size > XEN_SET_PARAMETER_MAX_SIZE )
-        {
-            ret = -E2BIG;
-            break;
-        }
-        params = xmalloc_bytes(op->u.set_parameter.size + 1);
-        if ( !params )
-        {
-            ret = -ENOMEM;
-            break;
-        }
-        if ( copy_from_guest(params, op->u.set_parameter.params,
-                             op->u.set_parameter.size) )
-            ret = -EFAULT;
-        else
-        {
-            params[op->u.set_parameter.size] = 0;
-            ret = runtime_parse(params);
-        }
-
-        xfree(params);
-
-        break;
-    }
 
     default:
         ret = arch_do_sysctl(op, u_sysctl);

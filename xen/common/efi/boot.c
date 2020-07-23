@@ -11,6 +11,7 @@
 #include <xen/lib.h>
 #include <xen/mm.h>
 #include <xen/multiboot.h>
+#include <xen/param.h>
 #include <xen/pci_regs.h>
 #include <xen/pfn.h>
 #if EFI_PAGE_SIZE != PAGE_SIZE
@@ -28,9 +29,6 @@
 #include <asm/fixmap.h>
 #undef __ASSEMBLY__
 #endif
-
-/* Using SetVirtualAddressMap() is incompatible with kexec: */
-#undef USE_SET_VIRTUAL_ADDRESS_MAP
 
 #define EFI_REVISION(major, minor) (((major) << 16) | (minor))
 
@@ -87,6 +85,14 @@ typedef struct _EFI_APPLE_PROPERTIES {
     EFI_APPLE_PROPERTIES_DELETE Delete;
     EFI_APPLE_PROPERTIES_GETALL GetAll;
 } EFI_APPLE_PROPERTIES;
+
+typedef struct _EFI_LOAD_OPTION {
+    UINT32 Attributes;
+    UINT16 FilePathListLength;
+    CHAR16 Description[];
+} EFI_LOAD_OPTION;
+
+#define LOAD_OPTION_ACTIVE              0x00000001
 
 union string {
     CHAR16 *w;
@@ -374,14 +380,59 @@ static void __init PrintErrMesg(const CHAR16 *mesg, EFI_STATUS ErrCode)
 }
 
 static unsigned int __init get_argv(unsigned int argc, CHAR16 **argv,
-                                    CHAR16 *cmdline, UINTN cmdsize,
+                                    VOID *data, UINTN size, UINTN *offset,
                                     CHAR16 **options)
 {
-    CHAR16 *ptr = (CHAR16 *)(argv + argc + 1), *prev = NULL;
+    CHAR16 *ptr = (CHAR16 *)(argv + argc + 1), *prev = NULL, *cmdline = NULL;
     bool prev_sep = true;
 
-    for ( ; cmdsize > sizeof(*cmdline) && *cmdline;
-            cmdsize -= sizeof(*cmdline), ++cmdline )
+    if ( argc )
+    {
+        cmdline = data + *offset;
+        /* EFI_LOAD_OPTION does not supply an image name as first component. */
+        if ( *offset )
+            *argv++ = NULL;
+    }
+    else if ( size > sizeof(*cmdline) && !(size % sizeof(*cmdline)) &&
+              (wmemchr(data, 0, size / sizeof(*cmdline)) ==
+               data + size - sizeof(*cmdline)) )
+    {
+        /* Plain command line, as usually passed by the EFI shell. */
+        *offset = 0;
+        cmdline = data;
+    }
+    else if ( size > sizeof(EFI_LOAD_OPTION) )
+    {
+        const EFI_LOAD_OPTION *elo = data;
+        /* The minimum size the buffer needs to be. */
+        size_t elo_min = offsetof(EFI_LOAD_OPTION, Description[1]) +
+                         elo->FilePathListLength;
+
+        if ( (elo->Attributes & LOAD_OPTION_ACTIVE) && size > elo_min &&
+             !((size - elo_min) % sizeof(*cmdline)) )
+        {
+            const CHAR16 *desc = elo->Description;
+            const CHAR16 *end = wmemchr(desc, 0,
+                                        (size - elo_min) / sizeof(*desc) + 1);
+
+            if ( end )
+            {
+                *offset = elo_min + (end - desc) * sizeof(*desc);
+                if ( (size -= *offset) > sizeof(*cmdline) )
+                {
+                    cmdline = data + *offset;
+                    /* Cater for the image name as first component. */
+                    ++argc;
+                }
+            }
+        }
+    }
+
+    if ( !cmdline )
+        return 0;
+
+    for ( ; size > sizeof(*cmdline) && *cmdline;
+            size -= sizeof(*cmdline), ++cmdline )
     {
         bool cur_sep = *cmdline == L' ' || *cmdline == L'\t';
 
@@ -424,6 +475,7 @@ static EFI_FILE_HANDLE __init get_parent_handle(EFI_LOADED_IMAGE *loaded_image,
                                                 CHAR16 **leaf)
 {
     static EFI_GUID __initdata fs_protocol = SIMPLE_FILE_SYSTEM_PROTOCOL;
+    static CHAR16 __initdata buffer[512];
     EFI_FILE_HANDLE dir_handle;
     EFI_DEVICE_PATH *dp;
     CHAR16 *pathend, *ptr;
@@ -443,8 +495,7 @@ static EFI_FILE_HANDLE __init get_parent_handle(EFI_LOADED_IMAGE *loaded_image,
     if ( ret != EFI_SUCCESS )
         PrintErrMesg(L"OpenVolume failure", ret);
 
-#define buffer ((CHAR16 *)keyhandler_scratch)
-#define BUFFERSIZE sizeof(keyhandler_scratch)
+#define BUFFERSIZE sizeof(buffer)
     for ( dp = loaded_image->FilePath, *buffer = 0;
           DevicePathType(dp) != END_DEVICE_PATH_TYPE;
           dp = (void *)dp + DevicePathNodeLength(dp) )
@@ -1000,11 +1051,17 @@ static void __init efi_set_gop_mode(EFI_GRAPHICS_OUTPUT_PROTOCOL *gop, UINTN gop
         efi_arch_video_init(gop, info_size, mode_info);
 }
 
+#define INVALID_VIRTUAL_ADDRESS (0xBAAADUL << \
+                                 (EFI_PAGE_SHIFT + BITS_PER_LONG - 32))
+
 static void __init efi_exit_boot(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
     EFI_STATUS status;
     UINTN info_size = 0, map_key;
     bool retry;
+#ifdef CONFIG_EFI_SET_VIRTUAL_ADDRESS_MAP
+    unsigned int i;
+#endif
 
     efi_bs->GetMemoryMap(&info_size, NULL, &map_key,
                          &efi_mdesc_size, &mdesc_ver);
@@ -1038,11 +1095,29 @@ static void __init efi_exit_boot(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *Syste
     if ( EFI_ERROR(status) )
         PrintErrMesg(L"Cannot exit boot services", status);
 
+#ifdef CONFIG_EFI_SET_VIRTUAL_ADDRESS_MAP
+    for ( i = 0; i < efi_memmap_size; i += efi_mdesc_size )
+    {
+        EFI_MEMORY_DESCRIPTOR *desc = efi_memmap + i;
+
+        if ( desc->Attribute & EFI_MEMORY_RUNTIME )
+            desc->VirtualStart = desc->PhysicalStart;
+        else
+            desc->VirtualStart = INVALID_VIRTUAL_ADDRESS;
+    }
+    status = efi_rs->SetVirtualAddressMap(efi_memmap_size, efi_mdesc_size,
+                                          mdesc_ver, efi_memmap);
+    if ( status != EFI_SUCCESS )
+    {
+        printk(XENLOG_ERR "EFI: SetVirtualAddressMap() failed (%#lx), disabling runtime services\n",
+               status);
+        __clear_bit(EFI_RS, &efi_flags);
+    }
+#endif
+
     /* Adjust pointers into EFI. */
     efi_ct = (void *)efi_ct + DIRECTMAP_VIRT_START;
-#ifdef USE_SET_VIRTUAL_ADDRESS_MAP
     efi_rs = (void *)efi_rs + DIRECTMAP_VIRT_START;
-#endif
     efi_memmap = (void *)efi_memmap + DIRECTMAP_VIRT_START;
     efi_fw_vendor = (void *)efi_fw_vendor + DIRECTMAP_VIRT_START;
 }
@@ -1099,15 +1174,17 @@ efi_start(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     if ( use_cfg_file )
     {
+        UINTN offset = 0;
+
         argc = get_argv(0, NULL, loaded_image->LoadOptions,
-                        loaded_image->LoadOptionsSize, NULL);
+                        loaded_image->LoadOptionsSize, &offset, NULL);
         if ( argc > 0 &&
              efi_bs->AllocatePool(EfiLoaderData,
                                   (argc + 1) * sizeof(*argv) +
                                       loaded_image->LoadOptionsSize,
                                   (void **)&argv) == EFI_SUCCESS )
             get_argv(argc, argv, loaded_image->LoadOptions,
-                     loaded_image->LoadOptionsSize, &options);
+                     loaded_image->LoadOptionsSize, &offset, &options);
         else
             argc = 0;
         for ( i = 1; i < argc; ++i )
@@ -1248,6 +1325,19 @@ efi_start(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             efi_bs->FreePool(name.w);
         }
 
+        /*
+         * EFI_LOAD_OPTION does not supply an image name as first component:
+         * Make one up.
+         */
+        if ( argc && !*argv )
+        {
+            EFI_FILE_HANDLE handle = get_parent_handle(loaded_image,
+                                                       &file_name);
+
+            handle->Close(handle);
+            *argv = file_name;
+        }
+
         name.s = get_value(&cfg, section.s, "options");
         efi_arch_handle_cmdline(argc ? *argv : NULL, options, name.s);
 
@@ -1302,8 +1392,7 @@ efi_start(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
     efi_exit_boot(ImageHandle, SystemTable);
 
-    efi_arch_post_exit_boot();
-    for( ; ; ); /* not reached */
+    efi_arch_post_exit_boot(); /* Doesn't return. */
 }
 
 #ifndef CONFIG_ARM /* TODO - runtime service support */
@@ -1315,27 +1404,29 @@ static bool __initdata efi_map_uc;
 static int __init parse_efi_param(const char *s)
 {
     const char *ss;
-    int rc = 0;
+    int rc = 0, val;
 
     do {
-        bool val = strncmp(s, "no-", 3);
-
-        if ( !val )
-            s += 3;
-
         ss = strchr(s, ',');
         if ( !ss )
             ss = strchr(s, '\0');
 
-        if ( !cmdline_strcmp(s, "rs") )
+        if ( (val = parse_boolean("rs", s, ss)) >= 0 )
         {
             if ( val )
                 __set_bit(EFI_RS, &efi_flags);
             else
                 __clear_bit(EFI_RS, &efi_flags);
         }
-        else if ( !cmdline_strcmp(s, "attr=uc") )
-            efi_map_uc = val;
+        else if ( (ss - s) > 5 && !memcmp(s, "attr=", 5) )
+        {
+            if ( !cmdline_strcmp(s + 5, "uc") )
+                efi_map_uc = true;
+            else if ( !cmdline_strcmp(s + 5, "no") )
+                efi_map_uc = false;
+            else
+                rc = -EINVAL;
+        }
         else
             rc = -EINVAL;
 
@@ -1346,7 +1437,6 @@ static int __init parse_efi_param(const char *s)
 }
 custom_param("efi", parse_efi_param);
 
-#ifndef USE_SET_VIRTUAL_ADDRESS_MAP
 static __init void copy_mapping(unsigned long mfn, unsigned long end,
                                 bool (*is_valid)(unsigned long smfn,
                                                  unsigned long emfn))
@@ -1390,21 +1480,16 @@ static bool __init rt_range_valid(unsigned long smfn, unsigned long emfn)
 {
     return true;
 }
-#endif
 
-#define INVALID_VIRTUAL_ADDRESS (0xBAAADUL << \
-                                 (EFI_PAGE_SHIFT + BITS_PER_LONG - 32))
 
 void __init efi_init_memory(void)
 {
     unsigned int i;
-#ifndef USE_SET_VIRTUAL_ADDRESS_MAP
     struct rt_extra {
         struct rt_extra *next;
         unsigned long smfn, emfn;
         unsigned int prot;
     } *extra, *extra_head = NULL;
-#endif
 
     free_ebmalloc_unused_mem();
 
@@ -1469,7 +1554,7 @@ void __init efi_init_memory(void)
 
         if ( desc->Attribute & (efi_bs_revision < EFI_REVISION(2, 5)
                                 ? EFI_MEMORY_WP : EFI_MEMORY_RO) )
-            prot &= ~_PAGE_RW;
+            prot &= ~(_PAGE_DIRTY | _PAGE_RW);
         if ( desc->Attribute & EFI_MEMORY_XP )
             prot |= _PAGE_NX;
 
@@ -1487,7 +1572,6 @@ void __init efi_init_memory(void)
                 printk(XENLOG_ERR "Could not map MFNs %#lx-%#lx\n",
                        smfn, emfn - 1);
         }
-#ifndef USE_SET_VIRTUAL_ADDRESS_MAP
         else if ( !((desc->PhysicalStart + len - 1) >> (VADDR_BITS - 1)) &&
                   (extra = xmalloc(struct rt_extra)) != NULL )
         {
@@ -1498,12 +1582,8 @@ void __init efi_init_memory(void)
             extra_head = extra;
             desc->VirtualStart = desc->PhysicalStart;
         }
-#endif
         else
         {
-#ifdef USE_SET_VIRTUAL_ADDRESS_MAP
-            /* XXX allocate e.g. down from FIXADDR_START */
-#endif
             printk(XENLOG_ERR "No mapping for MFNs %#lx-%#lx\n",
                    smfn, emfn - 1);
         }
@@ -1515,11 +1595,10 @@ void __init efi_init_memory(void)
         return;
     }
 
-#ifdef USE_SET_VIRTUAL_ADDRESS_MAP
-    efi_rs->SetVirtualAddressMap(efi_memmap_size, efi_mdesc_size,
-                                 mdesc_ver, efi_memmap);
-#else
-    /* Set up 1:1 page tables to do runtime calls in "physical" mode. */
+    /*
+     * Set up 1:1 page tables for runtime calls. See SetVirtualAddressMap() in
+     * efi_exit_boot().
+     */
     efi_l4_pgtable = alloc_xen_pagetable();
     BUG_ON(!efi_l4_pgtable);
     clear_page(efi_l4_pgtable);
@@ -1604,6 +1683,5 @@ void __init efi_init_memory(void)
     for ( i = l4_table_offset(HYPERVISOR_VIRT_START);
           i < l4_table_offset(DIRECTMAP_VIRT_END); ++i )
         efi_l4_pgtable[i] = idle_pg_table[i];
-#endif
 }
 #endif

@@ -31,9 +31,9 @@
 
 #define VTD_QI_TIMEOUT	1
 
-static int __must_check invalidate_sync(struct iommu *iommu);
+static int __must_check invalidate_sync(struct vtd_iommu *iommu);
 
-static void print_qi_regs(struct iommu *iommu)
+static void print_qi_regs(struct vtd_iommu *iommu)
 {
     u64 val;
 
@@ -47,7 +47,7 @@ static void print_qi_regs(struct iommu *iommu)
     printk("DMAR_IQT_REG = %"PRIx64"\n", val);
 }
 
-static unsigned int qinval_next_index(struct iommu *iommu)
+static unsigned int qinval_next_index(struct vtd_iommu *iommu)
 {
     u64 tail;
 
@@ -62,7 +62,7 @@ static unsigned int qinval_next_index(struct iommu *iommu)
     return tail;
 }
 
-static void qinval_update_qtail(struct iommu *iommu, unsigned int index)
+static void qinval_update_qtail(struct vtd_iommu *iommu, unsigned int index)
 {
     u64 val;
 
@@ -72,7 +72,7 @@ static void qinval_update_qtail(struct iommu *iommu, unsigned int index)
     dmar_writeq(iommu->reg, DMAR_IQT_REG, (val << QINVAL_INDEX_SHIFT));
 }
 
-static int __must_check queue_invalidate_context_sync(struct iommu *iommu,
+static int __must_check queue_invalidate_context_sync(struct vtd_iommu *iommu,
                                                       u16 did, u16 source_id,
                                                       u8 function_mask,
                                                       u8 granu)
@@ -84,7 +84,7 @@ static int __must_check queue_invalidate_context_sync(struct iommu *iommu,
 
     spin_lock_irqsave(&iommu->register_lock, flags);
     index = qinval_next_index(iommu);
-    entry_base = iommu_qi_ctrl(iommu)->qinval_maddr +
+    entry_base = iommu->qinval_maddr +
                  ((index >> QINVAL_ENTRY_ORDER) << PAGE_SHIFT);
     qinval_entries = map_vtd_domain_page(entry_base);
     qinval_entry = &qinval_entries[index % (1 << QINVAL_ENTRY_ORDER)];
@@ -106,7 +106,7 @@ static int __must_check queue_invalidate_context_sync(struct iommu *iommu,
     return invalidate_sync(iommu);
 }
 
-static int __must_check queue_invalidate_iotlb_sync(struct iommu *iommu,
+static int __must_check queue_invalidate_iotlb_sync(struct vtd_iommu *iommu,
                                                     u8 granu, u8 dr, u8 dw,
                                                     u16 did, u8 am, u8 ih,
                                                     u64 addr)
@@ -118,7 +118,7 @@ static int __must_check queue_invalidate_iotlb_sync(struct iommu *iommu,
 
     spin_lock_irqsave(&iommu->register_lock, flags);
     index = qinval_next_index(iommu);
-    entry_base = iommu_qi_ctrl(iommu)->qinval_maddr +
+    entry_base = iommu->qinval_maddr +
                  ((index >> QINVAL_ENTRY_ORDER) << PAGE_SHIFT);
     qinval_entries = map_vtd_domain_page(entry_base);
     qinval_entry = &qinval_entries[index % (1 << QINVAL_ENTRY_ORDER)];
@@ -143,7 +143,7 @@ static int __must_check queue_invalidate_iotlb_sync(struct iommu *iommu,
     return invalidate_sync(iommu);
 }
 
-static int __must_check queue_invalidate_wait(struct iommu *iommu,
+static int __must_check queue_invalidate_wait(struct vtd_iommu *iommu,
                                               u8 iflag, u8 sw, u8 fn,
                                               bool_t flush_dev_iotlb)
 {
@@ -157,7 +157,7 @@ static int __must_check queue_invalidate_wait(struct iommu *iommu,
     spin_lock_irqsave(&iommu->register_lock, flags);
     ACCESS_ONCE(*this_poll_slot) = QINVAL_STAT_INIT;
     index = qinval_next_index(iommu);
-    entry_base = iommu_qi_ctrl(iommu)->qinval_maddr +
+    entry_base = iommu->qinval_maddr +
                  ((index >> QINVAL_ENTRY_ORDER) << PAGE_SHIFT);
     qinval_entries = map_vtd_domain_page(entry_base);
     qinval_entry = &qinval_entries[index % (1 << QINVAL_ENTRY_ORDER)];
@@ -200,22 +200,19 @@ static int __must_check queue_invalidate_wait(struct iommu *iommu,
     return -EOPNOTSUPP;
 }
 
-static int __must_check invalidate_sync(struct iommu *iommu)
+static int __must_check invalidate_sync(struct vtd_iommu *iommu)
 {
-    struct qi_ctrl *qi_ctrl = iommu_qi_ctrl(iommu);
-
-    ASSERT(qi_ctrl->qinval_maddr);
+    ASSERT(iommu->qinval_maddr);
 
     return queue_invalidate_wait(iommu, 0, 1, 1, 0);
 }
 
-static int __must_check dev_invalidate_sync(struct iommu *iommu,
+static int __must_check dev_invalidate_sync(struct vtd_iommu *iommu,
                                             struct pci_dev *pdev, u16 did)
 {
-    struct qi_ctrl *qi_ctrl = iommu_qi_ctrl(iommu);
     int rc;
 
-    ASSERT(qi_ctrl->qinval_maddr);
+    ASSERT(iommu->qinval_maddr);
     rc = queue_invalidate_wait(iommu, 0, 1, 1, 1);
     if ( rc == -ETIMEDOUT )
     {
@@ -238,7 +235,7 @@ static int __must_check dev_invalidate_sync(struct iommu *iommu,
     return rc;
 }
 
-int qinval_device_iotlb_sync(struct iommu *iommu, struct pci_dev *pdev,
+int qinval_device_iotlb_sync(struct vtd_iommu *iommu, struct pci_dev *pdev,
                              u16 did, u16 size, u64 addr)
 {
     unsigned long flags;
@@ -249,7 +246,7 @@ int qinval_device_iotlb_sync(struct iommu *iommu, struct pci_dev *pdev,
     ASSERT(pdev);
     spin_lock_irqsave(&iommu->register_lock, flags);
     index = qinval_next_index(iommu);
-    entry_base = iommu_qi_ctrl(iommu)->qinval_maddr +
+    entry_base = iommu->qinval_maddr +
                  ((index >> QINVAL_ENTRY_ORDER) << PAGE_SHIFT);
     qinval_entries = map_vtd_domain_page(entry_base);
     qinval_entry = &qinval_entries[index % (1 << QINVAL_ENTRY_ORDER)];
@@ -272,7 +269,7 @@ int qinval_device_iotlb_sync(struct iommu *iommu, struct pci_dev *pdev,
     return dev_invalidate_sync(iommu, pdev, did);
 }
 
-static int __must_check queue_invalidate_iec_sync(struct iommu *iommu,
+static int __must_check queue_invalidate_iec_sync(struct vtd_iommu *iommu,
                                                   u8 granu, u8 im, u16 iidx)
 {
     unsigned long flags;
@@ -283,7 +280,7 @@ static int __must_check queue_invalidate_iec_sync(struct iommu *iommu,
 
     spin_lock_irqsave(&iommu->register_lock, flags);
     index = qinval_next_index(iommu);
-    entry_base = iommu_qi_ctrl(iommu)->qinval_maddr +
+    entry_base = iommu->qinval_maddr +
                  ((index >> QINVAL_ENTRY_ORDER) << PAGE_SHIFT);
     qinval_entries = map_vtd_domain_page(entry_base);
     qinval_entry = &qinval_entries[index % (1 << QINVAL_ENTRY_ORDER)];
@@ -311,24 +308,21 @@ static int __must_check queue_invalidate_iec_sync(struct iommu *iommu,
     return ret;
 }
 
-int iommu_flush_iec_global(struct iommu *iommu)
+int iommu_flush_iec_global(struct vtd_iommu *iommu)
 {
     return queue_invalidate_iec_sync(iommu, IEC_GLOBAL_INVL, 0, 0);
 }
 
-int iommu_flush_iec_index(struct iommu *iommu, u8 im, u16 iidx)
+int iommu_flush_iec_index(struct vtd_iommu *iommu, u8 im, u16 iidx)
 {
     return queue_invalidate_iec_sync(iommu, IEC_INDEX_INVL, im, iidx);
 }
 
-static int __must_check flush_context_qi(void *_iommu, u16 did,
+static int __must_check flush_context_qi(struct vtd_iommu *iommu, u16 did,
                                          u16 sid, u8 fm, u64 type,
-                                         bool_t flush_non_present_entry)
+                                         bool flush_non_present_entry)
 {
-    struct iommu *iommu = (struct iommu *)_iommu;
-    struct qi_ctrl *qi_ctrl = iommu_qi_ctrl(iommu);
-
-    ASSERT(qi_ctrl->qinval_maddr);
+    ASSERT(iommu->qinval_maddr);
 
     /*
      * In the non-present entry flush case, if hardware doesn't cache
@@ -348,17 +342,16 @@ static int __must_check flush_context_qi(void *_iommu, u16 did,
                                          type >> DMA_CCMD_INVL_GRANU_OFFSET);
 }
 
-static int __must_check flush_iotlb_qi(void *_iommu, u16 did, u64 addr,
+static int __must_check flush_iotlb_qi(struct vtd_iommu *iommu, u16 did,
+                                       u64 addr,
                                        unsigned int size_order, u64 type,
-                                       bool_t flush_non_present_entry,
-                                       bool_t flush_dev_iotlb)
+                                       bool flush_non_present_entry,
+                                       bool flush_dev_iotlb)
 {
     u8 dr = 0, dw = 0;
     int ret = 0, rc;
-    struct iommu *iommu = (struct iommu *)_iommu;
-    struct qi_ctrl *qi_ctrl = iommu_qi_ctrl(iommu);
 
-    ASSERT(qi_ctrl->qinval_maddr);
+    ASSERT(iommu->qinval_maddr);
 
     /*
      * In the non-present entry flush case, if hardware doesn't cache
@@ -395,30 +388,24 @@ static int __must_check flush_iotlb_qi(void *_iommu, u16 did, u64 addr,
     return ret;
 }
 
-int enable_qinval(struct iommu *iommu)
+int enable_qinval(struct vtd_iommu *iommu)
 {
-    struct acpi_drhd_unit *drhd;
-    struct qi_ctrl *qi_ctrl;
-    struct iommu_flush *flush;
     u32 sts;
     unsigned long flags;
 
     if ( !ecap_queued_inval(iommu->ecap) || !iommu_qinval )
         return -ENOENT;
 
-    qi_ctrl = iommu_qi_ctrl(iommu);
-    flush = iommu_get_flush(iommu);
-
     /* Return if already enabled by Xen */
     sts = dmar_readl(iommu->reg, DMAR_GSTS_REG);
-    if ( (sts & DMA_GSTS_QIES) && qi_ctrl->qinval_maddr )
+    if ( (sts & DMA_GSTS_QIES) && iommu->qinval_maddr )
         return 0;
 
-    if ( qi_ctrl->qinval_maddr == 0 )
+    if ( iommu->qinval_maddr == 0 )
     {
-        drhd = iommu_to_drhd(iommu);
-        qi_ctrl->qinval_maddr = alloc_pgtable_maddr(drhd, QINVAL_ARCH_PAGE_NR);
-        if ( qi_ctrl->qinval_maddr == 0 )
+        iommu->qinval_maddr = alloc_pgtable_maddr(QINVAL_ARCH_PAGE_NR,
+                                                  iommu->node);
+        if ( iommu->qinval_maddr == 0 )
         {
             dprintk(XENLOG_WARNING VTDPREFIX,
                     "Cannot allocate memory for qi_ctrl->qinval_maddr\n");
@@ -426,8 +413,8 @@ int enable_qinval(struct iommu *iommu)
         }
     }
 
-    flush->context = flush_context_qi;
-    flush->iotlb = flush_iotlb_qi;
+    iommu->flush.context = flush_context_qi;
+    iommu->flush.iotlb   = flush_iotlb_qi;
 
     spin_lock_irqsave(&iommu->register_lock, flags);
 
@@ -439,7 +426,7 @@ int enable_qinval(struct iommu *iommu)
      * to IQA register.
      */
     dmar_writeq(iommu->reg, DMAR_IQA_REG,
-                qi_ctrl->qinval_maddr | QINVAL_PAGE_ORDER);
+                iommu->qinval_maddr | QINVAL_PAGE_ORDER);
 
     dmar_writeq(iommu->reg, DMAR_IQT_REG, 0);
 
@@ -455,7 +442,7 @@ int enable_qinval(struct iommu *iommu)
     return 0;
 }
 
-void disable_qinval(struct iommu *iommu)
+void disable_qinval(struct vtd_iommu *iommu)
 {
     u32 sts;
     unsigned long flags;

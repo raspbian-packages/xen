@@ -10,7 +10,7 @@
 #
 # For more documentation you can refer to the wiki:
 #
-# http://wiki.xen.org/wiki/Category:Host_Configuration#System_wide_xen_configuration
+# https://wiki.xen.org/wiki/Category:Host_Configuration#System_wide_xen_configuration
 
 PACKAGE_TARNAME          := @PACKAGE_TARNAME@
 prefix                   := @prefix@
@@ -58,4 +58,4 @@ XENFIRMWAREDIR           := @XENFIRMWAREDIR@
 XEN_CONFIG_DIR           := @XEN_CONFIG_DIR@
 XEN_SCRIPT_DIR           := @XEN_SCRIPT_DIR@
 
-PKG_INSTALLDIR           := ${SHAREDIR}/pkgconfig
+PKG_INSTALLDIR           := ${libdir}/pkgconfig

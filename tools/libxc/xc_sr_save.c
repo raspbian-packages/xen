@@ -10,20 +10,18 @@ static int write_headers(struct xc_sr_context *ctx, uint16_t guest_type)
 {
     xc_interface *xch = ctx->xch;
     int32_t xen_version = xc_version(xch, XENVER_version, NULL);
-    struct xc_sr_ihdr ihdr =
-        {
-            .marker  = IHDR_MARKER,
-            .id      = htonl(IHDR_ID),
-            .version = htonl(IHDR_VERSION),
-            .options = htons(IHDR_OPT_LITTLE_ENDIAN),
-        };
-    struct xc_sr_dhdr dhdr =
-        {
-            .type       = guest_type,
-            .page_shift = XC_PAGE_SHIFT,
-            .xen_major  = (xen_version >> 16) & 0xffff,
-            .xen_minor  = (xen_version)       & 0xffff,
-        };
+    struct xc_sr_ihdr ihdr = {
+        .marker  = IHDR_MARKER,
+        .id      = htonl(IHDR_ID),
+        .version = htonl(3),
+        .options = htons(IHDR_OPT_LITTLE_ENDIAN),
+    };
+    struct xc_sr_dhdr dhdr = {
+        .type       = guest_type,
+        .page_shift = XC_PAGE_SHIFT,
+        .xen_major  = (xen_version >> 16) & 0xffff,
+        .xen_minor  = (xen_version)       & 0xffff,
+    };
 
     if ( xen_version < 0 )
     {
@@ -51,7 +49,17 @@ static int write_headers(struct xc_sr_context *ctx, uint16_t guest_type)
  */
 static int write_end_record(struct xc_sr_context *ctx)
 {
-    struct xc_sr_record end = { REC_TYPE_END, 0, NULL };
+    struct xc_sr_record end = { .type = REC_TYPE_END };
+
+    return write_record(ctx, &end);
+}
+
+/*
+ * Writes a STATIC_DATA_END record into the stream.
+ */
+static int write_static_data_end_record(struct xc_sr_context *ctx)
+{
+    struct xc_sr_record end = { .type = REC_TYPE_STATIC_DATA_END };
 
     return write_record(ctx, &end);
 }
@@ -61,7 +69,7 @@ static int write_end_record(struct xc_sr_context *ctx)
  */
 static int write_checkpoint_record(struct xc_sr_context *ctx)
 {
-    struct xc_sr_record checkpoint = { REC_TYPE_CHECKPOINT, 0, NULL };
+    struct xc_sr_record checkpoint = { .type = REC_TYPE_CHECKPOINT };
 
     return write_record(ctx, &checkpoint);
 }
@@ -84,14 +92,13 @@ static int write_batch(struct xc_sr_context *ctx)
     void **guest_data = NULL;
     void **local_pages = NULL;
     int *errors = NULL, rc = -1;
-    unsigned i, p, nr_pages = 0, nr_pages_mapped = 0;
-    unsigned nr_pfns = ctx->save.nr_batch_pfns;
+    unsigned int i, p, nr_pages = 0, nr_pages_mapped = 0;
+    unsigned int nr_pfns = ctx->save.nr_batch_pfns;
     void *page, *orig_page;
     uint64_t *rec_pfns = NULL;
     struct iovec *iov = NULL; int iovcnt = 0;
     struct xc_sr_rec_page_data_header hdr = { 0 };
-    struct xc_sr_record rec =
-    {
+    struct xc_sr_record rec = {
         .type = REC_TYPE_PAGE_DATA,
     };
 
@@ -153,8 +160,8 @@ static int write_batch(struct xc_sr_context *ctx)
 
     if ( nr_pages > 0 )
     {
-        guest_mapping = xenforeignmemory_map(xch->fmem,
-            ctx->domid, PROT_READ, nr_pages, mfns, errors);
+        guest_mapping = xenforeignmemory_map(
+            xch->fmem, ctx->domid, PROT_READ, nr_pages, mfns, errors);
         if ( !guest_mapping )
         {
             PERROR("Failed to map guest pages");
@@ -481,7 +488,7 @@ static int update_progress_string(struct xc_sr_context *ctx, char **str)
 static int simple_precopy_policy(struct precopy_stats stats, void *user)
 {
     return ((stats.dirty_count >= 0 &&
-            stats.dirty_count < SPP_TARGET_DIRTY_COUNT) ||
+             stats.dirty_count < SPP_TARGET_DIRTY_COUNT) ||
             stats.iteration >= SPP_MAX_ITERATIONS)
         ? XGS_POLICY_STOP_AND_COPY
         : XGS_POLICY_CONTINUE_PRECOPY;
@@ -511,12 +518,13 @@ static int send_memory_live(struct xc_sr_context *ctx)
     if ( rc )
         goto out;
 
-    ctx->save.stats = (struct precopy_stats)
-        { .dirty_count   = ctx->save.p2m_size };
+    ctx->save.stats = (struct precopy_stats){
+        .dirty_count = ctx->save.p2m_size,
+    };
     policy_stats = &ctx->save.stats;
 
     if ( precopy_policy == NULL )
-         precopy_policy = simple_precopy_policy;
+        precopy_policy = simple_precopy_policy;
 
     bitmap_set(dirty_bitmap, ctx->save.p2m_size);
 
@@ -546,7 +554,7 @@ static int send_memory_live(struct xc_sr_context *ctx)
         policy_decision = precopy_policy(*policy_stats, data);
 
         if ( policy_decision != XGS_POLICY_CONTINUE_PRECOPY )
-           break;
+            break;
 
         if ( xc_shadow_control(
                  xch, ctx->domid, XEN_DOMCTL_SHADOW_OP_CLEAN,
@@ -562,6 +570,13 @@ static int send_memory_live(struct xc_sr_context *ctx)
 
     }
 
+    if ( policy_decision == XGS_POLICY_ABORT )
+    {
+        PERROR("Abort precopy loop");
+        rc = -1;
+        goto out;
+    }
+
  out:
     xc_set_progress_prefix(xch, NULL);
     free(progress_str);
@@ -571,10 +586,10 @@ static int send_memory_live(struct xc_sr_context *ctx)
 static int colo_merge_secondary_dirty_bitmap(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
-    struct xc_sr_record rec = { 0, 0, NULL };
+    struct xc_sr_record rec;
     uint64_t *pfns = NULL;
     uint64_t pfn;
-    unsigned count, i;
+    unsigned int count, i;
     int rc;
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->save.dirty_bitmap_hbuf);
@@ -585,14 +600,14 @@ static int colo_merge_secondary_dirty_bitmap(struct xc_sr_context *ctx)
 
     if ( rec.type != REC_TYPE_CHECKPOINT_DIRTY_PFN_LIST )
     {
-        PERROR("Expect dirty bitmap record, but received %u", rec.type );
+        PERROR("Expect dirty bitmap record, but received %u", rec.type);
         rc = -1;
         goto err;
     }
 
     if ( rec.length % sizeof(*pfns) )
     {
-        PERROR("Invalid dirty pfn list record length %u", rec.length );
+        PERROR("Invalid dirty pfn list record length %u", rec.length);
         rc = -1;
         goto err;
     }
@@ -603,7 +618,7 @@ static int colo_merge_secondary_dirty_bitmap(struct xc_sr_context *ctx)
     for ( i = 0; i < count; i++ )
     {
         pfn = pfns[i];
-        if (pfn > ctx->save.p2m_size)
+        if ( pfn > ctx->save.p2m_size )
         {
             PERROR("Invalid pfn 0x%" PRIx64, pfn);
             rc = -1;
@@ -660,7 +675,7 @@ static int suspend_and_send_dirty(struct xc_sr_context *ctx)
 
     bitmap_or(dirty_bitmap, ctx->save.deferred_pages, ctx->save.p2m_size);
 
-    if ( !ctx->save.live && ctx->save.checkpointed == XC_MIG_STREAM_COLO )
+    if ( !ctx->save.live && ctx->stream_type == XC_STREAM_COLO )
     {
         rc = colo_merge_secondary_dirty_bitmap(ctx);
         if ( rc )
@@ -688,11 +703,7 @@ static int verify_frames(struct xc_sr_context *ctx)
     xc_interface *xch = ctx->xch;
     xc_shadow_op_stats_t stats = { 0, ctx->save.p2m_size };
     int rc;
-    struct xc_sr_record rec =
-    {
-        .type = REC_TYPE_VERIFY,
-        .length = 0,
-    };
+    struct xc_sr_record rec = { .type = REC_TYPE_VERIFY };
 
     DPRINTF("Enabling verify mode");
 
@@ -741,14 +752,14 @@ static int send_domain_memory_live(struct xc_sr_context *ctx)
     if ( rc )
         goto out;
 
-    if ( ctx->save.debug && ctx->save.checkpointed != XC_MIG_STREAM_NONE )
+    if ( ctx->save.debug && ctx->stream_type != XC_STREAM_PLAIN )
     {
         rc = verify_frames(ctx);
         if ( rc )
             goto out;
     }
 
-  out:
+ out:
     return rc;
 }
 
@@ -795,7 +806,7 @@ static int setup(struct xc_sr_context *ctx)
         goto err;
 
     dirty_bitmap = xc_hypercall_buffer_alloc_pages(
-                   xch, dirty_bitmap, NRPAGES(bitmap_size(ctx->save.p2m_size)));
+        xch, dirty_bitmap, NRPAGES(bitmap_size(ctx->save.p2m_size)));
     ctx->save.batch_pfns = malloc(MAX_BATCH_SIZE *
                                   sizeof(*ctx->save.batch_pfns));
     ctx->save.deferred_pages = calloc(1, bitmap_size(ctx->save.p2m_size));
@@ -855,6 +866,14 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
     if ( rc )
         goto err;
 
+    rc = ctx->save.ops.static_data(ctx);
+    if ( rc )
+        goto err;
+
+    rc = write_static_data_end_record(ctx);
+    if ( rc )
+        goto err;
+
     rc = ctx->save.ops.start_of_stream(ctx);
     if ( rc )
         goto err;
@@ -870,7 +889,7 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
 
         if ( ctx->save.live )
             rc = send_domain_memory_live(ctx);
-        else if ( ctx->save.checkpointed != XC_MIG_STREAM_NONE )
+        else if ( ctx->stream_type != XC_STREAM_PLAIN )
             rc = send_domain_memory_checkpointed(ctx);
         else
             rc = send_domain_memory_nonlive(ctx);
@@ -890,7 +909,7 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
         if ( rc )
             goto err;
 
-        if ( ctx->save.checkpointed != XC_MIG_STREAM_NONE )
+        if ( ctx->stream_type != XC_STREAM_PLAIN )
         {
             /*
              * We have now completed the initial live portion of the checkpoint
@@ -903,7 +922,7 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
             if ( rc )
                 goto err;
 
-            if ( ctx->save.checkpointed == XC_MIG_STREAM_COLO )
+            if ( ctx->stream_type == XC_STREAM_COLO )
             {
                 rc = ctx->save.callbacks->checkpoint(ctx->save.callbacks->data);
                 if ( !rc )
@@ -917,14 +936,14 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
             if ( rc <= 0 )
                 goto err;
 
-            if ( ctx->save.checkpointed == XC_MIG_STREAM_COLO )
+            if ( ctx->stream_type == XC_STREAM_COLO )
             {
                 rc = ctx->save.callbacks->wait_checkpoint(
                     ctx->save.callbacks->data);
                 if ( rc <= 0 )
                     goto err;
             }
-            else if ( ctx->save.checkpointed == XC_MIG_STREAM_REMUS )
+            else if ( ctx->stream_type == XC_STREAM_REMUS )
             {
                 rc = ctx->save.callbacks->checkpoint(ctx->save.callbacks->data);
                 if ( rc <= 0 )
@@ -937,7 +956,7 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
                 goto err;
             }
         }
-    } while ( ctx->save.checkpointed != XC_MIG_STREAM_NONE );
+    } while ( ctx->stream_type != XC_STREAM_PLAIN );
 
     xc_report_progress_single(xch, "End of stream");
 
@@ -966,36 +985,20 @@ static int save(struct xc_sr_context *ctx, uint16_t guest_type)
 };
 
 int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
-                   uint32_t flags, struct save_callbacks* callbacks,
-                   int hvm, xc_migration_stream_t stream_type, int recv_fd)
+                   uint32_t flags, struct save_callbacks *callbacks,
+                   xc_stream_type_t stream_type, int recv_fd)
 {
-    struct xc_sr_context ctx =
-        {
-            .xch = xch,
-            .fd = io_fd,
-        };
+    struct xc_sr_context ctx = {
+        .xch = xch,
+        .fd = io_fd,
+        .stream_type = stream_type,
+    };
 
     /* GCC 4.4 (of CentOS 6.x vintage) can' t initialise anonymous unions. */
     ctx.save.callbacks = callbacks;
     ctx.save.live  = !!(flags & XCFLAGS_LIVE);
     ctx.save.debug = !!(flags & XCFLAGS_DEBUG);
-    ctx.save.checkpointed = stream_type;
     ctx.save.recv_fd = recv_fd;
-
-    /* If altering migration_stream update this assert too. */
-    assert(stream_type == XC_MIG_STREAM_NONE ||
-           stream_type == XC_MIG_STREAM_REMUS ||
-           stream_type == XC_MIG_STREAM_COLO);
-
-    /* Sanity checks for callbacks. */
-    if ( hvm )
-        assert(callbacks->switch_qemu_logdirty);
-    if ( ctx.save.checkpointed )
-        assert(callbacks->checkpoint && callbacks->postcopy);
-    if ( ctx.save.checkpointed == XC_MIG_STREAM_COLO )
-        assert(callbacks->wait_checkpoint);
-
-    DPRINTF("fd %d, dom %u, flags %u, hvm %d", io_fd, dom, flags, hvm);
 
     if ( xc_domain_getinfo(xch, dom, 1, &ctx.dominfo) != 1 )
     {
@@ -1008,6 +1011,28 @@ int xc_domain_save(xc_interface *xch, int io_fd, uint32_t dom,
         ERROR("Domain %u does not exist", dom);
         return -1;
     }
+
+    /* Sanity check stream_type-related parameters */
+    switch ( stream_type )
+    {
+    case XC_STREAM_COLO:
+        assert(callbacks->wait_checkpoint);
+        /* Fallthrough */
+    case XC_STREAM_REMUS:
+        assert(callbacks->checkpoint && callbacks->postcopy);
+        /* Fallthrough */
+    case XC_STREAM_PLAIN:
+        if ( ctx.dominfo.hvm )
+            assert(callbacks->switch_qemu_logdirty);
+        break;
+
+    default:
+        assert(!"Bad stream_type");
+        break;
+    }
+
+    DPRINTF("fd %d, dom %u, flags %u, hvm %d",
+            io_fd, dom, flags, ctx.dominfo.hvm);
 
     ctx.domid = dom;
 

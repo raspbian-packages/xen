@@ -27,8 +27,6 @@
 
 #define HAP_PRINTK(_f, _a...)                                         \
     debugtrace_printk("hap: %s(): " _f, __func__, ##_a)
-#define HAP_ERROR(_f, _a...)                                          \
-    printk("hap error: %s(): " _f, __func__, ##_a)
 
 /************************************************/
 /*        hap domain level functions            */
@@ -43,10 +41,11 @@ void  hap_vcpu_init(struct vcpu *v);
 int   hap_track_dirty_vram(struct domain *d,
                            unsigned long begin_pfn,
                            unsigned long nr,
-                           XEN_GUEST_HANDLE_PARAM(void) dirty_bitmap);
+                           XEN_GUEST_HANDLE(void) dirty_bitmap);
 
 extern const struct paging_mode *hap_paging_get_mode(struct vcpu *);
 int hap_set_allocation(struct domain *d, unsigned int pages, bool *preempted);
+unsigned int hap_get_allocation(struct domain *d);
 
 #endif /* XEN_HAP_H */
 

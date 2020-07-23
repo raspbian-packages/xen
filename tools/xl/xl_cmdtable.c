@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include <libxl.h>
+
 #include "xl.h"
 
 struct cmd_spec cmd_table[] = {
@@ -152,7 +153,8 @@ struct cmd_spec cmd_table[] = {
       "[options] <Domain> <CheckpointFile> [<ConfigFile>]",
       "-h  Print this help.\n"
       "-c  Leave domain running after creating the snapshot.\n"
-      "-p  Leave domain paused after creating the snapshot."
+      "-p  Leave domain paused after creating the snapshot.\n"
+      "-D  Store the domain id in the configration."
     },
     { "migrate",
       &main_migrate, 0, 1,
@@ -166,7 +168,8 @@ struct cmd_spec cmd_table[] = {
       "-e              Do not wait in the background (on <host>) for the death\n"
       "                of the domain.\n"
       "--debug         Print huge (!) amount of debug during the migration process.\n"
-      "-p              Do not unpause domain after migrating it."
+      "-p              Do not unpause domain after migrating it.\n"
+      "-D              Preserve the domain id"
     },
     { "restore",
       &main_restore, 0, 1,
@@ -382,6 +385,21 @@ struct cmd_spec cmd_table[] = {
       "Destroy a domain's virtual TPM device",
       "<Domain> <DevId|uuid>",
     },
+    { "vkb-attach",
+      &main_vkbattach, 1, 1,
+      "Create a new virtual keyboard device",
+      "<Domain> <vkb-spec-component(s)>...",
+    },
+    { "vkb-list",
+      &main_vkblist, 0, 0,
+      "List virtual keyboard devices for a domain",
+      "<Domain(s)>",
+    },
+    { "vkb-detach",
+      &main_vkbdetach, 0, 1,
+      "Destroy a domain's virtual keyboard device",
+      "<Domain> <DevId>",
+    },
     { "vdispl-attach",
       &main_vdisplattach, 1, 1,
       "Create a new virtual display device",
@@ -401,6 +419,21 @@ struct cmd_spec cmd_table[] = {
       "Destroy a domain's virtual display device",
       "<Domain> <DevId>",
     },
+    { "vsnd-attach",
+      &main_vsndattach, 1, 1,
+      "Create a new virtual sound device",
+      "<Domain> <vsnd-spec-component(s)>...",
+    },
+    { "vsnd-list",
+      &main_vsndlist, 0, 0,
+      "List virtual display devices for a domain",
+      "<Domain(s)>",
+    },
+    { "vsnd-detach",
+      &main_vsnddetach, 0, 1,
+      "Destroy a domain's virtual sound device",
+      "<Domain> <DevId>",
+    },
     { "uptime",
       &main_uptime, 0, 0,
       "Print uptime for all/some domains",
@@ -410,46 +443,6 @@ struct cmd_spec cmd_table[] = {
       &main_claims, 0, 0,
       "List outstanding claim information about all domains",
       "",
-      "",
-    },
-    { "tmem-list",
-      &main_tmem_list, 0, 0,
-      "List tmem pools",
-      "[-l] [<Domain>|-a]",
-      "  -l                             List tmem stats",
-    },
-    { "tmem-freeze",
-      &main_tmem_freeze, 0, 1,
-      "Freeze tmem pools",
-      "[<Domain>|-a]",
-      "  -a                             Freeze all tmem",
-    },
-    { "tmem-thaw",
-      &main_tmem_thaw, 0, 1,
-      "Thaw tmem pools",
-      "[<Domain>|-a]",
-      "  -a                             Thaw all tmem",
-    },
-    { "tmem-set",
-      &main_tmem_set, 0, 1,
-      "Change tmem settings",
-      "[<Domain>|-a] [-w[=WEIGHT]|-c[=CAP]|-p[=COMPRESS]]",
-      "  -a                             Operate on all tmem\n"
-      "  -w WEIGHT                      Weight (int)\n"
-      "  -p COMPRESS                    Compress (int)",
-    },
-    { "tmem-shared-auth",
-      &main_tmem_shared_auth, 0, 1,
-      "De/authenticate shared tmem pool",
-      "[<Domain>|-a] [-u[=UUID] [-A[=AUTH]",
-      "  -a                             Authenticate for all tmem pools\n"
-      "  -u UUID                        Specify uuid\n"
-      "                                 (abcdef01-2345-6789-1234-567890abcdef)\n"
-      "  -A AUTH                        0=deauth,1=auth",
-    },
-    { "tmem-freeable",
-      &main_tmem_freeable, 0, 0,
-      "Get information about how much freeable memory (MB) is in-use by tmem",
       "",
     },
     { "cpupool-create",
@@ -511,7 +504,7 @@ struct cmd_spec cmd_table[] = {
     },
     { "loadpolicy",
       &main_loadpolicy, 0, 1,
-      "Loads a new policy int the Flask Xen security module",
+      "Loads a new policy into the Flask Xen security module",
       "<policy file>",
     },
 #ifndef LIBXL_HAVE_NO_SUSPEND_RESUME

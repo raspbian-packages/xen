@@ -16,12 +16,12 @@
  *
  * 7 - Primary stack (with a struct cpu_info at the top)
  * 6 - Primary stack
- * 5 - Optionally not present (MEMORY_GUARD)
- * 4 - Unused; optionally not present (MEMORY_GUARD)
- * 3 - Unused; optionally not present (MEMORY_GUARD)
- * 2 - MCE IST stack
- * 1 - NMI IST stack
- * 0 - Double Fault IST stack
+ * 5 - Primay Shadow Stack (read-only)
+ * 4 - #DF IST stack
+ * 3 - #DB IST stack
+ * 2 - NMI IST stack
+ * 1 - #MC IST stack
+ * 0 - IST Shadow Stacks (4x 1k, read-only)
  */
 
 /*
@@ -77,6 +77,11 @@ struct cpu_info {
     /* get_stack_bottom() must be 16-byte aligned */
 };
 
+static inline struct cpu_info *get_cpu_info_from_stack(unsigned long sp)
+{
+    return (struct cpu_info *)((sp | (STACK_SIZE - 1)) + 1) - 1;
+}
+
 static inline struct cpu_info *get_cpu_info(void)
 {
 #ifdef __clang__
@@ -87,7 +92,7 @@ static inline struct cpu_info *get_cpu_info(void)
     register unsigned long sp asm("rsp");
 #endif
 
-    return (struct cpu_info *)((sp | (STACK_SIZE - 1)) + 1) - 1;
+    return get_cpu_info_from_stack(sp);
 }
 
 #define get_current()         (get_cpu_info()->current_vcpu)
@@ -95,11 +100,6 @@ static inline struct cpu_info *get_cpu_info(void)
 #define current               (get_current())
 
 #define get_processor_id()    (get_cpu_info()->processor_id)
-#define set_processor_id(id)  do {                                      \
-    struct cpu_info *ci__ = get_cpu_info();                             \
-    ci__->per_cpu_offset = __per_cpu_offset[ci__->processor_id = (id)]; \
-} while (0)
-
 #define guest_cpu_user_regs() (&get_cpu_info()->guest_cpu_user_regs)
 
 /*
@@ -124,15 +124,63 @@ unsigned long get_stack_dump_bottom (unsigned long sp);
 # define CHECK_FOR_LIVEPATCH_WORK ""
 #endif
 
-#define reset_stack_and_jump(__fn)                                      \
+#ifdef CONFIG_XEN_SHSTK
+/*
+ * We need to unwind the primary shadow stack to its supervisor token, located
+ * in the last word of the primary shadow stack.
+ *
+ * Read the shadow stack pointer, subtract it from supervisor token position,
+ * and divide by 8 to get the number of slots needing popping.
+ *
+ * INCSSPQ can't pop more than 255 entries.  We shouldn't ever need to pop
+ * that many entries, and getting this wrong will cause us to #DF later.  Turn
+ * it into a BUG() now for fractionally easier debugging.
+ */
+# define SHADOW_STACK_WORK                                      \
+    "mov $1, %[ssp];"                                           \
+    "rdsspd %[ssp];"                                            \
+    "cmp $1, %[ssp];"                                           \
+    "je .L_shstk_done.%=;" /* CET not active?  Skip. */         \
+    "mov $%c[skstk_base], %[val];"                              \
+    "and $%c[stack_mask], %[ssp];"                              \
+    "sub %[ssp], %[val];"                                       \
+    "shr $3, %[val];"                                           \
+    "cmp $255, %[val];" /* More than 255 entries?  Crash. */    \
+    UNLIKELY_START(a, shstk_adjust)                             \
+    _ASM_BUGFRAME_TEXT(0)                                       \
+    UNLIKELY_END_SECTION ";"                                    \
+    "incsspq %q[val];"                                          \
+    ".L_shstk_done.%=:"
+#else
+# define SHADOW_STACK_WORK ""
+#endif
+
+#define switch_stack_and_jump(fn, instr)                                \
     ({                                                                  \
+        unsigned int tmp;                                               \
         __asm__ __volatile__ (                                          \
-            "mov %0,%%"__OP"sp;"                                        \
-            CHECK_FOR_LIVEPATCH_WORK                                      \
-             "jmp %c1"                                                  \
-            : : "r" (guest_cpu_user_regs()), "i" (__fn) : "memory" );   \
+            SHADOW_STACK_WORK                                           \
+            "mov %[stk], %%rsp;"                                        \
+            instr                                                       \
+            "jmp %c[fun];"                                              \
+            : [val] "=&r" (tmp),                                        \
+              [ssp] "=&r" (tmp)                                         \
+            : [stk] "r" (guest_cpu_user_regs()),                        \
+              [fun] "i" (fn),                                           \
+              [skstk_base] "i"                                          \
+              ((PRIMARY_SHSTK_SLOT + 1) * PAGE_SIZE - 8),               \
+              [stack_mask] "i" (STACK_SIZE - 1),                        \
+              _ASM_BUGFRAME_INFO(BUGFRAME_bug, __LINE__,                \
+                                 __FILE__, NULL)                        \
+            : "memory" );                                               \
         unreachable();                                                  \
     })
+
+#define reset_stack_and_jump(fn)                                        \
+    switch_stack_and_jump(fn, CHECK_FOR_LIVEPATCH_WORK)
+
+#define reset_stack_and_jump_nolp(fn)                                   \
+    switch_stack_and_jump(fn, "")
 
 /*
  * Which VCPU's state is currently running on each CPU?

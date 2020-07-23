@@ -478,7 +478,7 @@ __ubsan_handle_builtin_unreachable(struct unreachable_data *data)
 	ubsan_prologue(&data->location, &flags);
 	pr_err("calling __builtin_unreachable()\n");
 	ubsan_epilogue(&flags);
-	panic("can't return from __builtin_unreachable()");
+	panic("can't return from __builtin_unreachable()\n");
 }
 EXPORT_SYMBOL(__ubsan_handle_builtin_unreachable);
 
@@ -515,6 +515,29 @@ void __ubsan_handle_pointer_overflow(struct pointer_overflow_data *data,
 	pr_err("pointer operation %s %p to %p\n",
 	       base > result ? "underflowed" : "overflowed",
 	       _p(base), _p(result));
+
+	ubsan_epilogue(&flags);
+}
+
+void __ubsan_handle_invalid_builtin(struct invalid_builtin_data *data)
+{
+	unsigned long flags;
+	const char *fn = NULL;
+
+	if (suppress_report(&data->location))
+		return;
+
+	ubsan_prologue(&data->location, &flags);
+
+	switch (data->kind) {
+	case kind_ctz: fn = "ctz"; break;
+	case kind_clz: fn = "clz"; break;
+	}
+
+	if (fn)
+		pr_err("passing zero to %s(), which is not a valid argument\n", fn);
+	else
+		pr_err("Unknown kind %u\n", data->kind);
 
 	ubsan_epilogue(&flags);
 }

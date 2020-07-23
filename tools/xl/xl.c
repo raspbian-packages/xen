@@ -23,6 +23,7 @@
 #include <ctype.h>
 #include <inttypes.h>
 #include <regex.h>
+#include <limits.h>
 
 #include <libxl.h>
 #include <libxl_utils.h>
@@ -53,6 +54,7 @@ int claim_mode = 1;
 bool progress_use_cr = 0;
 int max_grant_frames = -1;
 int max_maptrack_frames = -1;
+libxl_domid domid_policy = INVALID_DOMID;
 
 xentoollog_level minmsglevel = minmsglevel_default;
 
@@ -96,7 +98,6 @@ static void parse_global_config(const char *configfile,
     XLU_Config *config;
     int e;
     const char *buf;
-    libxl_physinfo physinfo;
 
     config = xlu_cfg_init(stderr, configfile);
     if (!config) {
@@ -197,23 +198,22 @@ static void parse_global_config(const char *configfile,
     xlu_cfg_replace_string (config, "colo.default.proxyscript",
         &default_colo_proxy_script, 0);
 
-    if (!xlu_cfg_get_long (config, "max_grant_frames", &l, 0))
+    e = xlu_cfg_get_bounded_long (config, "max_grant_frames", 0, INT_MAX,
+                                  &l, 1);
+    if (!e)
         max_grant_frames = l;
-    else {
-        libxl_physinfo_init(&physinfo);
-        max_grant_frames = (libxl_get_physinfo(ctx, &physinfo) != 0 ||
-                            !(physinfo.max_possible_mfn >> 32))
-                           ? 32 : 64;
-        libxl_physinfo_dispose(&physinfo);
-    }
-    if (!xlu_cfg_get_long (config, "max_maptrack_frames", &l, 0))
-        max_maptrack_frames = l;
+    else if (e != ESRCH)
+        exit(1);
 
-    libxl_bitmap_init(&global_vm_affinity_mask);
+    e = xlu_cfg_get_bounded_long (config, "max_maptrack_frames", 0,
+                                  INT_MAX, &l, 1);
+    if (!e)
+        max_maptrack_frames = l;
+    else if (e != ESRCH)
+        exit(1);
+
     libxl_cpu_bitmap_alloc(ctx, &global_vm_affinity_mask, 0);
-    libxl_bitmap_init(&global_hvm_affinity_mask);
     libxl_cpu_bitmap_alloc(ctx, &global_hvm_affinity_mask, 0);
-    libxl_bitmap_init(&global_pv_affinity_mask);
     libxl_cpu_bitmap_alloc(ctx, &global_pv_affinity_mask, 0);
 
     if (!xlu_cfg_get_string (config, "vm.cpumask", &buf, 0))
@@ -228,6 +228,15 @@ static void parse_global_config(const char *configfile,
         parse_cpurange(buf, &global_pv_affinity_mask);
     else
         libxl_bitmap_set_any(&global_pv_affinity_mask);
+
+    if (!xlu_cfg_get_string (config, "domid_policy", &buf, 0)) {
+        if (!strcmp(buf, "xen"))
+            domid_policy = INVALID_DOMID;
+        else if (!strcmp(buf, "random"))
+            domid_policy = RANDOM_DOMID;
+        else
+            fprintf(stderr, "invalid domid_policy option");
+    }
 
     xlu_cfg_destroy(config);
 }
@@ -323,11 +332,17 @@ void xl_ctx_alloc(void) {
         exit(1);
     }
 
+    libxl_bitmap_init(&global_vm_affinity_mask);
+    libxl_bitmap_init(&global_hvm_affinity_mask);
+    libxl_bitmap_init(&global_pv_affinity_mask);
     libxl_childproc_setmode(ctx, &childproc_hooks, 0);
 }
 
 static void xl_ctx_free(void)
 {
+    libxl_bitmap_dispose(&global_pv_affinity_mask);
+    libxl_bitmap_dispose(&global_hvm_affinity_mask);
+    libxl_bitmap_dispose(&global_vm_affinity_mask);
     if (ctx) {
         libxl_ctx_free(ctx);
         ctx = NULL;
@@ -383,9 +398,9 @@ int main(int argc, char **argv)
         (progress_use_cr ? XTL_STDIOSTREAM_PROGRESS_USE_CR : 0));
     if (!logger) exit(EXIT_FAILURE);
 
-    atexit(xl_ctx_free);
-
     xl_ctx_alloc();
+
+    atexit(xl_ctx_free);
 
     ret = libxl_read_file_contents(ctx, XL_GLOBAL_CONFIG,
             &config_data, &config_len);

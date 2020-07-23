@@ -97,7 +97,7 @@ struct hvm_irq {
     (((((dev)<<2) + ((dev)>>3) + (intx)) & 31) + 16)
 #define hvm_pci_intx_link(dev, intx) \
     (((dev) + (intx)) & 3)
-#define hvm_domain_irq(d) ((d)->arch.hvm_domain.irq)
+#define hvm_domain_irq(d) ((d)->arch.hvm.irq)
 #define hvm_irq_size(cnt) offsetof(struct hvm_irq, gsi_assert_count[cnt])
 
 #define hvm_isa_irq_to_gsi(isa_irq) ((isa_irq) ? : 2)
@@ -121,6 +121,7 @@ struct dev_intx_gsi_link {
 #define _HVM_IRQ_DPCI_GUEST_PCI_SHIFT           4
 #define _HVM_IRQ_DPCI_GUEST_MSI_SHIFT           5
 #define _HVM_IRQ_DPCI_IDENTITY_GSI_SHIFT        6
+#define _HVM_IRQ_DPCI_NO_EOI_SHIFT              7
 #define _HVM_IRQ_DPCI_TRANSLATE_SHIFT          15
 #define HVM_IRQ_DPCI_MACH_PCI        (1u << _HVM_IRQ_DPCI_MACH_PCI_SHIFT)
 #define HVM_IRQ_DPCI_MACH_MSI        (1u << _HVM_IRQ_DPCI_MACH_MSI_SHIFT)
@@ -129,6 +130,7 @@ struct dev_intx_gsi_link {
 #define HVM_IRQ_DPCI_GUEST_PCI       (1u << _HVM_IRQ_DPCI_GUEST_PCI_SHIFT)
 #define HVM_IRQ_DPCI_GUEST_MSI       (1u << _HVM_IRQ_DPCI_GUEST_MSI_SHIFT)
 #define HVM_IRQ_DPCI_IDENTITY_GSI    (1u << _HVM_IRQ_DPCI_IDENTITY_GSI_SHIFT)
+#define HVM_IRQ_DPCI_NO_EOI          (1u << _HVM_IRQ_DPCI_NO_EOI_SHIFT)
 #define HVM_IRQ_DPCI_TRANSLATE       (1u << _HVM_IRQ_DPCI_TRANSLATE_SHIFT)
 
 struct hvm_gmsi_info {
@@ -158,6 +160,8 @@ struct hvm_irq_dpci {
     DECLARE_BITMAP(isairq_map, NR_ISAIRQS);
     /* Record of mapped Links */
     uint8_t link_cnt[NR_LINK];
+    /* Clean up: Entry with a softirq invocation pending / in progress. */
+    struct hvm_pirq_dpci *pending_pirq_dpci;
 };
 
 /* Machine IRQ to guest device/intx mapping. */
@@ -180,7 +184,15 @@ int pt_pirq_iterate(struct domain *d,
                               struct hvm_pirq_dpci *, void *arg),
                     void *arg);
 
+#ifdef CONFIG_HVM
 bool pt_pirq_softirq_active(struct hvm_pirq_dpci *);
+#else
+static inline bool pt_pirq_softirq_active(struct hvm_pirq_dpci *dpci)
+{
+    return false;
+}
+#endif
+
 /* Modify state of a PCI INTx wire. */
 void hvm_pci_intx_assert(struct domain *d, unsigned int device,
                          unsigned int intx);
@@ -207,11 +219,15 @@ int hvm_set_pci_link_route(struct domain *d, u8 link, u8 isa_irq);
 
 int hvm_inject_msi(struct domain *d, uint64_t addr, uint32_t data);
 
-/* Assert an IO APIC pin. */
+/* Assert/deassert an IO APIC pin. */
 int hvm_ioapic_assert(struct domain *d, unsigned int gsi, bool level);
+void hvm_ioapic_deassert(struct domain *d, unsigned int gsi);
 
 void hvm_maybe_deassert_evtchn_irq(void);
 void hvm_assert_evtchn_irq(struct vcpu *v);
 void hvm_set_callback_via(struct domain *d, uint64_t via);
+
+struct pirq;
+bool hvm_domain_use_pirq(const struct domain *, const struct pirq *);
 
 #endif /* __ASM_X86_HVM_IRQ_H__ */

@@ -6,8 +6,9 @@
 #include <xen/vga.h>
 #include <asm/e820.h>
 #include <asm/edd.h>
+#include <asm/microcode.h>
 #include <asm/msr.h>
-#include <asm/processor.h>
+#include <asm/setup.h>
 
 static struct file __initdata ucode;
 static multiboot_info_t __initdata mbi = {
@@ -59,7 +60,7 @@ static void __init efi_arch_relocate_image(unsigned long delta)
         /*
          * Relevant l{2,3}_bootmap entries get initialized explicitly in
          * efi_arch_memory_setup(), so we must not apply relocations there.
-         * l2_identmap's first slot, otoh, should be handled normally, as
+         * l2_directmap's first slot, otoh, should be handled normally, as
          * efi_arch_memory_setup() won't touch it (xen_phys_start should
          * never be zero).
          */
@@ -237,10 +238,9 @@ static void __init noreturn efi_arch_post_exit_boot(void)
     /* Set system registers and transfer control. */
     asm volatile("pushq $0\n\tpopfq");
     rdmsrl(MSR_EFER, efer);
-    efer |= EFER_SCE;
-    if ( cpuid_ext_features & cpufeat_mask(X86_FEATURE_NX) )
-        efer |= EFER_NX;
+    efer |= trampoline_efer;
     wrmsrl(MSR_EFER, efer);
+    wrmsrl(MSR_IA32_CR_PAT, XEN_MSR_PAT);
     write_cr0(X86_CR0_PE | X86_CR0_MP | X86_CR0_ET | X86_CR0_NE | X86_CR0_WP |
               X86_CR0_AM | X86_CR0_PG);
     asm volatile ( "mov    %[cr4], %%cr4\n\t"
@@ -249,26 +249,27 @@ static void __init noreturn efi_arch_post_exit_boot(void)
                    "or     $"__stringify(X86_CR4_PGE)", %[cr4]\n\t"
                    "mov    %[cr4], %%cr4\n\t"
 #endif
-                   "movabs $__start_xen, %[rip]\n\t"
-                   "lgdt   gdt_descr(%%rip)\n\t"
-                   "mov    stack_start(%%rip), %%rsp\n\t"
+                   "lgdt   boot_gdtr(%%rip)\n\t"
                    "mov    %[ds], %%ss\n\t"
                    "mov    %[ds], %%ds\n\t"
                    "mov    %[ds], %%es\n\t"
                    "mov    %[ds], %%fs\n\t"
                    "mov    %[ds], %%gs\n\t"
-                   "movl   %[cs], 8(%%rsp)\n\t"
-                   "mov    %[rip], (%%rsp)\n\t"
-                   "lretq  %[stkoff]-16"
+
+                   /* Jump to higher mappings. */
+                   "mov    stack_start(%%rip), %%rsp\n\t"
+                   "movabs $__start_xen, %[rip]\n\t"
+                   "push   %[cs]\n\t"
+                   "push   %[rip]\n\t"
+                   "lretq"
                    : [rip] "=&r" (efer/* any dead 64-bit variable */),
                      [cr4] "+&r" (cr4)
                    : [cr3] "r" (idle_pg_table),
-                     [cs] "ir" (__HYPERVISOR_CS),
+                     [cs] "i" (__HYPERVISOR_CS),
                      [ds] "r" (__HYPERVISOR_DS),
-                     [stkoff] "i" (STACK_SIZE - sizeof(struct cpu_info)),
                      "D" (&mbi)
                    : "memory" );
-    for( ; ; ); /* not reached */
+    unreachable();
 }
 
 static void __init efi_arch_cfg_file_early(EFI_FILE_HANDLE dir_handle, char *section)
@@ -584,21 +585,54 @@ static void __init efi_arch_memory_setup(void)
     if ( !efi_enabled(EFI_LOADER) )
         return;
 
-    /* Initialise L2 identity-map and boot-map page table entries (16MB). */
-    for ( i = 0; i < 8; ++i )
-    {
-        unsigned int slot = (xen_phys_start >> L2_PAGETABLE_SHIFT) + i;
-        paddr_t addr = slot << L2_PAGETABLE_SHIFT;
+    /*
+     * Map Xen into the higher mappings, using 2M superpages.
+     *
+     * NB: We are currently in physical mode, so a RIP-relative relocation
+     * against _start/_end result in our arbitrary placement by the bootloader
+     * in memory, rather than the intended high mappings position.  Subtract
+     * xen_phys_start to get the appropriate slots in l2_xenmap[].
+     */
+    for ( i =  l2_table_offset((UINTN)_start   - xen_phys_start);
+          i <= l2_table_offset((UINTN)_end - 1 - xen_phys_start); ++i )
+        l2_xenmap[i] =
+            l2e_from_paddr(xen_phys_start + (i << L2_PAGETABLE_SHIFT),
+                           PAGE_HYPERVISOR_RWX | _PAGE_PSE);
 
-        l2_identmap[slot] = l2e_from_paddr(addr, PAGE_HYPERVISOR|_PAGE_PSE);
-        slot &= L2_PAGETABLE_ENTRIES - 1;
-        l2_bootmap[slot] = l2e_from_paddr(addr, __PAGE_HYPERVISOR|_PAGE_PSE);
+    /* Check that there is at least 4G of mapping space in l2_*map[] */
+    BUILD_BUG_ON((sizeof(l2_bootmap)   / L2_PAGETABLE_ENTRIES) < 4);
+    BUILD_BUG_ON((sizeof(l2_directmap) / L2_PAGETABLE_ENTRIES) < 4);
+
+    /* Initialize L3 boot-map page directory entries. */
+    for ( i = 0; i < 4; ++i )
+        l3_bootmap[i] = l3e_from_paddr((UINTN)l2_bootmap + i * PAGE_SIZE,
+                                       __PAGE_HYPERVISOR);
+    /*
+     * Map Xen into the directmap (needed for early-boot pagetable
+     * handling/walking), and identity map Xen into bootmap (needed for the
+     * transition from the EFI pagetables to Xen), using 2M superpages.
+     *
+     * NB: We are currently in physical mode, so a RIP-relative relocation
+     * against _start/_end gets their real position in memory, which are the
+     * appropriate l2 slots to map.
+     */
+#define l2_4G_offset(a)                                                 \
+    (((UINTN)(a) >> L2_PAGETABLE_SHIFT) & (4 * L2_PAGETABLE_ENTRIES - 1))
+
+    for ( i  = l2_4G_offset(_start);
+          i <= l2_4G_offset(_end - 1); ++i )
+    {
+        l2_pgentry_t pte = l2e_from_paddr(i << L2_PAGETABLE_SHIFT,
+                                          __PAGE_HYPERVISOR | _PAGE_PSE);
+
+        l2_bootmap[i] = pte;
+
+        /* Bootmap RWX/Non-global.  Directmap RW/Global. */
+        l2e_add_flags(pte, PAGE_HYPERVISOR);
+
+        l2_directmap[i] = pte;
     }
-    /* Initialise L3 boot-map page directory entries. */
-    l3_bootmap[l3_table_offset(xen_phys_start)] =
-        l3e_from_paddr((UINTN)l2_bootmap, __PAGE_HYPERVISOR);
-    l3_bootmap[l3_table_offset(xen_phys_start + (8 << L2_PAGETABLE_SHIFT) - 1)] =
-        l3e_from_paddr((UINTN)l2_bootmap, __PAGE_HYPERVISOR);
+#undef l2_4G_offset
 }
 
 static void __init efi_arch_handle_module(struct file *file, const CHAR16 *name,
@@ -637,12 +671,18 @@ static void __init efi_arch_handle_module(struct file *file, const CHAR16 *name,
 static void __init efi_arch_cpu(void)
 {
     uint32_t eax = cpuid_eax(0x80000000);
+    uint32_t *caps = boot_cpu_data.x86_capability;
+
+    boot_tsc_stamp = rdtsc();
+
+    caps[cpufeat_word(X86_FEATURE_HYPERVISOR)] = cpuid_ecx(1);
 
     if ( (eax >> 16) == 0x8000 && eax > 0x80000000 )
     {
-        cpuid_ext_features = cpuid_edx(0x80000001);
-        boot_cpu_data.x86_capability[cpufeat_word(X86_FEATURE_SYSCALL)]
-            = cpuid_ext_features;
+        caps[cpufeat_word(X86_FEATURE_SYSCALL)] = cpuid_edx(0x80000001);
+
+        if ( cpu_has_nx )
+            trampoline_efer |= EFER_NX;
     }
 }
 

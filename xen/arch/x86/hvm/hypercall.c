@@ -22,7 +22,12 @@
 #include <xen/hypercall.h>
 #include <xen/nospec.h>
 
+#include <asm/hvm/emulate.h>
 #include <asm/hvm/support.h>
+#include <asm/hvm/viridian.h>
+
+#include <public/hvm/hvm_op.h>
+#include <public/hvm/params.h>
 
 static long hvm_memory_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
@@ -42,11 +47,12 @@ static long hvm_memory_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         rc = compat_memory_op(cmd, arg);
 
     if ( (cmd & MEMOP_CMD_MASK) == XENMEM_decrease_reservation )
-        curr->domain->arch.hvm_domain.qemu_mapcache_invalidate = true;
+        curr->domain->arch.hvm.qemu_mapcache_invalidate = true;
 
     return rc;
 }
 
+#ifdef CONFIG_GRANT_TABLE
 static long hvm_grant_table_op(
     unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) uop, unsigned int count)
 {
@@ -71,30 +77,31 @@ static long hvm_grant_table_op(
     else
         return compat_grant_table_op(cmd, uop, count);
 }
+#endif
 
 static long hvm_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     const struct vcpu *curr = current;
+    const struct domain *currd = curr->domain;
 
     switch ( cmd )
     {
-    default:
-        if ( !is_hardware_domain(curr->domain) )
-            return -ENOSYS;
-        /* fall through */
     case PHYSDEVOP_map_pirq:
     case PHYSDEVOP_unmap_pirq:
     case PHYSDEVOP_eoi:
     case PHYSDEVOP_irq_status_query:
     case PHYSDEVOP_get_free_pirq:
-        if ( !has_pirq(curr->domain) )
+        if ( !has_pirq(currd) )
             return -ENOSYS;
         break;
 
     case PHYSDEVOP_pci_mmcfg_reserved:
-        if ( !has_vpci(curr->domain) )
+        if ( !has_vpci(currd) || !is_hardware_domain(currd) )
             return -ENOSYS;
         break;
+
+    default:
+        return -ENOSYS;
     }
 
     if ( !curr->hcall_compat )
@@ -119,7 +126,10 @@ static long hvm_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 
 static const hypercall_table_t hvm_hypercall_table[] = {
     HVM_CALL(memory_op),
+#ifdef CONFIG_GRANT_TABLE
     HVM_CALL(grant_table_op),
+#endif
+    HYPERCALL(vm_assist),
     COMPAT_CALL(vcpu_op),
     HVM_CALL(physdev_op),
     COMPAT_CALL(xen_version),
@@ -131,13 +141,18 @@ static const hypercall_table_t hvm_hypercall_table[] = {
     HYPERCALL(hvm_op),
     HYPERCALL(sysctl),
     HYPERCALL(domctl),
-#ifdef CONFIG_TMEM
-    HYPERCALL(tmem_op),
+#ifdef CONFIG_ARGO
+    COMPAT_CALL(argo_op),
 #endif
     COMPAT_CALL(platform_op),
+#ifdef CONFIG_PV
     COMPAT_CALL(mmuext_op),
+#endif
     HYPERCALL(xenpmu_op),
     COMPAT_CALL(dm_op),
+#ifdef CONFIG_HYPFS
+    HYPERCALL(hypfs_op),
+#endif
     HYPERCALL(arch_1)
 };
 
@@ -153,6 +168,7 @@ int hvm_hypercall(struct cpu_user_regs *regs)
     struct domain *currd = curr->domain;
     int mode = hvm_guest_x86_mode(curr);
     unsigned long eax = regs->eax;
+    unsigned int token;
 
     switch ( mode )
     {
@@ -177,7 +193,18 @@ int hvm_hypercall(struct cpu_user_regs *regs)
     }
 
     if ( (eax & 0x80000000) && is_viridian_domain(currd) )
-        return viridian_hypercall(regs);
+    {
+        int ret;
+
+        /* See comment below. */
+        token = hvmemul_cache_disable(curr);
+
+        ret = viridian_hypercall(regs);
+
+        hvmemul_cache_restore(curr, token);
+
+        return ret;
+    }
 
     BUILD_BUG_ON(ARRAY_SIZE(hvm_hypercall_table) >
                  ARRAY_SIZE(hypercall_args_table));
@@ -195,6 +222,12 @@ int hvm_hypercall(struct cpu_user_regs *regs)
         regs->rax = -ENOSYS;
         return HVM_HCALL_completed;
     }
+
+    /*
+     * Caching is intended for instruction emulation only. Disable it
+     * for any accesses by hypercall argument copy-in / copy-out.
+     */
+    token = hvmemul_cache_disable(curr);
 
     curr->hcall_preempted = false;
 
@@ -289,13 +322,15 @@ int hvm_hypercall(struct cpu_user_regs *regs)
 #endif
     }
 
+    hvmemul_cache_restore(curr, token);
+
     HVM_DBG_LOG(DBG_LEVEL_HCALL, "hcall%lu -> %lx", eax, regs->rax);
 
     if ( curr->hcall_preempted )
         return HVM_HCALL_preempted;
 
-    if ( unlikely(currd->arch.hvm_domain.qemu_mapcache_invalidate) &&
-         test_and_clear_bool(currd->arch.hvm_domain.qemu_mapcache_invalidate) )
+    if ( unlikely(currd->arch.hvm.qemu_mapcache_invalidate) &&
+         test_and_clear_bool(currd->arch.hvm.qemu_mapcache_invalidate) )
         send_invalidate_req();
 
     return HVM_HCALL_completed;

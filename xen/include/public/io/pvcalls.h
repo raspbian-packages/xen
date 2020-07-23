@@ -3,6 +3,9 @@
  *
  * Refer to docs/misc/pvcalls.markdown for the specification
  *
+ * The header is provided as a C reference for the specification. In
+ * case of conflict, the specification is authoritative.
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
  * deal in the Software without restriction, including without limitation the
@@ -65,6 +68,7 @@ struct xen_pvcalls_request {
             uint32_t domain;
             uint32_t type;
             uint32_t protocol;
+            uint8_t pad[4];
         } socket;
         struct xen_pvcalls_connect {
             uint64_t id;
@@ -73,10 +77,12 @@ struct xen_pvcalls_request {
             uint32_t flags;
             grant_ref_t ref;
             uint32_t evtchn;
+            uint8_t pad[4];
         } connect;
         struct xen_pvcalls_release {
             uint64_t id;
             uint8_t reuse;
+            uint8_t pad[7];
         } release;
         struct xen_pvcalls_bind {
             uint64_t id;
@@ -86,6 +92,7 @@ struct xen_pvcalls_request {
         struct xen_pvcalls_listen {
             uint64_t id;
             uint32_t backlog;
+            uint8_t pad[4];
         } listen;
         struct xen_pvcalls_accept {
             uint64_t id;

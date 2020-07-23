@@ -13,6 +13,7 @@
 #include <xen/smp.h>
 #include <xen/softirq.h>
 #include <xen/bitops.h>
+#include <xen/nospec.h>
 #include <asm/event.h>
 
 /*
@@ -27,6 +28,13 @@ void send_guest_vcpu_virq(struct vcpu *v, uint32_t virq);
  *  @virq:     Virtual IRQ number (VIRQ_*)
  */
 void send_global_virq(uint32_t virq);
+
+/*
+ * send_guest_global_virq:
+ *  @d:        Domain to which VIRQ should be sent
+ *  @virq:     Virtual IRQ number (VIRQ_*), must be global
+ */
+void send_guest_global_virq(struct domain *d, uint32_t virq);
 
 /*
  * sent_global_virq_handler: Set a global VIRQ handler.
@@ -93,7 +101,7 @@ void notify_via_xen_event_channel(struct domain *ld, int lport);
  * The first bucket is directly accessed via d->evtchn.
  */
 #define group_from_port(d, p) \
-    ((d)->evtchn_group[(p) / EVTCHNS_PER_GROUP])
+    array_access_nospec((d)->evtchn_group, (p) / EVTCHNS_PER_GROUP)
 #define bucket_from_port(d, p) \
     ((group_from_port(d, p))[((p) % EVTCHNS_PER_GROUP) / EVTCHNS_PER_BUCKET])
 
@@ -107,7 +115,7 @@ static inline bool_t port_is_valid(struct domain *d, unsigned int p)
 static inline struct evtchn *evtchn_from_port(struct domain *d, unsigned int p)
 {
     if ( p < EVTCHNS_PER_BUCKET )
-        return &d->evtchn[p];
+        return &d->evtchn[array_index_nospec(p, EVTCHNS_PER_BUCKET)];
     return bucket_from_port(d, p) + (p % EVTCHNS_PER_BUCKET);
 }
 

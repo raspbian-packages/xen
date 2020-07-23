@@ -168,7 +168,7 @@ SET_PERMS		<path>|<perm-as-string>|+?
 		r<domid>	read only
 		b<domid>	both read and write
 		n<domid>	no access
-	See http://wiki.xen.org/wiki/XenBus section
+	See https://wiki.xen.org/wiki/XenBus section
 	`Permissions' for details of the permissions system.
 
 ---------- Watches ----------
@@ -254,7 +254,7 @@ TRANSACTION_END		F|
 
 ---------- Domain management and xenstored communications ----------
 
-INTRODUCE		<domid>|<mfn>|<evtchn>|?
+INTRODUCE		<domid>|<gfn>|<evtchn>|?
 	Notifies xenstored to communicate with this domain.
 
 	INTRODUCE is currently only used by xend (during domain
@@ -262,12 +262,12 @@ INTRODUCE		<domid>|<mfn>|<evtchn>|?
 	xenstored prevents its use other than by dom0.
 
 	<domid> must be a real domain id (not 0 and not a special
-	DOMID_... value).  <mfn> must be a machine page in that domain
+	DOMID_... value).  <gfn> must be a page in that domain
 	represented in signed decimal (!).  <evtchn> must be event
 	channel is an unbound event channel in <domid> (likewise in
 	decimal), on which xenstored will call bind_interdomain.
 	Violations of these rules may result in undefined behaviour;
-	for example passing a high-bit-set 32-bit mfn as an unsigned
+	for example passing a high-bit-set 32-bit gfn as an unsigned
 	decimal will attempt to use 0x7fffffff instead (!).
 
 RELEASE			<domid>|
@@ -288,23 +288,6 @@ IS_DOMAIN_INTRODUCED	<domid>|		T| or F|
 	Returns T if xenstored is in communication with the domain:
 	ie, if INTRODUCE for the domain has not yet been followed by
 	domain destruction or explicit RELEASE.
-
-RESUME			<domid>|
-
-	Arranges that @releaseDomain events will once more be
-	generated when the domain becomes shut down.  This might have
-	to be used if a domain were to be shut down (generating one
-	@releaseDomain) and then subsequently restarted, since the
-	state-sensitive algorithm in xenstored will not otherwise send
-	further watch event notifications if the domain were to be
-	shut down again.
-
-	It is not clear whether this is possible since one would
-	normally expect a domain not to be restarted after being shut
-	down without being destroyed in the meantime.  There are
-	currently no users of this request in xen-unstable.
-
-	xenstored prevents the use of RESUME other than by dom0.
 
 SET_TARGET		<domid>|<tdomid>|
 	Notifies xenstored that domain <domid> is targeting domain

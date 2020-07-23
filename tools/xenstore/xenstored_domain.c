@@ -55,10 +55,6 @@ struct domain
 	   repeated domain introductions. */
 	evtchn_port_t remote_port;
 
-	/* The mfn associated with the event channel, used only to validate
-	   repeated domain introductions. */
-	unsigned long mfn;
-
 	/* Domain path in store. */
 	char *path;
 
@@ -171,24 +167,16 @@ static int readchn(struct connection *conn, void *data, unsigned int len)
 	return len;
 }
 
-static void *map_interface(domid_t domid, unsigned long mfn)
+static void *map_interface(domid_t domid)
 {
-	if (*xgt_handle != NULL) {
-		/* this is the preferred method */
-		return xengnttab_map_grant_ref(*xgt_handle, domid,
-			GNTTAB_RESERVED_XENSTORE, PROT_READ|PROT_WRITE);
-	} else {
-		return xc_map_foreign_range(*xc_handle, domid,
-			XC_PAGE_SIZE, PROT_READ|PROT_WRITE, mfn);
-	}
+	return xengnttab_map_grant_ref(*xgt_handle, domid,
+				       GNTTAB_RESERVED_XENSTORE,
+				       PROT_READ|PROT_WRITE);
 }
 
 static void unmap_interface(void *interface)
 {
-	if (*xgt_handle != NULL)
-		xengnttab_unmap(*xgt_handle, interface, 1);
-	else
-		munmap(interface, XC_PAGE_SIZE);
+	xengnttab_unmap(*xgt_handle, interface, 1);
 }
 
 static int destroy_domain(void *_domain)
@@ -371,13 +359,12 @@ static void domain_conn_reset(struct domain *domain)
 	domain->interface->rsp_cons = domain->interface->rsp_prod = 0;
 }
 
-/* domid, mfn, evtchn, path */
+/* domid, gfn, evtchn, path */
 int do_introduce(struct connection *conn, struct buffered_data *in)
 {
 	struct domain *domain;
 	char *vec[3];
 	unsigned int domid;
-	unsigned long mfn;
 	evtchn_port_t port;
 	int rc;
 	struct xenstore_domain_interface *interface;
@@ -389,7 +376,7 @@ int do_introduce(struct connection *conn, struct buffered_data *in)
 		return EACCES;
 
 	domid = atoi(vec[0]);
-	mfn = atol(vec[1]);
+	/* Ignore the gfn, we don't need it. */
 	port = atoi(vec[2]);
 
 	/* Sanity check args. */
@@ -399,7 +386,7 @@ int do_introduce(struct connection *conn, struct buffered_data *in)
 	domain = find_domain_by_domid(domid);
 
 	if (domain == NULL) {
-		interface = map_interface(domid, mfn);
+		interface = map_interface(domid);
 		if (!interface)
 			return errno;
 		/* Hang domain off "in" until we're finished. */
@@ -410,21 +397,19 @@ int do_introduce(struct connection *conn, struct buffered_data *in)
 			return rc;
 		}
 		domain->interface = interface;
-		domain->mfn = mfn;
 
 		/* Now domain belongs to its connection. */
 		talloc_steal(domain->conn, domain);
 
 		fire_watches(NULL, in, "@introduceDomain", false);
-	} else if ((domain->mfn == mfn) && (domain->conn != conn)) {
+	} else {
 		/* Use XS_INTRODUCE for recreating the xenbus event-channel. */
 		if (domain->port)
 			xenevtchn_unbind(xce_handle, domain->port);
 		rc = xenevtchn_bind_interdomain(xce_handle, domid, port);
 		domain->port = (rc == -1) ? 0 : rc;
 		domain->remote_port = port;
-	} else
-		return EINVAL;
+	}
 
 	domain_conn_reset(domain);
 
@@ -644,9 +629,9 @@ void domain_init(void)
 
 	*xgt_handle = xengnttab_open(NULL, 0);
 	if (*xgt_handle == NULL)
-		xprintf("WARNING: Failed to open connection to gnttab\n");
-	else
-		talloc_set_destructor(xgt_handle, close_xgt_handle);
+		barf_perror("Failed to open connection to gnttab");
+
+	talloc_set_destructor(xgt_handle, close_xgt_handle);
 
 	xce_handle = xenevtchn_open(NULL, 0);
 
@@ -929,8 +914,8 @@ void wrl_apply_debit_actual(struct domain *domain)
 {
 	struct wrl_timestampt now;
 
-	if (!domain)
-		/* sockets escape the write rate limit */
+	if (!domain || !domid_is_unprivileged(domain->domid))
+		/* sockets and privileged domain escape the write rate limit */
 		return;
 
 	wrl_gettime_now(&now);
@@ -990,9 +975,9 @@ void wrl_apply_debit_trans_commit(struct connection *conn)
 
 /*
  * Local variables:
+ *  mode: C
  *  c-file-style: "linux"
  *  indent-tabs-mode: t
- *  c-indent-level: 8
  *  c-basic-offset: 8
  *  tab-width: 8
  * End:

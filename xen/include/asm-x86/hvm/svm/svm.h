@@ -21,10 +21,6 @@
 #define __ASM_X86_HVM_SVM_H__
 
 #include <xen/types.h>
-#include <xen/bitmap.h>
-
-#define svm_vmload(x)     svm_vmload_pa(__pa(x))
-#define svm_vmsave(x)     svm_vmsave_pa(__pa(x))
 
 static inline void svm_vmload_pa(paddr_t vmcb)
 {
@@ -40,18 +36,27 @@ static inline void svm_vmsave_pa(paddr_t vmcb)
         : : "a" (vmcb) : "memory" );
 }
 
-static inline void svm_invlpga(unsigned long vaddr, uint32_t asid)
+static inline void svm_invlpga(unsigned long linear, uint32_t asid)
 {
     asm volatile (
         ".byte 0x0f,0x01,0xdf"
         : /* output */
         : /* input */
-        "a" (vaddr), "c" (asid));
+        "a" (linear), "c" (asid));
 }
 
 unsigned long *svm_msrbit(unsigned long *msr_bitmap, uint32_t msr);
 void __update_guest_eip(struct cpu_user_regs *regs, unsigned int inst_len);
 void svm_update_guest_cr(struct vcpu *, unsigned int cr, unsigned int flags);
+
+/*
+ * PV context switch helper. Calls with zero ldt_base request a prefetch of
+ * the VMCB area to be loaded from, instead of an actual load of state.
+ */
+bool svm_load_segs(unsigned int ldt_ents, unsigned long ldt_base,
+                   unsigned int fs_sel, unsigned long fs_base,
+                   unsigned int gs_sel, unsigned long gs_base,
+                   unsigned long gs_shadow);
 
 extern u32 svm_feature_flags;
 
@@ -68,12 +73,13 @@ extern u32 svm_feature_flags;
 #define SVM_FEATURE_VLOADSAVE     15 /* virtual vmload/vmsave */
 #define SVM_FEATURE_VGIF          16 /* Virtual GIF */
 
-#define cpu_has_svm_feature(f) test_bit(f, &svm_feature_flags)
+#define cpu_has_svm_feature(f) (svm_feature_flags & (1u << (f)))
 #define cpu_has_svm_npt       cpu_has_svm_feature(SVM_FEATURE_NPT)
 #define cpu_has_svm_lbrv      cpu_has_svm_feature(SVM_FEATURE_LBRV)
 #define cpu_has_svm_svml      cpu_has_svm_feature(SVM_FEATURE_SVML)
 #define cpu_has_svm_nrips     cpu_has_svm_feature(SVM_FEATURE_NRIPS)
 #define cpu_has_svm_cleanbits cpu_has_svm_feature(SVM_FEATURE_VMCBCLEAN)
+#define cpu_has_svm_flushbyasid cpu_has_svm_feature(SVM_FEATURE_FLUSHBYASID)
 #define cpu_has_svm_decode    cpu_has_svm_feature(SVM_FEATURE_DECODEASSISTS)
 #define cpu_has_svm_vgif      cpu_has_svm_feature(SVM_FEATURE_VGIF)
 #define cpu_has_pause_filter  cpu_has_svm_feature(SVM_FEATURE_PAUSEFILTER)
@@ -87,9 +93,6 @@ extern u32 svm_feature_flags;
 /* TSC rate */
 #define DEFAULT_TSC_RATIO       0x0000000100000000ULL
 #define TSC_RATIO_RSVD_BITS     0xffffff0000000000ULL
-
-extern void svm_host_osvw_reset(void);
-extern void svm_host_osvw_init(void);
 
 /* EXITINFO1 fields on NPT faults */
 #define _NPT_PFEC_with_gla     32

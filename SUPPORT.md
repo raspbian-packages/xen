@@ -9,15 +9,21 @@ for the definitions of the support status levels etc.
 
 # Release Support
 
-    Xen-Version: 4.11
-    Initial-Release: 2018-07-10
-    Supported-Until: 2020-01-10
-    Security-Support-Until: 2021-07-10
+    Xen-Version: 4.14-rc
+    Initial-Release: n/a
+    Supported-Until: TBD
+    Security-Support-Until: Unreleased - not yet security-supported
 
 Release Notes
-: <a href="https://wiki.xenproject.org/wiki/Xen_Project_4.11_Release_Notes">RN</a>
+: <a href="https://wiki.xenproject.org/wiki/Xen_Project_4.14_Release_Notes">RN</a>
 
 # Feature Support
+
+## Kconfig
+
+EXPERT and DEBUG Kconfig options are not security supported. Other
+Kconfig options are supported, if the related features are marked as
+supported in this document.
 
 ## Host Architecture
 
@@ -58,6 +64,7 @@ Release Notes
     Status, Intel VT-d: Supported
     Status, ARM SMMUv1: Supported
     Status, ARM SMMUv2: Supported
+    Status, Renesas IPMMU-VMSA: Tech Preview
 
 ### ARM/GICv3 ITS
 
@@ -102,6 +109,20 @@ ARM only has one guest type at the moment
 
     Status: Supported
 
+## Hypervisor file system
+
+### Build info
+
+    Status: Supported
+
+### Hypervisor config
+
+    Status: Supported
+
+### Runtime parameters
+
+    Status: Supported
+
 ## Toolstack
 
 ### xl
@@ -139,6 +160,12 @@ Output of information in machine-parseable JSON format
 ### QEMU backend hotplugging for xl
 
     Status: Supported
+
+### xenlight Go package
+
+Go (golang) bindings for libxl
+
+    Status: Experimental
 
 ## Toolstack/3rd party
 
@@ -230,19 +257,9 @@ Allow pages belonging to guests to be paged to disk
 
     Status, x86 HVM: Experimenal
 
-### Transcendent Memory
-
-Transcendent Memory (tmem) allows the creation of hypervisor memory pools
-which guests can use to store memory
-rather than caching in its own memory or swapping to disk.
-Having these in the hypervisor
-can allow more efficient aggregate use of memory across VMs.
-
-    Status: Experimental
-
 ### Alternative p2m
 
-Allows external monitoring of hypervisor memory
+Alternative p2m (altp2m) allows external monitoring of guest memory
 by maintaining multiple physical to machine (p2m) memory mappings.
 
     Status, x86 HVM: Tech Preview
@@ -257,6 +274,14 @@ with each pool having the capability
 of using different schedulers and scheduling properties.
 
     Status: Supported
+
+### Core Scheduling
+
+Allows to group virtual cpus into virtual cores which are scheduled on the
+physical cores. This results in never running different guests at the same
+time on the same physical core.
+
+    Status, x86: Experimental
 
 ### Credit Scheduler
 
@@ -376,6 +401,12 @@ Guest-side driver capable of speaking the Xen PV Framebuffer protocol
 
     Status, Linux (xen-fbfront): Supported
 
+### PV display (frontend)
+
+Guest-side driver capable of speaking the Xen PV display protocol
+
+    Status, Linux: Supported
+
 ### PV Console (frontend)
 
 Guest-side driver capable of speaking the Xen PV console protocol
@@ -388,7 +419,8 @@ Guest-side driver capable of speaking the Xen PV console protocol
 ### PV keyboard (frontend)
 
 Guest-side driver capable of speaking the Xen PV keyboard protocol.
-Note that the "keyboard protocol" includes mouse / pointer support as well.
+Note that the "keyboard protocol" includes mouse / pointer /
+multi-touch support as well.
 
     Status, Linux (xen-kbdfront): Supported
 
@@ -420,6 +452,12 @@ Guest-side driver capable of speaking the Xen 9pfs protocol
 Guest-side driver capable of making pv system calls
 
     Status, Linux: Tech Preview
+
+### PV sound (frontend)
+
+Guest-side driver capable of speaking the Xen PV sound protocol
+
+    Status, Linux: Supported
 
 ## Virtual device support, host side
 
@@ -522,6 +560,26 @@ Vulnerabilities of a device model stub domain
 to a hostile driver domain (either compromised or untrusted)
 are excluded from security support.
 
+### Device Model Deprivileging
+
+    Status, Linux dom0: Tech Preview, with limited support
+
+This means adding extra restrictions to a device model in order to
+prevent a compromised device model from attacking the rest of the
+domain it's running in (normally dom0).
+
+"Tech preview with limited support" means we will not issue XSAs for
+the _additional_ functionality provided by the feature; but we will
+issue XSAs in the event that enabling this feature opens up a security
+hole that would not be present without the feature disabled.
+
+For example, while this is classified as tech preview, a bug in libxl
+which failed to change the user ID of QEMU would not receive an XSA,
+since without this feature the user ID wouldn't be changed. But a
+change which made it possible for a compromised guest to read
+arbitrary files on the host filesystem without compromising QEMU would
+be issued an XSA, since that does weaken security.
+
 ### KCONFIG Expert
 
     Status: Experimental
@@ -589,7 +647,11 @@ Virtual Performance Management Unit for HVM guests
     Status, x86: Supported, Not security supported
 
 Disabled by default (enable with hypervisor command line option).
-This feature is not security supported: see http://xenbits.xen.org/xsa/advisory-163.html
+This feature is not security supported: see https://xenbits.xen.org/xsa/advisory-163.html
+
+### Argo: Inter-domain message delivery by hypercall
+
+    Status: Experimental
 
 ### x86/PCI Device Passthrough
 
@@ -639,6 +701,10 @@ No support for QEMU backends in a 16K or 64K domain.
 ### ARM: Guest ACPI support
 
     Status: Supported
+
+### Arm: OP-TEE Mediator
+
+    Status: Tech Preview
 
 ## Virtual Hardware, QEMU
 

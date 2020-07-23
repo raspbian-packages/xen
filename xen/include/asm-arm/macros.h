@@ -8,10 +8,17 @@
 #if defined (CONFIG_ARM_32)
 # include <asm/arm32/macros.h>
 #elif defined(CONFIG_ARM_64)
-/* No specific ARM64 macros for now */
+# include <asm/arm64/macros.h>
 #else
 # error "unknown ARM variant"
 #endif
+
+    /* NOP sequence  */
+    .macro nops, num
+    .rept   \num
+    nop
+    .endr
+    .endm
 
     /*
      * Speculative barrier

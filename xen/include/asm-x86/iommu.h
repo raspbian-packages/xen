@@ -17,6 +17,7 @@
 #include <xen/errno.h>
 #include <xen/list.h>
 #include <xen/spinlock.h>
+#include <asm/apicdef.h>
 #include <asm/processor.h>
 #include <asm/hvm/vmx/vmcs.h>
 
@@ -30,6 +31,18 @@ struct g2m_ioport {
     unsigned int np;
 };
 
+#define IOMMU_PAGE_SHIFT 12
+#define IOMMU_PAGE_SIZE  (1 << IOMMU_PAGE_SHIFT)
+#define IOMMU_PAGE_MASK  (~(IOMMU_PAGE_SIZE - 1))
+
+typedef uint64_t daddr_t;
+
+#define __dfn_to_daddr(dfn) ((daddr_t)(dfn) << IOMMU_PAGE_SHIFT)
+#define __daddr_to_dfn(daddr) ((daddr) >> IOMMU_PAGE_SHIFT)
+
+#define dfn_to_daddr(dfn) __dfn_to_daddr(dfn_x(dfn))
+#define daddr_to_dfn(daddr) _dfn(__daddr_to_dfn(daddr))
+
 struct arch_iommu
 {
     u64 pgd_maddr;                 /* io page directory machine address */
@@ -40,59 +53,64 @@ struct arch_iommu
 
     /* amd iommu support */
     int paging_mode;
-    bool no_merge;
     struct page_info *root_table;
     struct guest_iommu *g_iommu;
 };
 
-extern const struct iommu_ops intel_iommu_ops;
-extern const struct iommu_ops amd_iommu_ops;
-int intel_vtd_setup(void);
-int amd_iov_detect(void);
+extern struct iommu_ops iommu_ops;
+
+#ifdef NDEBUG
+# include <asm/alternative.h>
+# define iommu_call(ops, fn, args...) ({      \
+    (void)(ops);                              \
+    alternative_call(iommu_ops.fn, ## args);  \
+})
+
+# define iommu_vcall(ops, fn, args...) ({     \
+    (void)(ops);                              \
+    alternative_vcall(iommu_ops.fn, ## args); \
+})
+#endif
 
 static inline const struct iommu_ops *iommu_get_ops(void)
 {
-    switch ( boot_cpu_data.x86_vendor )
-    {
-    case X86_VENDOR_INTEL:
-        return &intel_iommu_ops;
-    case X86_VENDOR_AMD:
-        return &amd_iommu_ops;
-    }
-
-    BUG();
-
-    return NULL;
+    BUG_ON(!iommu_ops.init);
+    return &iommu_ops;
 }
 
-static inline int iommu_hardware_setup(void)
-{
-    switch ( boot_cpu_data.x86_vendor )
-    {
-    case X86_VENDOR_INTEL:
-        return intel_vtd_setup();
-    case X86_VENDOR_AMD:
-        return amd_iov_detect();
-    }
+struct iommu_init_ops {
+    const struct iommu_ops *ops;
+    int (*setup)(void);
+    bool (*supports_x2apic)(void);
+};
 
-    return -ENODEV;
-}
-
-/* Does this domain have a P2M table we can use as its IOMMU pagetable? */
-#define iommu_use_hap_pt(d) (hap_enabled(d) && iommu_hap_pt_share)
+extern const struct iommu_init_ops *iommu_init_ops;
 
 void iommu_update_ire_from_apic(unsigned int apic, unsigned int reg, unsigned int value);
 unsigned int iommu_read_apic_from_ire(unsigned int apic, unsigned int reg);
 int iommu_setup_hpet_msi(struct msi_desc *);
 
-/* While VT-d specific, this must get declared in a generic header. */
-int adjust_vtd_irq_affinities(void);
-int __must_check iommu_flush_iotlb(struct domain *d, unsigned long gfn,
-                                   bool dma_old_pte_present,
-                                   unsigned int page_count);
-bool_t iommu_supports_eim(void);
-int iommu_enable_x2apic_IR(void);
-void iommu_disable_x2apic_IR(void);
+static inline int iommu_adjust_irq_affinities(void)
+{
+    return iommu_ops.adjust_irq_affinities
+           ? iommu_ops.adjust_irq_affinities()
+           : 0;
+}
+
+static inline bool iommu_supports_x2apic(void)
+{
+    return iommu_init_ops && iommu_init_ops->supports_x2apic
+           ? iommu_init_ops->supports_x2apic()
+           : false;
+}
+
+int iommu_enable_x2apic(void);
+
+static inline void iommu_disable_x2apic(void)
+{
+    if ( x2apic_enabled && iommu_ops.disable_x2apic )
+        iommu_ops.disable_x2apic();
+}
 
 extern bool untrusted_msi;
 
@@ -103,7 +121,7 @@ int pi_update_irte(const struct pi_desc *pi_desc, const struct pirq *pirq,
     const struct iommu_ops *ops = iommu_get_ops();      \
                                                         \
     if ( ops->sync_cache )                              \
-        ops->sync_cache(addr, size);                    \
+        iommu_vcall(ops, sync_cache, addr, size);       \
 })
 
 #endif /* !__ARCH_X86_IOMMU_H__ */

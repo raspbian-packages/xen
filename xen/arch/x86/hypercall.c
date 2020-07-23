@@ -47,7 +47,9 @@ const hypercall_args_t hypercall_args_table[NR_hypercalls] =
     ARGS(xen_version, 2),
     ARGS(console_io, 3),
     ARGS(physdev_op_compat, 1),
+#ifdef CONFIG_GRANT_TABLE
     ARGS(grant_table_op, 3),
+#endif
     ARGS(vm_assist, 2),
     COMP(update_va_mapping_otherdomain, 4, 5),
     ARGS(vcpu_op, 3),
@@ -60,13 +62,20 @@ const hypercall_args_t hypercall_args_table[NR_hypercalls] =
     ARGS(xenoprof_op, 2),
     ARGS(event_channel_op, 2),
     ARGS(physdev_op, 2),
-    ARGS(hvm_op, 2),
     ARGS(sysctl, 1),
     ARGS(domctl, 1),
     ARGS(kexec_op, 2),
-    ARGS(tmem_op, 1),
+#ifdef CONFIG_ARGO
+    ARGS(argo_op, 5),
+#endif
     ARGS(xenpmu_op, 2),
+#ifdef CONFIG_HVM
+    ARGS(hvm_op, 2),
     ARGS(dm_op, 3),
+#endif
+#ifdef CONFIG_HYPFS
+    ARGS(hypfs_op, 5),
+#endif
     ARGS(mca, 1),
     ARGS(arch_1, 1),
 };
@@ -159,6 +168,13 @@ unsigned long hypercall_create_continuation(
 }
 
 #undef NEXT_ARG
+
+void arch_hypercall_tasklet_result(struct vcpu *v, long res)
+{
+    struct cpu_user_regs *regs = &v->arch.user_regs;
+
+    regs->rax = res;
+}
 
 int hypercall_xlat_continuation(unsigned int *id, unsigned int nr,
                                 unsigned int mask, ...)
@@ -255,6 +271,14 @@ int hypercall_xlat_continuation(unsigned int *id, unsigned int nr,
 
     return rc;
 }
+
+#ifndef CONFIG_PV
+/* Stub for arch_do_multicall_call */
+enum mc_disposition arch_do_multicall_call(struct mc_state *mc)
+{
+    return mc_exit;
+}
+#endif
 
 /*
  * Local variables:

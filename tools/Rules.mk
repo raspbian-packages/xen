@@ -9,6 +9,8 @@ include $(XEN_ROOT)/Config.mk
 export _INSTALL := $(INSTALL)
 INSTALL = $(XEN_ROOT)/tools/cross-install
 
+LDFLAGS += $(PREPEND_LDFLAGS_XEN_TOOLS)
+
 XEN_INCLUDE        = $(XEN_ROOT)/tools/include
 XEN_LIBXENTOOLCORE  = $(XEN_ROOT)/tools/libs/toolcore
 XEN_LIBXENTOOLLOG  = $(XEN_ROOT)/tools/libs/toollog
@@ -17,13 +19,13 @@ XEN_LIBXENGNTTAB   = $(XEN_ROOT)/tools/libs/gnttab
 XEN_LIBXENCALL     = $(XEN_ROOT)/tools/libs/call
 XEN_LIBXENFOREIGNMEMORY = $(XEN_ROOT)/tools/libs/foreignmemory
 XEN_LIBXENDEVICEMODEL = $(XEN_ROOT)/tools/libs/devicemodel
+XEN_LIBXENHYPFS    = $(XEN_ROOT)/tools/libs/hypfs
 XEN_LIBXC          = $(XEN_ROOT)/tools/libxc
 XEN_XENLIGHT       = $(XEN_ROOT)/tools/libxl
 # Currently libxlutil lives in the same directory as libxenlight
 XEN_XLUTIL         = $(XEN_XENLIGHT)
 XEN_XENSTORE       = $(XEN_ROOT)/tools/xenstore
 XEN_LIBXENSTAT     = $(XEN_ROOT)/tools/xenstat/libxenstat/src
-XEN_BLKTAP2        = $(XEN_ROOT)/tools/blktap2
 XEN_LIBVCHAN       = $(XEN_ROOT)/tools/libvchan
 
 CFLAGS_xeninclude = -I$(XEN_INCLUDE)
@@ -34,9 +36,6 @@ XENSTORE_XENSTORED ?= y
 debug ?= n
 debug_symbols ?= $(debug)
 
-# Set CONFIG_GOLANG=y in .config (or in make) to build golang
-CONFIG_GOLANG ?= n
-XEN_GOPATH        = $(XEN_ROOT)/tools/golang
 XEN_GOCODE_URL    = golang.xenproject.org
 
 ifeq ($(debug_symbols),y)
@@ -129,9 +128,14 @@ LDLIBS_libxenforeignmemory = $(SHDEPS_libxenforeignmemory) $(XEN_LIBXENFOREIGNME
 SHLIB_libxenforeignmemory  = $(SHDEPS_libxenforeignmemory) -Wl,-rpath-link=$(XEN_LIBXENFOREIGNMEMORY)
 
 CFLAGS_libxendevicemodel = -I$(XEN_LIBXENDEVICEMODEL)/include $(CFLAGS_xeninclude)
-SHDEPS_libxendevicemodel = $(SHLIB_libxentoollog) $(SHLIB_libxentoolcore) $(SHLIB_xencall)
+SHDEPS_libxendevicemodel = $(SHLIB_libxentoollog) $(SHLIB_libxentoolcore) $(SHLIB_libxencall)
 LDLIBS_libxendevicemodel = $(SHDEPS_libxendevicemodel) $(XEN_LIBXENDEVICEMODEL)/libxendevicemodel$(libextension)
 SHLIB_libxendevicemodel  = $(SHDEPS_libxendevicemodel) -Wl,-rpath-link=$(XEN_LIBXENDEVICEMODEL)
+
+CFLAGS_libxenhypfs = -I$(XEN_LIBXENHYPFS)/include $(CFLAGS_xeninclude)
+SHDEPS_libxenhypfs = $(SHLIB_libxentoollog) $(SHLIB_libxentoolcore) $(SHLIB_libxencall)
+LDLIBS_libxenhypfs = $(SHDEPS_libxenhypfs) $(XEN_LIBXENHYPFS)/libxenhypfs$(libextension)
+SHLIB_libxenhypfs  = $(SHDEPS_libxenhypfs) -Wl,-rpath-link=$(XEN_LIBXENHYPFS)
 
 # code which compiles against libxenctrl get __XEN_TOOLS__ and
 # therefore sees the unstable hypercall interfaces.
@@ -158,7 +162,7 @@ SHDEPS_libxenstat  = $(SHLIB_libxenctrl) $(SHLIB_libxenstore)
 LDLIBS_libxenstat  = $(SHDEPS_libxenstat) $(XEN_LIBXENSTAT)/libxenstat$(libextension)
 SHLIB_libxenstat   = $(SHDEPS_libxenstat) -Wl,-rpath-link=$(XEN_LIBXENSTAT)
 
-CFLAGS_libxenvchan = -I$(XEN_LIBVCHAN)
+CFLAGS_libxenvchan = -I$(XEN_LIBVCHAN) $(CFLAGS_libxengnttab) $(CFLAGS_libxenevtchn)
 SHDEPS_libxenvchan = $(SHLIB_libxentoollog) $(SHLIB_libxenstore) $(SHLIB_libxenevtchn) $(SHLIB_libxengnttab)
 LDLIBS_libxenvchan = $(SHDEPS_libxenvchan) $(XEN_LIBVCHAN)/libxenvchan$(libextension)
 SHLIB_libxenvchan  = $(SHDEPS_libxenvchan) -Wl,-rpath-link=$(XEN_LIBVCHAN)
@@ -172,21 +176,8 @@ else
 CFLAGS += -O2 -fomit-frame-pointer
 endif
 
-ifeq ($(CONFIG_BLKTAP2),y)
-CFLAGS_libblktapctl = -I$(XEN_BLKTAP2)/control -I$(XEN_BLKTAP2)/include $(CFLAGS_xeninclude)
-SHDEPS_libblktapctl =
-LDLIBS_libblktapctl = $(SHDEPS_libblktapctl) $(XEN_BLKTAP2)/control/libblktapctl$(libextension)
-SHLIB_libblktapctl  = $(SHDEPS_libblktapctl) -Wl,-rpath-link=$(XEN_BLKTAP2)/control
-else
-CFLAGS_libblktapctl =
-SHDEPS_libblktapctl =
-LDLIBS_libblktapctl =
-SHLIB_libblktapctl  =
-PKG_CONFIG_REMOVE += xenblktapctl
-endif
-
 CFLAGS_libxenlight = -I$(XEN_XENLIGHT) $(CFLAGS_libxenctrl) $(CFLAGS_xeninclude)
-SHDEPS_libxenlight = $(SHLIB_libxenctrl) $(SHLIB_libxenstore) $(SHLIB_libblktapctl)
+SHDEPS_libxenlight = $(SHLIB_libxenctrl) $(SHLIB_libxenstore) $(SHLIB_libxenhypfs)
 LDLIBS_libxenlight = $(SHDEPS_libxenlight) $(XEN_XENLIGHT)/libxenlight$(libextension)
 SHLIB_libxenlight  = $(SHDEPS_libxenlight) -Wl,-rpath-link=$(XEN_XENLIGHT)
 
@@ -198,7 +189,7 @@ SHLIB_libxlutil  = $(SHDEPS_libxlutil) -Wl,-rpath-link=$(XEN_XLUTIL)
 CFLAGS += -D__XEN_INTERFACE_VERSION__=__XEN_LATEST_INTERFACE_VERSION__
 
 # Get gcc to generate the dependencies for us.
-CFLAGS += -MMD -MF .$(if $(filter-out .,$(@D)),$(subst /,@,$(@D))@)$(@F).d
+CFLAGS += -MMD -MP -MF .$(if $(filter-out .,$(@D)),$(subst /,@,$(@D))@)$(@F).d
 DEPS = .*.d
 
 ifneq ($(FILE_OFFSET_BITS),)
@@ -251,7 +242,8 @@ subdir-all-% subdir-clean-% subdir-install-% subdir-uninstall-%: .phony
 subdir-distclean-%: .phony
 	$(MAKE) -C $* distclean
 
-ifeq (,$(findstring clean,$(MAKECMDGOALS)))
+no-configure-targets := distclean subdir-distclean% clean subdir-clean% subtree-force-update-all %-dir-force-update
+ifeq (,$(filter $(no-configure-targets),$(MAKECMDGOALS)))
 $(XEN_ROOT)/config/Tools.mk:
 	$(error You have to run ./configure before building or installing the tools)
 endif
@@ -260,7 +252,7 @@ PKG_CONFIG_DIR ?= $(XEN_ROOT)/tools/pkg-config
 
 PKG_CONFIG_FILTER = $(foreach l,$(PKG_CONFIG_REMOVE),-e 's!\([ ,]\)$(l),!\1!g' -e 's![ ,]$(l)$$!!g')
 
-$(PKG_CONFIG_DIR)/%.pc: %.pc.in Makefile
+$(PKG_CONFIG_DIR)/%.pc: %.pc.in Makefile $(XEN_ROOT)/tools/Rules.mk
 	mkdir -p $(PKG_CONFIG_DIR)
 	@sed -e 's!@@version@@!$(PKG_CONFIG_VERSION)!g' \
 	     -e 's!@@prefix@@!$(PKG_CONFIG_PREFIX)!g' \
@@ -269,10 +261,10 @@ $(PKG_CONFIG_DIR)/%.pc: %.pc.in Makefile
 	     -e 's!@@firmwaredir@@!$(XENFIRMWAREDIR)!g' \
 	     -e 's!@@libexecbin@@!$(LIBEXEC_BIN)!g' \
 	     -e 's!@@cflagslocal@@!$(PKG_CONFIG_CFLAGS_LOCAL)!g' \
-	     -e 's!@@libsflag@@!-Wl,-rpath-link=!g' \
+	     -e 's!@@libsflag@@\([^ ]*\)!-L\1 -Wl,-rpath-link=\1!g' \
 	     $(PKG_CONFIG_FILTER) < $< > $@
 
-%.pc: %.pc.in Makefile
+%.pc: %.pc.in Makefile $(XEN_ROOT)/tools/Rules.mk
 	@sed -e 's!@@version@@!$(PKG_CONFIG_VERSION)!g' \
 	     -e 's!@@prefix@@!$(PKG_CONFIG_PREFIX)!g' \
 	     -e 's!@@incdir@@!$(PKG_CONFIG_INCDIR)!g' \

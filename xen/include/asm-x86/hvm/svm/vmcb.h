@@ -20,8 +20,6 @@
 #define __ASM_X86_HVM_SVM_VMCB_H__
 
 #include <xen/types.h>
-#include <asm/hvm/emulate.h>
-
 
 /* general 1 intercepts */
 enum GenericIntercept1bits
@@ -304,19 +302,38 @@ enum VMEXIT_EXITCODE
     VMEXIT_INVALID          =  -1
 };
 
+enum
+{
+    /* Available on all SVM-capable hardware. */
+    TLB_CTRL_NO_FLUSH             = 0,
+    TLB_CTRL_FLUSH_ALL            = 1,
+
+    /* Available with the FlushByASID feature. */
+    TLB_CTRL_FLUSH_ASID           = 3,
+    TLB_CTRL_FLUSH_ASID_NONGLOBAL = 7,
+};
+
 typedef union
 {
-    u64 bytes;
     struct
     {
-        u64 vector:    8;
-        u64 type:      3;
-        u64 ev:        1;
-        u64 resvd1:   19;
-        u64 v:         1;
-        u64 errorcode:32;
-    } fields;
-} eventinj_t;
+        uint8_t  vector;
+        uint8_t  type:3;
+        bool     ev:1;
+        uint32_t resvd1:19;
+        bool     v:1;
+        uint32_t ec;
+    };
+    uint64_t raw;
+} intinfo_t;
+
+typedef union {
+    struct {
+        bool intr_shadow:    1;
+        bool guest_intr_mask:1;
+    };
+    uint64_t raw;
+} intstat_t;
 
 typedef union
 {
@@ -367,34 +384,21 @@ typedef union
 
 typedef union
 {
-    uint32_t bytes;
-    struct
-    {
-        /* cr_intercepts, dr_intercepts, exception_intercepts,
-         * general{1,2}_intercepts, pause_filter_count, tsc_offset */
-        uint32_t intercepts: 1;
-        /* iopm_base_pa, msrpm_base_pa */
-        uint32_t iopm: 1;
-        /* guest_asid */
-        uint32_t asid: 1;
-        /* vintr */
-        uint32_t tpr: 1;
-        /* np_enable, h_cr3, g_pat */
-        uint32_t np: 1;
-        /* cr0, cr3, cr4, efer */
-        uint32_t cr: 1;
-        /* dr6, dr7 */
-        uint32_t dr: 1;
-        /* gdtr, idtr */
-        uint32_t dt: 1;
-        /* cs, ds, es, ss, cpl */
-        uint32_t seg: 1;
-        /* cr2 */
-        uint32_t cr2: 1;
-        /* debugctlmsr, last{branch,int}{to,from}ip */
-        uint32_t lbr: 1;
-        uint32_t resv: 21;
-    } fields;
+    struct {
+        bool intercepts:1; /* 0:  cr/dr/exception/general intercepts,
+                            *     pause_filter_count, tsc_offset */
+        bool iopm:1;       /* 1:  iopm_base_pa, msrpm_base_pa */
+        bool asid:1;       /* 2:  guest_asid */
+        bool tpr:1;        /* 3:  vintr */
+        bool np:1;         /* 4:  np_enable, h_cr3, g_pat */
+        bool cr:1;         /* 5:  cr0, cr3, cr4, efer */
+        bool dr:1;         /* 6:  dr6, dr7 */
+        bool dt:1;         /* 7:  gdtr, idtr */
+        bool seg:1;        /* 8:  cs, ds, es, ss, cpl */
+        bool cr2:1;        /* 9:  cr2 */
+        bool lbr:1;        /* 10: debugctlmsr, last{branch,int}{to,from}ip */
+    };
+    uint32_t raw;
 } vmcbcleanbits_t;
 
 #define IOPM_SIZE   (12 * 1024)
@@ -406,29 +410,54 @@ struct vmcb_struct {
     u32 _exception_intercepts;  /* offset 0x08 - cleanbit 0 */
     u32 _general1_intercepts;   /* offset 0x0C - cleanbit 0 */
     u32 _general2_intercepts;   /* offset 0x10 - cleanbit 0 */
-    u32 res01;                  /* offset 0x14 */
-    u64 res02;                  /* offset 0x18 */
-    u64 res03;                  /* offset 0x20 */
-    u64 res04;                  /* offset 0x28 */
-    u64 res05;                  /* offset 0x30 */
-    u32 res06;                  /* offset 0x38 */
+    u32 res01[10];
     u16 _pause_filter_thresh;   /* offset 0x3C - cleanbit 0 */
     u16 _pause_filter_count;    /* offset 0x3E - cleanbit 0 */
     u64 _iopm_base_pa;          /* offset 0x40 - cleanbit 1 */
     u64 _msrpm_base_pa;         /* offset 0x48 - cleanbit 1 */
     u64 _tsc_offset;            /* offset 0x50 - cleanbit 0 */
     u32 _guest_asid;            /* offset 0x58 - cleanbit 2 */
-    u8  tlb_control;            /* offset 0x5C */
+    u8  tlb_control;            /* offset 0x5C - TLB_CTRL_* */
     u8  res07[3];
     vintr_t _vintr;             /* offset 0x60 - cleanbit 3 */
-    u64 interrupt_shadow;       /* offset 0x68 */
+    intstat_t int_stat;         /* offset 0x68 */
     u64 exitcode;               /* offset 0x70 */
-    u64 exitinfo1;              /* offset 0x78 */
-    u64 exitinfo2;              /* offset 0x80 */
-    eventinj_t  exitintinfo;    /* offset 0x88 */
-    u64 _np_enable;             /* offset 0x90 - cleanbit 4 */
+    union {
+        struct {
+            uint64_t exitinfo1; /* offset 0x78 */
+            uint64_t exitinfo2; /* offset 0x80 */
+        };
+        union {
+            struct {
+                uint16_t sel;
+                uint64_t :48;
+
+                uint32_t ec;
+                uint32_t :4;
+                bool     iret:1;
+                uint32_t :1;
+                bool     jmp:1;
+                uint32_t :5;
+                bool     ev:1;
+                uint32_t :3;
+                bool     rf:1;
+            } task_switch;
+        } ei;
+    };
+    intinfo_t exit_int_info;    /* offset 0x88 */
+    union {                     /* offset 0x90 - cleanbit 4 */
+        struct {
+            bool _np_enable     :1;
+            bool _sev_enable    :1;
+            bool _sev_es_enable :1;
+            bool _gmet          :1;
+            bool                :1;
+            bool _vte           :1;
+        };
+        uint64_t _np_ctrl;
+    };
     u64 res08[2];
-    eventinj_t  eventinj;       /* offset 0xA8 */
+    intinfo_t event_inj;        /* offset 0xA8 */
     u64 _h_cr3;                 /* offset 0xB0 - cleanbit 4 */
     virt_ext_t virt_ext;        /* offset 0xB8 */
     vmcbcleanbits_t cleanbits;  /* offset 0xC0 */
@@ -479,20 +508,25 @@ struct vmcb_struct {
     u64 sysenter_esp;
     u64 sysenter_eip;
     u64 _cr2;                   /* cleanbit 9 */
-    u64 pdpe0;
-    u64 pdpe1;
-    u64 pdpe2;
-    u64 pdpe3;
+    u64 res16[4];
     u64 _g_pat;                 /* cleanbit 4 */
     u64 _debugctlmsr;           /* cleanbit 10 */
     u64 _lastbranchfromip;      /* cleanbit 10 */
     u64 _lastbranchtoip;        /* cleanbit 10 */
     u64 _lastintfromip;         /* cleanbit 10 */
     u64 _lastinttoip;           /* cleanbit 10 */
-    u64 res16[301];
+    u64 res17[301];
 };
 
 struct svm_domain {
+    /* OSVW MSRs */
+    union {
+        uint64_t raw[2];
+        struct {
+            uint64_t length;
+            uint64_t status;
+        };
+    } osvw;
 };
 
 /*
@@ -510,7 +544,7 @@ enum vmcb_sync_state {
     vmcb_needs_vmload     /* VMCB dirty (VMLOAD needed)? */
 };
 
-struct arch_svm_struct {
+struct svm_vcpu {
     struct vmcb_struct *vmcb;
     u64    vmcb_pa;
     unsigned long *msrpm;
@@ -529,19 +563,6 @@ struct arch_svm_struct {
     uint64_t guest_sysenter_cs;
     uint64_t guest_sysenter_esp;
     uint64_t guest_sysenter_eip;
-
-    /* AMD lightweight profiling MSR */
-    uint64_t guest_lwp_cfg;      /* guest version */
-    uint64_t cpu_lwp_cfg;        /* CPU version */
-
-    /* data breakpoint extension MSRs */
-    uint32_t dr_mask[4];
-
-    /* OSVW MSRs */
-    struct {
-        u64 length;
-        u64 status;
-    } osvw;
 };
 
 struct vmcb_struct *alloc_vmcb(void);
@@ -564,19 +585,22 @@ void svm_intercept_msr(struct vcpu *v, uint32_t msr, int enable);
  * VMCB accessor functions.
  */
 
-#define VMCB_ACCESSORS(name, cleanbit)            \
+#define VMCB_ACCESSORS_(name, type, cleanbit)     \
 static inline void                                \
 vmcb_set_ ## name(struct vmcb_struct *vmcb,       \
-                  typeof(vmcb->_ ## name) value)  \
+                  type value)                     \
 {                                                 \
     vmcb->_ ## name = value;                      \
-    vmcb->cleanbits.fields.cleanbit = 0;          \
+    vmcb->cleanbits.cleanbit = false;             \
 }                                                 \
-static inline typeof(alloc_vmcb()->_ ## name)     \
+static inline type                                \
 vmcb_get_ ## name(const struct vmcb_struct *vmcb) \
 {                                                 \
     return vmcb->_ ## name;                       \
 }
+
+#define VMCB_ACCESSORS(name, cleanbit) \
+        VMCB_ACCESSORS_(name, typeof(alloc_vmcb()->_ ## name), cleanbit)
 
 VMCB_ACCESSORS(cr_intercepts, intercepts)
 VMCB_ACCESSORS(dr_intercepts, intercepts)
@@ -590,7 +614,12 @@ VMCB_ACCESSORS(iopm_base_pa, iopm)
 VMCB_ACCESSORS(msrpm_base_pa, iopm)
 VMCB_ACCESSORS(guest_asid, asid)
 VMCB_ACCESSORS(vintr, tpr)
-VMCB_ACCESSORS(np_enable, np)
+VMCB_ACCESSORS(np_ctrl, np)
+VMCB_ACCESSORS_(np_enable, bool, np)
+VMCB_ACCESSORS_(sev_enable, bool, np)
+VMCB_ACCESSORS_(sev_es_enable, bool, np)
+VMCB_ACCESSORS_(gmet, bool, np)
+VMCB_ACCESSORS_(vte, bool, np)
 VMCB_ACCESSORS(h_cr3, np)
 VMCB_ACCESSORS(g_pat, np)
 VMCB_ACCESSORS(cr0, cr)

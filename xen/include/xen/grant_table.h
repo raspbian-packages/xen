@@ -29,16 +29,17 @@
 #include <asm/page.h>
 #include <asm/grant_table.h>
 
+#ifdef CONFIG_GRANT_TABLE
 struct grant_table;
 
+extern unsigned int opt_max_grant_frames;
+
 /* Create/destroy per-domain grant table context. */
-int grant_table_create(
-    struct domain *d);
+int grant_table_init(struct domain *d, int max_grant_frames,
+                     int max_maptrack_frames);
 void grant_table_destroy(
     struct domain *d);
 void grant_table_init_vcpu(struct vcpu *v);
-int grant_table_set_limits(struct domain *d, unsigned int grant_frames,
-                           unsigned int maptrack_frames);
 
 /*
  * Check if domain has active grants and log first 10 of them.
@@ -55,7 +56,55 @@ int mem_sharing_gref_to_gfn(struct grant_table *gt, grant_ref_t ref,
 
 int gnttab_map_frame(struct domain *d, unsigned long idx, gfn_t gfn,
                      mfn_t *mfn);
+int gnttab_get_shared_frame(struct domain *d, unsigned long idx,
+                            mfn_t *mfn);
+int gnttab_get_status_frame(struct domain *d, unsigned long idx,
+                            mfn_t *mfn);
 
-unsigned int gnttab_dom0_frames(void);
+#else
+
+#define opt_max_grant_frames 0
+
+static inline int grant_table_init(struct domain *d,
+                                   int max_grant_frames,
+                                   int max_maptrack_frames)
+{
+    return 0;
+}
+
+static inline void grant_table_destroy(struct domain *d) {}
+
+static inline void grant_table_init_vcpu(struct vcpu *v) {}
+
+static inline void grant_table_warn_active_grants(struct domain *d) {}
+
+static inline void gnttab_release_mappings(struct domain *d) {}
+
+static inline int mem_sharing_gref_to_gfn(struct grant_table *gt,
+                                          grant_ref_t ref,
+                                          gfn_t *gfn, uint16_t *status)
+{
+    return -EINVAL;
+}
+
+static inline int gnttab_map_frame(struct domain *d, unsigned long idx,
+                                   gfn_t gfn, mfn_t *mfn)
+{
+    return -EINVAL;
+}
+
+static inline int gnttab_get_shared_frame(struct domain *d, unsigned long idx,
+                                          mfn_t *mfn)
+{
+    return -EINVAL;
+}
+
+static inline int gnttab_get_status_frame(struct domain *d, unsigned long idx,
+                                          mfn_t *mfn)
+{
+    return -EINVAL;
+}
+
+#endif /* CONFIG_GRANT_TABLE */
 
 #endif /* __XEN_GRANT_TABLE_H__ */

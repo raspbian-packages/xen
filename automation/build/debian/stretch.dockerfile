@@ -15,7 +15,8 @@ RUN apt-get update && \
         zlib1g-dev \
         libncurses5-dev \
         libssl-dev \
-        python2.7-dev \
+        python-dev \
+        python3-dev \
         xorg-dev \
         uuid-dev \
         libyajl-dev \
@@ -41,6 +42,21 @@ RUN apt-get update && \
         checkpolicy \
         wget \
         git \
+        nasm \
+        gnupg \
+        apt-transport-https \
+        && \
+        apt-get autoremove -y && \
+        apt-get clean && \
+        rm -rf /var/lib/apt/lists* /tmp/* /var/tmp/*
+
+RUN wget -O - https://apt.llvm.org/llvm-snapshot.gpg.key | apt-key add -
+COPY stretch-llvm-8.list /etc/apt/sources.list.d/
+
+RUN apt-get update && \
+    apt-get --quiet --yes install \
+        clang-8 \
+        lld-8 \
         && \
         apt-get autoremove -y && \
         apt-get clean && \

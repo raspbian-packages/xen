@@ -23,6 +23,7 @@
 #include <xen/errno.h>
 #include <xen/init.h>
 #include <xen/mm.h>
+#include <xen/param.h>
 #include <xen/sched.h>
 #include <xen/smp.h>
 #include <xen/softirq.h>
@@ -52,8 +53,8 @@ nodemask_t __read_mostly node_online_map = { { [0] = 1UL } };
 static unsigned char __initdata cpu0_boot_stack[STACK_SIZE]
        __attribute__((__aligned__(STACK_SIZE)));
 
-/* Initial boot cpu data */
-struct init_info __initdata init_data =
+/* Boot cpu data */
+struct init_info init_data =
 {
     .stack = cpu0_boot_stack,
 };
@@ -82,11 +83,17 @@ static void setup_cpu_sibling_map(int cpu)
 {
     if ( !zalloc_cpumask_var(&per_cpu(cpu_sibling_mask, cpu)) ||
          !zalloc_cpumask_var(&per_cpu(cpu_core_mask, cpu)) )
-        panic("No memory for CPU sibling/core maps");
+        panic("No memory for CPU sibling/core maps\n");
 
     /* A CPU is a sibling with itself and is always on its own core. */
     cpumask_set_cpu(cpu, per_cpu(cpu_sibling_mask, cpu));
     cpumask_set_cpu(cpu, per_cpu(cpu_core_mask, cpu));
+}
+
+static void remove_cpu_sibling_map(int cpu)
+{
+    free_cpumask_var(per_cpu(cpu_sibling_mask, cpu));
+    free_cpumask_var(per_cpu(cpu_core_mask, cpu));
 }
 
 void __init
@@ -291,9 +298,7 @@ smp_prepare_cpus(void)
 }
 
 /* Boot the current CPU */
-void start_secondary(unsigned long boot_phys_offset,
-                     unsigned long fdt_paddr,
-                     unsigned long hwid)
+void start_secondary(void)
 {
     unsigned int cpuid = init_data.cpuid;
 
@@ -380,8 +385,6 @@ void __cpu_disable(void)
     /* It's now safe to remove this processor from the online map */
     cpumask_clear_cpu(cpu, &cpu_online_map);
 
-    if ( cpu_disable_scheduler(cpu) )
-        BUG();
     smp_mb();
 
     /* Return to caller; eventually the IPI mechanism will unwind and the 
@@ -395,6 +398,8 @@ void stop_cpu(void)
     /* Make sure the write happens before we sleep forever */
     dsb(sy);
     isb();
+    call_psci_cpu_off();
+
     while ( 1 )
         wfi();
 }
@@ -496,6 +501,36 @@ void __cpu_die(unsigned int cpu)
     cpu_is_dead = false;
     smp_mb();
 }
+
+static int cpu_smpboot_callback(struct notifier_block *nfb,
+                                unsigned long action,
+                                void *hcpu)
+{
+    unsigned int cpu = (unsigned long)hcpu;
+
+    switch ( action )
+    {
+    case CPU_DEAD:
+        remove_cpu_sibling_map(cpu);
+        break;
+    default:
+        break;
+    }
+
+    return NOTIFY_DONE;
+}
+
+static struct notifier_block cpu_smpboot_nfb = {
+    .notifier_call = cpu_smpboot_callback,
+};
+
+static int __init cpu_smpboot_notifier_init(void)
+{
+    register_cpu_notifier(&cpu_smpboot_nfb);
+
+    return 0;
+}
+presmp_initcall(cpu_smpboot_notifier_init);
 
 /*
  * Local variables:

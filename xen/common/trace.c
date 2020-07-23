@@ -19,6 +19,7 @@
 #include <asm/types.h>
 #include <asm/io.h>
 #include <xen/lib.h>
+#include <xen/param.h>
 #include <xen/sched.h>
 #include <xen/smp.h>
 #include <xen/trace.h>
@@ -113,7 +114,7 @@ static int calculate_tbuf_size(unsigned int pages, uint16_t t_info_first_offset)
     struct t_info dummy_pages;
     typeof(dummy_pages.tbuf_size) max_pages;
     typeof(dummy_pages.mfn_offset[0]) max_mfn_offset;
-    unsigned int max_cpus = num_online_cpus();
+    unsigned int max_cpus = nr_cpu_ids;
     unsigned int t_info_words;
 
     /* force maximum value for an unsigned type */
@@ -149,13 +150,13 @@ static int calculate_tbuf_size(unsigned int pages, uint16_t t_info_first_offset)
 
     /* 
      * NB this calculation is correct, because t_info_first_offset is
-     * in words, not bytes, not bytes
+     * in words, not bytes
      */
-    t_info_words = num_online_cpus() * pages + t_info_first_offset;
+    t_info_words = nr_cpu_ids * pages + t_info_first_offset;
     t_info_pages = PFN_UP(t_info_words * sizeof(uint32_t));
     printk(XENLOG_INFO "xentrace: requesting %u t_info pages "
            "for %u trace pages on %u cpus\n",
-           t_info_pages, pages, num_online_cpus());
+           t_info_pages, pages, nr_cpu_ids);
     return pages;
 }
 
@@ -662,12 +663,12 @@ static inline void insert_lost_records(struct t_buf *buf)
  * Notification is performed in qtasklet to avoid deadlocks with contexts
  * which __trace_var() may be called from (e.g., scheduler critical regions).
  */
-static void trace_notify_dom0(unsigned long unused)
+static void trace_notify_dom0(void *unused)
 {
     send_global_virq(VIRQ_TBUF);
 }
 static DECLARE_SOFTIRQ_TASKLET(trace_notify_dom0_tasklet,
-                               trace_notify_dom0, 0);
+                               trace_notify_dom0, NULL);
 
 /**
  * __trace_var - Enters a trace tuple into the trace buffer for the current CPU.

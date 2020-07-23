@@ -282,7 +282,7 @@ static void datacopier_readable(libxl__egc *egc, libxl__ev_fd *ev,
                 hupchk.revents = 0;
                 r = poll(&hupchk, 1, 0);
                 if (r < 0)
-                    LIBXL__EVENT_DISASTER(egc,
+                    LIBXL__EVENT_DISASTER(gc,
      "unexpected failure polling fd for datacopier eof hup check",
                                   errno, 0);
                 if (datacopier_pollhup_handled(egc, dc, fd, hupchk.revents, 0))
@@ -477,7 +477,7 @@ int libxl__openptys(libxl__openpty_state *op,
             r = openpty(&ptyfds[i][0], &ptyfds[i][1], NULL, termp, winp);
             if (r) { LOGE(ERROR,"openpty failed"); _exit(-1); }
         }
-        rc = libxl__sendmsg_fds(gc, sockets[1], "",1,
+        rc = libxl__sendmsg_fds(gc, sockets[1], '\0',
                                 2*count, &ptyfds[0][0], "ptys");
         if (rc) { LOGE(ERROR,"sendmsg to parent failed"); _exit(-1); }
         _exit(0);
@@ -624,6 +624,38 @@ void libxl__kill(libxl__gc *gc, pid_t pid, int sig, const char *what)
     int r = kill(pid, sig);
     if (r) LOGE(WARN, "failed to kill() %s [%lu] (signal %d)",
                 what, (unsigned long)pid, sig);
+}
+
+/* Generic function to signal (HUP) a pid stored in xenstore */
+int libxl__kill_xs_path(libxl__gc *gc, const char *xs_path_pid,
+                        const char *what)
+{
+    const char *xs_pid;
+    int ret, pid;
+
+    ret = libxl__xs_read_checked(gc, XBT_NULL, xs_path_pid, &xs_pid);
+    if (ret || !xs_pid) {
+        LOG(ERROR, "unable to find %s pid in %s", what, xs_path_pid);
+        ret = ret ? : ERROR_FAIL;
+        goto out;
+    }
+    pid = atoi(xs_pid);
+
+    ret = kill(pid, SIGHUP);
+    if (ret < 0 && errno == ESRCH) {
+        LOG(ERROR, "%s already exited", what);
+        ret = 0;
+    } else if (ret == 0) {
+        LOG(DEBUG, "%s signaled", what);
+        ret = 0;
+    } else {
+        LOGE(ERROR, "failed to kill %s [%d]", what, pid);
+        ret = ERROR_FAIL;
+        goto out;
+    }
+
+out:
+    return ret;
 }
 
 /*

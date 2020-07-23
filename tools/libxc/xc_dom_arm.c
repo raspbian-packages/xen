@@ -47,23 +47,6 @@ const char *xc_domain_get_native_protocol(xc_interface *xch,
 }
 
 /* ------------------------------------------------------------------------ */
-/*
- * arm guests are hybrid and start off with paging disabled, therefore no
- * pagetables and nothing to do here.
- */
-static int alloc_pgtables_arm(struct xc_dom_image *dom)
-{
-    DOMPRINTF_CALLED(dom->xch);
-    return 0;
-}
-
-static int setup_pgtables_arm(struct xc_dom_image *dom)
-{
-    DOMPRINTF_CALLED(dom->xch);
-    return 0;
-}
-
-/* ------------------------------------------------------------------------ */
 
 static int alloc_magic_pages(struct xc_dom_image *dom)
 {
@@ -365,9 +348,6 @@ static int populate_guest_memory(struct xc_dom_image *dom,
         }
     }
 
-    for ( pfn = 0; pfn < nr_pfns; pfn++ )
-        dom->p2m_host[pfn] = base_pfn + pfn;
-
 out:
     free(extents);
     return rc < 0 ? rc : 0;
@@ -376,7 +356,6 @@ out:
 static int meminit(struct xc_dom_image *dom)
 {
     int i, rc;
-    xen_pfn_t pfn;
     uint64_t modbase;
 
     uint64_t ramsize = (uint64_t)dom->total_pages << XC_PAGE_SHIFT;
@@ -440,11 +419,6 @@ static int meminit(struct xc_dom_image *dom)
     assert(ramsize == 0); /* Too much RAM is rejected above */
 
     dom->p2m_size = p2m_size;
-    dom->p2m_host = xc_dom_malloc(dom, sizeof(xen_pfn_t) * p2m_size);
-    if ( dom->p2m_host == NULL )
-        return -EINVAL;
-    for ( pfn = 0; pfn < p2m_size; pfn++ )
-        dom->p2m_host[pfn] = INVALID_PFN;
 
     /* setup initial p2m and allocate guest memory */
     for ( i = 0; i < GUEST_RAM_BANKS && dom->rambank_size[i]; i++ )
@@ -539,8 +513,6 @@ static struct xc_dom_arch xc_dom_32 = {
     .page_shift = PAGE_SHIFT_ARM,
     .sizeof_pfn = 8,
     .alloc_magic_pages = alloc_magic_pages,
-    .alloc_pgtables = alloc_pgtables_arm,
-    .setup_pgtables = setup_pgtables_arm,
     .start_info = start_info_arm,
     .shared_info = shared_info_arm,
     .vcpu = vcpu_arm32,
@@ -555,8 +527,6 @@ static struct xc_dom_arch xc_dom_64 = {
     .page_shift = PAGE_SHIFT_ARM,
     .sizeof_pfn = 8,
     .alloc_magic_pages = alloc_magic_pages,
-    .alloc_pgtables = alloc_pgtables_arm,
-    .setup_pgtables = setup_pgtables_arm,
     .start_info = start_info_arm,
     .shared_info = shared_info_arm,
     .vcpu = vcpu_arm64,

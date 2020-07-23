@@ -34,6 +34,7 @@ int libxl__domain_suspend_init(libxl__egc *egc,
     libxl__ev_evtchn_init(&dsps->guest_evtchn);
     libxl__ev_xswatch_init(&dsps->guest_watch);
     libxl__ev_time_init(&dsps->guest_timeout);
+    libxl__ev_qmp_init(&dsps->qmp);
 
     if (type == LIBXL_DOMAIN_TYPE_INVALID) goto out;
     dsps->type = type;
@@ -68,10 +69,11 @@ out:
 
 /*----- callbacks, called by xc_domain_save -----*/
 
-int libxl__domain_suspend_device_model(libxl__gc *gc,
+void libxl__domain_suspend_device_model(libxl__egc *egc,
                                        libxl__domain_suspend_state *dsps)
 {
-    int ret = 0;
+    STATE_AO_GC(dsps->ao);
+    int rc = 0;
     uint32_t const domid = dsps->domid;
     const char *const filename = dsps->dm_savefile;
 
@@ -83,18 +85,19 @@ int libxl__domain_suspend_device_model(libxl__gc *gc,
         break;
     }
     case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN:
-        if (libxl__qmp_stop(gc, domid))
-            return ERROR_FAIL;
-        /* Save DM state into filename */
-        ret = libxl__qmp_save(gc, domid, filename, dsps->live);
-        if (ret)
-            unlink(filename);
-        break;
+        /* calls dsps->callback_device_model_done when done */
+        libxl__qmp_suspend_save(egc, dsps); /* must be last */
+        return;
     default:
-        return ERROR_INVAL;
+        rc = ERROR_INVAL;
+        goto out;
     }
 
-    return ret;
+out:
+    if (rc)
+        LOGD(ERROR, dsps->domid,
+             "failed to suspend device model, rc=%d", rc);
+    dsps->callback_device_model_done(egc, dsps, rc); /* must be last */
 }
 
 static void domain_suspend_common_wait_guest(libxl__egc *egc,
@@ -190,16 +193,11 @@ static void domain_suspend_callback_common(libxl__egc *egc,
     LOGD(DEBUG, domid, "issuing %s suspend request via XenBus control node",
         dsps->type != LIBXL_DOMAIN_TYPE_PV ? "PVH/HVM" : "PV");
 
-    libxl__domain_pvcontrol_write(gc, XBT_NULL, domid, "suspend");
-
-    dsps->pvcontrol.path = libxl__domain_pvcontrol_xspath(gc, domid);
-    if (!dsps->pvcontrol.path) { rc = ERROR_FAIL; goto err; }
-
     dsps->pvcontrol.ao = ao;
-    dsps->pvcontrol.what = "guest acknowledgement of suspend request";
-    dsps->pvcontrol.timeout_ms = 60 * 1000;
     dsps->pvcontrol.callback = domain_suspend_common_pvcontrol_suspending;
-    libxl__xswait_start(gc, &dsps->pvcontrol);
+    rc = libxl__domain_pvcontrol(egc, &dsps->pvcontrol, domid, "suspend");
+    if (rc) goto err;
+
     return;
 
  err:
@@ -371,20 +369,15 @@ static void domain_suspend_common_guest_suspended(libxl__egc *egc,
                                          libxl__domain_suspend_state *dsps)
 {
     STATE_AO_GC(dsps->ao);
-    int rc;
 
     libxl__ev_evtchn_cancel(gc, &dsps->guest_evtchn);
     libxl__ev_xswatch_deregister(gc, &dsps->guest_watch);
     libxl__ev_time_deregister(gc, &dsps->guest_timeout);
 
     if (dsps->type == LIBXL_DOMAIN_TYPE_HVM) {
-        rc = libxl__domain_suspend_device_model(gc, dsps);
-        if (rc) {
-            LOGD(ERROR, dsps->domid,
-                 "libxl__domain_suspend_device_model failed ret=%d", rc);
-            domain_suspend_common_done(egc, dsps, rc);
-            return;
-        }
+        dsps->callback_device_model_done = domain_suspend_common_done;
+        libxl__domain_suspend_device_model(egc, dsps); /* must be last */
+        return;
     }
     domain_suspend_common_done(egc, dsps, 0);
 }
@@ -398,6 +391,7 @@ static void domain_suspend_common_done(libxl__egc *egc,
     libxl__ev_evtchn_cancel(gc, &dsps->guest_evtchn);
     libxl__ev_xswatch_deregister(gc, &dsps->guest_watch);
     libxl__ev_time_deregister(gc, &dsps->guest_timeout);
+    libxl__ev_qmp_dispose(gc, &dsps->qmp);
     dsps->callback_common_done(egc, dsps, rc);
 }
 
@@ -422,7 +416,7 @@ static void domain_suspend_callback_common_done(libxl__egc *egc,
 
 /*======================= Domain resume ========================*/
 
-int libxl__domain_resume_device_model(libxl__gc *gc, uint32_t domid)
+int libxl__domain_resume_device_model_deprecated(libxl__gc *gc, uint32_t domid)
 {
     const char *path, *state;
 
@@ -450,7 +444,7 @@ int libxl__domain_resume_device_model(libxl__gc *gc, uint32_t domid)
     return 0;
 }
 
-int libxl__domain_resume(libxl__gc *gc, uint32_t domid, int suspend_cancel)
+int libxl__domain_resume_deprecated(libxl__gc *gc, uint32_t domid, int suspend_cancel)
 {
     int rc = 0;
 
@@ -461,7 +455,7 @@ int libxl__domain_resume(libxl__gc *gc, uint32_t domid, int suspend_cancel)
     }
 
     if (type == LIBXL_DOMAIN_TYPE_HVM) {
-        rc = libxl__domain_resume_device_model(gc, domid);
+        rc = libxl__domain_resume_device_model_deprecated(gc, domid);
         if (rc) {
             LOGD(ERROR, domid, "failed to resume device model:%d", rc);
             goto out;
@@ -480,6 +474,198 @@ int libxl__domain_resume(libxl__gc *gc, uint32_t domid, int suspend_cancel)
     }
 out:
     return rc;
+}
+
+static void dm_resume_init(libxl__dm_resume_state *dmrs)
+{
+    libxl__ev_qmp_init(&dmrs->qmp);
+    libxl__ev_time_init(&dmrs->time);
+    libxl__ev_xswatch_init(&dmrs->watch);
+}
+
+static void dm_resume_dispose(libxl__gc *gc,
+                              libxl__dm_resume_state *dmrs)
+{
+    libxl__ev_qmp_dispose(gc, &dmrs->qmp);
+    libxl__ev_time_deregister(gc, &dmrs->time);
+    libxl__ev_xswatch_deregister(gc, &dmrs->watch);
+}
+
+static void dm_resume_xswatch_cb(libxl__egc *egc,
+    libxl__ev_xswatch *, const char *watch_path, const char *);
+static void dm_resume_qmp_done(libxl__egc *egc,
+    libxl__ev_qmp *qmp, const libxl__json_object *, int rc);
+static void dm_resume_timeout(libxl__egc *egc,
+    libxl__ev_time *, const struct timeval *, int rc);
+static void dm_resume_done(libxl__egc *egc,
+    libxl__dm_resume_state *dmrs, int rc);
+
+void libxl__dm_resume(libxl__egc *egc,
+                      libxl__dm_resume_state *dmrs)
+{
+    STATE_AO_GC(dmrs->ao);
+    int rc = 0;
+
+    /* Convenience aliases */
+    libxl_domid domid = dmrs->domid;
+    libxl__ev_qmp *qmp = &dmrs->qmp;
+
+    dm_resume_init(dmrs);
+
+    rc = libxl__ev_time_register_rel(dmrs->ao,
+                                     &dmrs->time,
+                                     dm_resume_timeout,
+                                     LIBXL_DEVICE_MODEL_START_TIMEOUT * 1000);
+    if (rc) goto out;
+
+    switch (libxl__device_model_version_running(gc, domid)) {
+    case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN_TRADITIONAL: {
+        uint32_t dm_domid = libxl_get_stubdom_id(CTX, domid);
+        const char *path, *state;
+
+        path = DEVICE_MODEL_XS_PATH(gc, dm_domid, domid, "/state");
+        rc = libxl__xs_read_checked(gc, XBT_NULL, path, &state);
+        if (rc) goto out;
+        if (!state || strcmp(state, "paused")) {
+            /* already running */
+            rc = 0;
+            goto out;
+        }
+
+        rc = libxl__qemu_traditional_cmd(gc, domid, "continue");
+        if (rc) goto out;
+        rc = libxl__ev_xswatch_register(gc, &dmrs->watch,
+                                        dm_resume_xswatch_cb,
+                                        path);
+        if (rc) goto out;
+        break;
+    }
+    case LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN:
+        qmp->ao = dmrs->ao;
+        qmp->domid = domid;
+        qmp->callback = dm_resume_qmp_done;
+        qmp->payload_fd = -1;
+        rc = libxl__ev_qmp_send(egc, qmp, "cont", NULL);
+        if (rc) goto out;
+        break;
+    default:
+        rc = ERROR_INVAL;
+        goto out;
+    }
+
+    return;
+
+out:
+    dm_resume_done(egc, dmrs, rc);
+}
+
+static void dm_resume_xswatch_cb(libxl__egc *egc,
+                                 libxl__ev_xswatch *xsw,
+                                 const char *watch_path,
+                                 const char *event_path)
+{
+    EGC_GC;
+    libxl__dm_resume_state *dmrs = CONTAINER_OF(xsw, *dmrs, watch);
+    int rc;
+    const char *value;
+
+    rc = libxl__xs_read_checked(gc, XBT_NULL, watch_path, &value);
+    if (rc) goto out;
+
+    if (!value || strcmp(value, "running"))
+        return;
+
+    rc = 0;
+out:
+    dm_resume_done(egc, dmrs, rc);
+}
+
+static void dm_resume_qmp_done(libxl__egc *egc,
+                               libxl__ev_qmp *qmp,
+                               const libxl__json_object *response,
+                               int rc)
+{
+    libxl__dm_resume_state *dmrs = CONTAINER_OF(qmp, *dmrs, qmp);
+    dm_resume_done(egc, dmrs, rc);
+}
+
+static void dm_resume_timeout(libxl__egc *egc,
+                              libxl__ev_time *ev,
+                              const struct timeval *requested_abs,
+                              int rc)
+{
+    libxl__dm_resume_state *dmrs = CONTAINER_OF(ev, *dmrs, time);
+    dm_resume_done(egc, dmrs, rc);
+}
+
+static void dm_resume_done(libxl__egc *egc,
+                           libxl__dm_resume_state *dmrs,
+                           int rc)
+{
+    EGC_GC;
+
+    if (rc) {
+        LOGD(ERROR, dmrs->domid,
+             "Failed to resume device model: rc=%d", rc);
+    }
+
+    dm_resume_dispose(gc, dmrs);
+    dmrs->dm_resumed_callback(egc, dmrs, rc);
+}
+
+
+static void domain_resume_done(libxl__egc *egc,
+                               libxl__dm_resume_state *dmrs, int rc);
+
+void libxl__domain_resume(libxl__egc *egc,
+                          libxl__dm_resume_state *dmrs,
+                          bool suspend_cancel)
+{
+    STATE_AO_GC(dmrs->ao);
+    int rc = 0;
+    libxl_domain_type type = libxl__domain_type(gc, dmrs->domid);
+
+    if (type == LIBXL_DOMAIN_TYPE_INVALID) {
+        rc = ERROR_FAIL;
+        goto out;
+    }
+
+    if (type != LIBXL_DOMAIN_TYPE_HVM) {
+        rc = 0;
+        goto out;
+    }
+
+    dmrs->suspend_cancel = suspend_cancel;
+    dmrs->dm_resumed_callback = domain_resume_done;
+    libxl__dm_resume(egc, dmrs); /* must be last */
+    return;
+
+out:
+    domain_resume_done(egc, dmrs, rc);
+}
+
+static void domain_resume_done(libxl__egc *egc,
+                               libxl__dm_resume_state *dmrs, int rc)
+{
+    EGC_GC;
+
+    /* Convenience aliases */
+    libxl_domid domid = dmrs->domid;
+
+    if (rc) goto out;
+
+    if (xc_domain_resume(CTX->xch, domid, dmrs->suspend_cancel)) {
+        LOGED(ERROR, domid, "xc_domain_resume failed");
+        rc = ERROR_FAIL;
+        goto out;
+    }
+
+    if (!xs_resume_domain(CTX->xsh, domid)) {
+        LOGED(ERROR, domid, "xs_resume_domain failed");
+        rc = ERROR_FAIL;
+    }
+out:
+    dmrs->callback(egc, dmrs, rc);
 }
 
 /*

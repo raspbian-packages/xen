@@ -56,6 +56,9 @@
 #define X86_DR6_DEFAULT 0xffff0ff0u
 #define X86_DR7_DEFAULT 0x00000400u
 
+#define MTRR_TYPE_WRBACK     6
+#define MTRR_DEF_TYPE_ENABLE (1u << 11)
+
 #define SPECIALPAGE_PAGING   0
 #define SPECIALPAGE_ACCESS   1
 #define SPECIALPAGE_SHARING  2
@@ -100,7 +103,10 @@ struct xc_dom_image_x86 {
     unsigned n_mappings;
 #define MAPPING_MAX 2
     struct xc_dom_x86_mapping maps[MAPPING_MAX];
-    struct xc_dom_params *params;
+    const struct xc_dom_params *params;
+
+    /* PV: Pointer to the in-guest P2M. */
+    void *p2m_guest;
 };
 
 /* get guest IO ABI protocol */
@@ -232,7 +238,7 @@ static int count_pgtables(struct xc_dom_image *dom, xen_vaddr_t from,
     return 0;
 }
 
-static int alloc_pgtables(struct xc_dom_image *dom)
+static int alloc_pgtables_pv(struct xc_dom_image *dom)
 {
     int pages, extra_pages;
     xen_vaddr_t try_virt_end;
@@ -265,20 +271,24 @@ static int alloc_pgtables(struct xc_dom_image *dom)
 /* ------------------------------------------------------------------------ */
 /* i386 pagetables                                                          */
 
-static struct xc_dom_params x86_32_params = {
-    .levels = PGTBL_LEVELS_I386,
-    .vaddr_mask = bits_to_mask(VIRT_BITS_I386),
-    .lvl_prot[0] = _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED,
-    .lvl_prot[1] = _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY|_PAGE_USER,
-    .lvl_prot[2] = _PAGE_PRESENT,
-};
-
 static int alloc_pgtables_x86_32_pae(struct xc_dom_image *dom)
 {
+    static const struct xc_dom_params x86_32_params = {
+        .levels = PGTBL_LEVELS_I386,
+        .vaddr_mask = bits_to_mask(VIRT_BITS_I386),
+        .lvl_prot[0] = _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED,
+        /*
+         * 64bit Xen runs 32bit PV guests with the PAE entries in an L3
+         * pagetable.  They don't behave exactly like native PAE paging.
+         */
+        .lvl_prot[1 ... 2] =
+            _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY|_PAGE_USER,
+    };
     struct xc_dom_image_x86 *domx86 = dom->arch_private;
 
     domx86->params = &x86_32_params;
-    return alloc_pgtables(dom);
+
+    return alloc_pgtables_pv(dom);
 }
 
 #define pfn_to_paddr(pfn) ((xen_paddr_t)(pfn) << PAGE_SHIFT_X86)
@@ -293,6 +303,8 @@ static xen_pfn_t move_l3_below_4G(struct xc_dom_image *dom,
                                   xen_pfn_t l3pfn,
                                   xen_pfn_t l3mfn)
 {
+    struct xc_dom_image_x86 *domx86 = dom->arch_private;
+    uint32_t *p2m_guest = domx86->p2m_guest;
     xen_pfn_t new_l3mfn;
     struct xc_mmu *mmu;
     void *l3tab;
@@ -310,9 +322,7 @@ static xen_pfn_t move_l3_below_4G(struct xc_dom_image *dom,
     if ( !new_l3mfn )
         goto out;
 
-    dom->p2m_host[l3pfn] = new_l3mfn;
-    if ( xc_dom_update_guest_p2m(dom) != 0 )
-        goto out;
+    p2m_guest[l3pfn] = dom->pv_p2m[l3pfn] = new_l3mfn;
 
     if ( xc_add_mmu_update(dom->xch, mmu,
                            (((unsigned long long)new_l3mfn)
@@ -352,7 +362,7 @@ static xen_pfn_t move_l3_below_4G(struct xc_dom_image *dom,
     return l3mfn;
 }
 
-static x86_pgentry_t *get_pg_table_x86(struct xc_dom_image *dom, int m, int l)
+static x86_pgentry_t *get_pg_table(struct xc_dom_image *dom, int m, int l)
 {
     struct xc_dom_image_x86 *domx86 = dom->arch_private;
     struct xc_dom_x86_mapping *map;
@@ -368,8 +378,7 @@ static x86_pgentry_t *get_pg_table_x86(struct xc_dom_image *dom, int m, int l)
     return NULL;
 }
 
-static x86_pgentry_t get_pg_prot_x86(struct xc_dom_image *dom, int l,
-                                     xen_pfn_t pfn)
+static x86_pgentry_t get_pg_prot(struct xc_dom_image *dom, int l, xen_pfn_t pfn)
 {
     struct xc_dom_image_x86 *domx86 = dom->arch_private;
     struct xc_dom_x86_mapping *map;
@@ -393,7 +402,7 @@ static x86_pgentry_t get_pg_prot_x86(struct xc_dom_image *dom, int l,
     return prot;
 }
 
-static int setup_pgtables_x86(struct xc_dom_image *dom)
+static int setup_pgtables_pv(struct xc_dom_image *dom)
 {
     struct xc_dom_image_x86 *domx86 = dom->arch_private;
     struct xc_dom_x86_mapping *map1, *map2;
@@ -410,7 +419,7 @@ static int setup_pgtables_x86(struct xc_dom_image *dom)
             map1 = domx86->maps + m1;
             from = map1->lvls[l].from;
             to = map1->lvls[l].to;
-            pg = get_pg_table_x86(dom, m1, l);
+            pg = get_pg_table(dom, m1, l);
             if ( !pg )
                 return -1;
             for ( m2 = 0; m2 < domx86->n_mappings; m2++ )
@@ -430,7 +439,7 @@ static int setup_pgtables_x86(struct xc_dom_image *dom)
                 for ( p = p_s; p <= p_e; p++ )
                 {
                     pg[p] = pfn_to_paddr(xc_dom_p2m(dom, pfn)) |
-                            get_pg_prot_x86(dom, l, pfn);
+                            get_pg_prot(dom, l, pfn);
                     pfn++;
                 }
             }
@@ -442,7 +451,17 @@ static int setup_pgtables_x86(struct xc_dom_image *dom)
 static int setup_pgtables_x86_32_pae(struct xc_dom_image *dom)
 {
     struct xc_dom_image_x86 *domx86 = dom->arch_private;
-    xen_pfn_t l3mfn, l3pfn;
+    uint32_t *p2m_guest = domx86->p2m_guest;
+    xen_pfn_t l3mfn, l3pfn, i;
+
+    /* Copy dom->pv_p2m[] into the guest. */
+    for ( i = 0; i < dom->p2m_size; ++i )
+    {
+        if ( dom->pv_p2m[i] != INVALID_PFN )
+            p2m_guest[i] = dom->pv_p2m[i];
+        else
+            p2m_guest[i] = -1;
+    }
 
     l3pfn = domx86->maps[0].lvls[2].pfn;
     l3mfn = xc_dom_p2m(dom, l3pfn);
@@ -461,43 +480,58 @@ static int setup_pgtables_x86_32_pae(struct xc_dom_image *dom)
         }
     }
 
-    return setup_pgtables_x86(dom);
+    return setup_pgtables_pv(dom);
 }
 
 /* ------------------------------------------------------------------------ */
 /* x86_64 pagetables                                                        */
 
-static struct xc_dom_params x86_64_params = {
-    .levels = PGTBL_LEVELS_X86_64,
-    .vaddr_mask = bits_to_mask(VIRT_BITS_X86_64),
-    .lvl_prot[0] = _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED,
-    .lvl_prot[1] = _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY|_PAGE_USER,
-    .lvl_prot[2] = _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY|_PAGE_USER,
-    .lvl_prot[3] = _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY|_PAGE_USER,
-};
-
 static int alloc_pgtables_x86_64(struct xc_dom_image *dom)
 {
+    const static struct xc_dom_params x86_64_params = {
+        .levels = PGTBL_LEVELS_X86_64,
+        .vaddr_mask = bits_to_mask(VIRT_BITS_X86_64),
+        .lvl_prot[0] = _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED,
+        .lvl_prot[1 ... 3] =
+            _PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_DIRTY|_PAGE_USER,
+    };
     struct xc_dom_image_x86 *domx86 = dom->arch_private;
 
     domx86->params = &x86_64_params;
-    return alloc_pgtables(dom);
+
+    return alloc_pgtables_pv(dom);
 }
 
 static int setup_pgtables_x86_64(struct xc_dom_image *dom)
 {
-    return setup_pgtables_x86(dom);
+    struct xc_dom_image_x86 *domx86 = dom->arch_private;
+    uint64_t *p2m_guest = domx86->p2m_guest;
+    xen_pfn_t i;
+
+    /* Copy dom->pv_p2m[] into the guest. */
+    for ( i = 0; i < dom->p2m_size; ++i )
+    {
+        if ( dom->pv_p2m[i] != INVALID_PFN )
+            p2m_guest[i] = dom->pv_p2m[i];
+        else
+            p2m_guest[i] = -1;
+    }
+
+    return setup_pgtables_pv(dom);
 }
 
 /* ------------------------------------------------------------------------ */
 
 static int alloc_p2m_list(struct xc_dom_image *dom, size_t p2m_alloc_size)
 {
+    struct xc_dom_image_x86 *domx86 = dom->arch_private;
+
     if ( xc_dom_alloc_segment(dom, &dom->p2m_seg, "phys2mach",
                               0, p2m_alloc_size) )
         return -1;
-    dom->p2m_guest = xc_dom_seg_to_ptr(dom, &dom->p2m_seg);
-    if ( dom->p2m_guest == NULL )
+
+    domx86->p2m_guest = xc_dom_seg_to_ptr(dom, &dom->p2m_seg);
+    if ( domx86->p2m_guest == NULL )
         return -1;
 
     return 0;
@@ -940,6 +974,20 @@ static int vcpu_x86_64(struct xc_dom_image *dom)
     return rc;
 }
 
+const static void *hvm_get_save_record(const void *ctx, unsigned int type,
+                                       unsigned int instance)
+{
+    const struct hvm_save_descriptor *header;
+
+    for ( header = ctx;
+          header->typecode != HVM_SAVE_CODE(END);
+          ctx += sizeof(*header) + header->length, header = ctx )
+        if ( header->typecode == type && header->instance == instance )
+            return ctx + sizeof(*header);
+
+    return NULL;
+}
+
 static int vcpu_hvm(struct xc_dom_image *dom)
 {
     struct {
@@ -954,6 +1002,8 @@ static int vcpu_hvm(struct xc_dom_image *dom)
     int rc;
 
     DOMPRINTF_CALLED(dom->xch);
+
+    assert(dom->max_vcpus);
 
     /*
      * Get the full HVM context in order to have the header, it is not
@@ -1034,6 +1084,58 @@ static int vcpu_hvm(struct xc_dom_image *dom)
     bsp_ctx.end_d.instance = 0;
     bsp_ctx.end_d.length = HVM_SAVE_LENGTH(END);
 
+    /* TODO: maybe this should be a firmware option instead? */
+    if ( !dom->device_model )
+    {
+        struct {
+            struct hvm_save_descriptor header_d;
+            HVM_SAVE_TYPE(HEADER) header;
+            struct hvm_save_descriptor mtrr_d;
+            HVM_SAVE_TYPE(MTRR) mtrr;
+            struct hvm_save_descriptor end_d;
+            HVM_SAVE_TYPE(END) end;
+        } mtrr = {
+            .header_d = bsp_ctx.header_d,
+            .header = bsp_ctx.header,
+            .mtrr_d.typecode = HVM_SAVE_CODE(MTRR),
+            .mtrr_d.length = HVM_SAVE_LENGTH(MTRR),
+            .end_d = bsp_ctx.end_d,
+            .end = bsp_ctx.end,
+        };
+        const HVM_SAVE_TYPE(MTRR) *mtrr_record =
+            hvm_get_save_record(full_ctx, HVM_SAVE_CODE(MTRR), 0);
+        unsigned int i;
+
+        if ( !mtrr_record )
+        {
+            xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
+                         "%s: unable to get MTRR save record", __func__);
+            goto out;
+        }
+
+        memcpy(&mtrr.mtrr, mtrr_record, sizeof(mtrr.mtrr));
+
+        /*
+         * Enable MTRR, set default type to WB.
+         * TODO: add MMIO areas as UC when passthrough is supported.
+         */
+        mtrr.mtrr.msr_mtrr_def_type = MTRR_TYPE_WRBACK | MTRR_DEF_TYPE_ENABLE;
+
+        for ( i = 0; i < dom->max_vcpus; i++ )
+        {
+            mtrr.mtrr_d.instance = i;
+            rc = xc_domain_hvm_setcontext(dom->xch, dom->guest_domid,
+                                          (uint8_t *)&mtrr, sizeof(mtrr));
+            if ( rc != 0 )
+                xc_dom_panic(dom->xch, XC_INTERNAL_ERROR,
+                             "%s: SETHVMCONTEXT failed (rc=%d)", __func__, rc);
+        }
+    }
+
+    /*
+     * Loading the BSP context should be done in the last call to setcontext,
+     * since each setcontext call will put all vCPUs down.
+     */
     rc = xc_domain_hvm_setcontext(dom->xch, dom->guest_domid,
                                   (uint8_t *)&bsp_ctx, sizeof(bsp_ctx));
     if ( rc != 0 )
@@ -1149,11 +1251,11 @@ static int meminit_pv(struct xc_dom_image *dom)
         return -EINVAL;
     }
 
-    dom->p2m_host = xc_dom_malloc(dom, sizeof(xen_pfn_t) * dom->p2m_size);
-    if ( dom->p2m_host == NULL )
+    dom->pv_p2m = xc_dom_malloc(dom, sizeof(*dom->pv_p2m) * dom->p2m_size);
+    if ( dom->pv_p2m == NULL )
         return -EINVAL;
     for ( pfn = 0; pfn < dom->p2m_size; pfn++ )
-        dom->p2m_host[pfn] = INVALID_PFN;
+        dom->pv_p2m[pfn] = INVALID_PFN;
 
     /* allocate guest memory */
     for ( i = 0; i < nr_vmemranges; i++ )
@@ -1173,7 +1275,7 @@ static int meminit_pv(struct xc_dom_image *dom)
         pfn_base = vmemranges[i].start >> PAGE_SHIFT;
 
         for ( pfn = pfn_base; pfn < pfn_base+pages; pfn++ )
-            dom->p2m_host[pfn] = pfn;
+            dom->pv_p2m[pfn] = pfn;
 
         pfn_base_idx = pfn_base;
         while ( super_pages ) {
@@ -1183,7 +1285,7 @@ static int meminit_pv(struct xc_dom_image *dom)
             for ( pfn = pfn_base_idx, j = 0;
                   pfn < pfn_base_idx + (count << SUPERPAGE_2MB_SHIFT);
                   pfn += SUPERPAGE_2MB_NR_PFNS, j++ )
-                extents[j] = dom->p2m_host[pfn];
+                extents[j] = dom->pv_p2m[pfn];
             rc = xc_domain_populate_physmap(dom->xch, dom->guest_domid, count,
                                             SUPERPAGE_2MB_SHIFT, memflags,
                                             extents);
@@ -1196,7 +1298,7 @@ static int meminit_pv(struct xc_dom_image *dom)
             {
                 mfn = extents[j];
                 for ( k = 0; k < SUPERPAGE_2MB_NR_PFNS; k++, pfn++ )
-                    dom->p2m_host[pfn] = mfn + k;
+                    dom->pv_p2m[pfn] = mfn + k;
             }
             pfn_base_idx = pfn;
         }
@@ -1205,7 +1307,7 @@ static int meminit_pv(struct xc_dom_image *dom)
         {
             allocsz = min_t(uint64_t, 1024 * 1024, pages - j);
             rc = xc_domain_populate_physmap_exact(dom->xch, dom->guest_domid,
-                     allocsz, 0, memflags, &dom->p2m_host[pfn_base + j]);
+                     allocsz, 0, memflags, &dom->pv_p2m[pfn_base + j]);
 
             if ( rc )
             {
@@ -1332,25 +1434,6 @@ static int meminit_hvm(struct xc_dom_image *dom)
     }
 
     dom->p2m_size = p2m_size;
-    dom->p2m_host = xc_dom_malloc(dom, sizeof(xen_pfn_t) *
-                                      dom->p2m_size);
-    if ( dom->p2m_host == NULL )
-    {
-        DOMPRINTF("Could not allocate p2m");
-        goto error_out;
-    }
-
-    for ( i = 0; i < p2m_size; i++ )
-        dom->p2m_host[i] = ((xen_pfn_t)-1);
-    for ( vmemid = 0; vmemid < nr_vmemranges; vmemid++ )
-    {
-        uint64_t pfn;
-
-        for ( pfn = vmemranges[vmemid].start >> PAGE_SHIFT;
-              pfn < vmemranges[vmemid].end >> PAGE_SHIFT;
-              pfn++ )
-            dom->p2m_host[pfn] = pfn;
-    }
 
     /*
      * Try to claim pages for early warning of insufficient memory available.
@@ -1392,14 +1475,16 @@ static int meminit_hvm(struct xc_dom_image *dom)
      * We attempt to allocate 1GB pages if possible. It falls back on 2MB
      * pages if 1GB allocation fails. 4KB pages will be used eventually if
      * both fail.
-     * 
-     * Under 2MB mode, we allocate pages in batches of no more than 8MB to 
-     * ensure that we can be preempted and hence dom0 remains responsive.
      */
     if ( dom->device_model )
     {
+        xen_pfn_t extents[0xa0];
+
+        for ( i = 0; i < ARRAY_SIZE(extents); ++i )
+            extents[i] = i;
+
         rc = xc_domain_populate_physmap_exact(
-            xch, domid, 0xa0, 0, memflags, &dom->p2m_host[0x00]);
+            xch, domid, 0xa0, 0, memflags, extents);
         if ( rc != 0 )
         {
             DOMPRINTF("Could not populate low memory (< 0xA0).\n");
@@ -1442,7 +1527,7 @@ static int meminit_hvm(struct xc_dom_image *dom)
             if ( count > max_pages )
                 count = max_pages;
 
-            cur_pfn = dom->p2m_host[cur_pages];
+            cur_pfn = cur_pages;
 
             /* Take care the corner cases of super page tails */
             if ( ((cur_pfn & (SUPERPAGE_1GB_NR_PFNS-1)) != 0) &&
@@ -1468,8 +1553,7 @@ static int meminit_hvm(struct xc_dom_image *dom)
                 xen_pfn_t sp_extents[nr_extents];
 
                 for ( i = 0; i < nr_extents; i++ )
-                    sp_extents[i] =
-                        dom->p2m_host[cur_pages+(i<<SUPERPAGE_1GB_SHIFT)];
+                    sp_extents[i] = cur_pages + (i << SUPERPAGE_1GB_SHIFT);
 
                 done = xc_domain_populate_physmap(xch, domid, nr_extents,
                                                   SUPERPAGE_1GB_SHIFT,
@@ -1508,8 +1592,7 @@ static int meminit_hvm(struct xc_dom_image *dom)
                     xen_pfn_t sp_extents[nr_extents];
 
                     for ( i = 0; i < nr_extents; i++ )
-                        sp_extents[i] =
-                            dom->p2m_host[cur_pages+(i<<SUPERPAGE_2MB_SHIFT)];
+                        sp_extents[i] = cur_pages + (i << SUPERPAGE_2MB_SHIFT);
 
                     done = xc_domain_populate_physmap(xch, domid, nr_extents,
                                                       SUPERPAGE_2MB_SHIFT,
@@ -1528,8 +1611,13 @@ static int meminit_hvm(struct xc_dom_image *dom)
             /* Fall back to 4kB extents. */
             if ( count != 0 )
             {
+                xen_pfn_t extents[count];
+
+                for ( i = 0; i < count; ++i )
+                    extents[i] = cur_pages + i;
+
                 rc = xc_domain_populate_physmap_exact(
-                    xch, domid, count, 0, new_memflags, &dom->p2m_host[cur_pages]);
+                    xch, domid, count, 0, new_memflags, extents);
                 cur_pages += count;
                 stat_normal_pages += count;
             }
@@ -1623,12 +1711,6 @@ static int bootlate_pv(struct xc_dom_image *dom)
     return 0;
 }
 
-static int alloc_pgtables_hvm(struct xc_dom_image *dom)
-{
-    DOMPRINTF("%s: doing nothing", __func__);
-    return 0;
-}
-
 /*
  * The memory layout of the start_info page and the modules, and where the
  * addresses are stored:
@@ -1713,26 +1795,30 @@ static int bootlate_hvm(struct xc_dom_image *dom)
                                 ((uintptr_t)cmdline - (uintptr_t)start_info);
         }
 
-        for ( i = 0; i < dom->num_modules; i++ )
-        {
-            struct xc_hvm_firmware_module mod;
-
-            DOMPRINTF("Adding module %u", i);
-            mod.guest_addr_out =
-                dom->modules[i].seg.vstart - dom->parms.virt_base;
-            mod.length =
-                dom->modules[i].seg.vend - dom->modules[i].seg.vstart;
-
-            add_module_to_list(dom, &mod, dom->modules[i].cmdline,
-                               modlist, start_info);
-        }
-
         /* ACPI module 0 is the RSDP */
         start_info->rsdp_paddr = dom->acpi_modules[0].guest_addr_out ? : 0;
     }
     else
     {
         add_module_to_list(dom, &dom->system_firmware_module, "firmware",
+                           modlist, start_info);
+    }
+
+    for ( i = 0; i < dom->num_modules; i++ )
+    {
+        struct xc_hvm_firmware_module mod;
+        uint64_t base = dom->parms.virt_base != UNSET_ADDR ?
+            dom->parms.virt_base : 0;
+
+        mod.guest_addr_out =
+            dom->modules[i].seg.vstart - base;
+        mod.length =
+            dom->modules[i].seg.vend - dom->modules[i].seg.vstart;
+
+        DOMPRINTF("Adding module %u guest_addr %"PRIx64" len %u",
+                  i, mod.guest_addr_out, mod.length);
+
+        add_module_to_list(dom, &mod, dom->modules[i].cmdline,
                            modlist, start_info);
     }
 
@@ -1835,10 +1921,6 @@ static struct xc_dom_arch xc_hvm_32 = {
     .page_shift = PAGE_SHIFT_X86,
     .sizeof_pfn = 4,
     .alloc_magic_pages = alloc_magic_pages_hvm,
-    .alloc_pgtables = alloc_pgtables_hvm,
-    .setup_pgtables = NULL,
-    .start_info = NULL,
-    .shared_info = NULL,
     .vcpu = vcpu_hvm,
     .meminit = meminit_hvm,
     .bootearly = bootearly,

@@ -9,11 +9,9 @@
 #include <xen/types.h>
 #include <xen/smp.h>
 #include <xen/percpu.h>
-#include <public/xen.h>
 #include <asm/types.h>
 #include <asm/cpufeature.h>
 #include <asm/desc.h>
-#include <asm/x86_emulate.h>
 #endif
 
 #include <asm/x86-defns.h>
@@ -45,11 +43,7 @@
 #define TRAP_virtualisation   20
 #define TRAP_nr               32
 
-#define TRAP_HAVE_EC                                                    \
-    ((1u << TRAP_double_fault) | (1u << TRAP_invalid_tss) |             \
-     (1u << TRAP_no_segment) | (1u << TRAP_stack_error) |               \
-     (1u << TRAP_gp_fault) | (1u << TRAP_page_fault) |                  \
-     (1u << TRAP_alignment_check))
+#define TRAP_HAVE_EC X86_EXC_HAVE_EC
 
 /* Set for entry via SYSCALL. Informs return code to use SYSRETQ not IRETQ. */
 /* NB. Same as VGCF_in_syscall. No bits in common with any other TRAP_ defn. */
@@ -74,6 +68,7 @@
 #define PFEC_reserved_bit   (_AC(1,U) << 3)
 #define PFEC_insn_fetch     (_AC(1,U) << 4)
 #define PFEC_prot_key       (_AC(1,U) << 5)
+#define PFEC_shstk          (_AC(1,U) << 6)
 #define PFEC_arch_mask      (_AC(0xffff,U)) /* Architectural PFEC values. */
 /* Internally used only flags. */
 #define PFEC_page_paged     (1U<<16)
@@ -96,6 +91,12 @@
 #define XEN_SYSCALL_MASK (X86_EFLAGS_AC|X86_EFLAGS_VM|X86_EFLAGS_RF|    \
                           X86_EFLAGS_NT|X86_EFLAGS_DF|X86_EFLAGS_IF|    \
                           X86_EFLAGS_TF)
+
+/*
+ * Host IA32_CR_PAT value to cover all memory types.  This is not the default
+ * MSR_PAT value, and is an ABI with PV guests.
+ */
+#define XEN_MSR_PAT _AC(0x050100070406, ULL)
 
 #ifndef __ASSEMBLY__
 
@@ -145,9 +146,8 @@ extern bool probe_cpuid_faulting(void);
 extern void ctxt_switch_levelling(const struct vcpu *next);
 extern void (*ctxt_switch_masking)(const struct vcpu *next);
 
-extern u64 host_pat;
 extern bool_t opt_cpu_info;
-extern u32 cpuid_ext_features;
+extern u32 trampoline_efer;
 extern u64 trampoline_misc_enable_off;
 
 /* Maximum width of physical addresses supported by the hardware. */
@@ -162,17 +162,19 @@ extern const struct x86_cpu_id *x86_match_cpu(const struct x86_cpu_id table[]);
 extern void identify_cpu(struct cpuinfo_x86 *);
 extern void setup_clear_cpu_cap(unsigned int);
 extern void setup_force_cpu_cap(unsigned int);
+extern bool is_forced_cpu_cap(unsigned int);
 extern void print_cpu_info(unsigned int cpu);
-extern unsigned int init_intel_cacheinfo(struct cpuinfo_x86 *c);
-
-extern void detect_extended_topology(struct cpuinfo_x86 *c);
-
-extern void detect_ht(struct cpuinfo_x86 *c);
+extern void init_intel_cacheinfo(struct cpuinfo_x86 *c);
 
 #define cpu_to_core(_cpu)   (cpu_data[_cpu].cpu_core_id)
 #define cpu_to_socket(_cpu) (cpu_data[_cpu].phys_proc_id)
 
 unsigned int apicid_to_socket(unsigned int);
+
+static inline int cpu_nr_siblings(unsigned int cpu)
+{
+    return cpu_data[cpu].x86_num_siblings;
+}
 
 /*
  * Generic CPUID function
@@ -268,12 +270,6 @@ static always_inline unsigned int cpuid_count_edx(
     return edx;
 }
 
-static always_inline void cpuid_count_leaf(uint32_t leaf, uint32_t subleaf,
-                                           struct cpuid_leaf *data)
-{
-    cpuid_count(leaf, subleaf, &data->a, &data->b, &data->c, &data->d);
-}
-
 static inline unsigned long read_cr0(void)
 {
     unsigned long cr0;
@@ -303,9 +299,9 @@ static inline unsigned long cr3_pa(unsigned long cr3)
     return cr3 & X86_CR3_ADDR_MASK;
 }
 
-static inline unsigned long cr3_pcid(unsigned long cr3)
+static inline unsigned int cr3_pcid(unsigned long cr3)
 {
-    return cr3 & X86_CR3_PCID_MASK;
+    return IS_ENABLED(CONFIG_PV) ? cr3 & X86_CR3_PCID_MASK : 0;
 }
 
 static inline unsigned long read_cr4(void)
@@ -317,8 +313,12 @@ static inline void write_cr4(unsigned long val)
 {
     struct cpu_info *info = get_cpu_info();
 
+#ifdef CONFIG_PV
     /* No global pages in case of PCIDs enabled! */
     ASSERT(!(val & X86_CR4_PGE) || !(val & X86_CR4_PCIDE));
+#else
+    ASSERT(!(val & X86_CR4_PCIDE));
+#endif
 
     /*
      * On hardware supporting FSGSBASE, the value in %cr4 is the kernel's
@@ -440,15 +440,16 @@ struct __packed tss64 {
     uint16_t :16, bitmap;
 };
 struct tss_page {
-    struct tss64 __aligned(PAGE_SIZE) tss;
+    uint64_t __aligned(PAGE_SIZE) ist_ssp[8];
+    struct tss64 tss;
 };
 DECLARE_PER_CPU(struct tss_page, tss_page);
 
 #define IST_NONE 0UL
-#define IST_DF   1UL
+#define IST_MCE  1UL
 #define IST_NMI  2UL
-#define IST_MCE  3UL
-#define IST_DB   4UL
+#define IST_DB   3UL
+#define IST_DF   4UL
 #define IST_MAX  4UL
 
 /* Set the Interrupt Stack Table used by a particular IDT entry. */
@@ -536,6 +537,7 @@ DECLARE_TRAP_HANDLER(coprocessor_error);
 DECLARE_TRAP_HANDLER(simd_coprocessor_error);
 DECLARE_TRAP_HANDLER_CONST(machine_check);
 DECLARE_TRAP_HANDLER(alignment_check);
+DECLARE_TRAP_HANDLER(entry_CP);
 
 DECLARE_TRAP_HANDLER(entry_int82);
 
@@ -548,24 +550,45 @@ static inline void enable_nmis(void)
 {
     unsigned long tmp;
 
-    asm volatile ( "mov %%rsp, %[tmp]     \n\t"
-                   "push %[ss]            \n\t"
-                   "push %[tmp]           \n\t"
-                   "pushf                 \n\t"
-                   "push %[cs]            \n\t"
-                   "lea 1f(%%rip), %[tmp] \n\t"
-                   "push %[tmp]           \n\t"
-                   "iretq; 1:             \n\t"
-                   : [tmp] "=&r" (tmp)
+    asm volatile ( "mov     %%rsp, %[rsp]        \n\t"
+                   "lea    .Ldone(%%rip), %[rip] \n\t"
+#ifdef CONFIG_XEN_SHSTK
+                   /* Check for CET-SS being active. */
+                   "mov    $1, %k[ssp]           \n\t"
+                   "rdsspq %[ssp]                \n\t"
+                   "cmp    $1, %k[ssp]           \n\t"
+                   "je     .Lshstk_done          \n\t"
+
+                   /* Push 3 words on the shadow stack */
+                   ".rept 3                      \n\t"
+                   "call 1f; nop; 1:             \n\t"
+                   ".endr                        \n\t"
+
+                   /* Fixup to be an IRET shadow stack frame */
+                   "wrssq  %q[cs], -1*8(%[ssp])  \n\t"
+                   "wrssq  %[rip], -2*8(%[ssp])  \n\t"
+                   "wrssq  %[ssp], -3*8(%[ssp])  \n\t"
+
+                   ".Lshstk_done:"
+#endif
+                   /* Write an IRET regular frame */
+                   "push   %[ss]                 \n\t"
+                   "push   %[rsp]                \n\t"
+                   "pushf                        \n\t"
+                   "push   %q[cs]                \n\t"
+                   "push   %[rip]                \n\t"
+                   "iretq                        \n\t"
+                   ".Ldone:                      \n\t"
+                   : [rip] "=&r" (tmp),
+                     [rsp] "=&r" (tmp),
+                     [ssp] "=&r" (tmp)
                    : [ss] "i" (__HYPERVISOR_DS),
-                     [cs] "i" (__HYPERVISOR_CS) );
+                     [cs] "r" (__HYPERVISOR_CS) );
 }
 
 void sysenter_entry(void);
 void sysenter_eflags_saved(void);
 void int80_direct_trap(void);
-
-#define STUBS_PER_PAGE (PAGE_SIZE / STUB_BUF_SIZE)
 
 struct stubs {
     union {
@@ -580,23 +603,8 @@ unsigned long alloc_stub_page(unsigned int cpu, unsigned long *mfn);
 
 void cpuid_hypervisor_leaves(const struct vcpu *v, uint32_t leaf,
                              uint32_t subleaf, struct cpuid_leaf *res);
-int rdmsr_hypervisor_regs(uint32_t idx, uint64_t *val);
-int wrmsr_hypervisor_regs(uint32_t idx, uint64_t val);
-
-void microcode_set_module(unsigned int);
-int microcode_update(XEN_GUEST_HANDLE_PARAM(const_void), unsigned long len);
-int microcode_resume_cpu(unsigned int cpu);
-int early_microcode_update_cpu(bool start_update);
-int early_microcode_init(void);
-int microcode_init_intel(void);
-int microcode_init_amd(void);
-
-enum get_cpu_vendor {
-    gcv_host,
-    gcv_guest,
-};
-
-int get_cpu_vendor(uint32_t b, uint32_t c, uint32_t d, enum get_cpu_vendor mode);
+int guest_rdmsr_xen(const struct vcpu *v, uint32_t idx, uint64_t *val);
+int guest_wrmsr_xen(struct vcpu *v, uint32_t idx, uint64_t val);
 
 static inline uint8_t get_cpu_family(uint32_t raw, uint8_t *model,
                                      uint8_t *stepping)

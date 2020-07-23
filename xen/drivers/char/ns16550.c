@@ -11,6 +11,7 @@
 #include <xen/console.h>
 #include <xen/init.h>
 #include <xen/irq.h>
+#include <xen/param.h>
 #include <xen/sched.h>
 #include <xen/timer.h>
 #include <xen/serial.h>
@@ -92,6 +93,7 @@ static struct ns16550 {
     u32 bar64;
     u16 cr;
     u8 bar_idx;
+    bool msi;
     const struct ns16550_config_param *param; /* Points into .init.*! */
 #endif
 } ns16550_com[2] = { { 0 } };
@@ -623,15 +625,18 @@ static void pci_serial_early_init(struct ns16550 *uart)
         return;
 
     if ( uart->pb_bdf_enable )
-        pci_conf_write16(0, uart->pb_bdf[0], uart->pb_bdf[1], uart->pb_bdf[2],
+        pci_conf_write16(PCI_SBDF(0, uart->pb_bdf[0], uart->pb_bdf[1],
+                                  uart->pb_bdf[2]),
                          PCI_IO_BASE,
                          (uart->io_base & 0xF000) |
                          ((uart->io_base & 0xF000) >> 8));
 
-    pci_conf_write32(0, uart->ps_bdf[0], uart->ps_bdf[1], uart->ps_bdf[2],
+    pci_conf_write32(PCI_SBDF(0, uart->ps_bdf[0], uart->ps_bdf[1],
+                              uart->ps_bdf[2]),
                      PCI_BASE_ADDRESS_0,
                      uart->io_base | PCI_BASE_ADDRESS_SPACE_IO);
-    pci_conf_write16(0, uart->ps_bdf[0], uart->ps_bdf[1], uart->ps_bdf[2],
+    pci_conf_write16(PCI_SBDF(0, uart->ps_bdf[0], uart->ps_bdf[1],
+                              uart->ps_bdf[2]),
                      PCI_COMMAND, PCI_COMMAND_IO);
 #endif
 }
@@ -712,6 +717,16 @@ static void __init ns16550_init_preirq(struct serial_port *port)
         uart->fifo_size = 16;
 }
 
+static void __init ns16550_init_irq(struct serial_port *port)
+{
+#ifdef CONFIG_HAS_PCI
+    struct ns16550 *uart = port->uart;
+
+    if ( uart->msi )
+        uart->irq = create_irq(0, false);
+#endif
+}
+
 static void ns16550_setup_postirq(struct ns16550 *uart)
 {
     if ( uart->irq > 0 )
@@ -746,6 +761,68 @@ static void __init ns16550_init_postirq(struct serial_port *port)
     uart->timeout_ms = max_t(
         unsigned int, 1, (bits * uart->fifo_size * 1000) / uart->baud);
 
+#ifdef CONFIG_HAS_PCI
+    if ( uart->bar || uart->ps_bdf_enable )
+    {
+        if ( uart->param && uart->param->mmio &&
+             rangeset_add_range(mmio_ro_ranges, uart->io_base,
+                                uart->io_base + uart->io_size - 1) )
+            printk(XENLOG_INFO "Error while adding MMIO range of device to mmio_ro_ranges\n");
+
+        if ( pci_ro_device(0, uart->ps_bdf[0],
+                           PCI_DEVFN(uart->ps_bdf[1], uart->ps_bdf[2])) )
+            printk(XENLOG_INFO "Could not mark config space of %02x:%02x.%u read-only.\n",
+                   uart->ps_bdf[0], uart->ps_bdf[1],
+                   uart->ps_bdf[2]);
+
+        if ( uart->msi )
+        {
+            struct msi_info msi = {
+                .bus = uart->ps_bdf[0],
+                .devfn = PCI_DEVFN(uart->ps_bdf[1], uart->ps_bdf[2]),
+                .irq = rc = uart->irq,
+                .entry_nr = 1
+            };
+
+            if ( rc > 0 )
+            {
+                struct msi_desc *msi_desc = NULL;
+
+                pcidevs_lock();
+
+                rc = pci_enable_msi(&msi, &msi_desc);
+                if ( !rc )
+                {
+                    struct irq_desc *desc = irq_to_desc(msi.irq);
+                    unsigned long flags;
+
+                    spin_lock_irqsave(&desc->lock, flags);
+                    rc = setup_msi_irq(desc, msi_desc);
+                    spin_unlock_irqrestore(&desc->lock, flags);
+                    if ( rc )
+                        pci_disable_msi(msi_desc);
+                }
+
+                pcidevs_unlock();
+
+                if ( rc )
+                {
+                    uart->irq = 0;
+                    if ( msi_desc )
+                        msi_free_irq(msi_desc);
+                    else
+                        destroy_irq(msi.irq);
+                }
+            }
+
+            if ( rc )
+                printk(XENLOG_WARNING
+                       "MSI setup failed (%d) for %02x:%02x.%o\n",
+                       rc, uart->ps_bdf[0], uart->ps_bdf[1], uart->ps_bdf[2]);
+        }
+    }
+#endif
+
     if ( uart->irq > 0 )
     {
         uart->irqaction.handler = ns16550_interrupt;
@@ -756,29 +833,6 @@ static void __init ns16550_init_postirq(struct serial_port *port)
     }
 
     ns16550_setup_postirq(uart);
-
-#ifdef CONFIG_HAS_PCI
-    if ( uart->bar || uart->ps_bdf_enable )
-    {
-        if ( !uart->param )
-            pci_hide_device(uart->ps_bdf[0], PCI_DEVFN(uart->ps_bdf[1],
-                            uart->ps_bdf[2]));
-        else
-        {
-            if ( uart->param->mmio &&
-                 rangeset_add_range(mmio_ro_ranges,
-                                    uart->io_base,
-                                    uart->io_base + uart->io_size - 1) )
-                printk(XENLOG_INFO "Error while adding MMIO range of device to mmio_ro_ranges\n");
-
-            if ( pci_ro_device(0, uart->ps_bdf[0],
-                               PCI_DEVFN(uart->ps_bdf[1], uart->ps_bdf[2])) )
-                printk(XENLOG_INFO "Could not mark config space of %02x:%02x.%u read-only.\n",
-                                    uart->ps_bdf[0], uart->ps_bdf[1],
-                                    uart->ps_bdf[2]);
-        }
-    }
-#endif
 }
 
 static void ns16550_suspend(struct serial_port *port)
@@ -789,8 +843,8 @@ static void ns16550_suspend(struct serial_port *port)
 
 #ifdef CONFIG_HAS_PCI
     if ( uart->bar )
-       uart->cr = pci_conf_read16(0, uart->ps_bdf[0], uart->ps_bdf[1],
-                                  uart->ps_bdf[2], PCI_COMMAND);
+       uart->cr = pci_conf_read16(PCI_SBDF(0, uart->ps_bdf[0], uart->ps_bdf[1],
+                                  uart->ps_bdf[2]), PCI_COMMAND);
 #endif
 }
 
@@ -801,16 +855,18 @@ static void _ns16550_resume(struct serial_port *port)
 
     if ( uart->bar )
     {
-       pci_conf_write32(0, uart->ps_bdf[0], uart->ps_bdf[1], uart->ps_bdf[2],
+       pci_conf_write32(PCI_SBDF(0, uart->ps_bdf[0], uart->ps_bdf[1],
+                                 uart->ps_bdf[2]),
                         PCI_BASE_ADDRESS_0 + uart->bar_idx*4, uart->bar);
 
         /* If 64 bit BAR, write higher 32 bits to BAR+4 */
         if ( uart->bar & PCI_BASE_ADDRESS_MEM_TYPE_64 )
-            pci_conf_write32(0, uart->ps_bdf[0],
-                        uart->ps_bdf[1], uart->ps_bdf[2],
+            pci_conf_write32(PCI_SBDF(0, uart->ps_bdf[0],  uart->ps_bdf[1],
+                                      uart->ps_bdf[2]),
                         PCI_BASE_ADDRESS_0 + (uart->bar_idx+1)*4, uart->bar64);
 
-       pci_conf_write16(0, uart->ps_bdf[0], uart->ps_bdf[1], uart->ps_bdf[2],
+       pci_conf_write16(PCI_SBDF(0, uart->ps_bdf[0], uart->ps_bdf[1],
+                                 uart->ps_bdf[2]),
                         PCI_COMMAND, uart->cr);
     }
 #endif
@@ -908,6 +964,7 @@ static const struct vuart_info *ns16550_vuart_info(struct serial_port *port)
 
 static struct uart_driver __read_mostly ns16550_driver = {
     .init_preirq  = ns16550_init_preirq,
+    .init_irq     = ns16550_init_irq,
     .init_postirq = ns16550_init_postirq,
     .endboot      = ns16550_endboot,
     .suspend      = ns16550_suspend,
@@ -1006,10 +1063,12 @@ pci_uart_config(struct ns16550 *uart, bool_t skip_amt, unsigned int idx)
                 u64 size = 0;
                 const struct ns16550_config_param *param = uart_param;
 
-                nextf = (f || (pci_conf_read16(0, b, d, f, PCI_HEADER_TYPE) &
+                nextf = (f || (pci_conf_read16(PCI_SBDF(0, b, d, f),
+                                               PCI_HEADER_TYPE) &
                                0x80)) ? f + 1 : 8;
 
-                switch ( pci_conf_read16(0, b, d, f, PCI_CLASS_DEVICE) )
+                switch ( pci_conf_read16(PCI_SBDF(0, b, d, f),
+                                         PCI_CLASS_DEVICE) )
                 {
                 case 0x0700: /* single port serial */
                 case 0x0702: /* multi port serial */
@@ -1026,8 +1085,10 @@ pci_uart_config(struct ns16550 *uart, bool_t skip_amt, unsigned int idx)
                 /* Check for params in uart_config lookup table */
                 for ( i = 0; i < ARRAY_SIZE(uart_config); i++ )
                 {
-                    u16 vendor = pci_conf_read16(0, b, d, f, PCI_VENDOR_ID);
-                    u16 device = pci_conf_read16(0, b, d, f, PCI_DEVICE_ID);
+                    u16 vendor = pci_conf_read16(PCI_SBDF(0, b, d, f),
+                                                 PCI_VENDOR_ID);
+                    u16 device = pci_conf_read16(PCI_SBDF(0, b, d, f),
+                                                 PCI_DEVICE_ID);
 
                     if ( uart_config[i].vendor_id == vendor &&
                          uart_config[i].dev_id == device )
@@ -1050,28 +1111,29 @@ pci_uart_config(struct ns16550 *uart, bool_t skip_amt, unsigned int idx)
                 }
 
                 uart->io_base = 0;
-                bar = pci_conf_read32(0, b, d, f,
-                                      PCI_BASE_ADDRESS_0 + bar_idx*4);
+                bar = pci_conf_read32(PCI_SBDF(0, b, d, f),
+                                      PCI_BASE_ADDRESS_0 + bar_idx * 4);
 
                 /* MMIO based */
                 if ( param->mmio && !(bar & PCI_BASE_ADDRESS_SPACE_IO) )
                 {
-                    pci_conf_write32(0, b, d, f,
+                    pci_conf_write32(PCI_SBDF(0, b, d, f),
                                      PCI_BASE_ADDRESS_0 + bar_idx*4, ~0u);
-                    len = pci_conf_read32(0, b, d, f, PCI_BASE_ADDRESS_0 + bar_idx*4);
-                    pci_conf_write32(0, b, d, f,
+                    len = pci_conf_read32(PCI_SBDF(0, b, d, f),
+                                          PCI_BASE_ADDRESS_0 + bar_idx * 4);
+                    pci_conf_write32(PCI_SBDF(0, b, d, f),
                                      PCI_BASE_ADDRESS_0 + bar_idx*4, bar);
 
                     /* Handle 64 bit BAR if found */
                     if ( bar & PCI_BASE_ADDRESS_MEM_TYPE_64 )
                     {
-                        bar_64 = pci_conf_read32(0, b, d, f,
-                                      PCI_BASE_ADDRESS_0 + (bar_idx+1)*4);
-                        pci_conf_write32(0, b, d, f,
+                        bar_64 = pci_conf_read32(PCI_SBDF(0, b, d, f),
+                                      PCI_BASE_ADDRESS_0 + (bar_idx + 1) * 4);
+                        pci_conf_write32(PCI_SBDF(0, b, d, f),
                                     PCI_BASE_ADDRESS_0 + (bar_idx+1)*4, ~0u);
-                        len_64 = pci_conf_read32(0, b, d, f,
-                                    PCI_BASE_ADDRESS_0 + (bar_idx+1)*4);
-                        pci_conf_write32(0, b, d, f,
+                        len_64 = pci_conf_read32(PCI_SBDF(0, b, d, f),
+                                    PCI_BASE_ADDRESS_0 + (bar_idx + 1) * 4);
+                        pci_conf_write32(PCI_SBDF(0, b, d, f),
                                     PCI_BASE_ADDRESS_0 + (bar_idx+1)*4, bar_64);
                         size  = ((u64)~0 << 32) | PCI_BASE_ADDRESS_MEM_MASK;
                         size &= ((u64)len_64 << 32) | len;
@@ -1085,10 +1147,11 @@ pci_uart_config(struct ns16550 *uart, bool_t skip_amt, unsigned int idx)
                 /* IO based */
                 else if ( !param->mmio && (bar & PCI_BASE_ADDRESS_SPACE_IO) )
                 {
-                    pci_conf_write32(0, b, d, f,
+                    pci_conf_write32(PCI_SBDF(0, b, d, f),
                                      PCI_BASE_ADDRESS_0 + bar_idx*4, ~0u);
-                    len = pci_conf_read32(0, b, d, f, PCI_BASE_ADDRESS_0);
-                    pci_conf_write32(0, b, d, f,
+                    len = pci_conf_read32(PCI_SBDF(0, b, d, f),
+                                          PCI_BASE_ADDRESS_0);
+                    pci_conf_write32(PCI_SBDF(0, b, d, f),
                                      PCI_BASE_ADDRESS_0 + bar_idx*4, bar);
                     size = len & PCI_BASE_ADDRESS_IO_MASK;
 
@@ -1130,8 +1193,10 @@ pci_uart_config(struct ns16550 *uart, bool_t skip_amt, unsigned int idx)
                 uart->bar64 = bar_64;
                 uart->io_size = max(8U << param->reg_shift,
                                     param->uart_offset);
-                uart->irq = pci_conf_read8(0, b, d, f, PCI_INTERRUPT_PIN) ?
-                    pci_conf_read8(0, b, d, f, PCI_INTERRUPT_LINE) : 0;
+                uart->irq = pci_conf_read8(PCI_SBDF(0, b, d, f),
+                                           PCI_INTERRUPT_PIN) ?
+                            pci_conf_read8(PCI_SBDF(0, b, d, f),
+                                           PCI_INTERRUPT_LINE) : 0;
 
                 return 0;
             }
@@ -1261,7 +1326,18 @@ static bool __init parse_positional(struct ns16550 *uart, char **str)
     }
 
     if ( *conf == ',' && *++conf != ',' )
-        uart->irq = simple_strtol(conf, &conf, 10);
+    {
+#ifdef CONFIG_HAS_PCI
+        if ( strncmp(conf, "msi", 3) == 0 )
+        {
+            conf += 3;
+            uart->msi = true;
+            uart->irq = 0;
+        }
+        else
+#endif
+            uart->irq = simple_strtol(conf, &conf, 10);
+    }
 
 #ifdef CONFIG_HAS_PCI
     if ( *conf == ',' && *++conf != ',' )
@@ -1503,6 +1579,12 @@ static int __init ns16550_uart_dt_init(struct dt_device_node *dev,
     if ( uart->reg_width != 1 && uart->reg_width != 4 )
         return -EINVAL;
 
+    if ( dt_device_is_compatible(dev, "brcm,bcm2835-aux-uart") )
+    {
+        uart->reg_width = 4;
+        uart->reg_shift = 2;
+    }
+
     res = platform_get_irq(dev, 0);
     if ( ! res )
         return -EINVAL;
@@ -1529,6 +1611,7 @@ static const struct dt_device_match ns16550_dt_match[] __initconst =
     DT_MATCH_COMPATIBLE("ns16550"),
     DT_MATCH_COMPATIBLE("ns16550a"),
     DT_MATCH_COMPATIBLE("snps,dw-apb-uart"),
+    DT_MATCH_COMPATIBLE("brcm,bcm2835-aux-uart"),
     { /* sentinel */ },
 };
 
@@ -1538,6 +1621,85 @@ DT_DEVICE_START(ns16550, "NS16550 UART", DEVICE_SERIAL)
 DT_DEVICE_END
 
 #endif /* HAS_DEVICE_TREE */
+
+#if defined(CONFIG_ACPI) && defined(CONFIG_ARM)
+#include <xen/acpi.h>
+
+static int __init ns16550_acpi_uart_init(const void *data)
+{
+    struct acpi_table_header *table;
+    struct acpi_table_spcr *spcr;
+    acpi_status status;
+    /*
+     * Same as the DT part.
+     * Only support one UART on ARM which happen to be ns16550_com[0].
+     */
+    struct ns16550 *uart = &ns16550_com[0];
+
+    status = acpi_get_table(ACPI_SIG_SPCR, 0, &table);
+    if ( ACPI_FAILURE(status) )
+    {
+        printk("ns16550: Failed to get SPCR table\n");
+        return -EINVAL;
+    }
+
+    spcr = container_of(table, struct acpi_table_spcr, header);
+
+    if ( unlikely(spcr->serial_port.space_id != ACPI_ADR_SPACE_SYSTEM_MEMORY) )
+    {
+        printk("ns16550: Address space type is not mmio\n");
+        return -EINVAL;
+    }
+
+    /*
+     * The serial port address may be 0 for example
+     * if the console redirection is disabled.
+     */
+    if ( unlikely(!spcr->serial_port.address) )
+    {
+        printk("ns16550: Console redirection is disabled\n");
+        return -EINVAL;
+    }
+
+    ns16550_init_common(uart);
+
+    /*
+     * The baud rate is pre-configured by the firmware.
+     * And currently the ACPI part is only targeting ARM so the flow_control
+     * field and all PCI related ones which we do not care yet are ignored.
+     */
+    uart->baud = BAUD_AUTO;
+    uart->data_bits = 8;
+    uart->parity = spcr->parity;
+    uart->stop_bits = spcr->stop_bits;
+    uart->io_base = spcr->serial_port.address;
+    uart->io_size = spcr->serial_port.bit_width;
+    uart->reg_shift = spcr->serial_port.bit_offset;
+    uart->reg_width = spcr->serial_port.access_width;
+
+    /* The trigger/polarity information is not available in spcr. */
+    irq_set_type(spcr->interrupt, IRQ_TYPE_LEVEL_HIGH);
+    uart->irq = spcr->interrupt;
+
+    uart->vuart.base_addr = uart->io_base;
+    uart->vuart.size = uart->io_size;
+    uart->vuart.data_off = UART_THR << uart->reg_shift;
+    uart->vuart.status_off = UART_LSR << uart->reg_shift;
+    uart->vuart.status = UART_LSR_THRE | UART_LSR_TEMT;
+
+    /* Register with generic serial driver. */
+    serial_register_uart(SERHND_DTUART, &ns16550_driver, uart);
+
+    return 0;
+}
+
+ACPI_DEVICE_START(ans16550, "NS16550 UART", DEVICE_SERIAL)
+    .class_type = ACPI_DBG2_16550_COMPATIBLE,
+    .init = ns16550_acpi_uart_init,
+ACPI_DEVICE_END
+
+#endif /* CONFIG_ACPI && CONFIG_ARM */
+
 /*
  * Local variables:
  * mode: C

@@ -23,24 +23,26 @@
 #include <xen/hypercall.h>
 #include <xen/init.h>
 #include <xen/iocap.h>
+#include <xen/param.h>
 #include <xen/shutdown.h>
-#include <xen/types.h>
 #include <xen/consoled.h>
 #include <xen/pv_console.h>
 
-#include <asm/apic.h>
 #include <asm/dom0_build.h>
 #include <asm/guest.h>
-#include <asm/pv/mm.h>
 
 #include <public/arch-x86/cpuid.h>
+#include <public/hvm/params.h>
 
 #include <compat/grant_table.h>
 
 #undef virt_to_mfn
 #define virt_to_mfn(va) _mfn(__virt_to_mfn(va))
 
-#ifndef CONFIG_PV_SHIM_EXCLUSIVE
+#ifdef CONFIG_PV_SHIM_EXCLUSIVE
+/* Tolerate "pv-shim" being passed to a CONFIG_PV_SHIM_EXCLUSIVE hypervisor. */
+ignore_param("pv-shim");
+#else
 bool pv_shim;
 boolean_param("pv-shim", pv_shim);
 #endif
@@ -53,6 +55,8 @@ static DEFINE_SPINLOCK(grant_lock);
 
 static PAGE_LIST_HEAD(balloon);
 static DEFINE_SPINLOCK(balloon_lock);
+
+static struct platform_bad_page __initdata reserved_pages[2];
 
 static long pv_shim_event_channel_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg);
 static long pv_shim_grant_table_op(unsigned int cmd,
@@ -102,7 +106,7 @@ uint64_t pv_shim_mem(uint64_t avail)
     }
 
     if ( total_pages - avail > shim_nrpages )
-        panic("pages used by shim > shim_nrpages (%#lx > %#lx)",
+        panic("pages used by shim > shim_nrpages (%#lx > %#lx)\n",
               total_pages - avail, shim_nrpages);
 
     shim_nrpages -= total_pages - avail;
@@ -113,6 +117,47 @@ uint64_t pv_shim_mem(uint64_t avail)
     return shim_nrpages;
 }
 
+static void __init mark_pfn_as_ram(struct e820map *e820, uint64_t pfn)
+{
+    if ( !e820_add_range(e820, pfn << PAGE_SHIFT,
+                         (pfn << PAGE_SHIFT) + PAGE_SIZE, E820_RAM) &&
+         !e820_change_range_type(e820, pfn << PAGE_SHIFT,
+                                 (pfn << PAGE_SHIFT) + PAGE_SIZE,
+                                 E820_RESERVED, E820_RAM) )
+        panic("Unable to add/change memory type of pfn %#lx to RAM\n", pfn);
+}
+
+void __init pv_shim_fixup_e820(struct e820map *e820)
+{
+    uint64_t pfn = 0;
+    unsigned int i = 0;
+    long rc;
+
+    ASSERT(xen_guest);
+
+#define MARK_PARAM_RAM(p) ({                    \
+    rc = xen_hypercall_hvm_get_param(p, &pfn);  \
+    if ( rc )                                   \
+        panic("Unable to get " #p "\n");        \
+    mark_pfn_as_ram(e820, pfn);                 \
+    ASSERT(i < ARRAY_SIZE(reserved_pages));     \
+    reserved_pages[i++].mfn = pfn;              \
+})
+    MARK_PARAM_RAM(HVM_PARAM_STORE_PFN);
+    if ( !pv_console )
+        MARK_PARAM_RAM(HVM_PARAM_CONSOLE_PFN);
+#undef MARK_PARAM_RAM
+}
+
+const struct platform_bad_page *__init pv_shim_reserved_pages(unsigned int *size)
+{
+    ASSERT(xen_guest);
+
+    *size = ARRAY_SIZE(reserved_pages);
+
+    return reserved_pages;
+}
+
 #define L1_PROT (_PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED|_PAGE_USER| \
                  _PAGE_GUEST_KERNEL)
 #define COMPAT_L1_PROT (_PAGE_PRESENT|_PAGE_RW|_PAGE_ACCESSED)
@@ -120,16 +165,17 @@ uint64_t pv_shim_mem(uint64_t avail)
 static void __init replace_va_mapping(struct domain *d, l4_pgentry_t *l4start,
                                       unsigned long va, mfn_t mfn)
 {
-    l4_pgentry_t *pl4e = l4start + l4_table_offset(va);
-    l3_pgentry_t *pl3e = l4e_to_l3e(*pl4e) + l3_table_offset(va);
-    l2_pgentry_t *pl2e = l3e_to_l2e(*pl3e) + l2_table_offset(va);
-    l1_pgentry_t *pl1e = l2e_to_l1e(*pl2e) + l1_table_offset(va);
+    l4_pgentry_t l4e = l4start[l4_table_offset(va)];
+    l3_pgentry_t l3e = l3e_from_l4e(l4e, l3_table_offset(va));
+    l2_pgentry_t l2e = l2e_from_l3e(l3e, l2_table_offset(va));
+    l1_pgentry_t *pl1e = map_l1t_from_l2e(l2e) + l1_table_offset(va);
     struct page_info *page = mfn_to_page(l1e_get_mfn(*pl1e));
 
     put_page_and_type(page);
 
     *pl1e = l1e_from_mfn(mfn, (!is_pv_32bit_domain(d) ? L1_PROT
                                                       : COMPAT_L1_PROT));
+    unmap_domain_page(pl1e);
 }
 
 static void evtchn_reserve(struct domain *d, unsigned int port)
@@ -222,7 +268,7 @@ void __init pv_shim_setup_dom(struct domain *d, l4_pgentry_t *l4start,
      * Set the max pages to the current number of pages to prevent the
      * guest from depleting the shim memory pool.
      */
-    d->max_pages = d->tot_pages;
+    d->max_pages = domain_tot_pages(d);
 }
 
 static void write_start_info(struct domain *d)
@@ -234,7 +280,7 @@ static void write_start_info(struct domain *d)
 
     snprintf(si->magic, sizeof(si->magic), "xen-3.0-x86_%s",
              is_pv_32bit_domain(d) ? "32p" : "64");
-    si->nr_pages = d->tot_pages;
+    si->nr_pages = domain_tot_pages(d);
     si->shared_info = virt_to_maddr(d->shared_info);
     si->flags = 0;
     BUG_ON(xen_hypercall_hvm_get_param(HVM_PARAM_STORE_PFN, &si->store_mfn));
@@ -369,7 +415,7 @@ int pv_shim_shutdown(uint8_t reason)
         unmap_vcpu_info(v);
 
         /* Reset the periodic timer to the default value. */
-        v->periodic_period = MILLISECS(10);
+        vcpu_set_periodic_timer(v, MILLISECS(10));
         /* Stop the singleshot timer. */
         stop_timer(&v->singleshot_timer);
 
@@ -378,8 +424,6 @@ int pv_shim_shutdown(uint8_t reason)
 
         if ( v != current )
             vcpu_unpause_by_systemcontroller(v);
-        else
-            vcpu_force_reschedule(v);
     }
 
     return 0;
@@ -703,7 +747,7 @@ static long pv_shim_grant_table_op(unsigned int cmd,
                 };
                 mfn_t mfn;
 
-                rc = hypervisor_alloc_unused_page(&mfn);
+                rc = xg_alloc_unused_page(&mfn);
                 if ( rc )
                 {
                     gprintk(XENLOG_ERR,
@@ -715,7 +759,7 @@ static long pv_shim_grant_table_op(unsigned int cmd,
                 rc = xen_hypercall_memory_op(XENMEM_add_to_physmap, &xatp);
                 if ( rc )
                 {
-                    hypervisor_free_unused_page(mfn);
+                    xg_free_unused_page(mfn);
                     break;
                 }
 
@@ -801,6 +845,8 @@ long pv_shim_cpu_up(void *data)
                     v->vcpu_id, rc);
             return rc;
         }
+
+        vcpu_set_hard_affinity(v, cpumask_of(v->vcpu_id));
     }
 
     wake = test_and_clear_bit(_VPF_down, &v->pause_flags);
@@ -954,7 +1000,7 @@ domid_t get_initial_domain_id(void)
     if ( !pv_shim )
         return 0;
 
-    cpuid(hypervisor_cpuid_base() + 4, &eax, &ebx, &ecx, &edx);
+    cpuid(xen_cpuid_base + 4, &eax, &ebx, &ecx, &edx);
 
     return (eax & XEN_HVM_CPUID_DOMID_PRESENT) ? ecx : 1;
 }

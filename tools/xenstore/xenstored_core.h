@@ -37,8 +37,6 @@
 /* DEFAULT_BUFFER_SIZE should be large enough for each errno string. */
 #define DEFAULT_BUFFER_SIZE 16
 
-#define MIN(a, b) (((a) < (b))? (a) : (b))
-
 typedef int32_t wrl_creditt;
 #define WRL_CREDIT_MAX (1000*1000*1000)
 /* ^ satisfies non-overflow condition for wrl_xfer_credit */
@@ -206,7 +204,7 @@ void finish_daemonize(void);
 /* Open a pipe for signal handling */
 void init_pipe(int reopen_log_pipe[2]);
 
-xengnttab_handle **xgt_handle;
+extern xengnttab_handle **xgt_handle;
 
 int remember_string(struct hashtable *hash, const char *str);
 
@@ -214,9 +212,9 @@ int remember_string(struct hashtable *hash, const char *str);
 
 /*
  * Local variables:
+ *  mode: C
  *  c-file-style: "linux"
  *  indent-tabs-mode: t
- *  c-indent-level: 8
  *  c-basic-offset: 8
  *  tab-width: 8
  * End:

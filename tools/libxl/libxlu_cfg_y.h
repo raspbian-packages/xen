@@ -1,8 +1,9 @@
-/* A Bison parser, made by GNU Bison 3.0.2.  */
+/* A Bison parser, made by GNU Bison 3.3.2.  */
 
 /* Bison interface for Yacc-like parsers in C
 
-   Copyright (C) 1984, 1989-1990, 2000-2013 Free Software Foundation, Inc.
+   Copyright (C) 1984, 1989-1990, 2000-2015, 2018-2019 Free Software Foundation,
+   Inc.
 
    This program is free software: you can redistribute it and/or modify
    it under the terms of the GNU General Public License as published by
@@ -30,6 +31,9 @@
    This special exception was added by the Free Software Foundation in
    version 2.2 of Bison.  */
 
+/* Undocumented macros, especially those whose name start with YY_,
+   are private implementation details.  Do not rely on them.  */
+
 #ifndef YY_XLU_CFG_YY_LIBXLU_CFG_Y_H_INCLUDED
 # define YY_XLU_CFG_YY_LIBXLU_CFG_Y_H_INCLUDED
 /* Debug traces.  */
@@ -48,22 +52,25 @@ extern int xlu__cfg_yydebug;
     IDENT = 258,
     STRING = 259,
     NUMBER = 260,
-    NEWLINE = 261
+    NEWLINE = 261,
+    OP_ADD = 262
   };
 #endif
 
 /* Value type.  */
 #if ! defined YYSTYPE && ! defined YYSTYPE_IS_DECLARED
-typedef union YYSTYPE YYSTYPE;
+
 union YYSTYPE
 {
-#line 25 "libxlu_cfg_y.y" /* yacc.c:1909  */
+#line 25 "libxlu_cfg_y.y" /* yacc.c:1921  */
 
   char *string;
   XLU_ConfigValue *value;
 
-#line 66 "libxlu_cfg_y.h" /* yacc.c:1909  */
+#line 71 "libxlu_cfg_y.h" /* yacc.c:1921  */
 };
+
+typedef union YYSTYPE YYSTYPE;
 # define YYSTYPE_IS_TRIVIAL 1
 # define YYSTYPE_IS_DECLARED 1
 #endif

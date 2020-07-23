@@ -87,7 +87,7 @@ static char *xc_dom_guest_type(struct xc_dom_image *dom,
         return "xen-3.0-x86_64";
     default:
         xc_dom_panic(dom->xch, XC_INVALID_KERNEL,
-                     "%s: unkown image type %"PRIu64,
+                     "%s: unknown image type %"PRIu64,
                      __FUNCTION__, machine);
         return NULL;
     }
@@ -163,15 +163,6 @@ static elf_negerrnoval xc_dom_parse_elf_kernel(struct xc_dom_image *dom)
         xc_dom_panic(dom->xch, XC_INVALID_KERNEL, "%s: corrupted ELF image",
                      __FUNCTION__);
         return rc;
-    }
-
-    /* Find the section-header strings table. */
-    if ( ELF_PTRVAL_INVALID(elf->sec_strtab) )
-    {
-        xc_dom_panic(dom->xch, XC_INVALID_KERNEL, "%s: ELF image"
-                     " has no shstrtab", __FUNCTION__);
-        rc = -EINVAL;
-        goto out;
     }
 
     /* parse binary and get xen meta info */
