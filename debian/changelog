@@ -1,8 +1,8 @@
-xen (4.14.0~rc6+2-g23fe1b8d51-1) UNRELEASED; urgency=medium
+xen (4.14.0-1~~) UNRELEASED; urgency=medium
 
-  * Update to new upstream version 4.14.0~rc6+2-g23fe1b8d51.
+  * Update to new upstream version 4.14.0.
 
- -- Hans van Kranenburg <hans@knorrie.org>  Thu, 23 Jul 2020 14:34:24 +0200
+ -- Hans van Kranenburg <hans@knorrie.org>  Tue, 28 Jul 2020 22:03:13 +0200
 
 xen (4.11.4+24-gddaaccbbab-1) unstable; urgency=medium
 
