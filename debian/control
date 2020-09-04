@@ -194,7 +194,8 @@ Depends: ${shlibs:Depends}, ${misc:Depends},
 	 libxengnttab1 (= ${binary:Version}),
 	 libxenstore3.0 (= ${binary:Version}),
 	 libxentoolcore1 (= ${binary:Version}),
-	 libxentoollog1 (= ${binary:Version})
+	 libxentoollog1 (= ${binary:Version}),
+	 libxenhypfs1 (= ${binary:Version}),
 Description: Public headers and libs for Xen
  This package contains the public headers and static libraries for Xen.
  .
@@ -281,5 +282,13 @@ Section: libs
 Architecture: amd64 arm64 armhf i386
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Xen runtime libraries - libxentoollog
+ Shared library for Xen utilities.
+Multi-Arch: same
+
+Package: libxenhypfs1
+Section: libs
+Architecture: amd64 arm64 armhf i386
+Depends: ${shlibs:Depends}, ${misc:Depends}
+Description: Xen runtime library - libxenhypfs
  Shared library for Xen utilities.
 Multi-Arch: same
