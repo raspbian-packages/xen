@@ -1,61 +1,21 @@
-#!/usr/bin/python
+#!/usr/bin/python3
 
 import json
-import re
-import sys
 import subprocess
+import sys
 
+"""
+This little script is used by the xendomains init script. It gets a filename of
+a domU guest config file as argument and uses xen create --dryrun to parse the
+config file and extract the domU name from it.
 
-class SXPParser(object):
-    tokenizer_rules = r""" (?P<open> \( ) | (?P<close> \) ) | (?P<whitespace> \s+ ) | [^()^\s]+ """
-    tokenizer_re = re.compile(tokenizer_rules, re.X)
+Note that there is no proper error handling. So, if a user symlinks something
+else than a correctly formatted domU config file into /etc/xen/auto (or a
+different path configured to use, of course) then this will just do ugly things
+and explode.
+"""
 
-    @classmethod
-    def loads(cls, input):
-        data = []
-        stack = []
-        for match in cls.tokenizer_re.finditer(input):
-            if match.group('open'):
-                stack.append([])
-            elif match.group('close'):
-                top = stack.pop()
-                if stack:
-                    stack[-1].append(top)
-                else:
-                    data.append(top)
-            elif match.group('whitespace'):
-                pass
-            else:
-                if stack:
-                    stack[-1].append(match.group())
-        return data
-
-
-class Data(object):
-    def __call__(self, out):
-        out.write('{}\n'.format(self.name))
-
-
-class DataJSON(Data):
-    def __init__(self, p):
-        s = json.loads(p)
-        self.name = s['c_info']['name']
-
-
-class DataSXP(Data):
-    def __init__(self, p):
-        s = SXPParser.loads(p)
-        for i in s:
-            if i and i[0] == 'domain':
-                data = dict(j for j in i if len(j) == 2)
-                self.name = data['name']
-                break
-
-
-if __name__ == '__main__':
-    p = subprocess.check_output(('xen', 'create', '--quiet', '--dryrun', '--defconfig', sys.argv[1]))
-    if p[0] == '(':
-        d = DataSXP(p)
-    else:
-        d = DataJSON(p)
-    d(sys.stdout)
+cmd = ('xen', 'create', '--quiet', '--dryrun', '--defconfig', sys.argv[1])
+domU_json = subprocess.check_output(cmd)
+name = json.loads(domU_json)['c_info']['name']
+print(name)
