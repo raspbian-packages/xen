@@ -23,7 +23,7 @@ Build-Depends:
    libfdt-dev [armhf arm64],
    libglib2.0-dev,
    liblzma-dev,
-   libncurses5-dev,
+   libncurses-dev,
    libpixman-1-dev,
    libyajl-dev,
    pkg-config,
