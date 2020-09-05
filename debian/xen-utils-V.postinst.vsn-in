@@ -4,7 +4,6 @@ set -e
 
 case "$1" in
     configure)
-        update-alternatives --remove xen-default /usr/lib/xen-@version@
         if [ -x "/etc/init.d/xen" ]; then
             # Only call the init script when this xen-utils-@version@ package
             # matches the currently running version of Xen. This means, doing
