@@ -1,8 +1,76 @@
-xen (4.14.0-1~~) UNRELEASED; urgency=medium
+xen (4.14.0-1~exp1) experimental; urgency=medium
 
+  Significant changes:
   * Update to new upstream version 4.14.0.
+    (Closes: #866380) about removal of broken xen-bugtool
+  * debian/{rules,control}: switch to python 3
+    (Closes: #938843) about python 2 removal in bullseye
+  * debian/control: Fix python dependancy to use python3-dev:any and
+    libpython3-dev  [Elliott Mitchell]
 
- -- Hans van Kranenburg <hans@knorrie.org>  Tue, 28 Jul 2020 22:03:13 +0200
+  Changes related to upgrading to Xen 4.14:
+  * debian/control: adjust to 4.14
+  * debian/rules: remove install commands for pkgconfig files, since those
+    files are not present any more
+  * debian/: Follow fsimage -> xenfsimage renaming
+  * debian/xen-utils-V.*: Use @version@ instead of hardcoded version
+  * debian/control: add flex, bison
+  * debian/control: add libxenhypfs[1]  [Ian Jackson]
+  * debian/libxenstore3.0.symbols: drop xprintf
+    (Closes: #968965)  [Ian Jackson; also reported by Gianfranco Costamagna]
+  * d/scripts/xen-init-name, d/scripts/xen-init-list: rewrite these two
+    scripts, hugely simplify them and make them use python 3
+  * Pick upstream commits d25cc3ec93eb ("libxl: workaround gcc 10.2
+    maybe-uninitialized warning") and fff1b7f50e75 ("libxl: fix
+    -Werror=stringop-truncation in libxl__prepare_sockaddr_un") to fix gcc 10
+    FTBFS
+  * tools: don't build/ship xenmon, it can't work with python 3
+
+  Packaging minor fixes and improvements:
+  * debian/rules: Set DEB_BUILD_MAINT_OPTIONS in shell
+    (Closes: #939560)  [Ian Jackson; report from Guillem Jover]
+  * debian/rules: Improve comment about hardening options
+    (Closes: #939560)  [Ian Jackson; report from Guillem Jover]
+  * debian/rules: Drop redundant sequence numbers in dh_installinit
+    (Closes: #939560)  [Ian Jackson; report from Guillem Jover]
+  * d/xen-utils-common.xen.init: add important notes to keep in mind when
+    changing this script, related to multi-version handling
+  * debian/control: cleanup Uploaders and add myself
+  * debian/control: s/libncurses5-dev/libncurses-dev/
+  * xen-utils-V scripts: remove update-alternatives command
+  * xen-utils-V.postinst.vsn-in: whitespace cosmetics
+  * d/xen-utils-common.xen.init: disable oom killer for xenstored
+    (Closes: #961511)
+  * debian/rules: Combine shared Make args  [Elliott Mitchell]
+
+  Fixes and improvements for cross-compiling  [Elliott Mitchell]:
+  * debian/rules: Add --host to tools configure target
+  * Pick upstream commit 69953e285638 ('tools: Partially revert
+    "Cross-compilation fixes."')
+
+  Lintian related fixes:
+  * debian/changelog: trim trailing whitespace.  [Debian Janitor]
+  * debian/pycompat: remove obsolete file.  [Debian Janitor]
+  * debian/rules: Avoid using $(PWD) variable.  [Debian Janitor]
+  * debian/control: hardcode xen-utils-4.14 python3 dependency because
+    dh_python can't figure out how to add it
+  * debian/control: xen-doc: add ${misc:Depends}
+  * d/xen-hypervisor-V-F.lintian-overrides.vsn-in: fix override to use the
+    newer debug-suffix-not-dbg tag and correct the file path used so it
+    matches again
+  * debian/control: remove XS-Python-Version which is deprecated
+  * debian/control: drop autotools-dev build dependency because debhelper
+    already takes care of this
+  * d/xen-utils-V.lintian-overrides.vsn-in: fix rpath override because the
+    xenfsimage python .so filename changed from xenfsimage.so into
+    xenfsimage.cpython-38-x86_64-linux-gnu.so now, make it match again
+  * d/xen-utils-V.lintian-overrides.vsn-in: s/fsimage/xenfsimage/ which is a
+    left over change from the rename in some comment lines
+  * d/xen-utils-common.xen.init: use /run instead of /var/run because we don't
+    expect anyone on a pre-stretch system to build and use these packages
+  * debian/control: update Standards-Version to 4.5.0
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Thu, 17 Sep 2020 18:59:28 +0200
 
 xen (4.11.4+24-gddaaccbbab-1) unstable; urgency=medium
 
