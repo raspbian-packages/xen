@@ -17,7 +17,6 @@ SUBDIRS-y += xentrace
 SUBDIRS-$(CONFIG_XCUTILS) += xcutils
 SUBDIRS-$(CONFIG_X86) += firmware
 SUBDIRS-y += console
-SUBDIRS-y += xenmon
 SUBDIRS-y += xenstat
 SUBDIRS-$(CONFIG_NetBSD) += xenbackendd
 SUBDIRS-y += libfsimage
