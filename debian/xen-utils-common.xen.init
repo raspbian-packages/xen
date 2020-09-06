@@ -226,7 +226,8 @@ xenstored_start()
 		eval "try_xenstored=\$$try_xenstored_var"
 		if [ -x $try_xenstored ]; then
 			if start-stop-daemon --start --quiet \
-				--pidfile "$XENSTORED_PIDFILE" --exec "$try_xenstored" -- \
+				--pidfile "$XENSTORED_PIDFILE" \
+				--exec /usr/bin/choom -- -n -1000 "$try_xenstored" -- \
 				$XENSTORED_ARGS --pid-file "$XENSTORED_PIDFILE"; then
 					started_xenstored=$try_xenstored
 					break
