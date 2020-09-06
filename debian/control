@@ -100,7 +100,7 @@ Package: xen-utils-4.14
 Section: admin
 Architecture: amd64 arm64 armhf i386
 Provides: xen-utils
-Depends: ${shlibs:Depends}, ${misc:Depends}, ${python3:Depends}, xen-utils-common (>= ${source:Version})
+Depends: ${shlibs:Depends}, ${misc:Depends}, python3, xen-utils-common (>= ${source:Version})
 Recommends: bridge-utils, libc6-xen [i386], xen-hypervisor-4.14, qemu-system-x86, grub-xen-host [i386 amd64]
 Suggests: qemu-utils [i386 amd64], seabios [i386 amd64], ovmf
 Description: XEN administrative tools
