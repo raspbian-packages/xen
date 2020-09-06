@@ -87,6 +87,7 @@ Description: Xen Hypervisor - common files
 Package: xen-doc
 Section: doc
 Architecture: amd64 i386 armhf arm64
+Depends: ${misc:Depends}
 Description: XEN documentation
  Documentation for the Xen hypervisor and surrounding software,
  including descriptions of the hypercall interfaces and of some
