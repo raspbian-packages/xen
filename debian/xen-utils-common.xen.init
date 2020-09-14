@@ -67,6 +67,7 @@ modules_setup()
 	modprobe xenfs 2>/dev/null
 	modprobe xen-evtchn 2>/dev/null
 	modprobe xen-gntdev 2>/dev/null
+	modprobe xen-acpi-processor 2>/dev/null
 }
 
 xenfs_setup()
