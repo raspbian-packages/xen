@@ -1,0 +1,23 @@
+From: Ian Jackson <iwj@barriere.debian.org>
+Date: Fri, 12 Oct 2018 16:00:16 +0000
+Subject: tools/firmware/Makfile: Respect caller's CONFIG_PV_SHIM
+
+This makes it easier to disable the shim build.  (In Debian we need to
+build the shim separately because it needs different compiler flags
+and a different XEN_COMPILE_ARCH.
+
+Signed-off-by: Ian Jackson <ijackson@chiark.greenend.org.uk>
+---
+ config/Tools.mk.in | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/config/Tools.mk.in b/config/Tools.mk.in
+index 23df47a..7a3e577 100644
+--- a/config/Tools.mk.in
++++ b/config/Tools.mk.in
+@@ -76,4 +76,4 @@ ARGP_LDFLAGS        := @argp_ldflags@
+ 
+ FILE_OFFSET_BITS    := @FILE_OFFSET_BITS@
+ 
+-CONFIG_PV_SHIM      := @pvshim@
++CONFIG_PV_SHIM      ?= @pvshim@

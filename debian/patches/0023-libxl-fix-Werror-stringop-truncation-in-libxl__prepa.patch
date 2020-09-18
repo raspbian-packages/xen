@@ -1,0 +1,47 @@
+From: =?utf-8?q?Marek_Marczykowski-G=C3=B3recki?=
+ <marmarek@invisiblethingslab.com>
+Date: Wed, 19 Aug 2020 04:00:36 +0200
+Subject: libxl: fix -Werror=stringop-truncation in libxl__prepare_sockaddr_un
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+In file included from /usr/include/string.h:495,
+                 from libxl_internal.h:38,
+                 from libxl_utils.c:20:
+In function 'strncpy',
+    inlined from 'libxl__prepare_sockaddr_un' at libxl_utils.c:1262:5:
+/usr/include/bits/string_fortified.h:106:10: error: '__builtin_strncpy' specified bound 108 equals destination size [-Werror=stringop-truncation]
+  106 |   return __builtin___strncpy_chk (__dest, __src, __len, __bos (__dest));
+      |          ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+cc1: all warnings being treated as errors
+
+Signed-off-by: Marek Marczykowski-Górecki <marmarek@invisiblethingslab.com>
+Reviewed-by: Ian Jackson <ian.jackson@eu.citrix.com>
+(cherry picked from commit fff1b7f50e75ad9535c86f3fcf425b4945c50a1c)
+---
+ tools/libxl/libxl_utils.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/tools/libxl/libxl_utils.c b/tools/libxl/libxl_utils.c
+index f360f5e..b039143 100644
+--- a/tools/libxl/libxl_utils.c
++++ b/tools/libxl/libxl_utils.c
+@@ -1252,14 +1252,14 @@ int libxl__prepare_sockaddr_un(libxl__gc *gc,
+                                struct sockaddr_un *un, const char *path,
+                                const char *what)
+ {
+-    if (sizeof(un->sun_path) <= strlen(path)) {
++    if (sizeof(un->sun_path) - 1 <= strlen(path)) {
+         LOG(ERROR, "UNIX socket path '%s' is too long for %s", path, what);
+-        LOG(DEBUG, "Path must be less than %zu bytes", sizeof(un->sun_path));
++        LOG(DEBUG, "Path must be less than %zu bytes", sizeof(un->sun_path) - 1);
+         return ERROR_INVAL;
+     }
+     memset(un, 0, sizeof(struct sockaddr_un));
+     un->sun_family = AF_UNIX;
+-    strncpy(un->sun_path, path, sizeof(un->sun_path));
++    strncpy(un->sun_path, path, sizeof(un->sun_path) - 1);
+     return 0;
+ }
+ 

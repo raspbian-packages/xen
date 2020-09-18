@@ -1,0 +1,75 @@
+From: =?utf-8?q?Marek_Marczykowski-G=C3=B3recki?=
+ <marmarek@invisiblethingslab.com>
+Date: Wed, 19 Aug 2020 04:00:35 +0200
+Subject: libxl: workaround gcc 10.2 maybe-uninitialized warning
+MIME-Version: 1.0
+Content-Type: text/plain; charset="utf-8"
+Content-Transfer-Encoding: 8bit
+
+It seems xlu_pci_parse_bdf has a state machine that is too complex for
+gcc to understand. The build fails with:
+
+    libxlu_pci.c: In function 'xlu_pci_parse_bdf':
+    libxlu_pci.c:32:18: error: 'func' may be used uninitialized in this function [-Werror=maybe-uninitialized]
+       32 |     pcidev->func = func;
+          |     ~~~~~~~~~~~~~^~~~~~
+    libxlu_pci.c:51:29: note: 'func' was declared here
+       51 |     unsigned dom, bus, dev, func, vslot = 0;
+          |                             ^~~~
+    libxlu_pci.c:31:17: error: 'dev' may be used uninitialized in this function [-Werror=maybe-uninitialized]
+       31 |     pcidev->dev = dev;
+          |     ~~~~~~~~~~~~^~~~~
+    libxlu_pci.c:51:24: note: 'dev' was declared here
+       51 |     unsigned dom, bus, dev, func, vslot = 0;
+          |                        ^~~
+    libxlu_pci.c:30:17: error: 'bus' may be used uninitialized in this function [-Werror=maybe-uninitialized]
+       30 |     pcidev->bus = bus;
+          |     ~~~~~~~~~~~~^~~~~
+    libxlu_pci.c:51:19: note: 'bus' was declared here
+       51 |     unsigned dom, bus, dev, func, vslot = 0;
+          |                   ^~~
+    libxlu_pci.c:29:20: error: 'dom' may be used uninitialized in this function [-Werror=maybe-uninitialized]
+       29 |     pcidev->domain = domain;
+          |     ~~~~~~~~~~~~~~~^~~~~~~~
+    libxlu_pci.c:51:14: note: 'dom' was declared here
+       51 |     unsigned dom, bus, dev, func, vslot = 0;
+          |              ^~~
+    cc1: all warnings being treated as errors
+
+Workaround it by setting the initial value to invalid value (0xffffffff)
+and then assert on each value being set. This way we mute the gcc
+warning, while still detecting bugs in the parse code.
+
+Signed-off-by: Marek Marczykowski-Górecki <marmarek@invisiblethingslab.com>
+Reviewed-by: Ian Jackson <ian.jackson@eu.citrix.com>
+(cherry picked from commit d25cc3ec93ebda030349045d2c7fa14ffde07ed7)
+---
+ tools/libxl/libxlu_pci.c | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/tools/libxl/libxlu_pci.c b/tools/libxl/libxlu_pci.c
+index 7947687..e2709c5 100644
+--- a/tools/libxl/libxlu_pci.c
++++ b/tools/libxl/libxlu_pci.c
+@@ -45,10 +45,11 @@ static int pcidev_struct_fill(libxl_device_pci *pcidev, unsigned int domain,
+ #define STATE_TYPE      9
+ #define STATE_RDM_STRATEGY      10
+ #define STATE_RESERVE_POLICY    11
++#define INVALID         0xffffffff
+ int xlu_pci_parse_bdf(XLU_Config *cfg, libxl_device_pci *pcidev, const char *str)
+ {
+     unsigned state = STATE_DOMAIN;
+-    unsigned dom, bus, dev, func, vslot = 0;
++    unsigned dom = INVALID, bus = INVALID, dev = INVALID, func = INVALID, vslot = 0;
+     char *buf2, *tok, *ptr, *end, *optkey = NULL;
+ 
+     if ( NULL == (buf2 = ptr = strdup(str)) )
+@@ -170,6 +171,8 @@ int xlu_pci_parse_bdf(XLU_Config *cfg, libxl_device_pci *pcidev, const char *str
+     if ( tok != ptr || state != STATE_TERMINAL )
+         goto parse_error;
+ 
++    assert(dom != INVALID && bus != INVALID && dev != INVALID && func != INVALID);
++
+     /* Just a pretty way to fill in the values */
+     pcidev_struct_fill(pcidev, dom, bus, dev, func, vslot << 3);
+ 
