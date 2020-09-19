@@ -271,7 +271,7 @@ xenstore_rm = $(addprefix debian/xen-utils-common/,		\
 		))
 
 override_dh_install:
-	debian/shuffle-binaries $(upstream_version) $(flavour)
+	debian/shuffle-binaries $(upstream_version)
 	:
 	debian/shuffle-boot-files $(upstream_version) $(flavour)
 	:
