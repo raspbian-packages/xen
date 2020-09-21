@@ -6,10 +6,12 @@ error() {
 }
 
 if [ -e "/sys/hypervisor/type" ]; then
-    type="$(cat /sys/hypervisor/type)"
+    read type < /sys/hypervisor/type
     if [ "$type" = xen ]; then
         DIR=/sys/hypervisor/version
-        VERSION="$(cat $DIR/major).$(cat $DIR/minor)"
+        read major < $DIR/major
+        read minor < $DIR/minor
+        VERSION="$major.$minor"
     elif [ -z "$type" ]; then
         error "Can't read hypervisor type from sysfs!"
     else
