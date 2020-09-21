@@ -1,3 +1,19 @@
+xen (4.14.0-1~exp2) UNRELEASED; urgency=medium
+
+  Packaging minor fixes and improvements:
+  * d/xen-utils-common.xen.init: Actually *really* include the change to
+    disable oom killer for xenstored. It inadvertently got lost in ~exp1.
+    (Closes: #961511)
+
+  More fixes for FTBFS with Xen 4.14 and gcc 10:
+  * Pick upstream commit 5d45ecabe3c0 ("xen/arm64: force gcc 10+ to always
+    inline generic atomics helpers") to fix a FTBFS at mem_access.c
+    (XXX: #968965)
+  * Pick upstream commit 0dfddb2116e3 ("tools/xenpmd: Fix gcc10 snprintf
+    warning") to fix a FTBFS on armhf. (Closes: #970802) (XXX: #968965)
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Tue, 22 Sep 2020 00:33:19 +0200
+
 xen (4.14.0-1~exp1) experimental; urgency=medium
 
   Significant changes:
