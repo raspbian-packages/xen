@@ -961,7 +961,8 @@ void __init start_xen(unsigned long boot_phys_offset,
     if ( construct_dom0(dom0) != 0)
         panic("Could not set up DOM0 guest OS\n");
 
-    create_domUs();
+    if ( acpi_disabled )
+        create_domUs();
 
     /*
      * This needs to be called **before** heap_init_late() so modules
