@@ -646,7 +646,6 @@ int domain_kill(struct domain *d)
         if ( d->is_dying != DOMDYING_alive )
             return domain_kill(d);
         d->is_dying = DOMDYING_dying;
-        evtchn_destroy(d);
         gnttab_release_mappings(d);
         tmem_destroy(d->tmem_client);
         vnuma_destroy(d->vnuma);
@@ -654,6 +653,9 @@ int domain_kill(struct domain *d)
         d->tmem_client = NULL;
         /* fallthrough */
     case DOMDYING_dying:
+        rc = evtchn_destroy(d);
+        if ( rc )
+            break;
         rc = domain_relinquish_resources(d);
         if ( rc != 0 )
             break;
@@ -1103,7 +1105,7 @@ void domain_unpause_except_self(struct domain *d)
         domain_unpause(d);
 }
 
-int domain_soft_reset(struct domain *d)
+int domain_soft_reset(struct domain *d, bool resuming)
 {
     struct vcpu *v;
     int rc;
@@ -1117,7 +1119,7 @@ int domain_soft_reset(struct domain *d)
         }
     spin_unlock(&d->shutdown_lock);
 
-    rc = evtchn_reset(d);
+    rc = evtchn_reset(d, resuming);
     if ( rc )
         return rc;
 

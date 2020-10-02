@@ -78,7 +78,7 @@ index 7fc4de5..3a2e403 100644
   * For more information about ERST, please refer to ACPI Specification
   * version 4.0, section 17.4.
 diff --git a/xen/include/public/domctl.h b/xen/include/public/domctl.h
-index 0ab9fa0..c0de281 100644
+index dd096b5..e883ca5 100644
 --- a/xen/include/public/domctl.h
 +++ b/xen/include/public/domctl.h
 @@ -495,7 +495,7 @@ struct xen_domctl_assign_device {

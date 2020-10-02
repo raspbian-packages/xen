@@ -41,10 +41,10 @@ index 2eb8156..87c2537 100644
  /*
  * For little endian,reverse the low significant equal bits into MSB,then
 diff --git a/xen/arch/x86/hvm/hvm.c b/xen/arch/x86/hvm/hvm.c
-index aa7d747..4f16783 100644
+index 07a412a..fd568f6 100644
 --- a/xen/arch/x86/hvm/hvm.c
 +++ b/xen/arch/x86/hvm/hvm.c
-@@ -1741,7 +1741,7 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
+@@ -1743,7 +1743,7 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
          case NESTEDHVM_PAGEFAULT_RETRY:
              return 1;
          case NESTEDHVM_PAGEFAULT_L1_ERROR:
@@ -106,10 +106,10 @@ index 6c180c4..5a5a2fb 100644
  #define VIRQ_ENOMEM     12 /* G. (DOM0) Low on heap memory       */
  #define VIRQ_XENPMU     13 /* V.  PMC interrupt                              */
 diff --git a/xen/include/xen/sched.h b/xen/include/xen/sched.h
-index e79d5a3..3a65d08 100644
+index c0cc5d9..1ce89fc 100644
 --- a/xen/include/xen/sched.h
 +++ b/xen/include/xen/sched.h
-@@ -627,7 +627,7 @@ void noreturn __domain_crash_synchronous(void);
+@@ -638,7 +638,7 @@ void noreturn __domain_crash_synchronous(void);
  
  /*
   * Called from assembly code, with an optional address to help indicate why

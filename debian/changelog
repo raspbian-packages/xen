@@ -1,4 +1,4 @@
-xen (4.11.4+24-gddaaccbbab-1~deb10u1+rpi1) buster-staging; urgency=medium
+xen (4.11.4+37-g3263f257ca-1+rpi1) buster-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,7 +9,35 @@ xen (4.11.4+24-gddaaccbbab-1~deb10u1+rpi1) buster-staging; urgency=medium
   [changes introduced in 4.11.1+26-g87f51bf366-3+rpi1 by Peter Michael Green]
   * Do not fail on files that are not installed.
 
- -- Raspbian forward porter <root@raspbian.org>  Thu, 16 Jul 2020 17:57:37 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Fri, 02 Oct 2020 23:52:54 +0000
+
+xen (4.11.4+37-g3263f257ca-1) buster-security; urgency=high
+
+  * Update to new upstream version 4.11.4+37-g3263f257ca, which also contains
+    security fixes for the following issues:
+    - x86 pv: Crash when handling guest access to MSR_MISC_ENABLE
+      XSA-333 CVE-2020-25602
+    - race when migrating timers between x86 HVM vCPU-s
+      XSA-336 CVE-2020-25604
+    - PCI passthrough code reading back hardware registers
+      XSA-337 CVE-2020-25595
+    - once valid event channels may not turn invalid
+      XSA-338 CVE-2020-25597
+    - x86 pv guest kernel DoS via SYSENTER
+      XSA-339 CVE-2020-25596
+    - Missing memory barriers when accessing/allocating an event channel
+      XSA-340 CVE-2020-25603
+    - out of bounds event channels available to 32-bit x86 domains
+      XSA-342 CVE-2020-25600
+    - races with evtchn_reset()
+      XSA-343 CVE-2020-25599
+    - lack of preemption in evtchn_reset() / evtchn_destroy()
+      XSA-344 CVE-2020-25601
+  * Note that with this update, we will be detaching the Buster updates from
+    the Xen version in Debian unstable, which will get a newer Xen version
+    RSN.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Thu, 01 Oct 2020 14:50:58 +0200
 
 xen (4.11.4+24-gddaaccbbab-1~deb10u1) buster-security; urgency=high
 
