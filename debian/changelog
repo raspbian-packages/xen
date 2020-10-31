@@ -22,7 +22,7 @@ xen (4.14.0-1~exp1) experimental; urgency=medium
     (Closes: #866380) about removal of broken xen-bugtool
   * debian/{rules,control}: switch to python 3
     (Closes: #938843) about python 2 removal in bullseye
-  * debian/control: Fix python dependancy to use python3-dev:any and
+  * debian/control: Fix python dependency to use python3-dev:any and
     libpython3-dev  [Elliott Mitchell]
 
   Changes related to upgrading to Xen 4.14:
