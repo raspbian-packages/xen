@@ -77,7 +77,7 @@ obj-$(CONFIG_HAS_DEVICE_TREE) += libfdt/
 
 CONF_FILE := $(if $(patsubst /%,,$(KCONFIG_CONFIG)),$(XEN_ROOT)/xen/)$(KCONFIG_CONFIG)
 config.gz: $(CONF_FILE)
-	gzip -c $< >$@
+	gzip -n -c $< >$@
 
 config_data.o: config.gz
 
