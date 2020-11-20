@@ -1,19 +1,67 @@
-xen (4.14.0+80-gd101b417b7-1) UNRELEASED; urgency=medium
+xen (4.14.0+80-gd101b417b7-1~exp1) experimental; urgency=medium
+
+  * Update to new upstream version 4.14.0+80-gd101b417b7, which also contains
+    security fixes for the following issues:
+    - Information leak via power sidechannel
+      XSA-351 (no CVE yet)
+    - x86 PV guest INVLPG-like flushes may leave stale TLB entries
+      XSA-286 (no CVE yet)
+    - unsafe AMD IOMMU page table updates
+      XSA-347 (no CVE yet)
+    - undue deferral of IOMMU TLB flushes
+      XSA-346 (no CVE yet)
+    - x86: Race condition in Xen mapping code
+      XSA-345 (no CVE yet)
+    - lack of preemption in evtchn_reset() / evtchn_destroy()
+      XSA-344 CVE-2020-25601
+    - races with evtchn_reset()
+      XSA-343 CVE-2020-25599
+    - out of bounds event channels available to 32-bit x86 domains
+      XSA-342 CVE-2020-25600
+    - Missing memory barriers when accessing/allocating an event channel
+      XSA-340 CVE-2020-25603
+    - x86 pv guest kernel DoS via SYSENTER
+      XSA-339 CVE-2020-25596
+    - once valid event channels may not turn invalid
+      XSA-338 CVE-2020-25597
+    - PCI passthrough code reading back hardware registers
+      XSA-337 CVE-2020-25595
+    - race when migrating timers between x86 HVM vCPU-s
+      XSA-336 CVE-2020-25604
+    - Missing unlock in XENMEM_acquire_resource error path
+      XSA-334 CVE-2020-25598
+    - x86 pv: Crash when handling guest access to MSR_MISC_ENABLE
+      XSA-333 CVE-2020-25602
+  * Updating to the most recent upstream stable-4.14 branch also fixes
+    additional compiling issues with gcc 10 that we were running into. These
+    were: upstream commit 5d45ecabe3c0 ("xen/arm64: force gcc 10+ to always
+    inline generic atomics helpers") to fix a FTBFS at mem_access.c and
+    upstream commit 0dfddb2116e3 ("tools/xenpmd: Fix gcc10 snprintf warning")
+    to fix a FTBFS on armhf. (Closes: #970802)
+  * Drop upstream commits d25cc3ec93eb ("libxl: workaround gcc 10.2
+    maybe-uninitialized warning") and fff1b7f50e75 ("libxl: fix
+    -Werror=stringop-truncation in libxl__prepare_sockaddr_un") from our patch
+    pile because these gcc 10 related fixes are in the upstream stable branch
+    now.
+  * Partially revert "debian/rules: Combine shared Make args" since it caused
+    a FTBFS on i386.
+  * Revert upstream commit a516bddbd3 ("tools/firmware/Makefile:
+    CONFIG_PV_SHIM: enable only on x86_64") and cherry-pick our previous
+    commits 0b898ccc2 ("tools/firmware/Makfile: Respect caller's
+    CONFIG_PV_SHIM") and a516bddbd3 ("tools/firmware/Makefile: CONFIG_PV_SHIM:
+    enable only on x86_64") again to work around a FTBFS where the shim would
+    not be built during the i386 package build.
+  * Now all FTBFS issues should be resolved, so we can do (Closes: #968965)
 
   Packaging minor fixes and improvements:
   * d/xen-utils-common.xen.init: Actually *really* include the change to
-    disable oom killer for xenstored. It inadvertently got lost in ~exp1.
-    (Closes: #961511)
+    disable oom killer for xenstored. It inadvertently got lost in
+    4.14.0-1~exp1. (Closes: #961511)
 
-  More fixes for FTBFS with Xen 4.14 and gcc 10:
-  * Pick upstream commit 5d45ecabe3c0 ("xen/arm64: force gcc 10+ to always
-    inline generic atomics helpers") to fix a FTBFS at mem_access.c
-    (XXX: #968965)
-  * Pick upstream commit 0dfddb2116e3 ("tools/xenpmd: Fix gcc10 snprintf
-    warning") to fix a FTBFS on armhf. (Closes: #970802) (XXX: #968965)
-  * Update to new upstream version 4.14.0+80-gd101b417b7.
+  Lintian related fixes:
+  * debian/changelog: fix a typo in the previous changelog entry
 
- -- Hans van Kranenburg <hans@knorrie.org>  Thu, 19 Nov 2020 18:44:35 +0100
+ -- Hans van Kranenburg <hans@knorrie.org>  Sun, 22 Nov 2020 02:16:00 +0100
 
 xen (4.14.0-1~exp1) experimental; urgency=medium
 
