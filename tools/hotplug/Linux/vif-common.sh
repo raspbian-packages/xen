@@ -183,7 +183,7 @@ frob_iptable()
 handle_iptable()
 {
   # This function is disabled in Debian packaging. See Debian bug #894013.
-  return
+  return 0
 
   # Check for a working iptables installation.  Checking for the iptables
   # binary is not sufficient, because the user may not have the appropriate
