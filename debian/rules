@@ -311,7 +311,7 @@ override_dh_compress:
 	rdfind -makehardlinks true -makeresultsfile false \
 		debian/xenstore-utils/usr/bin
 	:
-	dh_compress
+	dh_compress -Xusr/share/doc/xen/html
 	find debian/xen-hypervisor-*/usr/lib/debug -type f -print0 \
 		| xargs -0r gzip -9vn
 
