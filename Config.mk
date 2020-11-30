@@ -6,6 +6,8 @@ endif
 
 # Convenient variables
 comma   := ,
+open    := (
+close   := )
 squote  := '
 #' Balancing squote, to help syntax highlighting
 empty   :=
@@ -66,17 +68,6 @@ DEPS_RM = $(DEPS) $(DEPS_INCLUDE)
 include $(XEN_ROOT)/config/$(XEN_OS).mk
 include $(XEN_ROOT)/config/$(XEN_TARGET_ARCH).mk
 
-# arguments: variable, common path part, path to test, if yes, if no
-define setvar_dir
-  ifndef $(1)
-    ifneq (,$(wildcard $(2)$(3)))
-      $(1) ?= $(2)$(4)
-    else
-      $(1) ?= $(2)$(5)
-    endif
-  endif
-endef
-
 ifneq ($(EXTRA_PREFIX),)
 EXTRA_INCLUDES += $(EXTRA_PREFIX)/include
 EXTRA_LIB += $(EXTRA_PREFIX)/lib
@@ -130,11 +121,6 @@ define cc-ver-check-closure
     endif
 endef
 
-# cc-ifversion: Check compiler version and take branch accordingly
-# Usage $(call cc-ifversion,lt,0x040700,string_if_y,string_if_n)
-cc-ifversion = $(shell [ $(call cc-ver,$(CC),$(1),$(2)) = "y" ] \
-				&& echo $(3) || echo $(4))
-
 # Require GCC v4.1+
 check-$(gcc) = $(call cc-ver-check,CC,0x040100,"Xen requires at least gcc-4.1")
 $(eval $(check-y))
@@ -156,23 +142,6 @@ ifndef XEN_HAS_CHECKPOLICY
     XEN_HAS_CHECKPOLICY := $(shell $(CHECKPOLICY) -h 2>&1 | grep -q xen && echo y || echo n)
     export XEN_HAS_CHECKPOLICY
 endif
-
-# as-insn: Check whether assembler supports an instruction.
-# Usage: cflags-y += $(call as-insn,CC FLAGS,"insn",option-yes,option-no)
-as-insn = $(if $(shell echo 'void _(void) { asm volatile ( $(2) ); }' \
-                       | $(filter-out -M% %.d -include %/include/xen/config.h,$(1)) \
-                              -c -x c -o /dev/null - 2>&1),$(4),$(3))
-
-# as-option-add: Conditionally add options to flags
-# Usage: $(call as-option-add,CFLAGS,CC,"insn",option-yes,option-no)
-as-option-add = $(eval $(call as-option-add-closure,$(1),$(2),$(3),$(4),$(5)))
-define as-option-add-closure
-    ifeq ($$(call as-insn,$$($(2)) $$($(1)),$(3),y,n),y)
-        $(1) += $(4)
-    else
-        $(1) += $(5)
-    endif
-endef
 
 define buildmakevars2shellvars
     export PREFIX="$(prefix)";                                            \
@@ -235,7 +204,8 @@ APPEND_LDFLAGS += $(foreach i, $(APPEND_LIB), -L$(i))
 APPEND_CFLAGS += $(foreach i, $(APPEND_INCLUDES), -I$(i))
 
 EMBEDDED_EXTRA_CFLAGS := -nopie -fno-stack-protector -fno-stack-protector-all
-EMBEDDED_EXTRA_CFLAGS += -fno-exceptions
+EMBEDDED_EXTRA_CFLAGS += -fno-exceptions -fno-asynchronous-unwind-tables
+EMBEDDED_EXTRA_CFLAGS += -fcf-protection=none
 
 XEN_EXTFILES_URL ?= http://xenbits.xen.org/xen-extfiles
 # All the files at that location were downloaded from elsewhere on
@@ -274,18 +244,16 @@ QEMU_TRADITIONAL_URL ?= git://xenbits.xen.org/qemu-xen-traditional.git
 SEABIOS_UPSTREAM_URL ?= git://xenbits.xen.org/seabios.git
 MINIOS_UPSTREAM_URL ?= git://xenbits.xen.org/mini-os.git
 endif
-OVMF_UPSTREAM_REVISION ?= 947f3737abf65fda63f3ffd97fddfa6986986868
-QEMU_UPSTREAM_REVISION ?= qemu-xen-4.11.4
-MINIOS_UPSTREAM_REVISION ?= xen-RELEASE-4.11.4
+OVMF_UPSTREAM_REVISION ?= 20d2e5a125e34fc8501026613a71549b2a1a3e54
+QEMU_UPSTREAM_REVISION ?= qemu-xen-4.14.0
+MINIOS_UPSTREAM_REVISION ?= xen-RELEASE-4.14.0
 
-SEABIOS_UPSTREAM_REVISION ?= rel-1.11.1
+SEABIOS_UPSTREAM_REVISION ?= rel-1.13.0
 
 ETHERBOOT_NICS ?= rtl8139 8086100e
 
 
-QEMU_TRADITIONAL_REVISION ?= xen-4.11.4
-# Fri Sep 15 19:37:27 2017 +0100
-# qemu-xen-traditional: Link against xentoolcore
+QEMU_TRADITIONAL_REVISION ?= xen-4.14.0
 
 # Specify which qemu-dm to use. This may be `ioemu' to use the old
 # Mercurial in-tree version, or a local directory, or a git URL.
@@ -297,8 +265,5 @@ QEMU_TRADITIONAL_LOC ?= $(call or,$(wildcard $(QEMU_TRADITIONAL_INTREE)),\
 
 QEMU_UPSTREAM_LOC ?= $(call or,$(wildcard $(QEMU_UPSTREAM_INTREE)),\
                                $(QEMU_UPSTREAM_URL))
-
-# Short answer -- do not enable this unless you know what you are
-# doing and are prepared for some pain.
 
 CONFIG_TESTS       ?= y

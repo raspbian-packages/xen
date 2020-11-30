@@ -10,21 +10,12 @@ static int handle_hvm_context(struct xc_sr_context *ctx,
                               struct xc_sr_record *rec)
 {
     xc_interface *xch = ctx->xch;
-    void *p;
+    int rc = update_blob(&ctx->x86.hvm.restore.context, rec->data, rec->length);
 
-    p = malloc(rec->length);
-    if ( !p )
-    {
+    if ( rc )
         ERROR("Unable to allocate %u bytes for hvm context", rec->length);
-        return -1;
-    }
 
-    free(ctx->x86_hvm.restore.context);
-
-    ctx->x86_hvm.restore.context = memcpy(p, rec->data, rec->length);
-    ctx->x86_hvm.restore.contextsz = rec->length;
-
-    return 0;
+    return rc;
 }
 
 /*
@@ -81,6 +72,16 @@ static int handle_hvm_params(struct xc_sr_context *ctx,
         case HVM_PARAM_BUFIOREQ_PFN:
             xc_clear_domain_page(xch, ctx->domid, entry->value);
             break;
+
+        case HVM_PARAM_PAE_ENABLED:
+            /*
+             * This HVM_PARAM only ever existed to pass data into
+             * xc_cpuid_apply_policy().  The function has now been updated to
+             * use a normal calling convention, making the param obsolete.
+             *
+             * Discard if we find it in an old migration stream.
+             */
+            continue;
         }
 
         rc = xc_hvm_param_set(xch, ctx->domid, entry->index, entry->value);
@@ -138,16 +139,18 @@ static int x86_hvm_setup(struct xc_sr_context *ctx)
 
     if ( ctx->restore.guest_type != DHDR_TYPE_X86_HVM )
     {
-        ERROR("Unable to restore %s domain into an x86_hvm domain",
+        ERROR("Unable to restore %s domain into an x86 HVM domain",
               dhdr_type_to_str(ctx->restore.guest_type));
         return -1;
     }
-    else if ( ctx->restore.guest_page_size != PAGE_SIZE )
+
+    if ( ctx->restore.guest_page_size != PAGE_SIZE )
     {
-        ERROR("Invalid page size %u for x86_hvm domains",
+        ERROR("Invalid page size %u for x86 HVM domains",
               ctx->restore.guest_page_size);
         return -1;
     }
+
 #ifdef __i386__
     /* Very large domains (> 1TB) will exhaust virtual address space. */
     if ( ctx->restore.p2m_size > 0x0fffffff )
@@ -169,14 +172,20 @@ static int x86_hvm_process_record(struct xc_sr_context *ctx,
 {
     switch ( rec->type )
     {
-    case REC_TYPE_TSC_INFO:
-        return handle_tsc_info(ctx, rec);
+    case REC_TYPE_X86_TSC_INFO:
+        return handle_x86_tsc_info(ctx, rec);
 
     case REC_TYPE_HVM_CONTEXT:
         return handle_hvm_context(ctx, rec);
 
     case REC_TYPE_HVM_PARAMS:
         return handle_hvm_params(ctx, rec);
+
+    case REC_TYPE_X86_CPUID_POLICY:
+        return handle_x86_cpuid_policy(ctx, rec);
+
+    case REC_TYPE_X86_MSR_POLICY:
+        return handle_x86_msr_policy(ctx, rec);
 
     default:
         return RECORD_NOT_PROCESSED;
@@ -208,19 +217,19 @@ static int x86_hvm_stream_complete(struct xc_sr_context *ctx)
     }
 
     rc = xc_domain_hvm_setcontext(xch, ctx->domid,
-                                  ctx->x86_hvm.restore.context,
-                                  ctx->x86_hvm.restore.contextsz);
+                                  ctx->x86.hvm.restore.context.ptr,
+                                  ctx->x86.hvm.restore.context.size);
     if ( rc < 0 )
     {
         PERROR("Unable to restore HVM context");
         return rc;
     }
 
-    rc = xc_dom_gnttab_hvm_seed(xch, ctx->domid,
-                                ctx->restore.console_gfn,
-                                ctx->restore.xenstore_gfn,
-                                ctx->restore.console_domid,
-                                ctx->restore.xenstore_domid);
+    rc = xc_dom_gnttab_seed(xch, ctx->domid, true,
+                            ctx->restore.console_gfn,
+                            ctx->restore.xenstore_gfn,
+                            ctx->restore.console_domid,
+                            ctx->restore.xenstore_domid);
     if ( rc )
     {
         PERROR("Failed to seed grant table");
@@ -232,7 +241,10 @@ static int x86_hvm_stream_complete(struct xc_sr_context *ctx)
 
 static int x86_hvm_cleanup(struct xc_sr_context *ctx)
 {
-    free(ctx->x86_hvm.restore.context);
+    free(ctx->x86.hvm.restore.context.ptr);
+
+    free(ctx->x86.restore.cpuid.ptr);
+    free(ctx->x86.restore.msr.ptr);
 
     return 0;
 }
@@ -246,6 +258,7 @@ struct xc_sr_restore_ops restore_ops_x86_hvm =
     .localise_page   = x86_hvm_localise_page,
     .setup           = x86_hvm_setup,
     .process_record  = x86_hvm_process_record,
+    .static_data_complete = x86_static_data_complete,
     .stream_complete = x86_hvm_stream_complete,
     .cleanup         = x86_hvm_cleanup,
 };

@@ -7,7 +7,7 @@ LDFLAGS += $(call LDFLAGS_RPATH,../..)
 
 PIC_OBJS := $(patsubst %.c,%.opic,$(LIB_SRCS-y))
 
-FSDIR = $(LIBEXEC_LIB)/fs
+FSDIR = $(LIBEXEC_LIB)/xenfsimage
 
 FSLIB = fsimage.so
 
@@ -27,7 +27,7 @@ fs-uninstall:
 	fi
 
 $(FSLIB): $(PIC_OBJS)
-	$(CC) $(LDFLAGS) $(SHLIB_LDFLAGS) -o $@ $^ -lfsimage $(FS_LIBDEPS) $(APPEND_LDFLAGS)
+	$(CC) $(LDFLAGS) $(SHLIB_LDFLAGS) -o $@ $^ -lxenfsimage $(FS_LIBDEPS) $(APPEND_LDFLAGS)
 
 clean distclean::
 	rm -f $(PIC_OBJS) $(FSLIB) $(DEPS_RM)

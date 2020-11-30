@@ -12,6 +12,7 @@
 #include <xenstore.h>
 #include <xen/sys/xenbus_dev.h>
 #include <xen-xsm/flask/flask.h>
+#include <xen/io/xenbus.h>
 
 #include "init-dom-json.h"
 #include "_paths.h"
@@ -24,6 +25,8 @@ static char *param;
 static char *name = "Xenstore";
 static int memory;
 static int maxmem;
+static xen_pfn_t console_mfn;
+static xc_evtchn_port_or_error_t console_evtchn;
 
 static struct option options[] = {
     { "kernel", 1, NULL, 'k' },
@@ -60,11 +63,23 @@ static void usage(void)
 static int build(xc_interface *xch)
 {
     char cmdline[512];
-    uint32_t ssid;
-    xen_domain_handle_t handle = { 0 };
     int rv, xs_fd;
     struct xc_dom_image *dom = NULL;
     int limit_kb = (maxmem ? : (memory + 1)) * 1024;
+    struct xen_domctl_createdomain config = {
+        .ssidref = SECINITSID_DOMU,
+        .flags = XEN_DOMCTL_CDF_xs_domain,
+        .max_vcpus = 1,
+        .max_evtchn_port = -1, /* No limit. */
+
+        /*
+         * 1 grant frame is enough: we don't need many grants.
+         * Mini-OS doesn't like less than 4, though, so use 4.
+         * 128 maptrack frames: 256 entries per frame, enough for 32768 domains.
+         */
+        .max_grant_frames = 4,
+        .max_maptrack_frames = 128,
+    };
 
     xs_fd = open("/dev/xen/xenbus_backend", O_RDWR);
     if ( xs_fd == -1 )
@@ -75,25 +90,21 @@ static int build(xc_interface *xch)
 
     if ( flask )
     {
-        rv = xc_flask_context_to_sid(xch, flask, strlen(flask), &ssid);
+        rv = xc_flask_context_to_sid(xch, flask, strlen(flask), &config.ssidref);
         if ( rv )
         {
             fprintf(stderr, "xc_flask_context_to_sid failed\n");
             goto err;
         }
     }
-    else
-    {
-        ssid = SECINITSID_DOMU;
-    }
-    rv = xc_domain_create(xch, ssid, handle, XEN_DOMCTL_CDF_xs_domain,
-                          &domid, NULL);
+
+    rv = xc_domain_create(xch, &domid, &config);
     if ( rv )
     {
         fprintf(stderr, "xc_domain_create failed\n");
         goto err;
     }
-    rv = xc_domain_max_vcpus(xch, domid, 1);
+    rv = xc_domain_max_vcpus(xch, domid, config.max_vcpus);
     if ( rv )
     {
         fprintf(stderr, "xc_domain_max_vcpus failed\n");
@@ -105,15 +116,10 @@ static int build(xc_interface *xch)
         fprintf(stderr, "xc_domain_setmaxmem failed\n");
         goto err;
     }
-    /*
-     * 1 grant frame is enough: we don't need many grants.
-     * Mini-OS doesn't like less than 4, though, so use 4.
-     * 128 maptrack frames: 256 entries per frame, enough for 32768 domains.
-     */
-    rv = xc_domain_set_gnttab_limits(xch, domid, 4, 128);
-    if ( rv )
+    console_evtchn = xc_evtchn_alloc_unbound(xch, domid, 0);
+    if ( console_evtchn < 0 )
     {
-        fprintf(stderr, "xc_domain_set_gnttab_limits failed\n");
+        fprintf(stderr, "xc_evtchn_alloc_unbound failed\n");
         goto err;
     }
     rv = xc_domain_set_memmap_limit(xch, domid, limit_kb);
@@ -136,6 +142,15 @@ static int build(xc_interface *xch)
         snprintf(cmdline, 512, "--event %d --internal-db", rv);
 
     dom = xc_dom_allocate(xch, cmdline, NULL);
+    if ( !dom )
+    {
+        fprintf(stderr, "xc_dom_allocate failed\n");
+        goto err;
+    }
+    dom->container_type = XC_DOM_PV_CONTAINER;
+    dom->xenstore_domid = domid;
+    dom->console_evtchn = console_evtchn;
+
     rv = xc_dom_kernel_file(dom, kernel);
     if ( rv )
     {
@@ -189,6 +204,12 @@ static int build(xc_interface *xch)
         fprintf(stderr, "xc_dom_boot_image failed\n");
         goto err;
     }
+    rv = xc_dom_gnttab_init(dom);
+    if ( rv )
+    {
+        fprintf(stderr, "xc_dom_gnttab_init failed\n");
+        goto err;
+    }
 
     rv = xc_domain_set_virq_handler(xch, domid, VIRQ_DOM_EXC);
     if ( rv )
@@ -204,6 +225,7 @@ static int build(xc_interface *xch)
     }
 
     rv = 0;
+    console_mfn = xc_dom_p2m(dom, dom->console_pfn);
 
 err:
     if ( dom )
@@ -302,6 +324,15 @@ static void do_xs_write(struct xs_handle *xsh, char *path, char *val)
         fprintf(stderr, "writing %s to xenstore failed.\n", path);
 }
 
+static void do_xs_write_dir_node(struct xs_handle *xsh, char *dir, char *node,
+                                 char *val)
+{
+    char full_path[100];
+
+    snprintf(full_path, 100, "%s/%s", dir, node);
+    do_xs_write(xsh, full_path, val);
+}
+
 static void do_xs_write_dom(struct xs_handle *xsh, char *path, char *val)
 {
     char full_path[64];
@@ -315,7 +346,7 @@ int main(int argc, char** argv)
     int opt;
     xc_interface *xch;
     struct xs_handle *xsh;
-    char buf[16];
+    char buf[16], be_path[64], fe_path[64];
     int rv, fd;
     char *maxmem_str = NULL;
 
@@ -385,7 +416,7 @@ int main(int argc, char** argv)
     if ( rv )
         return 1;
 
-    rv = gen_stub_json_config(domid);
+    rv = gen_stub_json_config(domid, NULL);
     if ( rv )
         return 3;
 
@@ -404,6 +435,25 @@ int main(int argc, char** argv)
     if (maxmem)
         snprintf(buf, 16, "%d", maxmem * 1024);
     do_xs_write_dom(xsh, "memory/static-max", buf);
+    snprintf(be_path, 64, "/local/domain/0/backend/console/%d/0", domid);
+    snprintf(fe_path, 64, "/local/domain/%d/console", domid);
+    snprintf(buf, 16, "%d", domid);
+    do_xs_write_dir_node(xsh, be_path, "frontend-id", buf);
+    do_xs_write_dir_node(xsh, be_path, "frontend", fe_path);
+    do_xs_write_dir_node(xsh, be_path, "online", "1");
+    snprintf(buf, 16, "%d", XenbusStateInitialising);
+    do_xs_write_dir_node(xsh, be_path, "state", buf);
+    do_xs_write_dir_node(xsh, be_path, "protocol", "vt100");
+    do_xs_write_dir_node(xsh, fe_path, "backend", be_path);
+    do_xs_write_dir_node(xsh, fe_path, "backend-id", "0");
+    do_xs_write_dir_node(xsh, fe_path, "limit", "1048576");
+    do_xs_write_dir_node(xsh, fe_path, "type", "xenconsoled");
+    do_xs_write_dir_node(xsh, fe_path, "output", "pty");
+    do_xs_write_dir_node(xsh, fe_path, "tty", "");
+    snprintf(buf, 16, "%d", console_evtchn);
+    do_xs_write_dir_node(xsh, fe_path, "port", buf);
+    snprintf(buf, 16, "%ld", console_mfn);
+    do_xs_write_dir_node(xsh, fe_path, "ring-ref", buf);
     xs_close(xsh);
 
     fd = creat(XEN_RUN_DIR "/xenstored.pid", 0666);

@@ -25,12 +25,26 @@
 #include <asm/hvm/trace.h>
 #include <asm/hvm/support.h>
 #include <asm/hvm/svm/svm.h>
+#include <asm/iocap.h>
 #include <asm/vm_event.h>
+
+struct hvmemul_cache
+{
+    /* The cache is disabled as long as num_ents > max_ents. */
+    unsigned int num_ents;
+    unsigned int max_ents;
+    struct {
+        paddr_t gpa:PADDR_BITS;
+        unsigned int :BITS_PER_LONG - PADDR_BITS - 8;
+        unsigned int size:8;
+        unsigned long data;
+    } ents[];
+};
 
 static void hvmtrace_io_assist(const ioreq_t *p)
 {
     unsigned int size, event;
-    unsigned char buffer[12];
+    unsigned char buffer[16];
 
     if ( likely(!tb_init_done) )
         return;
@@ -47,8 +61,11 @@ static void hvmtrace_io_assist(const ioreq_t *p)
 
     if ( !p->data_is_ptr )
     {
-        *(uint32_t *)&buffer[size] = p->data;
-        size += 4;
+        if ( size == 4 )
+            *(uint32_t *)&buffer[size] = p->data;
+        else
+            *(uint64_t *)&buffer[size] = p->data;
+        size *= 2;
     }
 
     trace_var(event, 0/*!cycles*/, size, buffer);
@@ -117,13 +134,32 @@ static const struct hvm_io_handler ioreq_server_handler = {
     .ops = &ioreq_server_ops
 };
 
+/*
+ * Drop all records of in-flight emulation. This is needed whenever a vCPU's
+ * register state may have changed behind the emulator's back.
+ */
+void hvmemul_cancel(struct vcpu *v)
+{
+    struct hvm_vcpu_io *vio = &v->arch.hvm.hvm_io;
+
+    vio->io_req.state = STATE_IOREQ_NONE;
+    vio->io_completion = HVMIO_no_completion;
+    vio->mmio_cache_count = 0;
+    vio->mmio_insn_bytes = 0;
+    vio->mmio_access = (struct npfec){};
+    vio->mmio_retry = false;
+    vio->g2m_ioport = NULL;
+
+    hvmemul_cache_disable(v);
+}
+
 static int hvmemul_do_io(
     bool_t is_mmio, paddr_t addr, unsigned long *reps, unsigned int size,
     uint8_t dir, bool_t df, bool_t data_is_addr, uintptr_t data)
 {
     struct vcpu *curr = current;
     struct domain *currd = curr->domain;
-    struct hvm_vcpu_io *vio = &curr->arch.hvm_vcpu.hvm_io;
+    struct hvm_vcpu_io *vio = &curr->arch.hvm.hvm_io;
     ioreq_t p = {
         .type = is_mmio ? IOREQ_TYPE_COPY : IOREQ_TYPE_PIO,
         .addr = addr,
@@ -300,11 +336,7 @@ static int hvmemul_do_io(
             rc = hvm_send_ioreq(s, &p, 0);
             if ( rc != X86EMUL_RETRY || currd->is_shutting_down )
                 vio->io_req.state = STATE_IOREQ_NONE;
-            /*
-             * This effectively is !hvm_vcpu_io_need_completion(vio), slightly
-             * optimized and using local variables we have available.
-             */
-            else if ( data_is_addr || (!is_mmio && dir == IOREQ_WRITE) )
+            else if ( !hvm_ioreq_needs_completion(&vio->io_req) )
                 rc = X86EMUL_OKAY;
         }
         break;
@@ -357,22 +389,21 @@ static int hvmemul_acquire_page(unsigned long gmfn, struct page_info **page)
     struct domain *curr_d = current->domain;
     p2m_type_t p2mt;
 
-    *page = get_page_from_gfn(curr_d, gmfn, &p2mt, P2M_UNSHARE);
+    switch ( check_get_page_from_gfn(curr_d, _gfn(gmfn), false, &p2mt,
+                                     page) )
+    {
+    case 0:
+        break;
 
-    if ( *page == NULL )
+    case -EAGAIN:
+        return X86EMUL_RETRY;
+
+    default:
+        ASSERT_UNREACHABLE();
+        /* Fallthrough */
+
+    case -EINVAL:
         return X86EMUL_UNHANDLEABLE;
-
-    if ( p2m_is_paging(p2mt) )
-    {
-        put_page(*page);
-        p2m_mem_paging_populate(curr_d, gmfn);
-        return X86EMUL_RETRY;
-    }
-
-    if ( p2m_is_shared(p2mt) )
-    {
-        put_page(*page);
-        return X86EMUL_RETRY;
     }
 
     /* This code should not be reached if the gmfn is not RAM */
@@ -441,7 +472,7 @@ static int hvmemul_do_io_addr(
     ASSERT(rc != X86EMUL_UNIMPLEMENTED);
 
     if ( rc == X86EMUL_OKAY )
-        v->arch.hvm_vcpu.hvm_io.mmio_retry = (count < *reps);
+        v->arch.hvm.hvm_io.mmio_retry = (count < *reps);
 
     *reps = count;
 
@@ -549,6 +580,7 @@ static void *hvmemul_map_linear_addr(
     unsigned int nr_frames = ((linear + bytes - !!bytes) >> PAGE_SHIFT) -
         (linear >> PAGE_SHIFT) + 1;
     unsigned int i;
+    gfn_t gfn;
 
     /*
      * mfn points to the next free slot.  All used slots have a page reference
@@ -557,16 +589,12 @@ static void *hvmemul_map_linear_addr(
     mfn_t *mfn = &hvmemul_ctxt->mfn[0];
 
     /*
-     * The caller has no legitimate reason for trying a zero-byte write, but
-     * all other code here is written to work if the check below was dropped.
-     *
-     * The maximum write size depends on the number of adjacent mfns[] which
+     * The maximum access size depends on the number of adjacent mfns[] which
      * can be vmap()'d, accouting for possible misalignment within the region.
      * The higher level emulation callers are responsible for ensuring that
-     * mfns[] is large enough for the requested write size.
+     * mfns[] is large enough for the requested access size.
      */
-    if ( bytes == 0 ||
-         nr_frames > ARRAY_SIZE(hvmemul_ctxt->mfn) )
+    if ( nr_frames > ARRAY_SIZE(hvmemul_ctxt->mfn) )
     {
         ASSERT_UNREACHABLE();
         goto unhandleable;
@@ -587,7 +615,7 @@ static void *hvmemul_map_linear_addr(
         ASSERT(mfn_x(*mfn) == 0);
 
         res = hvm_translate_get_page(curr, addr, true, pfec,
-                                     &pfinfo, &page, NULL, &p2mt);
+                                     &pfinfo, &page, &gfn, &p2mt);
 
         switch ( res )
         {
@@ -604,6 +632,13 @@ static void *hvmemul_map_linear_addr(
             err = NULL;
             goto out;
 
+        case HVMTRANS_need_retry:
+            /*
+             * hvm_translate_get_page() does not currently return
+             * HVMTRANS_need_retry.
+             */
+            ASSERT_UNREACHABLE();
+            /* fall through */
         case HVMTRANS_gfn_paged_out:
         case HVMTRANS_gfn_shared:
             err = ERR_PTR(~X86EMUL_RETRY);
@@ -615,9 +650,28 @@ static void *hvmemul_map_linear_addr(
 
         *mfn++ = page_to_mfn(page);
 
-        if ( p2m_is_discard_write(p2mt) )
+        if ( pfec & PFEC_write_access )
         {
-            err = ERR_PTR(~X86EMUL_OKAY);
+            if ( p2m_is_discard_write(p2mt) )
+            {
+                err = ERR_PTR(~X86EMUL_OKAY);
+                goto out;
+            }
+
+            if ( p2mt == p2m_ioreq_server )
+            {
+                err = NULL;
+                goto out;
+            }
+
+            ASSERT(p2mt == p2m_ram_logdirty || !p2m_is_readonly(p2mt));
+        }
+
+        if ( unlikely(curr->arch.vm_event) &&
+             curr->arch.vm_event->send_event &&
+             hvm_monitor_check_p2m(addr, gfn, pfec, npfec_kind_with_gla) )
+        {
+            err = ERR_PTR(~X86EMUL_RETRY);
             goto out;
         }
     }
@@ -659,8 +713,6 @@ static void hvmemul_unmap_linear_addr(
         (linear >> PAGE_SHIFT) + 1;
     unsigned int i;
     mfn_t *mfn = &hvmemul_ctxt->mfn[0];
-
-    ASSERT(bytes > 0);
 
     if ( nr_frames == 1 )
         unmap_domain_page(mapping);
@@ -710,7 +762,7 @@ static int hvmemul_linear_to_phys(
     *reps = min_t(unsigned long, *reps, 4096);
 
     /* With no paging it's easy: linear == physical. */
-    if ( !(curr->arch.hvm_vcpu.guest_cr[0] & X86_CR0_PG) )
+    if ( !(curr->arch.hvm.guest_cr[0] & X86_CR0_PG) )
     {
         *paddr = addr;
         return X86EMUL_OKAY;
@@ -779,14 +831,14 @@ static int hvmemul_virtual_to_linear(
     enum x86_segment seg,
     unsigned long offset,
     unsigned int bytes_per_rep,
-    unsigned long *reps,
+    unsigned long *reps_p,
     enum hvm_access_type access_type,
     struct hvm_emulate_ctxt *hvmemul_ctxt,
     unsigned long *linear)
 {
     struct segment_register *reg;
     int okay;
-    unsigned long max_reps = 4096;
+    unsigned long reps = 1;
 
     if ( seg == x86_seg_none )
     {
@@ -794,62 +846,72 @@ static int hvmemul_virtual_to_linear(
         return X86EMUL_OKAY;
     }
 
-    /*
-     * If introspection has been enabled for this domain, and we're emulating
-     * becase a vm_reply asked us to (i.e. not doing regular IO) reps should
-     * be at most 1, since optimization might otherwise cause a single
-     * vm_event being triggered for repeated writes to a whole page.
-     */
-    if ( unlikely(current->domain->arch.mem_access_emulate_each_rep) &&
-         current->arch.vm_event->emulate_flags != 0 )
-       max_reps = 1;
+    if ( reps_p )
+    {
+        unsigned long max_reps = 4096;
 
-    /*
-     * Clip repetitions to avoid overflow when multiplying by @bytes_per_rep.
-     * The chosen maximum is very conservative but it's what we use in
-     * hvmemul_linear_to_phys() so there is no point in using a larger value.
-     */
-    *reps = min_t(unsigned long, *reps, max_reps);
+        /*
+         * If introspection has been enabled for this domain, and we're
+         * emulating because a vm_reply asked us to (i.e. not doing regular IO)
+         * reps should be at most 1, since optimization might otherwise cause a
+         * single vm_event being triggered for repeated writes to a whole page.
+         */
+        if ( unlikely(current->domain->arch.mem_access_emulate_each_rep) &&
+             current->arch.vm_event->emulate_flags != 0 )
+           max_reps = 1;
+
+        /*
+         * Clip repetitions to avoid overflow when multiplying by
+         * @bytes_per_rep. The chosen maximum is very conservative but it's
+         * what we use in hvmemul_linear_to_phys() so there is no point in
+         * using a larger value.
+         */
+        reps = *reps_p = min_t(unsigned long, *reps_p, max_reps);
+    }
 
     reg = hvmemul_get_seg_reg(seg, hvmemul_ctxt);
     if ( IS_ERR(reg) )
         return -PTR_ERR(reg);
 
-    if ( (hvmemul_ctxt->ctxt.regs->eflags & X86_EFLAGS_DF) && (*reps > 1) )
+    if ( (hvmemul_ctxt->ctxt.regs->eflags & X86_EFLAGS_DF) && (reps > 1) )
     {
         /*
          * x86_emulate() clips the repetition count to ensure we don't wrap
          * the effective-address index register. Hence this assertion holds.
          */
-        ASSERT(offset >= ((*reps - 1) * bytes_per_rep));
+        ASSERT(offset >= ((reps - 1) * bytes_per_rep));
         okay = hvm_virtual_to_linear_addr(
-            seg, reg, offset - (*reps - 1) * bytes_per_rep,
-            *reps * bytes_per_rep, access_type,
+            seg, reg, offset - (reps - 1) * bytes_per_rep,
+            reps * bytes_per_rep, access_type,
             hvmemul_get_seg_reg(x86_seg_cs, hvmemul_ctxt), linear);
-        *linear += (*reps - 1) * bytes_per_rep;
+        *linear += (reps - 1) * bytes_per_rep;
         if ( hvmemul_ctxt->ctxt.addr_size != 64 )
             *linear = (uint32_t)*linear;
     }
     else
     {
         okay = hvm_virtual_to_linear_addr(
-            seg, reg, offset, *reps * bytes_per_rep, access_type,
+            seg, reg, offset, reps * bytes_per_rep, access_type,
             hvmemul_get_seg_reg(x86_seg_cs, hvmemul_ctxt), linear);
     }
 
     if ( okay )
         return X86EMUL_OKAY;
 
-    /* If this is a string operation, emulate each iteration separately. */
-    if ( *reps != 1 )
-        return X86EMUL_UNHANDLEABLE;
+    if ( reps_p )
+    {
+        /* If this is a string operation, emulate each iteration separately. */
+        if ( reps != 1 )
+            return X86EMUL_UNHANDLEABLE;
+
+        *reps_p = 0;
+    }
 
     /*
      * Leave exception injection to the caller for non-user segments: We
      * neither know the exact error code to be used, nor can we easily
      * determine the kind of exception (#GP or #TS) in that case.
      */
-    *reps = 0;
     if ( is_x86_user_segment(seg) )
         x86_emul_hw_exception((seg == x86_seg_ss)
                               ? TRAP_stack_error
@@ -867,7 +929,18 @@ static int hvmemul_phys_mmio_access(
     int rc = X86EMUL_OKAY;
 
     /* Accesses must fall within a page. */
-    BUG_ON((gpa & ~PAGE_MASK) + size > PAGE_SIZE);
+    if ( (gpa & ~PAGE_MASK) + size > PAGE_SIZE )
+    {
+        ASSERT_UNREACHABLE();
+        return X86EMUL_UNHANDLEABLE;
+    }
+
+    /* Accesses must not overflow the cache's buffer. */
+    if ( size > sizeof(cache->buffer) )
+    {
+        ASSERT_UNREACHABLE();
+        return X86EMUL_UNHANDLEABLE;
+    }
 
     /*
      * hvmemul_do_io() cannot handle non-power-of-2 accesses or
@@ -932,7 +1005,7 @@ static int hvmemul_phys_mmio_access(
  * cache indexed by linear MMIO address.
  */
 static struct hvm_mmio_cache *hvmemul_find_mmio_cache(
-    struct hvm_vcpu_io *vio, unsigned long gla, uint8_t dir)
+    struct hvm_vcpu_io *vio, unsigned long gla, uint8_t dir, bool create)
 {
     unsigned int i;
     struct hvm_mmio_cache *cache;
@@ -945,6 +1018,9 @@ static struct hvm_mmio_cache *hvmemul_find_mmio_cache(
              dir == cache->dir )
             return cache;
     }
+
+    if ( !create )
+        return NULL;
 
     i = vio->mmio_cache_count;
     if( i == ARRAY_SIZE(vio->mmio_cache) )
@@ -978,9 +1054,9 @@ static int hvmemul_linear_mmio_access(
     unsigned long gla, unsigned int size, uint8_t dir, void *buffer,
     uint32_t pfec, struct hvm_emulate_ctxt *hvmemul_ctxt, bool_t known_gpfn)
 {
-    struct hvm_vcpu_io *vio = &current->arch.hvm_vcpu.hvm_io;
+    struct hvm_vcpu_io *vio = &current->arch.hvm.hvm_io;
     unsigned long offset = gla & ~PAGE_MASK;
-    struct hvm_mmio_cache *cache = hvmemul_find_mmio_cache(vio, gla, dir);
+    struct hvm_mmio_cache *cache = hvmemul_find_mmio_cache(vio, gla, dir, true);
     unsigned int chunk, buffer_offset = 0;
     paddr_t gpa;
     unsigned long one_rep = 1;
@@ -1044,6 +1120,134 @@ static inline int hvmemul_linear_mmio_write(
                                       pfec, hvmemul_ctxt, translate);
 }
 
+static bool known_gla(unsigned long addr, unsigned int bytes, uint32_t pfec)
+{
+    const struct hvm_vcpu_io *vio = &current->arch.hvm.hvm_io;
+
+    if ( pfec & PFEC_write_access )
+    {
+        if ( !vio->mmio_access.write_access )
+            return false;
+    }
+    else if ( pfec & PFEC_insn_fetch )
+    {
+        if ( !vio->mmio_access.insn_fetch )
+            return false;
+    }
+    else if ( !vio->mmio_access.read_access )
+            return false;
+
+    return (vio->mmio_gla == (addr & PAGE_MASK) &&
+            (addr & ~PAGE_MASK) + bytes <= PAGE_SIZE);
+}
+
+static int linear_read(unsigned long addr, unsigned int bytes, void *p_data,
+                       uint32_t pfec, struct hvm_emulate_ctxt *hvmemul_ctxt)
+{
+    pagefault_info_t pfinfo;
+    struct hvm_vcpu_io *vio = &current->arch.hvm.hvm_io;
+    unsigned int offset = addr & ~PAGE_MASK;
+    int rc = HVMTRANS_bad_gfn_to_mfn;
+
+    if ( offset + bytes > PAGE_SIZE )
+    {
+        unsigned int part1 = PAGE_SIZE - offset;
+
+        /* Split the access at the page boundary. */
+        rc = linear_read(addr, part1, p_data, pfec, hvmemul_ctxt);
+        if ( rc == X86EMUL_OKAY )
+            rc = linear_read(addr + part1, bytes - part1, p_data + part1,
+                             pfec, hvmemul_ctxt);
+        return rc;
+    }
+
+    /*
+     * If there is an MMIO cache entry for the access then we must be re-issuing
+     * an access that was previously handled as MMIO. Thus it is imperative that
+     * we handle this access in the same way to guarantee completion and hence
+     * clean up any interim state.
+     */
+    if ( !hvmemul_find_mmio_cache(vio, addr, IOREQ_READ, false) )
+        rc = hvm_copy_from_guest_linear(p_data, addr, bytes, pfec, &pfinfo);
+
+    switch ( rc )
+    {
+    case HVMTRANS_okay:
+        return X86EMUL_OKAY;
+
+    case HVMTRANS_bad_linear_to_gfn:
+        x86_emul_pagefault(pfinfo.ec, pfinfo.linear, &hvmemul_ctxt->ctxt);
+        return X86EMUL_EXCEPTION;
+
+    case HVMTRANS_bad_gfn_to_mfn:
+        if ( pfec & PFEC_insn_fetch )
+            return X86EMUL_UNHANDLEABLE;
+
+        return hvmemul_linear_mmio_read(addr, bytes, p_data, pfec,
+                                        hvmemul_ctxt,
+                                        known_gla(addr, bytes, pfec));
+
+    case HVMTRANS_gfn_paged_out:
+    case HVMTRANS_gfn_shared:
+    case HVMTRANS_need_retry:
+        return X86EMUL_RETRY;
+    }
+
+    return X86EMUL_UNHANDLEABLE;
+}
+
+static int linear_write(unsigned long addr, unsigned int bytes, void *p_data,
+                        uint32_t pfec, struct hvm_emulate_ctxt *hvmemul_ctxt)
+{
+    pagefault_info_t pfinfo;
+    struct hvm_vcpu_io *vio = &current->arch.hvm.hvm_io;
+    unsigned int offset = addr & ~PAGE_MASK;
+    int rc = HVMTRANS_bad_gfn_to_mfn;
+
+    if ( offset + bytes > PAGE_SIZE )
+    {
+        unsigned int part1 = PAGE_SIZE - offset;
+
+        /* Split the access at the page boundary. */
+        rc = linear_write(addr, part1, p_data, pfec, hvmemul_ctxt);
+        if ( rc == X86EMUL_OKAY )
+            rc = linear_write(addr + part1, bytes - part1, p_data + part1,
+                              pfec, hvmemul_ctxt);
+        return rc;
+    }
+
+    /*
+     * If there is an MMIO cache entry for the access then we must be re-issuing
+     * an access that was previously handled as MMIO. Thus it is imperative that
+     * we handle this access in the same way to guarantee completion and hence
+     * clean up any interim state.
+     */
+    if ( !hvmemul_find_mmio_cache(vio, addr, IOREQ_WRITE, false) )
+        rc = hvm_copy_to_guest_linear(addr, p_data, bytes, pfec, &pfinfo);
+
+    switch ( rc )
+    {
+    case HVMTRANS_okay:
+        return X86EMUL_OKAY;
+
+    case HVMTRANS_bad_linear_to_gfn:
+        x86_emul_pagefault(pfinfo.ec, pfinfo.linear, &hvmemul_ctxt->ctxt);
+        return X86EMUL_EXCEPTION;
+
+    case HVMTRANS_bad_gfn_to_mfn:
+        return hvmemul_linear_mmio_write(addr, bytes, p_data, pfec,
+                                         hvmemul_ctxt,
+                                         known_gla(addr, bytes, pfec));
+
+    case HVMTRANS_gfn_paged_out:
+    case HVMTRANS_gfn_shared:
+    case HVMTRANS_need_retry:
+        return X86EMUL_RETRY;
+    }
+
+    return X86EMUL_UNHANDLEABLE;
+}
+
 static int __hvmemul_read(
     enum x86_segment seg,
     unsigned long offset,
@@ -1052,52 +1256,23 @@ static int __hvmemul_read(
     enum hvm_access_type access_type,
     struct hvm_emulate_ctxt *hvmemul_ctxt)
 {
-    struct vcpu *curr = current;
-    pagefault_info_t pfinfo;
-    unsigned long addr, reps = 1;
+    unsigned long addr;
     uint32_t pfec = PFEC_page_present;
-    struct hvm_vcpu_io *vio = &curr->arch.hvm_vcpu.hvm_io;
     int rc;
 
     if ( is_x86_system_segment(seg) )
         pfec |= PFEC_implicit;
     else if ( hvmemul_ctxt->seg_reg[x86_seg_ss].dpl == 3 )
         pfec |= PFEC_user_mode;
+    if ( access_type == hvm_access_insn_fetch )
+        pfec |= PFEC_insn_fetch;
 
     rc = hvmemul_virtual_to_linear(
-        seg, offset, bytes, &reps, access_type, hvmemul_ctxt, &addr);
+        seg, offset, bytes, NULL, access_type, hvmemul_ctxt, &addr);
     if ( rc != X86EMUL_OKAY || !bytes )
         return rc;
-    if ( ((access_type != hvm_access_insn_fetch
-           ? vio->mmio_access.read_access
-           : vio->mmio_access.insn_fetch)) &&
-         (vio->mmio_gla == (addr & PAGE_MASK)) )
-        return hvmemul_linear_mmio_read(addr, bytes, p_data, pfec, hvmemul_ctxt, 1);
 
-    rc = ((access_type == hvm_access_insn_fetch) ?
-          hvm_fetch_from_guest_linear(p_data, addr, bytes, pfec, &pfinfo) :
-          hvm_copy_from_guest_linear(p_data, addr, bytes, pfec, &pfinfo));
-
-    switch ( rc )
-    {
-    case HVMTRANS_okay:
-        break;
-    case HVMTRANS_bad_linear_to_gfn:
-        x86_emul_pagefault(pfinfo.ec, pfinfo.linear, &hvmemul_ctxt->ctxt);
-        return X86EMUL_EXCEPTION;
-    case HVMTRANS_bad_gfn_to_mfn:
-        if ( access_type == hvm_access_insn_fetch )
-            return X86EMUL_UNHANDLEABLE;
-
-        return hvmemul_linear_mmio_read(addr, bytes, p_data, pfec, hvmemul_ctxt, 0);
-    case HVMTRANS_gfn_paged_out:
-    case HVMTRANS_gfn_shared:
-        return X86EMUL_RETRY;
-    default:
-        return X86EMUL_UNHANDLEABLE;
-    }
-
-    return X86EMUL_OKAY;
+    return linear_read(addr, bytes, p_data, pfec, hvmemul_ctxt);
 }
 
 static int hvmemul_read(
@@ -1174,12 +1349,10 @@ static int hvmemul_write(
 {
     struct hvm_emulate_ctxt *hvmemul_ctxt =
         container_of(ctxt, struct hvm_emulate_ctxt, ctxt);
-    struct vcpu *curr = current;
-    unsigned long addr, reps = 1;
+    unsigned long addr;
     uint32_t pfec = PFEC_page_present | PFEC_write_access;
-    struct hvm_vcpu_io *vio = &curr->arch.hvm_vcpu.hvm_io;
     int rc;
-    void *mapping;
+    void *mapping = NULL;
 
     if ( is_x86_system_segment(seg) )
         pfec |= PFEC_implicit;
@@ -1187,22 +1360,28 @@ static int hvmemul_write(
         pfec |= PFEC_user_mode;
 
     rc = hvmemul_virtual_to_linear(
-        seg, offset, bytes, &reps, hvm_access_write, hvmemul_ctxt, &addr);
+        seg, offset, bytes, NULL, hvm_access_write, hvmemul_ctxt, &addr);
     if ( rc != X86EMUL_OKAY || !bytes )
         return rc;
 
-    if ( vio->mmio_access.write_access &&
-         (vio->mmio_gla == (addr & PAGE_MASK)) )
-        return hvmemul_linear_mmio_write(addr, bytes, p_data, pfec, hvmemul_ctxt, 1);
-
-    mapping = hvmemul_map_linear_addr(addr, bytes, pfec, hvmemul_ctxt);
-    if ( IS_ERR(mapping) )
-        return ~PTR_ERR(mapping);
+    if ( !known_gla(addr, bytes, pfec) )
+    {
+        mapping = hvmemul_map_linear_addr(addr, bytes, pfec, hvmemul_ctxt);
+        if ( IS_ERR(mapping) )
+             return ~PTR_ERR(mapping);
+    }
 
     if ( !mapping )
-        return hvmemul_linear_mmio_write(addr, bytes, p_data, pfec, hvmemul_ctxt, 0);
+        return linear_write(addr, bytes, p_data, pfec, hvmemul_ctxt);
 
-    memcpy(mapping, p_data, bytes);
+    /* Where possible use single (and hence generally atomic) MOV insns. */
+    switch ( bytes )
+    {
+    case 2: write_u16_atomic(mapping, *(uint16_t *)p_data); break;
+    case 4: write_u32_atomic(mapping, *(uint32_t *)p_data); break;
+    case 8: write_u64_atomic(mapping, *(uint64_t *)p_data); break;
+    default: memcpy(mapping, p_data, bytes);                break;
+    }
 
     hvmemul_unmap_linear_addr(mapping, addr, bytes, hvmemul_ctxt);
 
@@ -1219,14 +1398,13 @@ static int hvmemul_rmw(
 {
     struct hvm_emulate_ctxt *hvmemul_ctxt =
         container_of(ctxt, struct hvm_emulate_ctxt, ctxt);
-    unsigned long addr, reps = 1;
+    unsigned long addr;
     uint32_t pfec = PFEC_page_present | PFEC_write_access;
-    struct hvm_vcpu_io *vio = &current->arch.hvm_vcpu.hvm_io;
     int rc;
-    void *mapping;
+    void *mapping = NULL;
 
     rc = hvmemul_virtual_to_linear(
-        seg, offset, bytes, &reps, hvm_access_write, hvmemul_ctxt, &addr);
+        seg, offset, bytes, NULL, hvm_access_write, hvmemul_ctxt, &addr);
     if ( rc != X86EMUL_OKAY || !bytes )
         return rc;
 
@@ -1235,9 +1413,12 @@ static int hvmemul_rmw(
     else if ( hvmemul_ctxt->seg_reg[x86_seg_ss].dpl == 3 )
         pfec |= PFEC_user_mode;
 
-    mapping = hvmemul_map_linear_addr(addr, bytes, pfec, hvmemul_ctxt);
-    if ( IS_ERR(mapping) )
-        return ~PTR_ERR(mapping);
+    if ( !known_gla(addr, bytes, pfec) )
+    {
+        mapping = hvmemul_map_linear_addr(addr, bytes, pfec, hvmemul_ctxt);
+        if ( IS_ERR(mapping) )
+            return ~PTR_ERR(mapping);
+    }
 
     if ( mapping )
     {
@@ -1247,19 +1428,56 @@ static int hvmemul_rmw(
     else
     {
         unsigned long data = 0;
-        bool known_gpfn = vio->mmio_access.write_access &&
-                          vio->mmio_gla == (addr & PAGE_MASK);
 
         if ( bytes > sizeof(data) )
             return X86EMUL_UNHANDLEABLE;
-        rc = hvmemul_linear_mmio_read(addr, bytes, &data, pfec, hvmemul_ctxt,
-                                      known_gpfn);
+        rc = linear_read(addr, bytes, &data, pfec, hvmemul_ctxt);
         if ( rc == X86EMUL_OKAY )
             rc = x86_emul_rmw(&data, bytes, eflags, state, ctxt);
         if ( rc == X86EMUL_OKAY )
-            rc = hvmemul_linear_mmio_write(addr, bytes, &data, pfec,
-                                           hvmemul_ctxt, known_gpfn);
+            rc = linear_write(addr, bytes, &data, pfec, hvmemul_ctxt);
     }
+
+    return rc;
+}
+
+static int hvmemul_blk(
+    enum x86_segment seg,
+    unsigned long offset,
+    void *p_data,
+    unsigned int bytes,
+    uint32_t *eflags,
+    struct x86_emulate_state *state,
+    struct x86_emulate_ctxt *ctxt)
+{
+    struct hvm_emulate_ctxt *hvmemul_ctxt =
+        container_of(ctxt, struct hvm_emulate_ctxt, ctxt);
+    unsigned long addr;
+    uint32_t pfec = PFEC_page_present;
+    int rc;
+    void *mapping = NULL;
+
+    rc = hvmemul_virtual_to_linear(
+        seg, offset, bytes, NULL, hvm_access_write, hvmemul_ctxt, &addr);
+    if ( rc != X86EMUL_OKAY || !bytes )
+        return rc;
+
+    if ( x86_insn_is_mem_write(state, ctxt) )
+        pfec |= PFEC_write_access;
+
+    if ( is_x86_system_segment(seg) )
+        pfec |= PFEC_implicit;
+    else if ( hvmemul_ctxt->seg_reg[x86_seg_ss].dpl == 3 )
+        pfec |= PFEC_user_mode;
+
+    mapping = hvmemul_map_linear_addr(addr, bytes, pfec, hvmemul_ctxt);
+    if ( IS_ERR(mapping) )
+        return ~PTR_ERR(mapping);
+    if ( !mapping )
+        return X86EMUL_UNHANDLEABLE;
+
+    rc = x86_emul_blk(mapping, p_data, bytes, eflags, state, ctxt);
+    hvmemul_unmap_linear_addr(mapping, addr, bytes, hvmemul_ctxt);
 
     return rc;
 }
@@ -1358,7 +1576,10 @@ static int hvmemul_write_msr_discard(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_wbinvd_discard(
+static int hvmemul_cache_op_discard(
+    enum x86emul_cache_op op,
+    enum x86_segment seg,
+    unsigned long offset,
     struct x86_emulate_ctxt *ctxt)
 {
     return X86EMUL_OKAY;
@@ -1376,14 +1597,14 @@ static int hvmemul_cmpxchg(
     struct hvm_emulate_ctxt *hvmemul_ctxt =
         container_of(ctxt, struct hvm_emulate_ctxt, ctxt);
     struct vcpu *curr = current;
-    unsigned long addr, reps = 1;
+    unsigned long addr;
     uint32_t pfec = PFEC_page_present | PFEC_write_access;
-    struct hvm_vcpu_io *vio = &curr->arch.hvm_vcpu.hvm_io;
+    struct hvm_vcpu_io *vio = &curr->arch.hvm.hvm_io;
     int rc;
     void *mapping = NULL;
 
     rc = hvmemul_virtual_to_linear(
-        seg, offset, bytes, &reps, hvm_access_write, hvmemul_ctxt, &addr);
+        seg, offset, bytes, NULL, hvm_access_write, hvmemul_ctxt, &addr);
     if ( rc != X86EMUL_OKAY )
         return rc;
 
@@ -1392,9 +1613,12 @@ static int hvmemul_cmpxchg(
     else if ( hvmemul_ctxt->seg_reg[x86_seg_ss].dpl == 3 )
         pfec |= PFEC_user_mode;
 
-    mapping = hvmemul_map_linear_addr(addr, bytes, pfec, hvmemul_ctxt);
-    if ( IS_ERR(mapping) )
-        return ~PTR_ERR(mapping);
+    if ( !known_gla(addr, bytes, pfec) )
+    {
+        mapping = hvmemul_map_linear_addr(addr, bytes, pfec, hvmemul_ctxt);
+        if ( IS_ERR(mapping) )
+            return ~PTR_ERR(mapping);
+    }
 
     if ( !mapping )
     {
@@ -1459,8 +1683,10 @@ static int hvmemul_validate(
     const struct x86_emulate_state *state,
     struct x86_emulate_ctxt *ctxt)
 {
-    const struct hvm_emulate_ctxt *hvmemul_ctxt =
+    struct hvm_emulate_ctxt *hvmemul_ctxt =
         container_of(ctxt, struct hvm_emulate_ctxt, ctxt);
+
+    hvmemul_ctxt->is_mem_access = x86_insn_is_mem_access(state, ctxt);
 
     return !hvmemul_ctxt->validate || hvmemul_ctxt->validate(state, ctxt)
            ? X86EMUL_OKAY : X86EMUL_UNHANDLEABLE;
@@ -1596,7 +1822,8 @@ static int hvmemul_rep_movs(
 {
     struct hvm_emulate_ctxt *hvmemul_ctxt =
         container_of(ctxt, struct hvm_emulate_ctxt, ctxt);
-    struct hvm_vcpu_io *vio = &current->arch.hvm_vcpu.hvm_io;
+    struct vcpu *curr = current;
+    struct hvm_vcpu_io *vio = &curr->arch.hvm.hvm_io;
     unsigned long saddr, daddr, bytes;
     paddr_t sgpa, dgpa;
     uint32_t pfec = PFEC_page_present;
@@ -1656,8 +1883,8 @@ static int hvmemul_rep_movs(
     }
 
     /* Check for MMIO ops */
-    (void) get_gfn_query_unlocked(current->domain, sgpa >> PAGE_SHIFT, &sp2mt);
-    (void) get_gfn_query_unlocked(current->domain, dgpa >> PAGE_SHIFT, &dp2mt);
+    get_gfn_query_unlocked(curr->domain, sgpa >> PAGE_SHIFT, &sp2mt);
+    get_gfn_query_unlocked(curr->domain, dgpa >> PAGE_SHIFT, &dp2mt);
 
     if ( sp2mt == p2m_mmio_direct || dp2mt == p2m_mmio_direct ||
          (sp2mt == p2m_mmio_dm && dp2mt == p2m_mmio_dm) )
@@ -1714,31 +1941,44 @@ static int hvmemul_rep_movs(
         rc = HVMTRANS_okay;
     }
     else
+    {
+        unsigned int token = hvmemul_cache_disable(curr);
+
         /*
          * We do a modicum of checking here, just for paranoia's sake and to
          * definitely avoid copying an unitialised buffer into guest address
          * space.
          */
         rc = hvm_copy_from_guest_phys(buf, sgpa, bytes);
+        hvmemul_cache_restore(curr, token);
+    }
 
     if ( rc == HVMTRANS_okay )
-        rc = hvm_copy_to_guest_phys(dgpa, buf, bytes, current);
+        rc = hvm_copy_to_guest_phys(dgpa, buf, bytes, curr);
 
     xfree(buf);
 
-    if ( rc == HVMTRANS_gfn_paged_out )
-        return X86EMUL_RETRY;
-    if ( rc == HVMTRANS_gfn_shared )
-        return X86EMUL_RETRY;
-    if ( rc != HVMTRANS_okay )
+    switch ( rc )
     {
-        gdprintk(XENLOG_WARNING, "Failed memory-to-memory REP MOVS: sgpa=%"
-                 PRIpaddr" dgpa=%"PRIpaddr" reps=%lu bytes_per_rep=%u\n",
-                 sgpa, dgpa, *reps, bytes_per_rep);
-        return X86EMUL_UNHANDLEABLE;
+    case HVMTRANS_need_retry:
+        /*
+         * hvm_copy_{from,to}_guest_phys() do not currently return
+         * HVMTRANS_need_retry.
+         */
+        ASSERT_UNREACHABLE();
+        /* fall through */
+    case HVMTRANS_gfn_paged_out:
+    case HVMTRANS_gfn_shared:
+        return X86EMUL_RETRY;
+    case HVMTRANS_okay:
+        return X86EMUL_OKAY;
     }
 
-    return X86EMUL_OKAY;
+    gdprintk(XENLOG_WARNING, "Failed memory-to-memory REP MOVS: sgpa=%"
+             PRIpaddr" dgpa=%"PRIpaddr" reps=%lu bytes_per_rep=%u\n",
+             sgpa, dgpa, *reps, bytes_per_rep);
+
+    return X86EMUL_UNHANDLEABLE;
 }
 
 static int hvmemul_rep_stos(
@@ -1751,7 +1991,8 @@ static int hvmemul_rep_stos(
 {
     struct hvm_emulate_ctxt *hvmemul_ctxt =
         container_of(ctxt, struct hvm_emulate_ctxt, ctxt);
-    struct hvm_vcpu_io *vio = &current->arch.hvm_vcpu.hvm_io;
+    struct vcpu *curr = current;
+    struct hvm_vcpu_io *vio = &curr->arch.hvm.hvm_io;
     unsigned long addr, bytes;
     paddr_t gpa;
     p2m_type_t p2mt;
@@ -1784,12 +2025,12 @@ static int hvmemul_rep_stos(
     }
 
     /* Check for MMIO op */
-    (void)get_gfn_query_unlocked(current->domain, gpa >> PAGE_SHIFT, &p2mt);
+    get_gfn_query_unlocked(curr->domain, gpa >> PAGE_SHIFT, &p2mt);
 
     switch ( p2mt )
     {
         unsigned long bytes;
-        void *buf;
+        char *buf;
 
     default:
         /* Allocate temporary buffer. */
@@ -1812,10 +2053,10 @@ static int hvmemul_rep_stos(
 #define CASE(bits, suffix)                                     \
             case (bits) / 8:                                   \
                 asm ( "rep stos" #suffix                       \
-                      : "=m" (*(char (*)[bytes])buf),          \
+                      : "=m" (*buf),                           \
                         "=D" (dummy), "=c" (dummy)             \
                       : "a" (*(const uint##bits##_t *)p_data), \
-                         "1" (buf), "2" (*reps) );             \
+                        "1" (buf), "2" (*reps) : "memory" );   \
                 break
             CASE(8, b);
             CASE(16, w);
@@ -1833,13 +2074,20 @@ static int hvmemul_rep_stos(
         if ( df )
             gpa -= bytes - bytes_per_rep;
 
-        rc = hvm_copy_to_guest_phys(gpa, buf, bytes, current);
+        rc = hvm_copy_to_guest_phys(gpa, buf, bytes, curr);
 
         if ( buf != p_data )
             xfree(buf);
 
         switch ( rc )
         {
+        case HVMTRANS_need_retry:
+            /*
+             * hvm_copy_to_guest_phys() does not currently return
+             * HVMTRANS_need_retry.
+             */
+            ASSERT_UNREACHABLE();
+            /* fall through */
         case HVMTRANS_gfn_paged_out:
         case HVMTRANS_gfn_shared:
             return X86EMUL_RETRY;
@@ -1934,7 +2182,7 @@ static int hvmemul_read_cr(
     case 2:
     case 3:
     case 4:
-        *val = current->arch.hvm_vcpu.guest_cr[reg];
+        *val = current->arch.hvm.guest_cr[reg];
         HVMTRACE_LONG_2D(CR_READ, reg, TRC_PAR_LONG(*val));
         return X86EMUL_OKAY;
     default:
@@ -1955,20 +2203,26 @@ static int hvmemul_write_cr(
     switch ( reg )
     {
     case 0:
-        rc = hvm_set_cr0(val, 1);
+        rc = hvm_set_cr0(val, true);
         break;
 
     case 2:
-        current->arch.hvm_vcpu.guest_cr[2] = val;
+        current->arch.hvm.guest_cr[2] = val;
         rc = X86EMUL_OKAY;
         break;
 
     case 3:
-        rc = hvm_set_cr3(val, 1);
+    {
+        bool noflush = hvm_pcid_enabled(current) && (val & X86_CR3_NOFLUSH);
+
+        if ( noflush )
+            val &= ~X86_CR3_NOFLUSH;
+        rc = hvm_set_cr3(val, noflush, true);
         break;
+    }
 
     case 4:
-        rc = hvm_set_cr4(val, 1);
+        rc = hvm_set_cr4(val, true);
         break;
 
     default:
@@ -2023,7 +2277,7 @@ static int hvmemul_write_msr(
     uint64_t val,
     struct x86_emulate_ctxt *ctxt)
 {
-    int rc = hvm_msr_write_intercept(reg, val, 1);
+    int rc = hvm_msr_write_intercept(reg, val, true);
 
     if ( rc == X86EMUL_EXCEPTION )
         x86_emul_hw_exception(TRAP_gp_fault, 0, ctxt);
@@ -2031,17 +2285,73 @@ static int hvmemul_write_msr(
     return rc;
 }
 
-static int hvmemul_wbinvd(
+static int hvmemul_cache_op(
+    enum x86emul_cache_op op,
+    enum x86_segment seg,
+    unsigned long offset,
     struct x86_emulate_ctxt *ctxt)
 {
-    hvm_funcs.wbinvd_intercept();
-    return X86EMUL_OKAY;
-}
+    struct hvm_emulate_ctxt *hvmemul_ctxt =
+        container_of(ctxt, struct hvm_emulate_ctxt, ctxt);
+    uint32_t pfec = PFEC_page_present;
 
-int hvmemul_cpuid(uint32_t leaf, uint32_t subleaf,
-                  struct cpuid_leaf *res, struct x86_emulate_ctxt *ctxt)
-{
-    guest_cpuid(current, leaf, subleaf, res);
+    if ( !cache_flush_permitted(current->domain) )
+        return X86EMUL_OKAY;
+
+    switch ( op )
+    {
+        unsigned long addr;
+        int rc;
+        void *mapping;
+
+    case x86emul_clflush:
+    case x86emul_clflushopt:
+    case x86emul_clwb:
+        ASSERT(!is_x86_system_segment(seg));
+
+        rc = hvmemul_virtual_to_linear(seg, offset, 0, NULL,
+                                       hvm_access_read, hvmemul_ctxt, &addr);
+        if ( rc != X86EMUL_OKAY )
+            break;
+
+        if ( hvmemul_ctxt->seg_reg[x86_seg_ss].dpl == 3 )
+            pfec |= PFEC_user_mode;
+
+        mapping = hvmemul_map_linear_addr(addr, 0, pfec, hvmemul_ctxt);
+        if ( mapping == ERR_PTR(~X86EMUL_EXCEPTION) )
+            return X86EMUL_EXCEPTION;
+        if ( IS_ERR_OR_NULL(mapping) )
+            break;
+
+        if ( cpu_has_clflush )
+        {
+            if ( op == x86emul_clwb && cpu_has_clwb )
+                clwb(mapping);
+            else if ( op == x86emul_clflushopt && cpu_has_clflushopt )
+                clflushopt(mapping);
+            else
+                clflush(mapping);
+
+            hvmemul_unmap_linear_addr(mapping, addr, 0, hvmemul_ctxt);
+            break;
+        }
+
+        hvmemul_unmap_linear_addr(mapping, addr, 0, hvmemul_ctxt);
+        /* fall through */
+    case x86emul_wbinvd:
+    case x86emul_wbnoinvd:
+        alternative_vcall(hvm_funcs.wbinvd_intercept);
+        break;
+
+    case x86emul_invd:
+        /*
+         * Deliberately ignored: We mustn't issue INVD, and issuing WBINVD
+         * wouldn't match the request. And the only place we'd expect the insn
+         * to be sensibly used is in (virtualization unaware) firmware.
+         */
+        break;
+    }
+
     return X86EMUL_OKAY;
 }
 
@@ -2052,7 +2362,7 @@ static int hvmemul_get_fpu(
     struct vcpu *curr = current;
 
     if ( !curr->fpu_dirtied )
-        hvm_funcs.fpu_dirty_intercept();
+        alternative_vcall(hvm_funcs.fpu_dirty_intercept);
     else if ( type == X86EMUL_FPU_fpu )
     {
         const typeof(curr->arch.xsave_area->fpu_sse) *fpu_ctxt =
@@ -2169,40 +2479,64 @@ static void hvmemul_put_fpu(
         {
             curr->fpu_dirtied = false;
             stts();
-            hvm_funcs.fpu_leave(curr);
+            alternative_vcall(hvm_funcs.fpu_leave, curr);
         }
     }
 }
 
-static int hvmemul_invlpg(
-    enum x86_segment seg,
-    unsigned long offset,
+static int hvmemul_tlb_op(
+    enum x86emul_tlb_op op,
+    unsigned long addr,
+    unsigned long aux,
     struct x86_emulate_ctxt *ctxt)
 {
     struct hvm_emulate_ctxt *hvmemul_ctxt =
         container_of(ctxt, struct hvm_emulate_ctxt, ctxt);
-    unsigned long addr, reps = 1;
-    int rc;
+    int rc = X86EMUL_OKAY;
 
-    rc = hvmemul_virtual_to_linear(
-        seg, offset, 1, &reps, hvm_access_none, hvmemul_ctxt, &addr);
-
-    if ( rc == X86EMUL_EXCEPTION )
+    switch ( op )
     {
-        /*
-         * `invlpg` takes segment bases into account, but is not subject to
-         * faults from segment type/limit checks, and is specified as a NOP
-         * when issued on non-canonical addresses.
-         *
-         * hvmemul_virtual_to_linear() raises exceptions for type/limit
-         * violations, so squash them.
-         */
-        x86_emul_reset_event(ctxt);
-        rc = X86EMUL_OKAY;
-    }
+    case x86emul_invlpg:
+        rc = hvmemul_virtual_to_linear(aux, addr, 1, NULL, hvm_access_none,
+                                       hvmemul_ctxt, &addr);
 
-    if ( rc == X86EMUL_OKAY )
-        paging_invlpg(current, addr);
+        if ( rc == X86EMUL_EXCEPTION )
+        {
+            /*
+             * `invlpg` takes segment bases into account, but is not subject
+             * to faults from segment type/limit checks, and is specified as
+             * a NOP when issued on non-canonical addresses.
+             *
+             * hvmemul_virtual_to_linear() raises exceptions for type/limit
+             * violations, so squash them.
+             */
+            x86_emul_reset_event(ctxt);
+            rc = X86EMUL_OKAY;
+        }
+
+        if ( rc == X86EMUL_OKAY )
+            paging_invlpg(current, addr);
+        break;
+
+    case x86emul_invpcid:
+        if ( x86emul_invpcid_type(aux) != X86_INVPCID_INDIV_ADDR )
+        {
+            hvm_asid_flush_vcpu(current);
+            break;
+        }
+        aux = x86emul_invpcid_pcid(aux);
+        /* fall through */
+    case x86emul_invlpga:
+        /* TODO: Support ASIDs/PCIDs. */
+        if ( !aux )
+            paging_invlpg(current, addr);
+        else
+        {
+            x86_emul_hw_exception(TRAP_invalid_op, X86_EVENT_NO_EC, ctxt);
+            rc = X86EMUL_EXCEPTION;
+        }
+        break;
+    }
 
     return rc;
 }
@@ -2227,6 +2561,7 @@ static const struct x86_emulate_ops hvm_emulate_ops = {
     .write         = hvmemul_write,
     .rmw           = hvmemul_rmw,
     .cmpxchg       = hvmemul_cmpxchg,
+    .blk           = hvmemul_blk,
     .validate      = hvmemul_validate,
     .rep_ins       = hvmemul_rep_ins,
     .rep_outs      = hvmemul_rep_outs,
@@ -2242,11 +2577,11 @@ static const struct x86_emulate_ops hvm_emulate_ops = {
     .write_xcr     = hvmemul_write_xcr,
     .read_msr      = hvmemul_read_msr,
     .write_msr     = hvmemul_write_msr,
-    .wbinvd        = hvmemul_wbinvd,
-    .cpuid         = hvmemul_cpuid,
+    .cache_op      = hvmemul_cache_op,
+    .tlb_op        = hvmemul_tlb_op,
+    .cpuid         = x86emul_cpuid,
     .get_fpu       = hvmemul_get_fpu,
     .put_fpu       = hvmemul_put_fpu,
-    .invlpg        = hvmemul_invlpg,
     .vmfunc        = hvmemul_vmfunc,
 };
 
@@ -2269,22 +2604,41 @@ static const struct x86_emulate_ops hvm_emulate_ops_no_write = {
     .write_xcr     = hvmemul_write_xcr,
     .read_msr      = hvmemul_read_msr,
     .write_msr     = hvmemul_write_msr_discard,
-    .wbinvd        = hvmemul_wbinvd_discard,
-    .cpuid         = hvmemul_cpuid,
+    .cache_op      = hvmemul_cache_op_discard,
+    .tlb_op        = hvmemul_tlb_op,
+    .cpuid         = x86emul_cpuid,
     .get_fpu       = hvmemul_get_fpu,
     .put_fpu       = hvmemul_put_fpu,
-    .invlpg        = hvmemul_invlpg,
     .vmfunc        = hvmemul_vmfunc,
 };
 
+/*
+ * Note that passing HVMIO_no_completion into this function serves as kind
+ * of (but not fully) an "auto select completion" indicator.  When there's
+ * no completion needed, the passed in value will be ignored in any case.
+ */
 static int _hvm_emulate_one(struct hvm_emulate_ctxt *hvmemul_ctxt,
-    const struct x86_emulate_ops *ops)
+    const struct x86_emulate_ops *ops,
+    enum hvm_io_completion completion)
 {
     const struct cpu_user_regs *regs = hvmemul_ctxt->ctxt.regs;
     struct vcpu *curr = current;
     uint32_t new_intr_shadow;
-    struct hvm_vcpu_io *vio = &curr->arch.hvm_vcpu.hvm_io;
+    struct hvm_vcpu_io *vio = &curr->arch.hvm.hvm_io;
     int rc;
+
+    /*
+     * Enable caching if it's currently disabled, but leave the cache
+     * untouched if it's already enabled, for re-execution to consume
+     * entries populated by an earlier pass.
+     */
+    if ( vio->cache->num_ents > vio->cache->max_ents )
+    {
+        ASSERT(vio->io_req.state == STATE_IOREQ_NONE);
+        vio->cache->num_ents = 0;
+    }
+    else
+        ASSERT(vio->io_req.state == STATE_IORESP_READY);
 
     hvm_emulate_init_per_insn(hvmemul_ctxt, vio->mmio_insn,
                               vio->mmio_insn_bytes);
@@ -2295,16 +2649,32 @@ static int _hvm_emulate_one(struct hvm_emulate_ctxt *hvmemul_ctxt,
     if ( rc == X86EMUL_OKAY && vio->mmio_retry )
         rc = X86EMUL_RETRY;
 
-    if ( !hvm_vcpu_io_need_completion(vio) )
+    if ( !hvm_ioreq_needs_completion(&vio->io_req) )
+        completion = HVMIO_no_completion;
+    else if ( completion == HVMIO_no_completion )
+        completion = (vio->io_req.type != IOREQ_TYPE_PIO ||
+                      hvmemul_ctxt->is_mem_access) ? HVMIO_mmio_completion
+                                                   : HVMIO_pio_completion;
+
+    switch ( vio->io_completion = completion )
     {
+    case HVMIO_no_completion:
+    case HVMIO_pio_completion:
         vio->mmio_cache_count = 0;
         vio->mmio_insn_bytes = 0;
-    }
-    else
-    {
+        vio->mmio_access = (struct npfec){};
+        hvmemul_cache_disable(curr);
+        break;
+
+    case HVMIO_mmio_completion:
+    case HVMIO_realmode_completion:
         BUILD_BUG_ON(sizeof(vio->mmio_insn) < sizeof(hvmemul_ctxt->insn_buf));
         vio->mmio_insn_bytes = hvmemul_ctxt->insn_buf_bytes;
         memcpy(vio->mmio_insn, hvmemul_ctxt->insn_buf, vio->mmio_insn_bytes);
+        break;
+
+    default:
+        ASSERT_UNREACHABLE();
     }
 
     if ( hvmemul_ctxt->ctxt.retire.singlestep )
@@ -2331,7 +2701,8 @@ static int _hvm_emulate_one(struct hvm_emulate_ctxt *hvmemul_ctxt,
     if ( hvmemul_ctxt->intr_shadow != new_intr_shadow )
     {
         hvmemul_ctxt->intr_shadow = new_intr_shadow;
-        hvm_funcs.set_interrupt_shadow(curr, new_intr_shadow);
+        alternative_vcall(hvm_funcs.set_interrupt_shadow,
+                          curr, new_intr_shadow);
     }
 
     if ( hvmemul_ctxt->ctxt.retire.hlt &&
@@ -2344,9 +2715,10 @@ static int _hvm_emulate_one(struct hvm_emulate_ctxt *hvmemul_ctxt,
 }
 
 int hvm_emulate_one(
-    struct hvm_emulate_ctxt *hvmemul_ctxt)
+    struct hvm_emulate_ctxt *hvmemul_ctxt,
+    enum hvm_io_completion completion)
 {
-    return _hvm_emulate_one(hvmemul_ctxt, &hvm_emulate_ops);
+    return _hvm_emulate_one(hvmemul_ctxt, &hvm_emulate_ops, completion);
 }
 
 int hvm_emulate_one_mmio(unsigned long mfn, unsigned long gla)
@@ -2355,13 +2727,13 @@ int hvm_emulate_one_mmio(unsigned long mfn, unsigned long gla)
         .read       = x86emul_unhandleable_rw,
         .insn_fetch = hvmemul_insn_fetch,
         .write      = mmcfg_intercept_write,
-        .cpuid      = hvmemul_cpuid,
+        .validate   = hvmemul_validate,
     };
     static const struct x86_emulate_ops hvm_ro_emulate_ops_mmio = {
         .read       = x86emul_unhandleable_rw,
         .insn_fetch = hvmemul_insn_fetch,
         .write      = mmio_ro_emulated_write,
-        .cpuid      = hvmemul_cpuid,
+        .validate   = hvmemul_validate,
     };
     struct mmio_ro_emulate_ctxt mmio_ro_ctxt = { .cr2 = gla };
     struct hvm_emulate_ctxt ctxt;
@@ -2381,8 +2753,8 @@ int hvm_emulate_one_mmio(unsigned long mfn, unsigned long gla)
     hvm_emulate_init_once(&ctxt, x86_insn_is_mem_write,
                           guest_cpu_user_regs());
     ctxt.ctxt.data = &mmio_ro_ctxt;
-    rc = _hvm_emulate_one(&ctxt, ops);
-    switch ( rc )
+
+    switch ( rc = _hvm_emulate_one(&ctxt, ops, HVMIO_no_completion) )
     {
     case X86EMUL_UNHANDLEABLE:
     case X86EMUL_UNIMPLEMENTED:
@@ -2409,11 +2781,12 @@ void hvm_emulate_one_vm_event(enum emul_kind kind, unsigned int trapnr,
     switch ( kind )
     {
     case EMUL_KIND_NOWRITE:
-        rc = _hvm_emulate_one(&ctx, &hvm_emulate_ops_no_write);
+        rc = _hvm_emulate_one(&ctx, &hvm_emulate_ops_no_write,
+                              HVMIO_no_completion);
         break;
     case EMUL_KIND_SET_CONTEXT_INSN: {
         struct vcpu *curr = current;
-        struct hvm_vcpu_io *vio = &curr->arch.hvm_vcpu.hvm_io;
+        struct hvm_vcpu_io *vio = &curr->arch.hvm.hvm_io;
 
         BUILD_BUG_ON(sizeof(vio->mmio_insn) !=
                      sizeof(curr->arch.vm_event->emul.insn.data));
@@ -2430,7 +2803,7 @@ void hvm_emulate_one_vm_event(enum emul_kind kind, unsigned int trapnr,
     /* Fall-through */
     default:
         ctx.set_context = (kind == EMUL_KIND_SET_CONTEXT_DATA);
-        rc = hvm_emulate_one(&ctx);
+        rc = hvm_emulate_one(&ctx, HVMIO_no_completion);
     }
 
     switch ( rc )
@@ -2468,13 +2841,14 @@ void hvm_emulate_init_once(
 
     memset(hvmemul_ctxt, 0, sizeof(*hvmemul_ctxt));
 
-    hvmemul_ctxt->intr_shadow = hvm_funcs.get_interrupt_shadow(curr);
+    hvmemul_ctxt->intr_shadow =
+        alternative_call(hvm_funcs.get_interrupt_shadow, curr);
     hvmemul_get_seg_reg(x86_seg_cs, hvmemul_ctxt);
     hvmemul_get_seg_reg(x86_seg_ss, hvmemul_ctxt);
 
     hvmemul_ctxt->validate = validate;
     hvmemul_ctxt->ctxt.regs = regs;
-    hvmemul_ctxt->ctxt.vendor = curr->domain->arch.cpuid->x86_vendor;
+    hvmemul_ctxt->ctxt.cpuid = curr->domain->arch.cpuid;
     hvmemul_ctxt->ctxt.force_writeback = true;
 }
 
@@ -2484,8 +2858,6 @@ void hvm_emulate_init_per_insn(
     unsigned int insn_bytes)
 {
     struct vcpu *curr = current;
-    unsigned int pfec = PFEC_page_present;
-    unsigned long addr;
 
     hvmemul_ctxt->ctxt.lma = hvm_long_mode_active(curr);
 
@@ -2500,14 +2872,23 @@ void hvm_emulate_init_per_insn(
             hvmemul_ctxt->seg_reg[x86_seg_ss].db ? 32 : 16;
     }
 
-    if ( hvmemul_ctxt->seg_reg[x86_seg_ss].dpl == 3 )
-        pfec |= PFEC_user_mode;
-
     hvmemul_ctxt->insn_buf_eip = hvmemul_ctxt->ctxt.regs->rip;
-    if ( !insn_bytes )
+
+    if ( insn_bytes )
     {
+        hvmemul_ctxt->insn_buf_bytes = insn_bytes;
+        memcpy(hvmemul_ctxt->insn_buf, insn_buf, insn_bytes);
+    }
+    else if ( !(hvmemul_ctxt->insn_buf_bytes =
+                hvm_get_insn_bytes(curr, hvmemul_ctxt->insn_buf)) )
+    {
+        unsigned int pfec = PFEC_page_present | PFEC_insn_fetch;
+        unsigned long addr;
+
+        if ( hvmemul_ctxt->seg_reg[x86_seg_ss].dpl == 3 )
+            pfec |= PFEC_user_mode;
+
         hvmemul_ctxt->insn_buf_bytes =
-            hvm_get_insn_bytes(curr, hvmemul_ctxt->insn_buf) ?:
             (hvm_virtual_to_linear_addr(x86_seg_cs,
                                         &hvmemul_ctxt->seg_reg[x86_seg_cs],
                                         hvmemul_ctxt->insn_buf_eip,
@@ -2515,16 +2896,13 @@ void hvm_emulate_init_per_insn(
                                         hvm_access_insn_fetch,
                                         &hvmemul_ctxt->seg_reg[x86_seg_cs],
                                         &addr) &&
-             hvm_fetch_from_guest_linear(hvmemul_ctxt->insn_buf, addr,
-                                         sizeof(hvmemul_ctxt->insn_buf),
-                                         pfec, NULL) == HVMTRANS_okay) ?
+             hvm_copy_from_guest_linear(hvmemul_ctxt->insn_buf, addr,
+                                        sizeof(hvmemul_ctxt->insn_buf),
+                                        pfec, NULL) == HVMTRANS_okay) ?
             sizeof(hvmemul_ctxt->insn_buf) : 0;
     }
-    else
-    {
-        hvmemul_ctxt->insn_buf_bytes = insn_bytes;
-        memcpy(hvmemul_ctxt->insn_buf, insn_buf, insn_bytes);
-    }
+
+    hvmemul_ctxt->is_mem_access = false;
 }
 
 void hvm_emulate_writeback(
@@ -2587,6 +2965,123 @@ void hvm_dump_emulation_state(const char *loglvl, const char *prefix,
            loglvl, prefix, rc, curr, mode_str, cs->sel,
            hvmemul_ctxt->insn_buf_eip, hvmemul_ctxt->insn_buf_bytes,
            hvmemul_ctxt->insn_buf);
+}
+
+int hvmemul_cache_init(struct vcpu *v)
+{
+    /*
+     * No insn can access more than 16 independent linear addresses (AVX512F
+     * scatters/gathers being the worst). Each such linear range can span a
+     * page boundary, i.e. may require two page walks. Account for each insn
+     * byte individually, for simplicity.
+     */
+    const unsigned int nents = (CONFIG_PAGING_LEVELS + 1) *
+                               (MAX_INST_LEN + 16 * 2);
+    struct hvmemul_cache *cache = xmalloc_flex_struct(struct hvmemul_cache,
+                                                      ents, nents);
+
+    if ( !cache )
+        return -ENOMEM;
+
+    /* Cache is disabled initially. */
+    cache->num_ents = nents + 1;
+    cache->max_ents = nents;
+
+    v->arch.hvm.hvm_io.cache = cache;
+
+    return 0;
+}
+
+unsigned int hvmemul_cache_disable(struct vcpu *v)
+{
+    struct hvmemul_cache *cache = v->arch.hvm.hvm_io.cache;
+    unsigned int token = cache->num_ents;
+
+    cache->num_ents = cache->max_ents + 1;
+
+    return token;
+}
+
+void hvmemul_cache_restore(struct vcpu *v, unsigned int token)
+{
+    struct hvmemul_cache *cache = v->arch.hvm.hvm_io.cache;
+
+    ASSERT(cache->num_ents > cache->max_ents);
+    cache->num_ents = token;
+}
+
+bool hvmemul_read_cache(const struct vcpu *v, paddr_t gpa,
+                        void *buffer, unsigned int size)
+{
+    const struct hvmemul_cache *cache = v->arch.hvm.hvm_io.cache;
+    unsigned int i;
+
+    /* Cache unavailable? */
+    if ( !is_hvm_vcpu(v) || cache->num_ents > cache->max_ents )
+        return false;
+
+    while ( size > sizeof(cache->ents->data) )
+    {
+        i = gpa & (sizeof(cache->ents->data) - 1)
+            ? -gpa & (sizeof(cache->ents->data) - 1)
+            : sizeof(cache->ents->data);
+        if ( !hvmemul_read_cache(v, gpa, buffer, i) )
+            return false;
+        gpa += i;
+        buffer += i;
+        size -= i;
+    }
+
+    for ( i = 0; i < cache->num_ents; ++i )
+        if ( cache->ents[i].gpa == gpa && cache->ents[i].size == size )
+        {
+            memcpy(buffer, &cache->ents[i].data, size);
+            return true;
+        }
+
+    return false;
+}
+
+void hvmemul_write_cache(const struct vcpu *v, paddr_t gpa,
+                         const void *buffer, unsigned int size)
+{
+    struct hvmemul_cache *cache = v->arch.hvm.hvm_io.cache;
+    unsigned int i;
+
+    /* Cache unavailable? */
+    if ( !is_hvm_vcpu(v) || cache->num_ents > cache->max_ents )
+        return;
+
+    while ( size > sizeof(cache->ents->data) )
+    {
+        i = gpa & (sizeof(cache->ents->data) - 1)
+            ? -gpa & (sizeof(cache->ents->data) - 1)
+            : sizeof(cache->ents->data);
+        hvmemul_write_cache(v, gpa, buffer, i);
+        gpa += i;
+        buffer += i;
+        size -= i;
+    }
+
+    for ( i = 0; i < cache->num_ents; ++i )
+        if ( cache->ents[i].gpa == gpa && cache->ents[i].size == size )
+        {
+            memcpy(&cache->ents[i].data, buffer, size);
+            return;
+        }
+
+    if ( unlikely(i >= cache->max_ents) )
+    {
+        domain_crash(v->domain);
+        return;
+    }
+
+    cache->ents[i].gpa  = gpa;
+    cache->ents[i].size = size;
+
+    memcpy(&cache->ents[i].data, buffer, size);
+
+    cache->num_ents = i + 1;
 }
 
 /*

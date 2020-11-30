@@ -63,6 +63,8 @@ void __bad_atomic_size(void);
 
 #define write_atomic(p, x) ({                             \
     typeof(*(p)) __x = (x);                               \
+    /* Check that the pointer is not a const type */      \
+    void *__maybe_unused p_ = &__x;                       \
     unsigned long x_ = (unsigned long)__x;                \
     switch ( sizeof(*(p)) ) {                             \
     case 1: write_u8_atomic((uint8_t *)(p), x_); break;   \
@@ -222,6 +224,14 @@ static inline int atomic_add_unless(atomic_t *v, int a, int u)
     while (c != u && (old = atomic_cmpxchg(v, c, c + a)) != c)
         c = old;
     return c;
+}
+
+static inline void atomic_and(int m, atomic_t *v)
+{
+    asm volatile (
+        "lock andl %1, %0"
+        : "+m" (*(volatile int *)&v->counter)
+        : "ir" (m) );
 }
 
 #define atomic_xchg(v, new) (xchg(&((v)->counter), new))

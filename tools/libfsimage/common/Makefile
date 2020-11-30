@@ -1,6 +1,9 @@
 XEN_ROOT = $(CURDIR)/../../..
 include $(XEN_ROOT)/tools/libfsimage/Rules.mk
 
+MAJOR = 4.14
+MINOR = 0
+
 CFLAGS += -DFSDIR="\"$(LIBEXEC_LIB)/fs\""
 
 LDFLAGS-$(CONFIG_SunOS) = -Wl,-M -Wl,mapfile-SunOS
@@ -14,7 +17,7 @@ LIB_SRCS-y = fsimage.c fsimage_plugin.c fsimage_grub.c
 
 PIC_OBJS := $(patsubst %.c,%.opic,$(LIB_SRCS-y))
 
-LIB = libfsimage.so
+LIB = libxenfsimage.so libxenfsimage.so.$(MAJOR) libxenfsimage.so.$(MAJOR).$(MINOR)
 
 .PHONY: all
 all: $(LIB)
@@ -23,23 +26,32 @@ all: $(LIB)
 install: all
 	$(INSTALL_DIR) $(DESTDIR)$(LIBEXEC_LIB)
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)
-	$(INSTALL_PROG) libfsimage.so $(DESTDIR)$(LIBEXEC_LIB)
-	$(INSTALL_DATA) fsimage.h $(DESTDIR)$(includedir)
-	$(INSTALL_DATA) fsimage_plugin.h $(DESTDIR)$(includedir)
-	$(INSTALL_DATA) fsimage_grub.h $(DESTDIR)$(includedir)
+	$(INSTALL_PROG) libxenfsimage.so.$(MAJOR).$(MINOR) $(DESTDIR)$(LIBEXEC_LIB)
+	ln -sf libxenfsimage.so.$(MAJOR).$(MINOR) $(DESTDIR)$(LIBEXEC_LIB)/libxenfsimage.so.$(MAJOR)
+	ln -sf libxenfsimage.so.$(MAJOR) $(DESTDIR)$(LIBEXEC_LIB)/libxenfsimage.so
+	$(INSTALL_DATA) xenfsimage.h $(DESTDIR)$(includedir)
+	$(INSTALL_DATA) xenfsimage_plugin.h $(DESTDIR)$(includedir)
+	$(INSTALL_DATA) xenfsimage_grub.h $(DESTDIR)$(includedir)
 
 .PHONY: uninstall
 uninstall:
-	rm -f $(DESTDIR)$(includedir)/fsimage_grub.h
-	rm -f $(DESTDIR)$(includedir)/fsimage_plugin.h
-	rm -f $(DESTDIR)$(includedir)/fsimage.h
-	rm -f $(DESTDIR)$(LIBEXEC_LIB)/libfsimage.so
+	rm -f $(DESTDIR)$(includedir)/xenfsimage_grub.h
+	rm -f $(DESTDIR)$(includedir)/xenfsimage_plugin.h
+	rm -f $(DESTDIR)$(includedir)/xenfsimage.h
+	rm -f $(DESTDIR)$(LIBEXEC_LIB)/libxenfsimage.so
+	rm -f $(DESTDIR)$(LIBEXEC_LIB)/libxenfsimage.so.$(MAJOR)
+	rm -f $(DESTDIR)$(LIBEXEC_LIB)/libxenfsimage.so.$(MAJOR).$(MINOR)
 
 clean distclean::
 	rm -f $(LIB)
 
-libfsimage.so: $(PIC_OBJS)
-	$(CC) $(LDFLAGS) -Wl,$(SONAME_LDFLAG),$@ $(SHLIB_LDFLAGS) -o $@ $^ $(PTHREAD_LIBS) $(APPEND_LDFLAGS)
+libxenfsimage.so: libxenfsimage.so.$(MAJOR)
+	ln -sf $< $@
+libxenfsimage.so.$(MAJOR): libxenfsimage.so.$(MAJOR).$(MINOR)
+	ln -sf $< $@
+
+libxenfsimage.so.$(MAJOR).$(MINOR): $(PIC_OBJS)
+	$(CC) $(LDFLAGS) -Wl,$(SONAME_LDFLAG) -Wl,libxenfsimage.so.$(MAJOR) $(SHLIB_LDFLAGS) -o $@ $^ $(PTHREAD_LIBS) $(APPEND_LDFLAGS)
 
 -include $(DEPS_INCLUDE)
 

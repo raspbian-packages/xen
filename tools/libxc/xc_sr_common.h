@@ -63,8 +63,14 @@ struct xc_sr_save_ops
     int (*setup)(struct xc_sr_context *ctx);
 
     /**
-     * Send records which need to be at the start of the stream.  This is
-     * called once, after the Image and Domain headers are written.
+     * Send static records at the head of the stream.  This is called once,
+     * after the Image and Domain headers are written.
+     */
+    int (*static_data)(struct xc_sr_context *ctx);
+
+    /**
+     * Send dynamic records which need to be at the start of the stream.  This
+     * is called after the STATIC_DATA_END record is written.
      */
     int (*start_of_stream)(struct xc_sr_context *ctx);
 
@@ -153,6 +159,15 @@ struct xc_sr_restore_ops
     int (*process_record)(struct xc_sr_context *ctx, struct xc_sr_record *rec);
 
     /**
+     * Perform any actions required after the static data has arrived.  Called
+     * when the STATIC_DATA_COMPLETE record has been recieved/inferred.
+     * 'missing' should be filled in for any data item the higher level
+     * toolstack needs to provide compatiblity for.
+     */
+    int (*static_data_complete)(struct xc_sr_context *ctx,
+                                unsigned int *missing);
+
+    /**
      * Perform any actions required after the stream has been finished. Called
      * after the END record has been received.
      */
@@ -165,18 +180,46 @@ struct xc_sr_restore_ops
     int (*cleanup)(struct xc_sr_context *ctx);
 };
 
-/* x86 PV per-vcpu storage structure for blobs heading Xen-wards. */
-struct xc_sr_x86_pv_restore_vcpu
+/* Wrapper for blobs of data heading Xen-wards. */
+struct xc_sr_blob
 {
-    void *basic, *extd, *xsave, *msr;
-    size_t basicsz, extdsz, xsavesz, msrsz;
+    void *ptr;
+    size_t size;
 };
+
+/*
+ * Update a blob.  Duplicate src/size, freeing the old blob if necessary.  May
+ * fail due to memory allocation.
+ */
+static inline int update_blob(struct xc_sr_blob *blob,
+                              const void *src, size_t size)
+{
+    void *ptr;
+
+    if ( !src || !size )
+    {
+        errno = EINVAL;
+        return -1;
+    }
+
+    if ( (ptr = malloc(size)) == NULL )
+        return -1;
+
+    free(blob->ptr);
+    blob->ptr = memcpy(ptr, src, size);
+    blob->size = size;
+
+    return 0;
+}
 
 struct xc_sr_context
 {
     xc_interface *xch;
     uint32_t domid;
     int fd;
+
+    /* Plain VM, or checkpoints over time. */
+    xc_stream_type_t stream_type;
 
     xc_dominfo_t dominfo;
 
@@ -192,9 +235,6 @@ struct xc_sr_context
             /* Live migrate vs non live suspend. */
             bool live;
 
-            /* Plain VM, or checkpoints over time. */
-            int checkpointed;
-
             /* Further debugging information in the stream. */
             bool debug;
 
@@ -203,7 +243,7 @@ struct xc_sr_context
             struct precopy_stats stats;
 
             xen_pfn_t *batch_pfns;
-            unsigned nr_batch_pfns;
+            unsigned int nr_batch_pfns;
             unsigned long *deferred_pages;
             unsigned long nr_deferred_pages;
             xc_hypercall_buffer_t dirty_bitmap_hbuf;
@@ -225,11 +265,11 @@ struct xc_sr_context
             uint32_t guest_type;
             uint32_t guest_page_size;
 
-            /* Plain VM, or checkpoints over time. */
-            int checkpointed;
-
             /* Currently buffering records between a checkpoint */
             bool buffer_all_records;
+
+            /* Whether a STATIC_DATA_END record has been seen/inferred. */
+            bool seen_static_data_end;
 
 /*
  * With Remus/COLO, we buffer the records sent by the primary at checkpoint,
@@ -240,8 +280,8 @@ struct xc_sr_context
  */
 #define DEFAULT_BUF_RECORDS 1024
             struct xc_sr_record *buffered_records;
-            unsigned allocated_rec_num;
-            unsigned buffered_rec_num;
+            unsigned int allocated_rec_num;
+            unsigned int buffered_rec_num;
 
             /*
              * Xenstore and Console parameters.
@@ -263,75 +303,91 @@ struct xc_sr_context
 
     union /* Guest-arch specific data. */
     {
-        struct /* x86 PV guest. */
+        struct /* x86 */
         {
-            /* 4 or 8; 32 or 64 bit domain */
-            unsigned int width;
-            /* 3 or 4 pagetable levels */
-            unsigned int levels;
-
-            /* Maximum Xen frame */
-            xen_pfn_t max_mfn;
-            /* Read-only machine to phys map */
-            xen_pfn_t *m2p;
-            /* first mfn of the compat m2p (Only needed for 32bit PV guests) */
-            xen_pfn_t compat_m2p_mfn0;
-            /* Number of m2p frames mapped */
-            unsigned long nr_m2p_frames;
-
-            /* Maximum guest frame */
-            xen_pfn_t max_pfn;
-
-            /* Number of frames making up the p2m */
-            unsigned int p2m_frames;
-            /* Guest's phys to machine map.  Mapped read-only (save) or
-             * allocated locally (restore).  Uses guest unsigned longs. */
-            void *p2m;
-            /* The guest pfns containing the p2m leaves */
-            xen_pfn_t *p2m_pfns;
-
-            /* Read-only mapping of guests shared info page */
-            shared_info_any_t *shinfo;
-
-            /* p2m generation count for verifying validity of local p2m. */
-            uint64_t p2m_generation;
-
+            /* Common save/restore data. */
             union
             {
                 struct
                 {
-                    /* State machine for the order of received records. */
-                    bool seen_pv_info;
-
-                    /* Types for each page (bounded by max_pfn). */
-                    uint32_t *pfn_types;
-
-                    /* Vcpu context blobs. */
-                    struct xc_sr_x86_pv_restore_vcpu *vcpus;
-                    unsigned nr_vcpus;
+                    /* X86_{CPUID,MSR}_DATA blobs for CPU Policy. */
+                    struct xc_sr_blob cpuid, msr;
                 } restore;
             };
-        } x86_pv;
 
-        struct /* x86 HVM guest. */
-        {
-            union
+            struct /* x86 PV guest. */
             {
-                struct
-                {
-                    /* Whether qemu enabled logdirty mode, and we should
-                     * disable on cleanup. */
-                    bool qemu_enabled_logdirty;
-                } save;
+                /* 4 or 8; 32 or 64 bit domain */
+                unsigned int width;
+                /* 3 or 4 pagetable levels */
+                unsigned int levels;
 
-                struct
+                /* Maximum Xen frame */
+                xen_pfn_t max_mfn;
+                /* Read-only machine to phys map */
+                xen_pfn_t *m2p;
+                /* first mfn of the compat m2p (Only needed for 32bit PV guests) */
+                xen_pfn_t compat_m2p_mfn0;
+                /* Number of m2p frames mapped */
+                unsigned long nr_m2p_frames;
+
+                /* Maximum guest frame */
+                xen_pfn_t max_pfn;
+
+                /* Number of frames making up the p2m */
+                unsigned int p2m_frames;
+                /* Guest's phys to machine map.  Mapped read-only (save) or
+                 * allocated locally (restore).  Uses guest unsigned longs. */
+                void *p2m;
+                /* The guest pfns containing the p2m leaves */
+                xen_pfn_t *p2m_pfns;
+
+                /* Read-only mapping of guests shared info page */
+                shared_info_any_t *shinfo;
+
+                /* p2m generation count for verifying validity of local p2m. */
+                uint64_t p2m_generation;
+
+                union
                 {
-                    /* HVM context blob. */
-                    void *context;
-                    size_t contextsz;
-                } restore;
-            };
-        } x86_hvm;
+                    struct
+                    {
+                        /* State machine for the order of received records. */
+                        bool seen_pv_info;
+
+                        /* Types for each page (bounded by max_pfn). */
+                        uint32_t *pfn_types;
+
+                        /* x86 PV per-vcpu storage structure for blobs. */
+                        struct xc_sr_x86_pv_restore_vcpu
+                        {
+                            struct xc_sr_blob basic, extd, xsave, msr;
+                        } *vcpus;
+                        unsigned int nr_vcpus;
+                    } restore;
+                };
+            } pv;
+
+            struct /* x86 HVM guest. */
+            {
+                union
+                {
+                    struct
+                    {
+                        /* Whether qemu enabled logdirty mode, and we should
+                         * disable on cleanup. */
+                        bool qemu_enabled_logdirty;
+                    } save;
+
+                    struct
+                    {
+                        /* HVM context blob. */
+                        struct xc_sr_blob context;
+                    } restore;
+                };
+            } hvm;
+
+        } x86;
     };
 };
 
@@ -394,8 +450,11 @@ int read_record(struct xc_sr_context *ctx, int fd, struct xc_sr_record *rec);
  * x86_pv_localise_page() if we receive pagetables frames ahead of the
  * contents of the frames they point at.
  */
-int populate_pfns(struct xc_sr_context *ctx, unsigned count,
+int populate_pfns(struct xc_sr_context *ctx, unsigned int count,
                   const xen_pfn_t *original_pfns, const uint32_t *types);
+
+/* Handle a STATIC_DATA_END record. */
+int handle_static_data_end(struct xc_sr_context *ctx);
 
 #endif
 /*

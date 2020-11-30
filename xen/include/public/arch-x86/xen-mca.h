@@ -170,9 +170,9 @@ struct mcinfo_extended {
     /*
      * Currently Intel extended MSR (32/64) include all gp registers
      * and E(R)FLAGS, E(R)IP, E(R)MISC, up to 11/19 of them might be
-     * useful at present. So expand this array to 16/32 to leave room.
+     * useful at present. So expand this array to 32 to leave room.
      */
-    struct mcinfo_msr mc_msr[sizeof(void *) * 4];
+    struct mcinfo_msr mc_msr[32];
 };
 
 /* Recovery Action flags. Giving recovery result information to DOM0 */
@@ -246,7 +246,9 @@ typedef struct mc_info mc_info_t;
 DEFINE_XEN_GUEST_HANDLE(mc_info_t);
 
 #define __MC_MSR_ARRAYSIZE 8
+#if __XEN_INTERFACE_VERSION__ <= 0x00040d00
 #define __MC_NMSRS 1
+#endif
 #define MC_NCAPS	7	/* 7 CPU feature flag words */
 #define MC_CAPS_STD_EDX	0	/* cpuid level 0x00000001 (%edx) */
 #define MC_CAPS_AMD_EDX	1	/* cpuid level 0x80000001 (%edx) */

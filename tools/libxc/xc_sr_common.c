@@ -4,12 +4,10 @@
 
 #include <xen-tools/libs.h>
 
-static const char *dhdr_types[] =
+static const char *const dhdr_types[] =
 {
     [DHDR_TYPE_X86_PV]  = "x86 PV",
     [DHDR_TYPE_X86_HVM] = "x86 HVM",
-    [DHDR_TYPE_X86_PVH] = "x86 PVH",
-    [DHDR_TYPE_ARM]     = "ARM",
 };
 
 const char *dhdr_type_to_str(uint32_t type)
@@ -20,7 +18,7 @@ const char *dhdr_type_to_str(uint32_t type)
     return "Reserved";
 }
 
-static const char *mandatory_rec_types[] =
+static const char *const mandatory_rec_types[] =
 {
     [REC_TYPE_END]                          = "End",
     [REC_TYPE_PAGE_DATA]                    = "Page data",
@@ -30,7 +28,7 @@ static const char *mandatory_rec_types[] =
     [REC_TYPE_X86_PV_VCPU_EXTENDED]         = "x86 PV vcpu extended",
     [REC_TYPE_X86_PV_VCPU_XSAVE]            = "x86 PV vcpu xsave",
     [REC_TYPE_SHARED_INFO]                  = "Shared info",
-    [REC_TYPE_TSC_INFO]                     = "TSC info",
+    [REC_TYPE_X86_TSC_INFO]                 = "x86 TSC info",
     [REC_TYPE_HVM_CONTEXT]                  = "HVM context",
     [REC_TYPE_HVM_PARAMS]                   = "HVM params",
     [REC_TYPE_TOOLSTACK]                    = "Toolstack",
@@ -38,6 +36,9 @@ static const char *mandatory_rec_types[] =
     [REC_TYPE_VERIFY]                       = "Verify",
     [REC_TYPE_CHECKPOINT]                   = "Checkpoint",
     [REC_TYPE_CHECKPOINT_DIRTY_PFN_LIST]    = "Checkpoint dirty pfn list",
+    [REC_TYPE_STATIC_DATA_END]              = "Static data end",
+    [REC_TYPE_X86_CPUID_POLICY]             = "x86 CPUID policy",
+    [REC_TYPE_X86_MSR_POLICY]               = "x86 MSR policy",
 };
 
 const char *rec_type_to_str(uint32_t type)
@@ -60,13 +61,12 @@ int write_split_record(struct xc_sr_context *ctx, struct xc_sr_record *rec,
     xc_interface *xch = ctx->xch;
     typeof(rec->length) combined_length = rec->length + sz;
     size_t record_length = ROUNDUP(combined_length, REC_ALIGN_ORDER);
-    struct iovec parts[] =
-    {
+    struct iovec parts[] = {
         { &rec->type,       sizeof(rec->type) },
         { &combined_length, sizeof(combined_length) },
         { rec->data,        rec->length },
         { buf,              sz },
-        { (void*)zeroes,    record_length - combined_length },
+        { (void *)zeroes,   record_length - combined_length },
     };
 
     if ( record_length > REC_LENGTH_MAX )
@@ -102,7 +102,8 @@ int read_record(struct xc_sr_context *ctx, int fd, struct xc_sr_record *rec)
         PERROR("Failed to read Record Header from stream");
         return -1;
     }
-    else if ( rhdr.length > REC_LENGTH_MAX )
+
+    if ( rhdr.length > REC_LENGTH_MAX )
     {
         ERROR("Record (0x%08x, %s) length %#x exceeds max (%#x)", rhdr.type,
               rec_type_to_str(rhdr.type), rhdr.length, REC_LENGTH_MAX);
@@ -150,7 +151,7 @@ static void __attribute__((unused)) build_assertions(void)
     BUILD_BUG_ON(sizeof(struct xc_sr_rec_x86_pv_info)       != 8);
     BUILD_BUG_ON(sizeof(struct xc_sr_rec_x86_pv_p2m_frames) != 8);
     BUILD_BUG_ON(sizeof(struct xc_sr_rec_x86_pv_vcpu_hdr)   != 8);
-    BUILD_BUG_ON(sizeof(struct xc_sr_rec_tsc_info)          != 24);
+    BUILD_BUG_ON(sizeof(struct xc_sr_rec_x86_tsc_info)      != 24);
     BUILD_BUG_ON(sizeof(struct xc_sr_rec_hvm_params_entry)  != 16);
     BUILD_BUG_ON(sizeof(struct xc_sr_rec_hvm_params)        != 8);
 }

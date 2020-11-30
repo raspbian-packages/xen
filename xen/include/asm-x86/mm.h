@@ -77,9 +77,12 @@
 #define PGC_state_offlined PG_mask(2, 9)
 #define PGC_state_free    PG_mask(3, 9)
 #define page_state_is(pg, st) (((pg)->count_info&PGC_state) == PGC_state_##st)
+/* Page is not reference counted */
+#define _PGC_extra        PG_shift(10)
+#define PGC_extra         PG_mask(1, 10)
 
- /* Count of references to this frame. */
-#define PGC_count_width   PG_shift(9)
+/* Count of references to this frame. */
+#define PGC_count_width   PG_shift(10)
 #define PGC_count_mask    ((1UL<<PGC_count_width)-1)
 
 /*
@@ -127,6 +130,8 @@ struct page_info
         /* For non-pinnable single-page shadows, a higher entry that points
          * at us. */
         paddr_t up;
+
+#ifdef CONFIG_MEM_SHARING
         /* For shared/sharable pages, we use a doubly-linked list
          * of all the {pfn,domain} pairs that map this page. We also include
          * an opaque handle, which is effectively a version, so that clients
@@ -134,6 +139,7 @@ struct page_info
          * This list is allocated and freed when a page is shared/unshared.
          */
         struct page_sharing_info *sharing;
+#endif
     };
 
     /* Reference count and various PGC_xxx flags and fields. */
@@ -281,7 +287,9 @@ struct page_info
          */
         struct {
             uint16_t shadow_flags;
+#ifdef CONFIG_HVM
             bool pagetable_dying;
+#endif
         };
 
         /* When in use as a shadow, next shadow in this hash chain. */
@@ -293,10 +301,10 @@ struct page_info
 
 #define is_xen_heap_page(page) ((page)->count_info & PGC_xen_heap)
 #define is_xen_heap_mfn(mfn) \
-    (__mfn_valid(mfn) && is_xen_heap_page(mfn_to_page(_mfn(mfn))))
+    (mfn_valid(mfn) && is_xen_heap_page(mfn_to_page(mfn)))
 #define is_xen_fixed_mfn(mfn)                     \
-    ((((mfn) << PAGE_SHIFT) >= __pa(_stext)) &&  \
-     (((mfn) << PAGE_SHIFT) <= __pa(__2M_rwdata_end - 1)))
+    (((mfn_to_maddr(mfn)) >= __pa(_stext)) &&     \
+     ((mfn_to_maddr(mfn)) <= __pa(__2M_rwdata_end - 1)))
 
 #define PRtype_info "016lx"/* should only be used for printk's */
 
@@ -313,8 +321,6 @@ struct page_info
     ((_p)->v.inuse._domain = (_d) ? virt_to_pdx(_d) : 0)
 
 #define maddr_get_owner(ma)   (page_get_owner(maddr_to_page((ma))))
-
-extern void free_shared_domheap_page(struct page_info *page);
 
 #define frame_table ((struct page_info *)FRAMETABLE_VIRT_START)
 extern unsigned long max_page;
@@ -352,8 +358,8 @@ static inline void *__page_to_virt(const struct page_info *pg)
                     (PAGE_SIZE / (sizeof(*pg) & -sizeof(*pg))));
 }
 
-int free_page_type(struct page_info *page, unsigned long type,
-                   int preemptible);
+int devalidate_page(struct page_info *page, unsigned long type,
+                         int preemptible);
 
 void init_xen_pae_l2_slots(l2_pgentry_t *l2t, const struct domain *d);
 void init_xen_l4_slots(l4_pgentry_t *l4t, mfn_t l4mfn,
@@ -371,24 +377,15 @@ struct platform_bad_page {
 const struct platform_bad_page *get_platform_badpages(unsigned int *array_size);
 
 /* Per page locks:
- * page_lock() is used for two purposes: pte serialization, and memory sharing.
+ * page_lock() is used for pte serialization.
  *
  * All users of page lock for pte serialization live in mm.c, use it
  * to lock a page table page during pte updates, do not take other locks within
  * the critical section delimited by page_lock/unlock, and perform no
  * nesting.
  *
- * All users of page lock for memory sharing live in mm/mem_sharing.c. Page_lock
- * is used in memory sharing to protect addition (share) and removal (unshare)
- * of (gfn,domain) tupples to a list of gfn's that the shared page is currently
- * backing. Nesting may happen when sharing (and locking) two pages -- deadlock
- * is avoided by locking pages in increasing order.
- * All memory sharing code paths take the p2m lock of the affected gfn before
- * taking the lock for the underlying page. We enforce ordering between page_lock
- * and p2m_lock using an mm-locks.h construct.
- *
- * These two users (pte serialization and memory sharing) do not collide, since
- * sharing is only supported for hvm guests, which do not perform pv pte updates.
+ * The use of PGT_locked in mem_sharing does not collide, since mem_sharing is
+ * only supported for hvm guests, which do not have PV PTEs updated.
  */
 int page_lock(struct page_info *page);
 void page_unlock(struct page_info *page);
@@ -453,7 +450,7 @@ static inline int get_page_and_type(struct page_info *page,
     ASSERT(((_p)->count_info & PGC_count_mask) != 0);          \
     ASSERT(page_get_owner(_p) == (_d))
 
-int check_descriptor(const struct domain *, struct desc_struct *d);
+int check_descriptor(const struct domain *d, seg_desc_t *desc);
 
 extern paddr_t mem_hotplug;
 
@@ -539,7 +536,6 @@ void memguard_unguard_range(void *p, unsigned long l);
 
 void memguard_guard_stack(void *p);
 void memguard_unguard_stack(void *p);
-bool __attribute_const__ memguard_is_stack_guard_page(unsigned long addr);
 
 struct mmio_ro_emulate_ctxt {
         unsigned long cr2;
@@ -556,8 +552,6 @@ extern int mmcfg_intercept_write(enum x86_segment seg,
                                  void *p_data,
                                  unsigned int bytes,
                                  struct x86_emulate_ctxt *ctxt);
-int pv_emul_cpuid(uint32_t leaf, uint32_t subleaf,
-                  struct cpuid_leaf *res, struct x86_emulate_ctxt *ctxt);
 
 int audit_adjust_pgtables(struct domain *d, int dir, int noisy);
 
@@ -587,6 +581,14 @@ void update_cr3(struct vcpu *v);
 int vcpu_destroy_pagetables(struct vcpu *);
 void *do_page_walk(struct vcpu *v, unsigned long addr);
 
+/* Allocator functions for Xen pagetables. */
+void *alloc_xen_pagetable(void);
+void free_xen_pagetable(void *v);
+mfn_t alloc_xen_pagetable_new(void);
+void free_xen_pagetable_new(mfn_t mfn);
+
+l1_pgentry_t *virt_to_xen_l1e(unsigned long v);
+
 int __sync_local_execstate(void);
 
 /* Arch-specific portion of memory_op hypercall. */
@@ -612,8 +614,6 @@ unsigned int domain_clamp_alloc_bitsize(struct domain *d, unsigned int bits);
 
 unsigned long domain_get_maximum_gpfn(struct domain *d);
 
-extern struct domain *dom_xen, *dom_io, *dom_cow;	/* for vmcoreinfo */
-
 /* Definition of an mm lock: spinlock with extra fields for debugging */
 typedef struct mm_lock {
     spinlock_t         lock;
@@ -630,10 +630,8 @@ typedef struct mm_rwlock {
     const char        *locker_function; /* func that took it */
 } mm_rwlock_t;
 
-#define arch_free_heap_page(d, pg)                                      \
-    page_list_del2(pg, is_xen_heap_page(pg) ?                           \
-                       &(d)->xenpage_list : &(d)->page_list,            \
-                   &(d)->arch.relmem_list)
+#define arch_free_heap_page(d, pg) \
+    page_list_del2(pg, page_to_list(d, pg), &(d)->arch.relmem_list)
 
 extern const char zero_page[];
 
@@ -653,7 +651,6 @@ static inline bool arch_mfn_in_directmap(unsigned long mfn)
 
 int arch_acquire_resource(struct domain *d, unsigned int type,
                           unsigned int id, unsigned long frame,
-                          unsigned int nr_frames, xen_pfn_t mfn_list[],
-                          unsigned int *flags);
+                          unsigned int nr_frames, xen_pfn_t mfn_list[]);
 
 #endif /* __ASM_X86_MM_H__ */

@@ -41,9 +41,9 @@
 #define OPT_CONSOLE_STR "dtuart"
 
 #ifdef CONFIG_ARM_64
-#define MAX_VIRT_CPUS 128
+#define MAX_VIRT_CPUS 128u
 #else
-#define MAX_VIRT_CPUS 8
+#define MAX_VIRT_CPUS 8u
 #endif
 
 #define INVALID_VCPU_ID MAX_VIRT_CPUS
@@ -194,8 +194,6 @@ extern unsigned long frametable_virt_end;
 
 #define watchdog_disable() ((void)0)
 #define watchdog_enable()  ((void)0)
-
-#define VM_ASSIST_VALID          (1UL << VMASST_TYPE_runstate_update_flag)
 
 #endif /* __ARM_CONFIG_H__ */
 /*

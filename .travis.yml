@@ -44,7 +44,7 @@ addons:
             - zlib1g-dev
             - libncurses5-dev
             - libssl-dev
-            - python2.7-dev
+            - python-dev
             - xorg-dev
             - uuid-dev
             - libyajl-dev
@@ -62,7 +62,6 @@ addons:
             - libnl-3-dev
             - ocaml-nox
             - libfindlib-ocaml-dev
-            - markdown
             - transfig
             - pandoc
             - gcc-arm-linux-gnueabihf

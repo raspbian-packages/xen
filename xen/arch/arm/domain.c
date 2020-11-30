@@ -21,6 +21,7 @@
 #include <xen/wait.h>
 
 #include <asm/alternative.h>
+#include <asm/cpuerrata.h>
 #include <asm/cpufeature.h>
 #include <asm/current.h>
 #include <asm/event.h>
@@ -32,6 +33,7 @@
 #include <asm/platform.h>
 #include <asm/procinfo.h>
 #include <asm/regs.h>
+#include <asm/tee/tee.h>
 #include <asm/vfp.h>
 #include <asm/vgic.h>
 #include <asm/vtimer.h>
@@ -44,8 +46,8 @@ static void do_idle(void)
 {
     unsigned int cpu = smp_processor_id();
 
-    sched_tick_suspend();
-    /* sched_tick_suspend() can raise TIMER_SOFTIRQ. Process it now. */
+    rcu_idle_enter(cpu);
+    /* rcu_idle_enter() can raise TIMER_SOFTIRQ. Process it now. */
     process_pending_softirqs();
 
     local_irq_disable();
@@ -56,7 +58,7 @@ static void do_idle(void)
     }
     local_irq_enable();
 
-    sched_tick_resume();
+    rcu_idle_exit(cpu);
 }
 
 void idle_loop(void)
@@ -70,7 +72,11 @@ void idle_loop(void)
 
         /* Are we here for running vcpu context tasklets, or for idling? */
         if ( unlikely(tasklet_work_to_do(cpu)) )
+        {
             do_tasklet();
+            /* Livepatch work is always kicked off via a tasklet. */
+            check_for_livepatch_work();
+        }
         /*
          * Test softirqs twice --- first to see if should even try scrubbing
          * and then, after it is done, whether softirqs became pending
@@ -81,11 +87,6 @@ void idle_loop(void)
             do_idle();
 
         do_softirq();
-        /*
-         * We MUST be last (or before dsb, wfi). Otherwise after we get the
-         * softirq we would execute dsb,wfi (and sleep) and not patch.
-         */
-        check_for_livepatch_work();
     }
 }
 
@@ -181,8 +182,6 @@ static void ctxt_switch_to(struct vcpu *n)
     if ( is_idle_vcpu(n) )
         return;
 
-    p2m_restore_state(n);
-
     vpidr = READ_SYSREG32(MIDR_EL1);
     WRITE_SYSREG32(vpidr, VPIDR_EL2);
     WRITE_SYSREG(n->arch.vmpidr, VMPIDR_EL2);
@@ -234,6 +233,12 @@ static void ctxt_switch_to(struct vcpu *n)
     WRITE_SYSREG64(n->arch.amair, AMAIR_EL1);
 #endif
     isb();
+
+    /*
+     * ARM64_WORKAROUND_AT_SPECULATE: The P2M should be restored after
+     * the stage-1 MMU sysregs have been restored.
+     */
+    p2m_restore_state(n);
 
     /* Control Registers */
     WRITE_SYSREG(n->arch.cpacr, CPACR_EL1);
@@ -304,16 +309,17 @@ static void update_runstate_area(struct vcpu *v)
 
 static void schedule_tail(struct vcpu *prev)
 {
+    ASSERT(prev != current);
+
     ctxt_switch_from(prev);
 
     ctxt_switch_to(current);
 
     local_irq_enable();
 
-    context_saved(prev);
+    sched_context_switched(prev, current);
 
-    if ( prev != current )
-        update_runstate_area(current);
+    update_runstate_area(current);
 
     /* Ensure that the vcpu has an up-to-date time base. */
     update_vcpu_system_time(current);
@@ -342,21 +348,9 @@ void context_switch(struct vcpu *prev, struct vcpu *next)
     ASSERT(prev != next);
     ASSERT(!vcpu_cpu_dirty(next));
 
-    if ( prev != next )
-        update_runstate_area(prev);
+    update_runstate_area(prev);
 
     local_irq_disable();
-
-    /*
-     * If the serrors_op is "FORWARD", we have to prevent forwarding
-     * SError to wrong vCPU. So before context switch, we have to use
-     * the SYNCRONIZE_SERROR to guarantee that the pending SError would
-     * be caught by current vCPU.
-     *
-     * The SKIP_CTXT_SWITCH_SERROR_SYNC will be set to cpu_hwcaps when the
-     * serrors_op is NOT "FORWARD".
-     */
-    SYNCHRONIZE_SERROR(SKIP_CTXT_SWITCH_SERROR_SYNC);
 
     set_current(next);
 
@@ -377,7 +371,20 @@ void sync_local_execstate(void)
 
 void sync_vcpu_execstate(struct vcpu *v)
 {
-    /* Nothing to do -- no lazy switching */
+    /*
+     * We don't support lazy switching.
+     *
+     * However the context may have been saved from a remote pCPU so we
+     * need a barrier to ensure it is observed before continuing.
+     *
+     * Per vcpu_context_saved(), the context can be observed when
+     * v->is_running is false (the caller should check it before calling
+     * this function).
+     *
+     * Note this is a full barrier to also prevent update of the context
+     * to happen before it was observed.
+     */
+    smp_mb();
 }
 
 #define NEXT_ARG(fmt, args)                                                 \
@@ -526,7 +533,7 @@ void dump_pageframe_info(struct domain *d)
 #define MAX_PAGES_PER_VCPU  1
 #endif
 
-struct vcpu *alloc_vcpu_struct(void)
+struct vcpu *alloc_vcpu_struct(const struct domain *d)
 {
     struct vcpu *v;
 
@@ -548,7 +555,7 @@ void free_vcpu_struct(struct vcpu *v)
     free_xenheap_pages(v, get_order_from_bytes(sizeof(*v)));
 }
 
-int vcpu_initialise(struct vcpu *v)
+int arch_vcpu_create(struct vcpu *v)
 {
     int rc = 0;
 
@@ -561,8 +568,8 @@ int vcpu_initialise(struct vcpu *v)
     v->arch.cpu_info = (struct cpu_info *)(v->arch.stack
                                            + STACK_SIZE
                                            - sizeof(struct cpu_info));
+    memset(v->arch.cpu_info, 0, sizeof(*v->arch.cpu_info));
 
-    memset(&v->arch.saved_context, 0, sizeof(v->arch.saved_context));
     v->arch.saved_context.sp = (register_t)v->arch.cpu_info;
     v->arch.saved_context.pc = (register_t)continue_new_vcpu;
 
@@ -582,14 +589,21 @@ int vcpu_initialise(struct vcpu *v)
     if ( (rc = vcpu_vtimer_init(v)) != 0 )
         goto fail;
 
+    /*
+     * The workaround 2 (i.e SSBD mitigation) is enabled by default if
+     * supported.
+     */
+    if ( get_ssbd_state() == ARM_SSBD_RUNTIME )
+        v->arch.cpu_info->flags |= CPUINFO_WORKAROUND_2_FLAG;
+
     return rc;
 
 fail:
-    vcpu_destroy(v);
+    arch_vcpu_destroy(v);
     return rc;
 }
 
-void vcpu_destroy(struct vcpu *v)
+void arch_vcpu_destroy(struct vcpu *v)
 {
     vcpu_timer_destroy(v);
     vcpu_vgic_free(v);
@@ -601,13 +615,78 @@ void vcpu_switch_to_aarch64_mode(struct vcpu *v)
     v->arch.hcr_el2 |= HCR_RW;
 }
 
+int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
+{
+    unsigned int max_vcpus;
+
+    /* HVM and HAP must be set. IOMMU may or may not be */
+    if ( (config->flags & ~XEN_DOMCTL_CDF_iommu) !=
+         (XEN_DOMCTL_CDF_hvm | XEN_DOMCTL_CDF_hap) )
+    {
+        dprintk(XENLOG_INFO, "Unsupported configuration %#x\n",
+                config->flags);
+        return -EINVAL;
+    }
+
+    /* The P2M table must always be shared between the CPU and the IOMMU */
+    if ( config->iommu_opts & XEN_DOMCTL_IOMMU_no_sharept )
+    {
+        dprintk(XENLOG_INFO,
+                "Unsupported iommu option: XEN_DOMCTL_IOMMU_no_sharept\n");
+        return -EINVAL;
+    }
+
+    /* Fill in the native GIC version, passed back to the toolstack. */
+    if ( config->arch.gic_version == XEN_DOMCTL_CONFIG_GIC_NATIVE )
+    {
+        switch ( gic_hw_version() )
+        {
+        case GIC_V2:
+            config->arch.gic_version = XEN_DOMCTL_CONFIG_GIC_V2;
+            break;
+
+        case GIC_V3:
+            config->arch.gic_version = XEN_DOMCTL_CONFIG_GIC_V3;
+            break;
+
+        default:
+            ASSERT_UNREACHABLE();
+            return -EINVAL;
+        }
+    }
+
+    /* max_vcpus depends on the GIC version, and Xen's compiled limit. */
+    max_vcpus = min(vgic_max_vcpus(config->arch.gic_version), MAX_VIRT_CPUS);
+
+    if ( max_vcpus == 0 )
+    {
+        dprintk(XENLOG_INFO, "Unsupported GIC version\n");
+        return -EINVAL;
+    }
+
+    if ( config->max_vcpus > max_vcpus )
+    {
+        dprintk(XENLOG_INFO, "Requested vCPUs (%u) exceeds max (%u)\n",
+                config->max_vcpus, max_vcpus);
+        return -EINVAL;
+    }
+
+    if ( config->arch.tee_type != XEN_DOMCTL_CONFIG_TEE_NONE &&
+         config->arch.tee_type != tee_get_type() )
+    {
+        dprintk(XENLOG_INFO, "Unsupported TEE type\n");
+        return -EINVAL;
+    }
+
+    return 0;
+}
+
 int arch_domain_create(struct domain *d,
                        struct xen_domctl_createdomain *config)
 {
     int rc, count = 0;
 
     BUILD_BUG_ON(GUEST_MAX_VCPUS < MAX_VIRT_CPUS);
-    d->arch.relmem = RELMEM_not_started;
 
     /* Idle domains do not need this setup */
     if ( is_idle_domain(d) )
@@ -616,7 +695,7 @@ int arch_domain_create(struct domain *d,
     ASSERT(config != NULL);
 
     /* p2m_init relies on some value initialized by the IOMMU subsystem */
-    if ( (rc = iommu_domain_init(d)) != 0 )
+    if ( (rc = iommu_domain_init(d, config->iommu_opts)) != 0 )
         goto fail;
 
     if ( (rc = p2m_init(d)) != 0 )
@@ -631,24 +710,6 @@ int arch_domain_create(struct domain *d,
 
     switch ( config->arch.gic_version )
     {
-    case XEN_DOMCTL_CONFIG_GIC_NATIVE:
-        switch ( gic_hw_version () )
-        {
-        case GIC_V2:
-            config->arch.gic_version = XEN_DOMCTL_CONFIG_GIC_V2;
-            d->arch.vgic.version = GIC_V2;
-            break;
-
-        case GIC_V3:
-            config->arch.gic_version = XEN_DOMCTL_CONFIG_GIC_V3;
-            d->arch.vgic.version = GIC_V3;
-            break;
-
-        default:
-            BUG();
-        }
-        break;
-
     case XEN_DOMCTL_CONFIG_GIC_V2:
         d->arch.vgic.version = GIC_V2;
         break;
@@ -658,8 +719,7 @@ int arch_domain_create(struct domain *d,
         break;
 
     default:
-        rc = -EOPNOTSUPP;
-        goto fail;
+        BUG();
     }
 
     if ( (rc = domain_vgic_register(d, &count)) != 0 )
@@ -672,6 +732,9 @@ int arch_domain_create(struct domain *d,
         goto fail;
 
     if ( (rc = domain_vtimer_init(d, &config->arch)) != 0 )
+        goto fail;
+
+    if ( (rc = tee_domain_init(d, config->arch.tee_type)) != 0 )
         goto fail;
 
     update_domain_wallclock_time(d);
@@ -738,6 +801,20 @@ void arch_domain_unpause(struct domain *d)
 int arch_domain_soft_reset(struct domain *d)
 {
     return -ENOSYS;
+}
+
+void arch_domain_creation_finished(struct domain *d)
+{
+    /*
+     * To avoid flushing the whole guest RAM on the first Set/Way, we
+     * invalidate the P2M to track what has been accessed.
+     *
+     * This is only turned when IOMMU is not used or the page-table are
+     * not shared because bit[0] (e.g valid bit) unset will result
+     * IOMMU fault that could be not fixed-up.
+     */
+    if ( !iommu_use_hap_pt(d) )
+        p2m_invalidate_root(p2m_get_hostp2m(d));
 }
 
 static int is_guest_pv32_psr(uint32_t psr)
@@ -870,9 +947,7 @@ static int relinquish_memory(struct domain *d, struct page_list_head *list)
              */
             continue;
 
-        if ( test_and_clear_bit(_PGC_allocated, &page->count_info) )
-            put_page(page);
-
+        put_page_alloc_ref(page);
         put_page(page);
 
         if ( hypercall_preempt_check() )
@@ -887,13 +962,41 @@ static int relinquish_memory(struct domain *d, struct page_list_head *list)
     return ret;
 }
 
+/*
+ * Record the current progress. Subsequent hypercall continuations will
+ * logically restart work from this point.
+ *
+ * PROGRESS() markers must not be in the middle of loops. The loop
+ * variable isn't preserved accross a continuation.
+ *
+ * To avoid redundant work, there should be a marker before each
+ * function which may return -ERESTART.
+ */
+enum {
+    PROG_tee = 1,
+    PROG_xen,
+    PROG_page,
+    PROG_mapping,
+    PROG_done,
+};
+
+#define PROGRESS(x)                         \
+    d->arch.rel_priv = PROG_ ## x;          \
+    /* Fallthrough */                       \
+    case PROG_ ## x
+
 int domain_relinquish_resources(struct domain *d)
 {
     int ret = 0;
 
-    switch ( d->arch.relmem )
+    /*
+     * This hypercall can take minutes of wallclock time to complete.  This
+     * logic implements a co-routine, stashing state in struct domain across
+     * hypercall continuation boundaries.
+     */
+    switch ( d->arch.rel_priv )
     {
-    case RELMEM_not_started:
+    case 0:
         ret = iommu_release_dt_devices(d);
         if ( ret )
             return ret;
@@ -904,34 +1007,27 @@ int domain_relinquish_resources(struct domain *d)
          */
         domain_vpl011_deinit(d);
 
-        d->arch.relmem = RELMEM_xen;
-        /* Fallthrough */
+    PROGRESS(tee):
+        ret = tee_relinquish_resources(d);
+        if (ret )
+            return ret;
 
-    case RELMEM_xen:
+    PROGRESS(xen):
         ret = relinquish_memory(d, &d->xenpage_list);
         if ( ret )
             return ret;
 
-        d->arch.relmem = RELMEM_page;
-        /* Fallthrough */
-
-    case RELMEM_page:
+    PROGRESS(page):
         ret = relinquish_memory(d, &d->page_list);
         if ( ret )
             return ret;
 
-        d->arch.relmem = RELMEM_mapping;
-        /* Fallthrough */
-
-    case RELMEM_mapping:
+    PROGRESS(mapping):
         ret = relinquish_p2m_mapping(d);
         if ( ret )
             return ret;
 
-        d->arch.relmem = RELMEM_done;
-        /* Fallthrough */
-
-    case RELMEM_done:
+    PROGRESS(done):
         break;
 
     default:
@@ -940,6 +1036,8 @@ int domain_relinquish_resources(struct domain *d)
 
     return 0;
 }
+
+#undef PROGRESS
 
 void arch_dump_domain_info(struct domain *d)
 {

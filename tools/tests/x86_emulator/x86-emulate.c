@@ -1,6 +1,12 @@
 #include "x86-emulate.h"
 
+#include <errno.h>
 #include <sys/mman.h>
+
+#define DEFINE_PER_CPU(type, var) type per_cpu_##var
+#define this_cpu(var) per_cpu_##var
+
+#define ERR_PTR(val) NULL
 
 #define cpu_has_amd_erratum(nr) 0
 #define cpu_has_mpx false
@@ -25,9 +31,17 @@
 #define put_stub(stb) ((stb).addr = 0)
 
 uint32_t mxcsr_mask = 0x0000ffbf;
+struct cpuid_policy cp;
 
 static char fpu_save_area[4096] __attribute__((__aligned__((64))));
 static bool use_xsave;
+
+/*
+ * Re-use the area above also as scratch space for the emulator itself.
+ * (When debugging the emulator, care needs to be taken when inserting
+ * printf() or alike function calls into regions using this.)
+ */
+#define FXSAVE_AREA ((struct x86_fxsr *)fpu_save_area)
 
 void emul_save_fpu_state(void)
 {
@@ -63,6 +77,19 @@ bool emul_test_init(void)
     } *fxs = (void *)fpu_save_area;
 
     unsigned long sp;
+
+    x86_cpuid_policy_fill_native(&cp);
+
+    /*
+     * The emulator doesn't use these instructions, so can always emulate
+     * them.
+     */
+    cp.basic.movbe = true;
+    cp.feat.invpcid = true;
+    cp.feat.adx = true;
+    cp.feat.avx512pf = cp.feat.avx512f;
+    cp.feat.rdpid = true;
+    cp.extd.clzero = true;
 
     if ( cpu_has_xsave )
     {
@@ -123,12 +150,14 @@ int emul_test_cpuid(
         res->c |= 1U << 22;
 
     /*
-     * The emulator doesn't itself use ADCX/ADOX/RDPID, so we can always run
-     * the respective tests.
+     * The emulator doesn't itself use ADCX/ADOX/RDPID nor the S/G prefetch
+     * insns, so we can always run the respective tests.
      */
     if ( leaf == 7 && subleaf == 0 )
     {
-        res->b |= 1U << 19;
+        res->b |= (1U << 10) | (1U << 19);
+        if ( res->b & (1U << 16) )
+            res->b |= 1U << 26;
         res->c |= 1U << 22;
     }
 
@@ -208,6 +237,10 @@ int emul_test_get_fpu(
             break;
     case X86EMUL_FPU_ymm:
         if ( cpu_has_avx )
+            break;
+    case X86EMUL_FPU_opmask:
+    case X86EMUL_FPU_zmm:
+        if ( cpu_has_avx512f )
             break;
     default:
         return X86EMUL_UNHANDLEABLE;

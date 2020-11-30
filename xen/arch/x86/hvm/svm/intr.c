@@ -32,6 +32,7 @@
 #include <asm/hvm/svm/svm.h>
 #include <asm/hvm/svm/intr.h>
 #include <asm/hvm/nestedhvm.h> /* for nestedhvm_vcpu_in_guestmode */
+#include <asm/vm_event.h>
 #include <xen/event.h>
 #include <xen/kernel.h>
 #include <public/hvm/ioreq.h>
@@ -40,17 +41,17 @@
 
 static void svm_inject_nmi(struct vcpu *v)
 {
-    struct vmcb_struct *vmcb = v->arch.hvm_svm.vmcb;
+    struct vmcb_struct *vmcb = v->arch.hvm.svm.vmcb;
     u32 general1_intercepts = vmcb_get_general1_intercepts(vmcb);
-    eventinj_t event;
+    intinfo_t event;
 
-    event.bytes = 0;
-    event.fields.v = 1;
-    event.fields.type = X86_EVENTTYPE_NMI;
-    event.fields.vector = 2;
+    event.raw = 0;
+    event.v = true;
+    event.type = X86_EVENTTYPE_NMI;
+    event.vector = TRAP_nmi;
 
-    ASSERT(vmcb->eventinj.fields.v == 0);
-    vmcb->eventinj = event;
+    ASSERT(!vmcb->event_inj.v);
+    vmcb->event_inj = event;
 
     /*
      * SVM does not virtualise the NMI mask, so we emulate it by intercepting
@@ -62,21 +63,21 @@ static void svm_inject_nmi(struct vcpu *v)
 
 static void svm_inject_extint(struct vcpu *v, int vector)
 {
-    struct vmcb_struct *vmcb = v->arch.hvm_svm.vmcb;
-    eventinj_t event;
+    struct vmcb_struct *vmcb = v->arch.hvm.svm.vmcb;
+    intinfo_t event;
 
-    event.bytes = 0;
-    event.fields.v = 1;
-    event.fields.type = X86_EVENTTYPE_EXT_INTR;
-    event.fields.vector = vector;
+    event.raw = 0;
+    event.v = true;
+    event.type = X86_EVENTTYPE_EXT_INTR;
+    event.vector = vector;
 
-    ASSERT(vmcb->eventinj.fields.v == 0);
-    vmcb->eventinj = event;
+    ASSERT(!vmcb->event_inj.v);
+    vmcb->event_inj = event;
 }
 
 static void svm_enable_intr_window(struct vcpu *v, struct hvm_intack intack)
 {
-    struct vmcb_struct *vmcb = v->arch.hvm_svm.vmcb;
+    struct vmcb_struct *vmcb = v->arch.hvm.svm.vmcb;
     uint32_t general1_intercepts = vmcb_get_general1_intercepts(vmcb);
     vintr_t intr;
 
@@ -98,7 +99,7 @@ static void svm_enable_intr_window(struct vcpu *v, struct hvm_intack intack)
     }
 
     HVMTRACE_3D(INTR_WINDOW, intack.vector, intack.source,
-                vmcb->eventinj.fields.v?vmcb->eventinj.fields.vector:-1);
+                vmcb->event_inj.v ? vmcb->event_inj.vector : -1);
 
     /*
      * Create a dummy virtual interrupt to intercept as soon as the
@@ -133,9 +134,13 @@ static void svm_enable_intr_window(struct vcpu *v, struct hvm_intack intack)
 void svm_intr_assist(void) 
 {
     struct vcpu *v = current;
-    struct vmcb_struct *vmcb = v->arch.hvm_svm.vmcb;
+    struct vmcb_struct *vmcb = v->arch.hvm.svm.vmcb;
     struct hvm_intack intack;
     enum hvm_intblk intblk;
+
+    /* Block event injection while handling a sync vm_event. */
+    if ( unlikely(v->arch.vm_event) && v->arch.vm_event->sync_event )
+        return;
 
     /* Crank the handle on interrupt state. */
     pt_update_irq(v);
@@ -173,7 +178,7 @@ void svm_intr_assist(void)
                 /* Guest already enabled an interrupt window. */
                 return;
             default:
-                panic("%s: nestedsvm_vcpu_interrupt can't handle value %#x",
+                panic("%s: nestedsvm_vcpu_interrupt can't handle value %#x\n",
                     __func__, rc);
             }
         }
@@ -192,7 +197,7 @@ void svm_intr_assist(void)
          *      have cleared the interrupt out of the IRR.
          * 2. The IRQ is masked.
          */
-        if ( unlikely(vmcb->eventinj.fields.v) || intblk )
+        if ( unlikely(vmcb->event_inj.v) || intblk )
         {
             svm_enable_intr_window(v, intack);
             return;

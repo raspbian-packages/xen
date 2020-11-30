@@ -19,11 +19,12 @@
 #include <xen/errno.h>
 #include <xen/init.h>
 #include <xen/lib.h>
+#include <xen/param.h>
 #include <xen/warning.h>
 
 #include <asm/microcode.h>
 #include <asm/msr.h>
-#include <asm/processor.h>
+#include <asm/pv/domain.h>
 #include <asm/pv/shim.h>
 #include <asm/setup.h>
 #include <asm/spec_ctrl.h>
@@ -51,6 +52,7 @@ bool __read_mostly opt_ibpb = true;
 bool __read_mostly opt_ssbd = false;
 int8_t __read_mostly opt_eager_fpu = -1;
 int8_t __read_mostly opt_l1d_flush = -1;
+bool __read_mostly opt_branch_harden = true;
 
 bool __initdata bsp_delay_spec_ctrl;
 uint8_t __read_mostly default_xen_spec_ctrl;
@@ -65,63 +67,6 @@ static bool __initdata cpu_has_bug_mds; /* Any other M{LP,SB,FB}DS combination. 
 
 static int8_t __initdata opt_srb_lock = -1;
 uint64_t __read_mostly default_xen_mcu_opt_ctrl;
-
-static int __init parse_bti(const char *s)
-{
-    const char *ss;
-    int val, rc = 0;
-
-    do {
-        ss = strchr(s, ',');
-        if ( !ss )
-            ss = strchr(s, '\0');
-
-        val = parse_bool(s, ss);
-        if ( !val )
-        {
-            opt_thunk = THUNK_JMP;
-            opt_ibrs = 0;
-            opt_ibpb = false;
-            opt_rsb_pv = false;
-            opt_rsb_hvm = false;
-        }
-        else if ( val > 0 )
-            rc = -EINVAL;
-        else if ( !strncmp(s, "thunk=", 6) )
-        {
-            s += 6;
-
-            if ( !cmdline_strcmp(s, "retpoline") )
-                opt_thunk = THUNK_RETPOLINE;
-            else if ( !cmdline_strcmp(s, "lfence") )
-                opt_thunk = THUNK_LFENCE;
-            else if ( !cmdline_strcmp(s, "jmp") )
-                opt_thunk = THUNK_JMP;
-            else
-                rc = -EINVAL;
-        }
-        else if ( (val = parse_boolean("ibrs", s, ss)) >= 0 )
-            opt_ibrs = val;
-        else if ( (val = parse_boolean("ibpb", s, ss)) >= 0 )
-            opt_ibpb = val;
-        else if ( (val = parse_boolean("rsb_native", s, ss)) >= 0 )
-            opt_rsb_pv = val;
-        else if ( (val = parse_boolean("rsb_vmexit", s, ss)) >= 0 )
-            opt_rsb_hvm = val;
-        else if ( (val = parse_boolean("rsb", s, ss)) >= 0 )
-        {
-            opt_rsb_pv = val;
-            opt_rsb_hvm = val;
-        }
-        else
-            rc = -EINVAL;
-
-        s = ss + 1;
-    } while ( *ss );
-
-    return rc;
-}
-custom_param("bti", parse_bti);
 
 static int __init parse_spec_ctrl(const char *s)
 {
@@ -169,6 +114,7 @@ static int __init parse_spec_ctrl(const char *s)
             opt_ibpb = false;
             opt_ssbd = false;
             opt_l1d_flush = 0;
+            opt_branch_harden = false;
             opt_srb_lock = 0;
         }
         else if ( val > 0 )
@@ -204,8 +150,7 @@ static int __init parse_spec_ctrl(const char *s)
             opt_rsb_pv = val;
             opt_rsb_hvm = val;
         }
-        else if ( (val = parse_boolean("md-clear", s, ss)) >= 0 ||
-                  (val = parse_boolean("mds", s, ss)) >= 0 )
+        else if ( (val = parse_boolean("md-clear", s, ss)) >= 0 )
         {
             opt_md_clear_pv = val;
             opt_md_clear_hvm = val;
@@ -235,6 +180,8 @@ static int __init parse_spec_ctrl(const char *s)
             opt_eager_fpu = val;
         else if ( (val = parse_boolean("l1d-flush", s, ss)) >= 0 )
             opt_l1d_flush = val;
+        else if ( (val = parse_boolean("branch-harden", s, ss)) >= 0 )
+            opt_branch_harden = val;
         else if ( (val = parse_boolean("srb-lock", s, ss)) >= 0 )
             opt_srb_lock = val;
         else
@@ -252,7 +199,7 @@ int8_t __read_mostly opt_xpti_domu = -1;
 
 static __init void xpti_init_default(uint64_t caps)
 {
-    if ( boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
+    if ( boot_cpu_data.x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON) )
         caps = ARCH_CAPS_RDCL_NO;
 
     if ( caps & ARCH_CAPS_RDCL_NO )
@@ -400,7 +347,7 @@ static void __init print_details(enum ind_thunk thunk, uint64_t caps)
                "\n");
 
     /* Settings for Xen's protection, irrespective of guests. */
-    printk("  Xen settings: BTI-Thunk %s, SPEC_CTRL: %s%s%s, Other:%s%s%s%s\n",
+    printk("  Xen settings: BTI-Thunk %s, SPEC_CTRL: %s%s%s, Other:%s%s%s%s%s\n",
            thunk == THUNK_NONE      ? "N/A" :
            thunk == THUNK_RETPOLINE ? "RETPOLINE" :
            thunk == THUNK_LFENCE    ? "LFENCE" :
@@ -415,7 +362,8 @@ static void __init print_details(enum ind_thunk thunk, uint64_t caps)
            opt_srb_lock                              ? " SRB_LOCK+" : " SRB_LOCK-",
            opt_ibpb                                  ? " IBPB"  : "",
            opt_l1d_flush                             ? " L1D_FLUSH" : "",
-           opt_md_clear_pv || opt_md_clear_hvm       ? " VERW"  : "");
+           opt_md_clear_pv || opt_md_clear_hvm       ? " VERW"  : "",
+           opt_branch_harden                         ? " BRANCH_HARDEN" : "");
 
     /* L1TF diagnostics, printed if vulnerable or PV shadowing is in use. */
     if ( cpu_has_bug_l1tf || opt_pv_l1tf_hwdom || opt_pv_l1tf_domu )
@@ -428,15 +376,8 @@ static void __init print_details(enum ind_thunk thunk, uint64_t caps)
      * Alternatives blocks for protecting against and/or virtualising
      * mitigation support for guests.
      */
-    printk("  Support for VMs: PV:%s%s%s%s%s, HVM:%s%s%s%s%s\n",
-           (boot_cpu_has(X86_FEATURE_SC_MSR_PV) ||
-            boot_cpu_has(X86_FEATURE_SC_RSB_PV) ||
-            boot_cpu_has(X86_FEATURE_MD_CLEAR)  ||
-            opt_eager_fpu)                           ? ""               : " None",
-           boot_cpu_has(X86_FEATURE_SC_MSR_PV)       ? " MSR_SPEC_CTRL" : "",
-           boot_cpu_has(X86_FEATURE_SC_RSB_PV)       ? " RSB"           : "",
-           opt_eager_fpu                             ? " EAGER_FPU"     : "",
-           boot_cpu_has(X86_FEATURE_MD_CLEAR)        ? " MD_CLEAR"      : "",
+#ifdef CONFIG_HVM
+    printk("  Support for HVM VMs:%s%s%s%s%s\n",
            (boot_cpu_has(X86_FEATURE_SC_MSR_HVM) ||
             boot_cpu_has(X86_FEATURE_SC_RSB_HVM) ||
             boot_cpu_has(X86_FEATURE_MD_CLEAR)   ||
@@ -446,13 +387,27 @@ static void __init print_details(enum ind_thunk thunk, uint64_t caps)
            opt_eager_fpu                             ? " EAGER_FPU"     : "",
            boot_cpu_has(X86_FEATURE_MD_CLEAR)        ? " MD_CLEAR"      : "");
 
-    printk("  XPTI (64-bit PV only): Dom0 %s, DomU %s\n",
+#endif
+#ifdef CONFIG_PV
+    printk("  Support for PV VMs:%s%s%s%s%s\n",
+           (boot_cpu_has(X86_FEATURE_SC_MSR_PV) ||
+            boot_cpu_has(X86_FEATURE_SC_RSB_PV) ||
+            boot_cpu_has(X86_FEATURE_MD_CLEAR)  ||
+            opt_eager_fpu)                           ? ""               : " None",
+           boot_cpu_has(X86_FEATURE_SC_MSR_PV)       ? " MSR_SPEC_CTRL" : "",
+           boot_cpu_has(X86_FEATURE_SC_RSB_PV)       ? " RSB"           : "",
+           opt_eager_fpu                             ? " EAGER_FPU"     : "",
+           boot_cpu_has(X86_FEATURE_MD_CLEAR)        ? " MD_CLEAR"      : "");
+
+    printk("  XPTI (64-bit PV only): Dom0 %s, DomU %s (with%s PCID)\n",
            opt_xpti_hwdom ? "enabled" : "disabled",
-           opt_xpti_domu  ? "enabled" : "disabled");
+           opt_xpti_domu  ? "enabled" : "disabled",
+           xpti_pcid_enabled() ? "" : "out");
 
     printk("  PV L1TF shadowing: Dom0 %s, DomU %s\n",
            opt_pv_l1tf_hwdom ? "enabled"  : "disabled",
            opt_pv_l1tf_domu  ? "enabled"  : "disabled");
+#endif
 }
 
 static bool __init check_smt_enabled(void)
@@ -497,9 +452,9 @@ static bool __init check_smt_enabled(void)
 /* Calculate whether Retpoline is known-safe on this CPU. */
 static bool __init retpoline_safe(uint64_t caps)
 {
-    unsigned int ucode_rev = this_cpu(ucode_cpu_info).cpu_sig.rev;
+    unsigned int ucode_rev = this_cpu(cpu_sig).rev;
 
-    if ( boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
+    if ( boot_cpu_data.x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON) )
         return true;
 
     if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
@@ -564,13 +519,13 @@ static bool __init retpoline_safe(uint64_t caps)
         /*
          * Skylake, Kabylake and Cannonlake processors are not retpoline-safe.
          */
-    case 0x4e:
-    case 0x55:
-    case 0x5e:
-    case 0x66:
-    case 0x67:
-    case 0x8e:
-    case 0x9e:
+    case 0x4e: /* Skylake M */
+    case 0x55: /* Skylake X */
+    case 0x5e: /* Skylake D */
+    case 0x66: /* Cannonlake */
+    case 0x67: /* Cannonlake? */
+    case 0x8e: /* Kabylake M */
+    case 0x9e: /* Kabylake D */
         return false;
 
         /*
@@ -901,10 +856,10 @@ static __init void mds_calculations(uint64_t caps)
     case 0x4c: /* Cherrytrail / Brasswell */
     case 0x4d: /* Avaton / Rangely (Silvermont) */
     case 0x5a: /* Moorefield */
-    case 0x5d:
-    case 0x65:
-    case 0x6e:
-    case 0x75:
+    case 0x5d: /* SoFIA 3G Granite/ES2.1 */
+    case 0x65: /* SoFIA LTE AOSP */
+    case 0x6e: /* Cougar Mountain */
+    case 0x75: /* Lightning Mountain */
         /*
          * Knights processors (which are based on the Silvermont/Airmont
          * microarchitecture) are similarly only affected by the Store Buffer
@@ -934,6 +889,14 @@ void __init init_speculation_mitigations(void)
         rdmsrl(MSR_ARCH_CAPABILITIES, caps);
 
     hw_smt_enabled = check_smt_enabled();
+
+    /*
+     * First, disable the use of retpolines if Xen is using shadow stacks, as
+     * they are incompatible.
+     */
+    if ( cpu_has_xen_shstk &&
+         (opt_thunk == THUNK_DEFAULT || opt_thunk == THUNK_RETPOLINE) )
+        thunk = THUNK_JMP;
 
     /*
      * Has the user specified any custom BTI mitigations?  If so, follow their
@@ -1071,11 +1034,6 @@ void __init init_speculation_mitigations(void)
 
     xpti_init_default(caps);
 
-    if ( !opt_xpti_hwdom && !opt_xpti_domu )
-        setup_force_cpu_cap(X86_FEATURE_NO_XPTI);
-    else
-        setup_clear_cpu_cap(X86_FEATURE_NO_XPTI);
-
     l1tf_calculations(caps);
 
     /*
@@ -1098,6 +1056,9 @@ void __init init_speculation_mitigations(void)
         opt_l1d_flush = 0;
     else if ( opt_l1d_flush == -1 )
         opt_l1d_flush = cpu_has_bug_l1tf && !(caps & ARCH_CAPS_SKIP_L1DFL);
+
+    if ( opt_branch_harden )
+        setup_force_cpu_cap(X86_FEATURE_SC_BRANCH_HARDEN);
 
     /*
      * We do not disable HT by default on affected hardware.

@@ -99,6 +99,7 @@ struct save_file_header {
 #define SAVEFILE_BYTEORDER_VALUE ((uint32_t)0x01020304UL)
 
 void save_domain_core_begin(uint32_t domid,
+                            int preserve_domid,
                             const char *override_config_file,
                             uint8_t **config_data_r,
                             int *config_len_r);
@@ -171,6 +172,12 @@ int main_vtpmdetach(int argc, char **argv);
 int main_vdisplattach(int argc, char **argv);
 int main_vdispllist(int argc, char **argv);
 int main_vdispldetach(int argc, char **argv);
+int main_vsndattach(int argc, char **argv);
+int main_vsndlist(int argc, char **argv);
+int main_vsnddetach(int argc, char **argv);
+int main_vkbattach(int argc, char **argv);
+int main_vkblist(int argc, char **argv);
+int main_vkbdetach(int argc, char **argv);
 int main_usbctrl_attach(int argc, char **argv);
 int main_usbctrl_detach(int argc, char **argv);
 int main_usbdev_attach(int argc, char **argv);
@@ -178,12 +185,6 @@ int main_usbdev_detach(int argc, char **argv);
 int main_usblist(int argc, char **argv);
 int main_uptime(int argc, char **argv);
 int main_claims(int argc, char **argv);
-int main_tmem_list(int argc, char **argv);
-int main_tmem_freeze(int argc, char **argv);
-int main_tmem_thaw(int argc, char **argv);
-int main_tmem_set(int argc, char **argv);
-int main_tmem_shared_auth(int argc, char **argv);
-int main_tmem_freeable(int argc, char **argv);
 int main_network2attach(int argc, char **argv);
 int main_network2list(int argc, char **argv);
 int main_network2detach(int argc, char **argv);
@@ -283,6 +284,7 @@ extern int max_maptrack_frames;
 extern libxl_bitmap global_vm_affinity_mask;
 extern libxl_bitmap global_hvm_affinity_mask;
 extern libxl_bitmap global_pv_affinity_mask;
+extern libxl_domid domid_policy;
 
 enum output_format {
     OUTPUT_FORMAT_JSON,

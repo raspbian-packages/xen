@@ -1,4 +1,4 @@
-xen (4.11.4+24-gddaaccbbab-1+rpi1) bullseye-staging; urgency=medium
+xen (4.14.0+80-gd101b417b7-1+rpi1) bullseye-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,7 +9,158 @@ xen (4.11.4+24-gddaaccbbab-1+rpi1) bullseye-staging; urgency=medium
   [changes introduced in 4.11.1+26-g87f51bf366-3+rpi1 by Peter Michael Green]
   * Do not fail on files that are not installed.
 
- -- Raspbian forward porter <root@raspbian.org>  Thu, 16 Jul 2020 21:35:50 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Mon, 30 Nov 2020 02:51:13 +0000
+
+xen (4.14.0+80-gd101b417b7-1) unstable; urgency=medium
+
+  * Re-upload to unstable for rebuild.
+
+ -- Ian Jackson <ijackson@chiark.greenend.org.uk>  Tue, 24 Nov 2020 10:28:22 +0000
+
+xen (4.14.0+80-gd101b417b7-1~exp2) experimental; urgency=medium
+
+  * Re-upload since apparently DMs aren't allowed NEW?
+
+ -- Ian Jackson <ijackson@chiark.greenend.org.uk>  Mon, 23 Nov 2020 13:24:17 +0000
+
+xen (4.14.0+80-gd101b417b7-1~exp1) experimental; urgency=medium
+
+  * Update to new upstream version 4.14.0+80-gd101b417b7, which also contains
+    security fixes for the following issues:
+    - Information leak via power sidechannel
+      XSA-351 (no CVE yet)
+    - x86 PV guest INVLPG-like flushes may leave stale TLB entries
+      XSA-286 (no CVE yet)
+    - unsafe AMD IOMMU page table updates
+      XSA-347 (no CVE yet)
+    - undue deferral of IOMMU TLB flushes
+      XSA-346 (no CVE yet)
+    - x86: Race condition in Xen mapping code
+      XSA-345 (no CVE yet)
+    - lack of preemption in evtchn_reset() / evtchn_destroy()
+      XSA-344 CVE-2020-25601
+    - races with evtchn_reset()
+      XSA-343 CVE-2020-25599
+    - out of bounds event channels available to 32-bit x86 domains
+      XSA-342 CVE-2020-25600
+    - Missing memory barriers when accessing/allocating an event channel
+      XSA-340 CVE-2020-25603
+    - x86 pv guest kernel DoS via SYSENTER
+      XSA-339 CVE-2020-25596
+    - once valid event channels may not turn invalid
+      XSA-338 CVE-2020-25597
+    - PCI passthrough code reading back hardware registers
+      XSA-337 CVE-2020-25595
+    - race when migrating timers between x86 HVM vCPU-s
+      XSA-336 CVE-2020-25604
+    - Missing unlock in XENMEM_acquire_resource error path
+      XSA-334 CVE-2020-25598
+    - x86 pv: Crash when handling guest access to MSR_MISC_ENABLE
+      XSA-333 CVE-2020-25602
+  * Updating to the most recent upstream stable-4.14 branch also fixes
+    additional compiling issues with gcc 10 that we were running into. These
+    were: upstream commit 5d45ecabe3c0 ("xen/arm64: force gcc 10+ to always
+    inline generic atomics helpers") to fix a FTBFS at mem_access.c and
+    upstream commit 0dfddb2116e3 ("tools/xenpmd: Fix gcc10 snprintf warning")
+    to fix a FTBFS on armhf. (Closes: #970802)
+  * Drop upstream commits d25cc3ec93eb ("libxl: workaround gcc 10.2
+    maybe-uninitialized warning") and fff1b7f50e75 ("libxl: fix
+    -Werror=stringop-truncation in libxl__prepare_sockaddr_un") from our patch
+    pile because these gcc 10 related fixes are in the upstream stable branch
+    now.
+  * Partially revert "debian/rules: Combine shared Make args" since it caused
+    a FTBFS on i386.
+  * Revert upstream commit a516bddbd3 ("tools/firmware/Makefile:
+    CONFIG_PV_SHIM: enable only on x86_64") and cherry-pick our previous
+    commits 0b898ccc2 ("tools/firmware/Makfile: Respect caller's
+    CONFIG_PV_SHIM") and a516bddbd3 ("tools/firmware/Makefile: CONFIG_PV_SHIM:
+    enable only on x86_64") again to work around a FTBFS where the shim would
+    not be built during the i386 package build.
+  * Now all FTBFS issues should be resolved, so we can do (Closes: #968965)
+
+  Packaging minor fixes and improvements:
+  * d/xen-utils-common.xen.init: Actually *really* include the change to
+    disable oom killer for xenstored. It inadvertently got lost in
+    4.14.0-1~exp1. (Closes: #961511)
+
+  Lintian related fixes:
+  * debian/changelog: fix a typo in the previous changelog entry
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Sun, 22 Nov 2020 02:16:00 +0100
+
+xen (4.14.0-1~exp1) experimental; urgency=medium
+
+  Significant changes:
+  * Update to new upstream version 4.14.0.
+    (Closes: #866380) about removal of broken xen-bugtool
+  * debian/{rules,control}: switch to python 3
+    (Closes: #938843) about python 2 removal in bullseye
+  * debian/control: Fix python dependency to use python3-dev:any and
+    libpython3-dev  [Elliott Mitchell]
+
+  Changes related to upgrading to Xen 4.14:
+  * debian/control: adjust to 4.14
+  * debian/rules: remove install commands for pkgconfig files, since those
+    files are not present any more
+  * debian/: Follow fsimage -> xenfsimage renaming
+  * debian/xen-utils-V.*: Use @version@ instead of hardcoded version
+  * debian/control: add flex, bison
+  * debian/control: add libxenhypfs[1]  [Ian Jackson]
+  * debian/libxenstore3.0.symbols: drop xprintf
+    (Closes: #968965)  [Ian Jackson; also reported by Gianfranco Costamagna]
+  * d/scripts/xen-init-name, d/scripts/xen-init-list: rewrite these two
+    scripts, hugely simplify them and make them use python 3
+  * Pick upstream commits d25cc3ec93eb ("libxl: workaround gcc 10.2
+    maybe-uninitialized warning") and fff1b7f50e75 ("libxl: fix
+    -Werror=stringop-truncation in libxl__prepare_sockaddr_un") to fix gcc 10
+    FTBFS
+  * tools: don't build/ship xenmon, it can't work with python 3
+
+  Packaging minor fixes and improvements:
+  * debian/rules: Set DEB_BUILD_MAINT_OPTIONS in shell
+    (Closes: #939560)  [Ian Jackson; report from Guillem Jover]
+  * debian/rules: Improve comment about hardening options
+    (Closes: #939560)  [Ian Jackson; report from Guillem Jover]
+  * debian/rules: Drop redundant sequence numbers in dh_installinit
+    (Closes: #939560)  [Ian Jackson; report from Guillem Jover]
+  * d/xen-utils-common.xen.init: add important notes to keep in mind when
+    changing this script, related to multi-version handling
+  * debian/control: cleanup Uploaders and add myself
+  * debian/control: s/libncurses5-dev/libncurses-dev/
+  * xen-utils-V scripts: remove update-alternatives command
+  * xen-utils-V.postinst.vsn-in: whitespace cosmetics
+  * d/xen-utils-common.xen.init: disable oom killer for xenstored
+    (Closes: #961511)
+  * debian/rules: Combine shared Make args  [Elliott Mitchell]
+
+  Fixes and improvements for cross-compiling  [Elliott Mitchell]:
+  * debian/rules: Add --host to tools configure target
+  * Pick upstream commit 69953e285638 ('tools: Partially revert
+    "Cross-compilation fixes."')
+
+  Lintian related fixes:
+  * debian/changelog: trim trailing whitespace.  [Debian Janitor]
+  * debian/pycompat: remove obsolete file.  [Debian Janitor]
+  * debian/rules: Avoid using $(PWD) variable.  [Debian Janitor]
+  * debian/control: hardcode xen-utils-4.14 python3 dependency because
+    dh_python can't figure out how to add it
+  * debian/control: xen-doc: add ${misc:Depends}
+  * d/xen-hypervisor-V-F.lintian-overrides.vsn-in: fix override to use the
+    newer debug-suffix-not-dbg tag and correct the file path used so it
+    matches again
+  * debian/control: remove XS-Python-Version which is deprecated
+  * debian/control: drop autotools-dev build dependency because debhelper
+    already takes care of this
+  * d/xen-utils-V.lintian-overrides.vsn-in: fix rpath override because the
+    xenfsimage python .so filename changed from xenfsimage.so into
+    xenfsimage.cpython-38-x86_64-linux-gnu.so now, make it match again
+  * d/xen-utils-V.lintian-overrides.vsn-in: s/fsimage/xenfsimage/ which is a
+    left over change from the rename in some comment lines
+  * d/xen-utils-common.xen.init: use /run instead of /var/run because we don't
+    expect anyone on a pre-stretch system to build and use these packages
+  * debian/control: update Standards-Version to 4.5.0
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Thu, 17 Sep 2020 18:59:28 +0200
 
 xen (4.11.4+24-gddaaccbbab-1) unstable; urgency=medium
 
@@ -1297,7 +1448,7 @@ xen (4.0.1-2) unstable; urgency=low
   * Check for MWAIT support before using it.
   * Fix endless loop on interrupts on Nehalem cpus.
   * Don't crash upon direct GDT/LDT access. (closes: #609531)
-    CVE-2010-4255  
+    CVE-2010-4255
   * Don't loose timer ticks after domain restore.
   * Reserve some space for IOMMU area in dom0. (closes: #608715)
   * Fix hypercall arguments after trace callout.
@@ -1652,7 +1803,7 @@ xen-3.0 (3.0.2+hg9656-1) unstable; urgency=low
 xen-3.0 (3.0.2+hg9651-1) unstable; urgency=low
 
   * Merge upstream fixes trunk
-  * Fix PAE disabled in pae build (Closes: #364875) 
+  * Fix PAE disabled in pae build (Closes: #364875)
 
  -- Julien Danjou <acid@debian.org>  Wed, 26 Apr 2006 13:19:39 +0200
 

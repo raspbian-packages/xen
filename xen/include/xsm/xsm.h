@@ -24,7 +24,7 @@ DEFINE_XEN_GUEST_HANDLE(xsm_op_t);
 /* policy magic number (defined by XSM_MAGIC) */
 typedef u32 xsm_magic_t;
 
-#ifdef CONFIG_FLASK
+#ifdef CONFIG_XSM_FLASK
 #define XSM_MAGIC 0xf97cff8c
 #else
 #define XSM_MAGIC 0x0
@@ -59,6 +59,7 @@ struct xsm_operations {
     int (*evtchn_interdomain) (struct domain *d1, struct evtchn *chn1,
                                         struct domain *d2, struct evtchn *chn2);
     void (*evtchn_close_post) (struct evtchn *chn);
+    /* Note: Next hook may be called with 'chn' set to NULL. See call site. */
     int (*evtchn_send) (struct domain *d, struct evtchn *chn);
     int (*evtchn_status) (struct domain *d, struct evtchn *chn);
     int (*evtchn_reset) (struct domain *d1, struct domain *d2);
@@ -127,7 +128,7 @@ struct xsm_operations {
     int (*resource_setup_misc) (void);
 
     int (*page_offline)(uint32_t cmd);
-    int (*tmem_op)(void);
+    int (*hypfs_op)(void);
 
     long (*do_xsm_op) (XEN_GUEST_HANDLE_PARAM(xsm_op_t) op);
 #ifdef CONFIG_COMPAT
@@ -143,7 +144,7 @@ struct xsm_operations {
 
     int (*vm_event_control) (struct domain *d, int mode, int op);
 
-#ifdef CONFIG_HAS_MEM_ACCESS
+#ifdef CONFIG_MEM_ACCESS
     int (*mem_access) (struct domain *d);
 #endif
 
@@ -151,7 +152,7 @@ struct xsm_operations {
     int (*mem_paging) (struct domain *d);
 #endif
 
-#ifdef CONFIG_HAS_MEM_SHARING
+#ifdef CONFIG_MEM_SHARING
     int (*mem_sharing) (struct domain *d);
 #endif
 
@@ -181,6 +182,13 @@ struct xsm_operations {
 #endif
     int (*xen_version) (uint32_t cmd);
     int (*domain_resource_map) (struct domain *d);
+#ifdef CONFIG_ARGO
+    int (*argo_enable) (const struct domain *d);
+    int (*argo_register_single_source) (const struct domain *d,
+                                        const struct domain *t);
+    int (*argo_register_any_source) (const struct domain *d);
+    int (*argo_send) (const struct domain *d, const struct domain *t);
+#endif
 };
 
 #ifdef CONFIG_XSM
@@ -530,9 +538,9 @@ static inline int xsm_page_offline(xsm_default_t def, uint32_t cmd)
     return xsm_ops->page_offline(cmd);
 }
 
-static inline int xsm_tmem_op(xsm_default_t def)
+static inline int xsm_hypfs_op(xsm_default_t def)
 {
-    return xsm_ops->tmem_op();
+    return xsm_ops->hypfs_op();
 }
 
 static inline long xsm_do_xsm_op (XEN_GUEST_HANDLE_PARAM(xsm_op_t) op)
@@ -582,7 +590,7 @@ static inline int xsm_vm_event_control (xsm_default_t def, struct domain *d, int
     return xsm_ops->vm_event_control(d, mode, op);
 }
 
-#ifdef CONFIG_HAS_MEM_ACCESS
+#ifdef CONFIG_MEM_ACCESS
 static inline int xsm_mem_access (xsm_default_t def, struct domain *d)
 {
     return xsm_ops->mem_access(d);
@@ -596,7 +604,7 @@ static inline int xsm_mem_paging (xsm_default_t def, struct domain *d)
 }
 #endif
 
-#ifdef CONFIG_HAS_MEM_SHARING
+#ifdef CONFIG_MEM_SHARING
 static inline int xsm_mem_sharing (xsm_default_t def, struct domain *d)
 {
     return xsm_ops->mem_sharing(d);
@@ -698,6 +706,30 @@ static inline int xsm_domain_resource_map(xsm_default_t def, struct domain *d)
     return xsm_ops->domain_resource_map(d);
 }
 
+#ifdef CONFIG_ARGO
+static inline int xsm_argo_enable(const struct domain *d)
+{
+    return xsm_ops->argo_enable(d);
+}
+
+static inline int xsm_argo_register_single_source(const struct domain *d,
+                                                  const struct domain *t)
+{
+    return xsm_ops->argo_register_single_source(d, t);
+}
+
+static inline int xsm_argo_register_any_source(const struct domain *d)
+{
+    return xsm_ops->argo_register_any_source(d);
+}
+
+static inline int xsm_argo_send(const struct domain *d, const struct domain *t)
+{
+    return xsm_ops->argo_send(d, t);
+}
+
+#endif /* CONFIG_ARGO */
+
 #endif /* XSM_NO_WRAPPERS */
 
 #ifdef CONFIG_MULTIBOOT
@@ -725,7 +757,7 @@ extern int register_xsm(struct xsm_operations *ops);
 extern struct xsm_operations dummy_xsm_ops;
 extern void xsm_fixup_ops(struct xsm_operations *ops);
 
-#ifdef CONFIG_FLASK
+#ifdef CONFIG_XSM_FLASK
 extern void flask_init(const void *policy_buffer, size_t policy_size);
 #else
 static inline void flask_init(const void *policy_buffer, size_t policy_size)
@@ -733,12 +765,12 @@ static inline void flask_init(const void *policy_buffer, size_t policy_size)
 }
 #endif
 
-#ifdef CONFIG_XSM_POLICY
-extern const unsigned char xsm_init_policy[];
-extern const unsigned int xsm_init_policy_size;
+#ifdef CONFIG_XSM_FLASK_POLICY
+extern const unsigned char xsm_flask_init_policy[];
+extern const unsigned int xsm_flask_init_policy_size;
 #endif
 
-#ifdef CONFIG_SILO
+#ifdef CONFIG_XSM_SILO
 extern void silo_init(void);
 #else
 static inline void silo_init(void) {}

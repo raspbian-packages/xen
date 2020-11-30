@@ -22,6 +22,7 @@
 
 #include <xen/sched.h>
 #include <xen/vm_event.h>
+#include <asm/hvm/emulate.h>
 #include <asm/hvm/support.h>
 #include <asm/vm_event.h>
 
@@ -94,7 +95,7 @@ void hvm_vm_event_do_resume(struct vcpu *v)
 
     if ( unlikely(w->do_write.cr0) )
     {
-        if ( hvm_set_cr0(w->cr0, 0) == X86EMUL_EXCEPTION )
+        if ( hvm_set_cr0(w->cr0, false) == X86EMUL_EXCEPTION )
             hvm_inject_hw_exception(TRAP_gp_fault, 0);
 
         w->do_write.cr0 = 0;
@@ -102,7 +103,7 @@ void hvm_vm_event_do_resume(struct vcpu *v)
 
     if ( unlikely(w->do_write.cr4) )
     {
-        if ( hvm_set_cr4(w->cr4, 0) == X86EMUL_EXCEPTION )
+        if ( hvm_set_cr4(w->cr4, false) == X86EMUL_EXCEPTION )
             hvm_inject_hw_exception(TRAP_gp_fault, 0);
 
         w->do_write.cr4 = 0;
@@ -110,7 +111,7 @@ void hvm_vm_event_do_resume(struct vcpu *v)
 
     if ( unlikely(w->do_write.cr3) )
     {
-        if ( hvm_set_cr3(w->cr3, 0) == X86EMUL_EXCEPTION )
+        if ( hvm_set_cr3(w->cr3, w->cr3_noflush, false) == X86EMUL_EXCEPTION )
             hvm_inject_hw_exception(TRAP_gp_fault, 0);
 
         w->do_write.cr3 = 0;
@@ -118,12 +119,14 @@ void hvm_vm_event_do_resume(struct vcpu *v)
 
     if ( unlikely(w->do_write.msr) )
     {
-        if ( hvm_msr_write_intercept(w->msr, w->value, 0) ==
+        if ( hvm_msr_write_intercept(w->msr, w->value, false) ==
              X86EMUL_EXCEPTION )
             hvm_inject_hw_exception(TRAP_gp_fault, 0);
 
         w->do_write.msr = 0;
     }
+
+    vm_event_sync_event(v, false);
 }
 
 /*

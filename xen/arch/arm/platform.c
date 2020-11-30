@@ -71,7 +71,7 @@ void __init platform_init(void)
         res = platform->init();
 
     if ( res )
-        panic("Unable to initialize the platform");
+        panic("Unable to initialize the platform\n");
 }
 
 int __init platform_init_time(void)
@@ -95,7 +95,7 @@ int __init platform_specific_mapping(struct domain *d)
 }
 
 #ifdef CONFIG_ARM_32
-int __init platform_cpu_up(int cpu)
+int platform_cpu_up(int cpu)
 {
     if ( psci_ver )
         return call_psci_cpu_on(cpu);
@@ -127,6 +127,14 @@ void platform_poweroff(void)
         platform->poweroff();
 }
 
+bool platform_smc(struct cpu_user_regs *regs)
+{
+    if ( likely(platform && platform->smc) )
+        return platform->smc(regs);
+
+    return false;
+}
+
 bool platform_has_quirk(uint32_t quirk)
 {
     uint32_t quirks = 0;
@@ -145,6 +153,11 @@ bool platform_device_is_blacklisted(const struct dt_device_node *node)
         blacklist = platform->blacklist_dev;
 
     return (dt_match_node(blacklist, node) != NULL);
+}
+
+unsigned int arch_get_dma_bitsize(void)
+{
+    return ( platform && platform->dma_bitsize ) ? platform->dma_bitsize : 32;
 }
 
 /*

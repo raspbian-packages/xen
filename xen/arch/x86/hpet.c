@@ -11,6 +11,8 @@
 #include <xen/softirq.h>
 #include <xen/irq.h>
 #include <xen/numa.h>
+#include <xen/param.h>
+#include <xen/sched.h>
 #include <asm/fixmap.h>
 #include <asm/div64.h>
 #include <asm/hpet.h>
@@ -187,12 +189,7 @@ again:
     /* find all expired events */
     for_each_cpu(cpu, ch->cpumask)
     {
-        s_time_t deadline;
-
-        if ( !cpumask_test_cpu(cpu, ch->cpumask) )
-            continue;
-
-        deadline = ACCESS_ONCE(per_cpu(timer_deadline, cpu));
+        s_time_t deadline = ACCESS_ONCE(per_cpu(timer_deadline, cpu));
 
         if ( deadline <= now )
             __cpumask_set_cpu(cpu, &mask);
@@ -218,7 +215,7 @@ again:
 static void hpet_interrupt_handler(int irq, void *data,
         struct cpu_user_regs *regs)
 {
-    struct hpet_event_channel *ch = (struct hpet_event_channel *)data;
+    struct hpet_event_channel *ch = data;
 
     this_cpu(irq_count)--;
 
@@ -373,7 +370,7 @@ static int __init hpet_assign_irq(struct hpet_event_channel *ch)
 {
     int irq;
 
-    if ( (irq = create_irq(NUMA_NO_NODE)) < 0 )
+    if ( (irq = create_irq(NUMA_NO_NODE, false)) < 0 )
         return irq;
 
     ch->msi.irq = irq;
@@ -546,7 +543,7 @@ static void handle_rtc_once(uint8_t index, uint8_t value)
     if ( value & (RTC_PIE | RTC_AIE | RTC_UIE ) )
     {
         cpuidle_disable_deep_cstate();
-        pv_rtc_handler = NULL;
+        ACCESS_ONCE(pv_rtc_handler) = NULL;
     }
 }
 
@@ -802,9 +799,9 @@ u64 __init hpet_setup(void)
     hpet_resume(hpet_boot_cfg);
 
     hpet_rate = 1000000000000000ULL; /* 10^15 */
-    (void)do_div(hpet_rate, hpet_period);
+    last = do_div(hpet_rate, hpet_period);
 
-    return hpet_rate;
+    return hpet_rate + (last * 2 > hpet_period);
 }
 
 void hpet_resume(u32 *boot_cfg)

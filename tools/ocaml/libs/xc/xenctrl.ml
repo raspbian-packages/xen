@@ -46,6 +46,7 @@ type x86_arch_emulation_flags =
 	| X86_EMU_IOMMU
 	| X86_EMU_PIT
 	| X86_EMU_USE_PIRQ
+	| X86_EMU_VPCI
 
 type xen_x86_arch_domainconfig =
 {
@@ -55,6 +56,30 @@ type xen_x86_arch_domainconfig =
 type arch_domainconfig =
 	| ARM of xen_arm_arch_domainconfig
 	| X86 of xen_x86_arch_domainconfig
+
+type domain_create_flag =
+	| CDF_HVM
+	| CDF_HAP
+	| CDF_S3_INTEGRITY
+	| CDF_OOS_OFF
+	| CDF_XS_DOMAIN
+	| CDF_IOMMU
+
+type domain_create_iommu_opts =
+	| IOMMU_NO_SHAREPT
+
+type domctl_create_config =
+{
+	ssidref: int32;
+	handle: string;
+	flags: domain_create_flag list;
+	iommu_opts: domain_create_iommu_opts list;
+	max_vcpus: int;
+	max_evtchn_port: int;
+	max_grant_frames: int;
+	max_maptrack_frames: int;
+	arch: arch_domainconfig;
+}
 
 type domaininfo =
 {
@@ -85,7 +110,11 @@ type sched_control =
 
 type physinfo_cap_flag =
 	| CAP_HVM
+	| CAP_PV
 	| CAP_DirectIO
+	| CAP_HAP
+	| CAP_Shadow
+	| CAP_IOMMU_HAP_PT_SHARE
 
 type physinfo =
 {
@@ -120,8 +149,6 @@ type compile_info =
 
 type shutdown_reason = Poweroff | Reboot | Suspend | Crash | Watchdog | Soft_reset
 
-type domain_create_flag = CDF_HVM | CDF_HAP
-
 exception Error of string
 
 type handle
@@ -129,32 +156,33 @@ type handle
 external interface_open: unit -> handle = "stub_xc_interface_open"
 external interface_close: handle -> unit = "stub_xc_interface_close"
 
-let with_intf f =
-	let xc = interface_open () in
-	let r = try f xc with exn -> interface_close xc; raise exn in
-	interface_close xc;
-	r
+let handle = ref None
 
-external _domain_create: handle -> int32 -> domain_create_flag list -> int array -> arch_domainconfig -> domid
+let get_handle () = !handle
+
+let close_handle () =
+	match !handle with
+	| Some h -> handle := None; interface_close h
+	| None -> ()
+
+let with_intf f =
+	match !handle with
+	| Some h -> f h
+	| None ->
+		let h =
+			try interface_open () with
+			| e ->
+				let msg = Printexc.to_string e in
+				failwith ("failed to open xenctrl: "^msg)
+		in
+		handle := Some h;
+		f h
+
+external domain_create: handle -> domctl_create_config -> domid
        = "stub_xc_domain_create"
 
-let int_array_of_uuid_string s =
-	try
-		Scanf.sscanf s
-			"%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x"
-			(fun a0 a1 a2 a3 a4 a5 a6 a7 a8 a9 a10 a11 a12 a13 a14 a15 ->
-				[| a0; a1; a2; a3; a4; a5; a6; a7;
-				   a8; a9; a10; a11; a12; a13; a14; a15 |])
-	with _ -> invalid_arg ("Xc.int_array_of_uuid_string: " ^ s)
-
-let domain_create handle n flags uuid =
-	_domain_create handle n flags (int_array_of_uuid_string uuid)
-
-external _domain_sethandle: handle -> domid -> int array -> unit
-                          = "stub_xc_domain_sethandle"
-
-let domain_sethandle handle n uuid =
-	_domain_sethandle handle n (int_array_of_uuid_string uuid)
+external domain_sethandle: handle -> domid -> string -> unit
+       = "stub_xc_domain_sethandle"
 
 external domain_max_vcpus: handle -> domid -> int -> unit
        = "stub_xc_domain_max_vcpus"
@@ -227,18 +255,6 @@ external domain_set_memmap_limit: handle -> domid -> int64 -> unit
        = "stub_xc_domain_set_memmap_limit"
 external domain_memory_increase_reservation: handle -> domid -> int64 -> unit
        = "stub_xc_domain_memory_increase_reservation"
-
-external domain_set_machine_address_size: handle -> domid -> int -> unit
-       = "stub_xc_domain_set_machine_address_size"
-external domain_get_machine_address_size: handle -> domid -> int
-       = "stub_xc_domain_get_machine_address_size"
-
-external domain_cpuid_set: handle -> domid -> (int64 * (int64 option))
-                        -> string option array
-                        -> string option array
-       = "stub_xc_domain_cpuid_set"
-external domain_cpuid_apply_policy: handle -> domid -> unit
-       = "stub_xc_domain_cpuid_apply_policy"
 
 external map_foreign_range: handle -> domid -> int
                          -> nativeint -> Xenmmap.mmap_interface

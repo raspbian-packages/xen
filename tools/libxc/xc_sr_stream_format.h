@@ -23,7 +23,6 @@ struct xc_sr_ihdr
 
 #define IHDR_MARKER  0xffffffffffffffffULL
 #define IHDR_ID      0x58454E46U
-#define IHDR_VERSION 2
 
 #define _IHDR_OPT_ENDIAN 0
 #define IHDR_OPT_LITTLE_ENDIAN (0 << _IHDR_OPT_ENDIAN)
@@ -43,8 +42,6 @@ struct xc_sr_dhdr
 
 #define DHDR_TYPE_X86_PV  0x00000001U
 #define DHDR_TYPE_X86_HVM 0x00000002U
-#define DHDR_TYPE_X86_PVH 0x00000003U
-#define DHDR_TYPE_ARM     0x00000004U
 
 /*
  * Record Header
@@ -68,7 +65,7 @@ struct xc_sr_rhdr
 #define REC_TYPE_X86_PV_VCPU_EXTENDED       0x00000005U
 #define REC_TYPE_X86_PV_VCPU_XSAVE          0x00000006U
 #define REC_TYPE_SHARED_INFO                0x00000007U
-#define REC_TYPE_TSC_INFO                   0x00000008U
+#define REC_TYPE_X86_TSC_INFO               0x00000008U
 #define REC_TYPE_HVM_CONTEXT                0x00000009U
 #define REC_TYPE_HVM_PARAMS                 0x0000000aU
 #define REC_TYPE_TOOLSTACK                  0x0000000bU
@@ -76,6 +73,9 @@ struct xc_sr_rhdr
 #define REC_TYPE_VERIFY                     0x0000000dU
 #define REC_TYPE_CHECKPOINT                 0x0000000eU
 #define REC_TYPE_CHECKPOINT_DIRTY_PFN_LIST  0x0000000fU
+#define REC_TYPE_STATIC_DATA_END            0x00000010U
+#define REC_TYPE_X86_CPUID_POLICY           0x00000011U
+#define REC_TYPE_X86_MSR_POLICY             0x00000012U
 
 #define REC_TYPE_OPTIONAL             0x80000000U
 
@@ -114,8 +114,8 @@ struct xc_sr_rec_x86_pv_vcpu_hdr
     uint8_t context[0];
 };
 
-/* TSC_INFO */
-struct xc_sr_rec_tsc_info
+/* X86_TSC_INFO */
+struct xc_sr_rec_x86_tsc_info
 {
     uint32_t mode;
     uint32_t khz;

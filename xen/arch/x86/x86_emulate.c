@@ -10,6 +10,7 @@
  */
 
 #include <xen/domain_page.h>
+#include <xen/err.h>
 #include <xen/event.h>
 #include <asm/x86_emulate.h>
 #include <asm/processor.h> /* current_cpu_info */
@@ -41,6 +42,14 @@
         (stb).ptr = NULL;                                  \
     }                                                      \
 })
+
+#define FXSAVE_AREA current->arch.fpu_ctxt
+
+#ifndef CONFIG_HVM
+# define X86EMUL_NO_FPU
+# define X86EMUL_NO_MMX
+# define X86EMUL_NO_SIMD
+#endif
 
 #include "x86_emulate/x86_emulate.c"
 
@@ -89,6 +98,7 @@ int x86emul_write_xcr(unsigned int reg, uint64_t val,
     return X86EMUL_OKAY;
 }
 
+#ifdef CONFIG_PV
 /* Called with NULL ctxt in hypercall context. */
 int x86emul_read_dr(unsigned int reg, unsigned long *val,
                     struct x86_emulate_ctxt *ctxt)
@@ -101,23 +111,28 @@ int x86emul_read_dr(unsigned int reg, unsigned long *val,
     switch ( reg )
     {
     case 0 ... 3:
-    case 6:
-        *val = curr->arch.debugreg[reg];
+        *val = array_access_nospec(curr->arch.dr, reg);
         break;
 
-    case 7:
-        *val = (curr->arch.debugreg[7] |
-                curr->arch.debugreg[5]);
-        break;
-
-    case 4 ... 5:
-        if ( !(curr->arch.pv_vcpu.ctrlreg[4] & X86_CR4_DE) )
-        {
-            *val = curr->arch.debugreg[reg + 2];
-            break;
-        }
+    case 4:
+        if ( curr->arch.pv.ctrlreg[4] & X86_CR4_DE )
+            goto ud_fault;
 
         /* Fallthrough */
+    case 6:
+        *val = curr->arch.dr6;
+        break;
+
+    case 5:
+        if ( curr->arch.pv.ctrlreg[4] & X86_CR4_DE )
+            goto ud_fault;
+
+        /* Fallthrough */
+    case 7:
+        *val = curr->arch.dr7 | curr->arch.pv.dr7_emul;
+        break;
+
+    ud_fault:
     default:
         if ( ctxt )
             x86_emul_hw_exception(TRAP_invalid_op, X86_EVENT_NO_EC, ctxt);
@@ -149,6 +164,15 @@ int x86emul_write_dr(unsigned int reg, unsigned long val,
         x86_emul_hw_exception(TRAP_gp_fault, 0, ctxt);
         return X86EMUL_EXCEPTION;
     }
+}
+#endif /* CONFIG_PV */
+
+int x86emul_cpuid(uint32_t leaf, uint32_t subleaf,
+                  struct cpuid_leaf *res, struct x86_emulate_ctxt *ctxt)
+{
+    guest_cpuid(current, leaf, subleaf, res);
+
+    return X86EMUL_OKAY;
 }
 
 /*

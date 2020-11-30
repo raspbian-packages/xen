@@ -16,6 +16,7 @@
 #include <xen/init.h>
 #include <xen/lib.h>
 #include <xen/mm.h>
+#include <xen/param.h>
 #include <xen/irq.h>
 #include <xen/delay.h>
 #include <xen/time.h>
@@ -150,15 +151,14 @@ int nmi_active;
 
 static void __init wait_for_nmis(void *p)
 {
-    unsigned int cpu = smp_processor_id();
-    unsigned int start_count = nmi_count(cpu);
+    unsigned int start_count = this_cpu(nmi_count);
     unsigned long ticks = 10 * 1000 * cpu_khz / nmi_hz;
     unsigned long s, e;
 
     s = rdtsc();
     do {
         cpu_relax();
-        if ( nmi_count(cpu) >= start_count + 2 )
+        if ( this_cpu(nmi_count) >= start_count + 2 )
             break;
         e = rdtsc();
     } while( e - s < ticks );
@@ -176,7 +176,7 @@ void __init check_nmi_watchdog(void)
     printk("Testing NMI watchdog on all CPUs:");
 
     for_each_online_cpu ( cpu )
-        prev_nmi_count[cpu] = nmi_count(cpu);
+        prev_nmi_count[cpu] = per_cpu(nmi_count, cpu);
 
     /*
      * Wait at most 10 ticks for 2 watchdog NMIs on each CPU.
@@ -187,7 +187,7 @@ void __init check_nmi_watchdog(void)
 
     for_each_online_cpu ( cpu )
     {
-        if ( nmi_count(cpu) - prev_nmi_count[cpu] < 2 )
+        if ( per_cpu(nmi_count, cpu) - prev_nmi_count[cpu] < 2 )
         {
             printk(" %d", cpu);
             ok = false;
@@ -398,7 +398,7 @@ void setup_apic_nmi_watchdog(void)
     case X86_VENDOR_AMD:
         switch (boot_cpu_data.x86) {
         case 6:
-        case 0xf ... 0x17:
+        case 0xf ... 0x19:
             setup_k7_watchdog();
             break;
         default:
@@ -586,25 +586,24 @@ static void do_nmi_trigger(unsigned char key)
 
 static void do_nmi_stats(unsigned char key)
 {
-    int i;
-    struct domain *d;
-    struct vcpu *v;
+    const struct vcpu *v;
+    unsigned int cpu;
+    bool pend, mask;
 
     printk("CPU\tNMI\n");
-    for_each_online_cpu ( i )
-        printk("%3d\t%3d\n", i, nmi_count(i));
+    for_each_online_cpu ( cpu )
+        printk("%3u\t%3u\n", cpu, per_cpu(nmi_count, cpu));
 
-    if ( ((d = hardware_domain) == NULL) || (d->vcpu == NULL) ||
-         ((v = d->vcpu[0]) == NULL) )
+    if ( !hardware_domain || !(v = domain_vcpu(hardware_domain, 0)) )
         return;
 
-    i = v->async_exception_mask & (1 << VCPU_TRAP_NMI);
-    if ( v->nmi_pending || i )
-        printk("dom0 vpu0: NMI %s%s\n",
-               v->nmi_pending ? "pending " : "",
-               i ? "masked " : "");
+    pend = v->arch.nmi_pending;
+    mask = v->arch.async_exception_mask & (1 << VCPU_TRAP_NMI);
+    if ( pend || mask )
+        printk("%pv: NMI%s%s\n",
+               v, pend ? " pending" : "", mask ? " masked" : "");
     else
-        printk("dom0 vcpu0: NMI neither pending nor masked\n");
+        printk("%pv: NMI neither pending nor masked\n", v);
 }
 
 static __init int register_nmi_trigger(void)

@@ -52,6 +52,7 @@
 #include <xen/lib.h>
 #include <xen/cpu.h>
 #include <xen/init.h>
+#include <xen/param.h>
 #include <xen/softirq.h>
 #include <xen/trace.h>
 #include <asm/cpuidle.h>
@@ -553,6 +554,28 @@ static const struct cpuidle_state skx_cstates[] = {
 	{}
 };
 
+static const struct cpuidle_state icx_cstates[] = {
+       {
+               .name = "C1-ICX",
+               .flags = MWAIT2flg(0x00),
+               .exit_latency = 1,
+               .target_residency = 1,
+       },
+       {
+               .name = "C1E-ICX",
+               .flags = MWAIT2flg(0x01),
+               .exit_latency = 4,
+               .target_residency = 4,
+       },
+       {
+               .name = "C6-ICX",
+               .flags = MWAIT2flg(0x20) | CPUIDLE_FLAG_TLB_FLUSHED,
+               .exit_latency = 128,
+               .target_residency = 384,
+       },
+       {}
+};
+
 static const struct cpuidle_state atom_cstates[] = {
 	{
 		.name = "C1E-ATM",
@@ -724,14 +747,20 @@ static void mwait_idle(void)
 	u64 before, after;
 	u32 exp = 0, pred = 0, irq_traced[4] = { 0 };
 
-	if (max_cstate > 0 && power && !sched_has_urgent_vcpu() &&
+	if (max_cstate > 0 && power &&
 	    (next_state = cpuidle_current_governor->select(power)) > 0) {
+		unsigned int max_state = sched_has_urgent_vcpu() ? ACPI_STATE_C1
+								 : max_cstate;
+
 		do {
 			cx = &power->states[next_state];
-		} while (cx->type > max_cstate && --next_state);
+		} while ((cx->type > max_state || (cx->type == max_cstate &&
+			  MWAIT_HINT2SUBSTATE(cx->address) > max_csubstate)) &&
+			 --next_state);
 		if (!next_state)
 			cx = NULL;
-		menu_get_trace_data(&exp, &pred);
+		else if (tb_init_done)
+			menu_get_trace_data(&exp, &pred);
 	}
 	if (!cx) {
 		if (pm_idle_save)
@@ -749,8 +778,8 @@ static void mwait_idle(void)
 
 	cpufreq_dbs_timer_suspend();
 
-	sched_tick_suspend();
-	/* sched_tick_suspend() can raise TIMER_SOFTIRQ. Process it now. */
+	rcu_idle_enter(cpu);
+	/* rcu_idle_enter() can raise TIMER_SOFTIRQ. Process it now. */
 	process_pending_softirqs();
 
 	/* Interrupts must be disabled for C2 and higher transitions. */
@@ -758,10 +787,13 @@ static void mwait_idle(void)
 
 	if (!cpu_is_haltable(cpu)) {
 		local_irq_enable();
-		sched_tick_resume();
+		rcu_idle_exit(cpu);
 		cpufreq_dbs_timer_resume();
 		return;
 	}
+
+	if ((cx->type >= 3) && errata_c6_workaround())
+		cx = power->safe_state;
 
 	eax = cx->address;
 	cstate = ((eax >> MWAIT_SUBSTATE_SIZE) & MWAIT_CSTATE_MASK) + 1;
@@ -778,7 +810,7 @@ static void mwait_idle(void)
 	if (!(lapic_timer_reliable_states & (1 << cstate)))
 		lapic_timer_off();
 
-	before = cpuidle_get_tick();
+	before = alternative_call(cpuidle_get_tick);
 	TRACE_4D(TRC_PM_IDLE_ENTRY, cx->type, before, exp, pred);
 
 	update_last_cx_stat(power, cx, before);
@@ -786,7 +818,7 @@ static void mwait_idle(void)
 	if (cpu_is_haltable(cpu))
 		mwait_idle_with_hints(eax, MWAIT_ECX_INTERRUPT_BREAK);
 
-	after = cpuidle_get_tick();
+	after = alternative_call(cpuidle_get_tick);
 
 	cstate_restore_tsc();
 	trace_exit_reason(irq_traced);
@@ -800,7 +832,7 @@ static void mwait_idle(void)
 	if (!(lapic_timer_reliable_states & (1 << cstate)))
 		lapic_timer_on();
 
-	sched_tick_resume();
+	rcu_idle_exit(cpu);
 	cpufreq_dbs_timer_resume();
 
 	if ( cpuidle_current_governor->reflect )
@@ -897,6 +929,11 @@ static const struct idle_cpu idle_cpu_skx = {
 	.disable_promotion_to_c1e = 1,
 };
 
+static const struct idle_cpu idle_cpu_icx = {
+       .state_table = icx_cstates,
+       .disable_promotion_to_c1e = 1,
+};
+
 static const struct idle_cpu idle_cpu_avn = {
 	.state_table = avn_cstates,
 	.disable_promotion_to_c1e = 1,
@@ -917,8 +954,7 @@ static const struct idle_cpu idle_cpu_dnv = {
 };
 
 #define ICPU(model, cpu) \
-    { X86_VENDOR_INTEL, 6, model, X86_FEATURE_MONITOR, \
-        &idle_cpu_##cpu}
+	{ X86_VENDOR_INTEL, 6, model, X86_FEATURE_ALWAYS, &idle_cpu_##cpu}
 
 static const struct x86_cpu_id intel_idle_ids[] __initconstrel = {
 	ICPU(0x1a, nehalem),
@@ -952,11 +988,13 @@ static const struct x86_cpu_id intel_idle_ids[] __initconstrel = {
 	ICPU(0x8e, skl),
 	ICPU(0x9e, skl),
 	ICPU(0x55, skx),
+	ICPU(0x6a, icx),
 	ICPU(0x57, knl),
 	ICPU(0x85, knl),
 	ICPU(0x5c, bxt),
 	ICPU(0x7a, bxt),
 	ICPU(0x5f, dnv),
+	ICPU(0x86, dnv),
 	{}
 };
 
@@ -1121,6 +1159,11 @@ static int __init mwait_idle_probe(void)
 		return -ENODEV;
 	}
 
+	if (!boot_cpu_has(X86_FEATURE_MONITOR)) {
+		pr_debug(PREFIX "Please enable MWAIT in BIOS SETUP\n");
+		return -ENODEV;
+	}
+
 	if (boot_cpu_data.cpuid_level < CPUID_MWAIT_LEAF)
 		return -ENODEV;
 
@@ -1162,12 +1205,17 @@ static int mwait_idle_cpu_init(struct notifier_block *nfb,
 	struct acpi_processor_power *dev = processor_powers[cpu];
 
 	switch (action) {
+		int rc;
+
 	default:
 		return NOTIFY_DONE;
 
 	case CPU_UP_PREPARE:
-		cpuidle_init_cpu(cpu);
-		return NOTIFY_DONE;
+		rc = cpuidle_init_cpu(cpu);
+		dev = processor_powers[cpu];
+		if (!rc && cpuidle_current_governor->enable)
+			rc = cpuidle_current_governor->enable(dev);
+		return !rc ? NOTIFY_DONE : notifier_from_errno(rc);
 
 	case CPU_ONLINE:
 		if (!dev)
@@ -1256,8 +1304,6 @@ int __init mwait_idle_init(struct notifier_block *nfb)
 	}
 	if (!err) {
 		nfb->notifier_call = mwait_idle_cpu_init;
-		mwait_idle_cpu_init(nfb, CPU_UP_PREPARE, NULL);
-
 		pm_idle_save = pm_idle;
 		pm_idle = mwait_idle;
 		dead_idle = acpi_dead_idle;

@@ -108,7 +108,7 @@ int create_grant_pv_mapping(uint64_t addr, mfn_t frame,
         goto out_unlock;
 
     ol1e = *pl1e;
-    if ( UPDATE_ENTRY(l1, pl1e, ol1e, nl1e, mfn_x(gl1mfn), curr, 0) )
+    if ( UPDATE_ENTRY(l1, pl1e, ol1e, nl1e, gl1mfn, curr, 0) )
         rc = GNTST_okay;
 
  out_unlock:
@@ -165,7 +165,10 @@ static bool steal_linear_address(unsigned long linear, l1_pgentry_t *out)
         goto out_unlock;
 
     ol1e = *pl1e;
-    okay = UPDATE_ENTRY(l1, pl1e, ol1e, l1e_empty(), mfn_x(gl1mfn), curr, 0);
+    okay = UPDATE_ENTRY(l1, pl1e, ol1e, l1e_empty(), gl1mfn, curr, 0);
+
+    if ( okay )
+        *out = ol1e;
 
  out_unlock:
     page_unlock(page);
@@ -173,9 +176,6 @@ static bool steal_linear_address(unsigned long linear, l1_pgentry_t *out)
     put_page(page);
  out_unmap:
     unmap_domain_page(pl1e);
-
-    if ( okay )
-        *out = ol1e;
 
  out:
     return okay;
@@ -293,7 +293,7 @@ int replace_grant_pv_mapping(uint64_t addr, mfn_t frame,
                  "PTE flags %x for %"PRIx64" don't match grant (%x)\n",
                  l1e_get_flags(ol1e), addr, grant_pte_flags);
 
-    if ( UPDATE_ENTRY(l1, pl1e, ol1e, nl1e, mfn_x(gl1mfn), curr, 0) )
+    if ( UPDATE_ENTRY(l1, pl1e, ol1e, nl1e, gl1mfn, curr, 0) )
         rc = GNTST_okay;
 
  out_unlock:

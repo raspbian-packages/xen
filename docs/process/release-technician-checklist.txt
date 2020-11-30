@@ -49,16 +49,30 @@ t=RELEASE-$r
 * consider bumping sonames of shlibs
 
 * change xen-unstable README (should say "Xen 4.5" in releases and on stable branches, "Xen 4.5-unstable" on unstable)
-* change xen-unstable Config.mk (QEMU_UPSTREAM_REVISION, QEMU_TRADITIONAL_REVISION, MINIOS_UPSTREAM_REVISION)
+* change xen-unstable Config.mk
+#   QEMU_UPSTREAM_REVISION,
+#   QEMU_TRADITIONAL_REVISION
+#   MINIOS_UPSTREAM_REVISION
 * change SUPPORT.md heading version number; -unstable or -rc tag
 *     (empty in stable branches after .0 release).
+* SUPPORT.md: insert correct version number in release-notes link
 * change xen-unstable xen/Makefile XEN_EXTRAVERSION
 # if main version number has changed (eg 4.7 -> 4.8) rerun ./autogen.sh
 * rerun ./autogen.sh to update version number in configure
-#    - XEN_EXTRAVERSION should be `.0-rc$(XEN_VENDORVERSION)'
-#    - turn off debug on stable branches
-#           - tools/Rules.mk debug ?= n
-#           - Kconfig.debug default n
+#    - XEN_EXTRAVERSION should be as follows
+#      `.0-rc$(XEN_VENDORVERSION)'       during freeze, first rc onwards (including staging, before branching)
+#      `-unstable$(XEN_VENDORVERSION)'   unstable aka unfrozen staging (or unstable branch, after branching)
+#      `.0$(XEN_VENDORVERSION)'          actual release of Xen X.Y.0 (aka first actual release of Xen X.Y)
+#      `.Z$(XEN_VENDORVERSION)'          actual release of Xen X.Y.Z (stable point realase)
+#      `.Z-pre$(XEN_VENDORVERSION)'      stable branch, after release of Z-1
+#
+#    - turn off debug on stable branches, if not already done
+#           - tools/Rules.mk
+#                 debug ?= n
+#           - xen/Kconfig.debug
+#                 config DEBUG
+#                     default n
+
 * tag xen-unstable
 
 # In xen.git
@@ -132,9 +146,15 @@ RELEASE TARBALL
 	#   U oss-xen/release/4.8.0-rc2/xen-4.8.0-rc2.tar.gz
 	#   U oss-xen/release/4.8.0-rc2/xen-4.8.0-rc2.tar.gz.sig
 
+After a .0 release, update XEN_EXTRAVERSION again (to .1-pre, see above).
 
-update xenbits front page to change references to old stable branch
- into references to new stable branch
+After a .0 release,
+Update new stable tree's MAINTAINERS to contain correct info for this
+stable branch: usually, copy text from previous
+staging-$ov:MAINTAINERS section "Stable Release Maintenance"
+into new staging-$v, deleting what's there.
+  git cat-file blob origin/staging-$ov:MAINTAINERS >MAINTAINERS
+and review the changes, commiting ONLY THE RELEVANT ONES
 
-Edit website
+Notify release manager of completion
 

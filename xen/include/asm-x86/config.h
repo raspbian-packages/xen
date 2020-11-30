@@ -21,7 +21,6 @@
 
 #define CONFIG_X86_PM_TIMER 1
 #define CONFIG_HPET_TIMER 1
-#define CONFIG_X86_MCE_THERMAL 1
 #define CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS 1
 #define CONFIG_DISCONTIGMEM 1
 #define CONFIG_NUMA_EMU 1
@@ -34,7 +33,6 @@
 /* Intel P4 currently has largest cache line (L2 line size is 128 bytes). */
 #define CONFIG_X86_L1_CACHE_SHIFT 7
 
-#define CONFIG_ACPI_SLEEP 1
 #define CONFIG_ACPI_NUMA 1
 #define CONFIG_ACPI_SRAT 1
 #define CONFIG_ACPI_CSTATE 1
@@ -68,6 +66,8 @@
 #define STACK_ORDER 3
 #define STACK_SIZE  (PAGE_SIZE << STACK_ORDER)
 
+#define IST_SHSTK_SIZE 1024
+
 #define TRAMPOLINE_STACK_SPACE  PAGE_SIZE
 #define TRAMPOLINE_SPACE        (KB(64) - TRAMPOLINE_STACK_SPACE)
 #define WAKEUP_STACK_MIN        3072
@@ -77,9 +77,13 @@
 /* Primary stack is restricted to 8kB by guard pages. */
 #define PRIMARY_STACK_SIZE 8192
 
+/* Primary shadow stack is slot 5 of 8, immediately under the primary stack. */
+#define PRIMARY_SHSTK_SLOT 5
+
 /* Total size of syscall and emulation stubs. */
 #define STUB_BUF_SHIFT (L1_CACHE_SHIFT > 7 ? L1_CACHE_SHIFT : 7)
 #define STUB_BUF_SIZE  (1 << STUB_BUF_SHIFT)
+#define STUBS_PER_PAGE (PAGE_SIZE / STUB_BUF_SIZE)
 
 /* Return value for zero-size _xmalloc(), distinguished from NULL. */
 #define ZERO_BLOCK_PTR ((void *)0xBAD0BAD0BAD0BAD0UL)
@@ -93,14 +97,16 @@ extern unsigned long trampoline_phys;
 #define bootsym_phys(sym)                                 \
     (((unsigned long)&(sym)-(unsigned long)&trampoline_start)+trampoline_phys)
 #define bootsym(sym)                                      \
-    (*RELOC_HIDE((typeof(&(sym)))__va(__pa(&(sym))),      \
-                 trampoline_phys-__pa(trampoline_start)))
+    (*((typeof(sym) *)__va(bootsym_phys(sym))))
+
 extern char trampoline_start[], trampoline_end[];
 extern char trampoline_realmode_entry[];
 extern unsigned int trampoline_xen_phys_start;
 extern unsigned char trampoline_cpu_started;
 extern char wakeup_start[];
-extern unsigned int video_mode, video_flags;
+
+extern unsigned char video_flags;
+
 extern unsigned short boot_edid_caps;
 extern unsigned char boot_edid_info[128];
 #endif
@@ -138,18 +144,16 @@ extern unsigned char boot_edid_info[128];
  *  0xffff82d000000000 - 0xffff82d03fffffff [1GB,   2^30 bytes, PML4:261]
  *    Compatibility machine-to-phys translation table.
  *  0xffff82d040000000 - 0xffff82d07fffffff [1GB,   2^30 bytes, PML4:261]
- *    High read-only compatibility machine-to-phys translation table.
- *  0xffff82d080000000 - 0xffff82d0bfffffff [1GB,   2^30 bytes, PML4:261]
  *    Xen text, static data, bss.
 #ifndef CONFIG_BIGMEM
- *  0xffff82d0c0000000 - 0xffff82dfffffffff [61GB,              PML4:261]
+ *  0xffff82d080000000 - 0xffff82dfffffffff [62GB,              PML4:261]
  *    Reserved for future use.
  *  0xffff82e000000000 - 0xffff82ffffffffff [128GB, 2^37 bytes, PML4:261]
  *    Page-frame information array.
  *  0xffff830000000000 - 0xffff87ffffffffff [5TB, 5*2^40 bytes, PML4:262-271]
  *    1:1 direct mapping of all physical memory.
 #else
- *  0xffff82d0c0000000 - 0xffff82ffffffffff [189GB,             PML4:261]
+ *  0xffff82d080000000 - 0xffff82ffffffffff [190GB,             PML4:261]
  *    Reserved for future use.
  *  0xffff830000000000 - 0xffff847fffffffff [1.5TB, 3*2^39 bytes, PML4:262-264]
  *    Page-frame information array.
@@ -214,11 +218,8 @@ extern unsigned char boot_edid_info[128];
 /* Slot 261: compatibility machine-to-phys conversion table (1GB). */
 #define RDWR_COMPAT_MPT_VIRT_START VMAP_VIRT_END
 #define RDWR_COMPAT_MPT_VIRT_END (RDWR_COMPAT_MPT_VIRT_START + GB(1))
-/* Slot 261: high read-only compat machine-to-phys conversion table (1GB). */
-#define HIRO_COMPAT_MPT_VIRT_START RDWR_COMPAT_MPT_VIRT_END
-#define HIRO_COMPAT_MPT_VIRT_END (HIRO_COMPAT_MPT_VIRT_START + GB(1))
-/* Slot 261: xen text, static data and bss (1GB). */
-#define XEN_VIRT_START          (HIRO_COMPAT_MPT_VIRT_END)
+/* Slot 261: xen text, static data, bss, per-cpu stubs and executable fixmap (1GB). */
+#define XEN_VIRT_START          RDWR_COMPAT_MPT_VIRT_END
 #define XEN_VIRT_END            (XEN_VIRT_START + GB(1))
 
 #ifndef CONFIG_BIGMEM
@@ -265,9 +266,7 @@ extern unsigned char boot_edid_info[128];
 
 #endif
 
-#define __HYPERVISOR_CS64 0xe008
-#define __HYPERVISOR_CS32 0xe038
-#define __HYPERVISOR_CS   __HYPERVISOR_CS64
+#define __HYPERVISOR_CS   0xe008
 #define __HYPERVISOR_DS64 0x0000
 #define __HYPERVISOR_DS32 0xe010
 #define __HYPERVISOR_DS   __HYPERVISOR_DS64
@@ -309,17 +308,6 @@ extern unsigned long xen_phys_start;
 #define ARG_XLAT_VA_SHIFT        (2 + PAGE_SHIFT)
 #define ARG_XLAT_START(v)        \
     (ARG_XLAT_VIRT_START + ((v)->vcpu_id << ARG_XLAT_VA_SHIFT))
-
-#define NATIVE_VM_ASSIST_VALID   ((1UL << VMASST_TYPE_4gb_segments)        | \
-                                  (1UL << VMASST_TYPE_4gb_segments_notify) | \
-                                  (1UL << VMASST_TYPE_writable_pagetables) | \
-                                  (1UL << VMASST_TYPE_pae_extended_cr3)    | \
-                                  (1UL << VMASST_TYPE_architectural_iopl)  | \
-                                  (1UL << VMASST_TYPE_runstate_update_flag)| \
-                                  (1UL << VMASST_TYPE_m2p_strict))
-#define VM_ASSIST_VALID          NATIVE_VM_ASSIST_VALID
-#define COMPAT_VM_ASSIST_VALID   (NATIVE_VM_ASSIST_VALID & \
-                                  ((1UL << COMPAT_BITS_PER_LONG) - 1))
 
 #define ELFSIZE 64
 

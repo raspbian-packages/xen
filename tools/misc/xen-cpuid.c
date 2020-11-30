@@ -3,6 +3,9 @@
 #include <err.h>
 #include <getopt.h>
 #include <string.h>
+#include <errno.h>
+#include <limits.h>
+#include <inttypes.h>
 
 #include <xenctrl.h>
 
@@ -10,7 +13,7 @@
 
 static uint32_t nr_features;
 
-static const char *str_1d[32] =
+static const char *const str_1d[32] =
 {
     [ 0] = "fpu",  [ 1] = "vme",
     [ 2] = "de",   [ 3] = "pse",
@@ -30,7 +33,7 @@ static const char *str_1d[32] =
     [30] = "ia64", [31] = "pbe",
 };
 
-static const char *str_1c[32] =
+static const char *const str_1c[32] =
 {
     [ 0] = "sse3",    [ 1] = "pclmulqdq",
     [ 2] = "dtes64",  [ 3] = "monitor",
@@ -50,7 +53,7 @@ static const char *str_1c[32] =
     [30] = "rdrnd",   [31] = "hyper",
 };
 
-static const char *str_e1d[32] =
+static const char *const str_e1d[32] =
 {
     [ 0] = "fpu",    [ 1] = "vme",
     [ 2] = "de",     [ 3] = "pse",
@@ -70,7 +73,7 @@ static const char *str_e1d[32] =
     [30] = "3dnow+", [31] = "3dnow",
 };
 
-static const char *str_e1c[32] =
+static const char *const str_e1c[32] =
 {
     [ 0] = "lahf_lm",    [ 1] = "cmp",
     [ 2] = "svm",        [ 3] = "extapic",
@@ -89,7 +92,7 @@ static const char *str_e1c[32] =
     [28] = "pcx_l2i",    [29] = "monitorx",
 };
 
-static const char *str_7b0[32] =
+static const char *const str_7b0[32] =
 {
     [ 0] = "fsgsbase", [ 1] = "tsc-adj",
     [ 2] = "sgx",      [ 3] = "bmi1",
@@ -101,61 +104,84 @@ static const char *str_7b0[32] =
     [14] = "mpx",      [15] = "pqe",
     [16] = "avx512f",  [17] = "avx512dq",
     [18] = "rdseed",   [19] = "adx",
-    [20] = "smap",     [21] = "avx512ifma",
-    [22] = "pcomit",   [23] = "clflushopt",
+    [20] = "smap",     [21] = "avx512-ifma",
+    [22] = "pcommit",  [23] = "clflushopt",
     [24] = "clwb",     [25] = "pt",
     [26] = "avx512pf", [27] = "avx512er",
     [28] = "avx512cd", [29] = "sha",
     [30] = "avx512bw", [31] = "avx512vl",
 };
 
-static const char *str_Da1[32] =
+static const char *const str_Da1[32] =
 {
     [ 0] = "xsaveopt", [ 1] = "xsavec",
     [ 2] = "xgetbv1",  [ 3] = "xsaves",
 };
 
-static const char *str_7c0[32] =
+static const char *const str_7c0[32] =
 {
-    [ 0] = "prechwt1", [ 1] = "avx512vbmi",
-    [ 2] = "umip",     [ 3] = "pku",
-    [ 4] = "ospke",
-
+    [ 0] = "prefetchwt1",      [ 1] = "avx512_vbmi",
+    [ 2] = "umip",             [ 3] = "pku",
+    [ 4] = "ospke",            [ 5] = "waitpkg",
+    [ 6] = "avx512_vbmi2",     [ 7] = "cet-ss",
+    [ 8] = "gfni",             [ 9] = "vaes",
+    [10] = "vpclmulqdq",       [11] = "avx512_vnni",
+    [12] = "avx512_bitalg",
     [14] = "avx512_vpopcntdq",
+    [16] = "tsxldtrk",
 
     [22] = "rdpid",
+    /* 24 */                   [25] = "cldemote",
+    /* 26 */                   [27] = "movdiri",
+    [28] = "movdir64b",
+    [30] = "sgx_lc",
 };
 
-static const char *str_e7d[32] =
+static const char *const str_e7d[32] =
 {
     [ 8] = "itsc",
     [10] = "efro",
 };
 
-static const char *str_e8b[32] =
+static const char *const str_e8b[32] =
 {
     [ 0] = "clzero",
+    [ 2] = "rstr-fp-err-ptrs",
+
+    /* [ 8] */            [ 9] = "wbnoinvd",
 
     [12] = "ibpb",
+
+    /* [22] */                 [23] = "ppin",
 };
 
-static const char *str_7d0[32] =
+static const char *const str_7d0[32] =
 {
     [ 2] = "avx512_4vnniw", [ 3] = "avx512_4fmaps",
+    [ 4] = "fsrm",
 
     /*  8 */                [ 9] = "srbds-ctrl",
     [10] = "md-clear",
     /* 12 */                [13] = "tsx-force-abort",
+    [14] = "serialize",
+
+    [18] = "pconfig",
+    [20] = "cet-ibt",
 
     [26] = "ibrsb",         [27] = "stibp",
     [28] = "l1d_flush",     [29] = "arch_caps",
-    /* 30 */                [31] = "ssbd",
+    [30] = "core_caps",     [31] = "ssbd",
 };
 
-static struct {
+static const char *const str_7a1[32] =
+{
+    /* 4 */                 [ 5] = "avx512_bf16",
+};
+
+static const struct {
     const char *name;
     const char *abbr;
-    const char **strs;
+    const char *const *strs;
 } decodes[] =
 {
     { "0x00000001.edx",   "1d",  str_1d },
@@ -168,6 +194,7 @@ static struct {
     { "0x80000007.edx",   "e7d", str_e7d },
     { "0x80000008.ebx",   "e8b", str_e8b },
     { "0x00000007:0.edx", "7d0", str_7d0 },
+    { "0x00000007:1.eax", "7a1", str_7a1 },
 };
 
 #define COL_ALIGN "18"
@@ -184,7 +211,7 @@ static struct fsinfo {
     [XEN_SYSCTL_cpu_featureset_hvm]  = { "HVM",  0, NULL },
 };
 
-static void dump_leaf(uint32_t leaf, const char **strs)
+static void dump_leaf(uint32_t leaf, const char *const *strs)
 {
     unsigned i;
 
@@ -228,7 +255,7 @@ static void decode_featureset(const uint32_t *features,
     }
 }
 
-static void get_featureset(xc_interface *xch, unsigned int idx)
+static int get_featureset(xc_interface *xch, unsigned int idx)
 {
     struct fsinfo *f = &featuresets[idx];
 
@@ -238,8 +265,7 @@ static void get_featureset(xc_interface *xch, unsigned int idx)
     if ( !f->fs )
         err(1, "calloc(, featureset)");
 
-    if ( xc_get_cpu_featureset(xch, idx, &f->len, f->fs) )
-        err(1, "xc_get_featureset()");
+    return xc_get_cpu_featureset(xch, idx, &f->len, f->fs);
 }
 
 static void dump_info(xc_interface *xch, bool detail)
@@ -261,17 +287,33 @@ static void dump_info(xc_interface *xch, bool detail)
                       nr_features, "Known", detail);
     decode_featureset(xc_get_static_cpu_featuremask(XC_FEATUREMASK_SPECIAL),
                       nr_features, "Special", detail);
-    decode_featureset(xc_get_static_cpu_featuremask(XC_FEATUREMASK_PV),
-                      nr_features, "PV Mask", detail);
-    decode_featureset(xc_get_static_cpu_featuremask(XC_FEATUREMASK_HVM_SHADOW),
-                      nr_features, "HVM Shadow Mask", detail);
-    decode_featureset(xc_get_static_cpu_featuremask(XC_FEATUREMASK_HVM_HAP),
-                      nr_features, "HVM Hap Mask", detail);
+    decode_featureset(xc_get_static_cpu_featuremask(XC_FEATUREMASK_PV_MAX),
+                      nr_features, "PV Max", detail);
+    decode_featureset(xc_get_static_cpu_featuremask(XC_FEATUREMASK_PV_DEF),
+                      nr_features, "PV Default", detail);
+    decode_featureset(xc_get_static_cpu_featuremask(XC_FEATUREMASK_HVM_SHADOW_MAX),
+                      nr_features, "HVM Shadow Max", detail);
+    decode_featureset(xc_get_static_cpu_featuremask(XC_FEATUREMASK_HVM_SHADOW_DEF),
+                      nr_features, "HVM Shadow Default", detail);
+    decode_featureset(xc_get_static_cpu_featuremask(XC_FEATUREMASK_HVM_HAP_MAX),
+                      nr_features, "HVM Hap Max", detail);
+    decode_featureset(xc_get_static_cpu_featuremask(XC_FEATUREMASK_HVM_HAP_DEF),
+                      nr_features, "HVM Hap Default", detail);
 
     printf("\nDynamic sets:\n");
     for ( i = 0; i < ARRAY_SIZE(featuresets); ++i )
     {
-        get_featureset(xch, i);
+        if ( get_featureset(xch, i) )
+        {
+            if ( errno == EOPNOTSUPP )
+            {
+                printf("%s featureset not supported by Xen\n",
+                       featuresets[i].name);
+                continue;
+            }
+
+            err(1, "xc_get_featureset()");
+        }
 
         decode_featureset(featuresets[i].fs, featuresets[i].len,
                           featuresets[i].name, detail);
@@ -281,26 +323,57 @@ static void dump_info(xc_interface *xch, bool detail)
         free(featuresets[i].fs);
 }
 
+static void print_policy(const char *name,
+                         xen_cpuid_leaf_t *leaves, uint32_t nr_leaves,
+                         xen_msr_entry_t *msrs, uint32_t nr_msrs)
+{
+    unsigned int l;
+
+    printf("%s policy: %u leaves, %u MSRs\n", name, nr_leaves, nr_msrs);
+    printf(" CPUID:\n");
+    printf("  %-8s %-8s -> %-8s %-8s %-8s %-8s\n",
+           "leaf", "subleaf", "eax", "ebx", "ecx", "edx");
+    for ( l = 0; l < nr_leaves; ++l )
+    {
+        /* Skip empty leaves. */
+        if ( !leaves[l].a && !leaves[l].b && !leaves[l].c && !leaves[l].d )
+            continue;
+
+        printf("  %08x:%08x -> %08x:%08x:%08x:%08x\n",
+               leaves[l].leaf, leaves[l].subleaf,
+               leaves[l].a, leaves[l].b, leaves[l].c, leaves[l].d);
+    }
+
+    printf(" MSRs:\n");
+    printf("  %-8s -> %-16s\n", "index", "value");
+    for ( l = 0; l < nr_msrs; ++l )
+        printf("  %08x -> %016"PRIx64"\n",
+               msrs[l].idx, msrs[l].val);
+}
+
 int main(int argc, char **argv)
 {
-    enum { MODE_UNKNOWN, MODE_INFO, MODE_DETAIL, MODE_INTERPRET }
+    enum { MODE_UNKNOWN, MODE_INFO, MODE_DETAIL, MODE_INTERPRET, MODE_POLICY }
     mode = MODE_UNKNOWN;
+    int domid = -1;
 
     nr_features = xc_get_cpu_featureset_size();
 
     for ( ;; )
     {
+        const char *tmp_optarg;
         int option_index = 0, c;
-        static struct option long_options[] =
+        static const struct option long_options[] =
         {
             { "help", no_argument, NULL, 'h' },
             { "info", no_argument, NULL, 'i' },
             { "detail", no_argument, NULL, 'd' },
             { "verbose", no_argument, NULL, 'v' },
+            { "policy", optional_argument, NULL, 'p' },
             { NULL, 0, NULL, 0 },
         };
 
-        c = getopt_long(argc, argv, "hidv", long_options, &option_index);
+        c = getopt_long(argc, argv, "hidvp::", long_options, &option_index);
 
         if ( c == -1 )
             break;
@@ -316,6 +389,28 @@ int main(int argc, char **argv)
 
         case 'i':
             mode = MODE_INFO;
+            break;
+
+        case 'p':
+            mode = MODE_POLICY;
+
+            tmp_optarg = optarg;
+
+            /* Make "--policy $DOMID" and "-p $DOMID" work. */
+            if ( !optarg && optind < argc &&
+                 argv[optind] != NULL && argv[optind][0] != '\0' &&
+                 argv[optind][0] != '-' )
+                tmp_optarg = argv[optind++];
+
+            if ( tmp_optarg )
+            {
+                char *endptr;
+
+                errno = 0;
+                domid = strtol(tmp_optarg, &endptr, 0);
+                if ( errno || endptr == tmp_optarg )
+                    err(1, "strtol(%s,,)", tmp_optarg);
+            }
             break;
 
         case 'd':
@@ -348,7 +443,83 @@ int main(int argc, char **argv)
             mode = MODE_INTERPRET;
     }
 
-    if ( mode == MODE_INFO || mode == MODE_DETAIL )
+    if ( mode == MODE_POLICY )
+    {
+        static const char *const sys_policies[] = {
+            [ XEN_SYSCTL_cpu_policy_raw ]          = "Raw",
+            [ XEN_SYSCTL_cpu_policy_host ]         = "Host",
+            [ XEN_SYSCTL_cpu_policy_pv_max ]       = "PV Max",
+            [ XEN_SYSCTL_cpu_policy_hvm_max ]      = "HVM Max",
+            [ XEN_SYSCTL_cpu_policy_pv_default ]   = "PV Default",
+            [ XEN_SYSCTL_cpu_policy_hvm_default ]  = "HVM Default",
+        };
+        xen_cpuid_leaf_t *leaves;
+        xen_msr_entry_t *msrs;
+        uint32_t i, max_leaves, max_msrs;
+
+        xc_interface *xch = xc_interface_open(0, 0, 0);
+
+        if ( !xch )
+            err(1, "xc_interface_open");
+
+        if ( xc_get_cpu_policy_size(xch, &max_leaves, &max_msrs) )
+            err(1, "xc_get_cpu_policy_size(...)");
+        if ( domid == -1 )
+            printf("Xen reports there are maximum %u leaves and %u MSRs\n",
+                   max_leaves, max_msrs);
+
+        leaves = calloc(max_leaves, sizeof(xen_cpuid_leaf_t));
+        if ( !leaves )
+            err(1, "calloc(max_leaves)");
+        msrs = calloc(max_msrs, sizeof(xen_msr_entry_t));
+        if ( !msrs )
+            err(1, "calloc(max_msrs)");
+
+        if ( domid != -1 )
+        {
+            char name[20];
+            uint32_t nr_leaves = max_leaves;
+            uint32_t nr_msrs = max_msrs;
+
+            if ( xc_get_domain_cpu_policy(xch, domid, &nr_leaves, leaves,
+                                          &nr_msrs, msrs) )
+                err(1, "xc_get_domain_cpu_policy(, %d, %d,, %d,)",
+                    domid, nr_leaves, nr_msrs);
+
+            snprintf(name, sizeof(name), "Domain %d", domid);
+            print_policy(name, leaves, nr_leaves, msrs, nr_msrs);
+        }
+        else
+        {
+            /* Get system policies */
+            for ( i = 0; i < ARRAY_SIZE(sys_policies); ++i )
+            {
+                uint32_t nr_leaves = max_leaves;
+                uint32_t nr_msrs = max_msrs;
+
+                if ( xc_get_system_cpu_policy(xch, i, &nr_leaves, leaves,
+                                              &nr_msrs, msrs) )
+                {
+                    if ( errno == EOPNOTSUPP )
+                    {
+                        printf("%s policy not supported by Xen\n",
+                               sys_policies[i]);
+                        continue;
+                    }
+
+                    err(1, "xc_get_system_cpu_policy(, %s,,)", sys_policies[i]);
+                }
+
+                print_policy(sys_policies[i], leaves, nr_leaves,
+                             msrs, nr_msrs);
+            }
+        }
+
+        free(leaves);
+        free(msrs);
+        xc_interface_close(xch);
+    }
+    else if ( mode == MODE_INFO || mode == MODE_DETAIL )
     {
         xc_interface *xch = xc_interface_open(0, 0, 0);
 
@@ -388,6 +559,15 @@ int main(int argc, char **argv)
                 }
                 break;
             }
+
+            if ( !i )
+            {
+                fprintf(stderr, "'%s' unrecognized - skipping\n", ptr);
+                continue;
+            }
+
+            if ( *ptr )
+                fprintf(stderr, "'%s' unrecognized - ignoring\n", ptr);
 
             decode_featureset(fs, i, "Raw", true);
         }

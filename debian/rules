@@ -7,16 +7,19 @@ SHELL    := bash -e
 
 # This influences dpkg-buildflags to specify better linker
 # options.  See https://wiki.debian.org/Hardening
-# TBH it is not clear to me (Diziet, 2018) why this is not the
-# default but it is definitely appropriate for Xen, many of whose
-# users will care significantly about security.x
+# Apparently some of these might incur silent breakage
+#   https://bugs.debian.org/cgi-bin/bugreport.cgi?bug=939560#5
+# but we don't think this is relevant to us.
 #
 # Note that we don't use the dpkg-buildflags output for the
 # hypervisor build.  This because I haven't investigated which
 # of them are sane to use in the hypervisor context, rather than
 # simply in userland binaries.
 #
-export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+# Inexplicably, if you tell make `export V=value' and `$(shell ...)'
+# it does not pass V to the shell.  WTF.  So we set a variable
+# dbmo which we include in the relevant $(shell ...) invocations.
+dbmo= DEB_BUILD_MAINT_OPTIONS=hardening=+all
 
 # Architecture handling.
 #
@@ -125,26 +128,31 @@ export WGET=/bin/false GIT=/bin/false
 
 # Other build flags etc.
 
-t=$(PWD)/debian/tmp
+t=$(CURDIR)/debian/tmp
 
-dpkg_CFLAGS   := $(shell dpkg-buildflags --get CFLAGS)
-dpkg_CPPFLAGS := $(shell dpkg-buildflags --get CPPFLAGS)
-dpkg_LDFLAGS  := $(shell dpkg-buildflags --get LDFLAGS)
+dpkg_CFLAGS   := $(shell $(dbmo) dpkg-buildflags --get CFLAGS)
+dpkg_CPPFLAGS := $(shell $(dbmo) dpkg-buildflags --get CPPFLAGS)
+dpkg_LDFLAGS  := $(shell $(dbmo) dpkg-buildflags --get LDFLAGS)
 
-make_args_xen= $(make_args_common) \
-	XEN_COMPILE_ARCH=$(xen_arch_$(DEB_BUILD_ARCH)) \
-	XEN_TARGET_ARCH=$(xen_arch_$(flavour)) \
+make_args_common := \
+	XEN_COMPILE_ARCH=$(xen_arch_$(DEB_BUILD_ARCH))
+
+make_args_xen := $(make_args_common) \
+	XEN_TARGET_ARCH=$(xen_arch_$(flavour))
 # (Xen upstream does not offer a separate CPPFLAGS,
 # so we pass those in CFLAGS.)
 
-make_args_tools= $(make_args_common) \
-	XEN_COMPILE_ARCH=$(xen_arch_$(DEB_BUILD_ARCH)) \
+make_args_tools := $(make_args_common) \
 	XEN_TARGET_ARCH=$(xen_arch_$(DEB_HOST_ARCH)) \
 	EXTRA_CFLAGS_XEN_TOOLS='$(dpkg_CFLAGS) $(dpkg_CPPFLAGS)' \
 	PREPEND_LDFLAGS_XEN_TOOLS='$(dpkg_LDFLAGS)'
 
+export PYBUILD_NAME=xen
+export PYBUILD_DISABLE=test
+export PYBUILD_SYSTEM=distutils
+
 %:
-	dh $@ --with=python2
+	dh $@ --with=python3 --buildsystem=pybuild
 
 # Without this, something on stretch passes CFLAGS in the environment
 # to the Xen build system, which then (with 4.11) chokes printing
@@ -175,6 +183,7 @@ override_dh_auto_configure:
 		--includedir=/usr/include \
 		--libdir=/usr/lib/$(DEB_HOST_MULTIARCH) \
 		--with-libexec-libdir-suffix=/$(DEB_HOST_MULTIARCH) \
+		--host=$(DEB_HOST_MULTIARCH) \
 		--mandir=/usr/share/man \
 		--infodir=/usr/share/info \
 		--sysconfdir=/etc \
@@ -220,10 +229,6 @@ override_dh_auto_install: $(TEMPLATED_FILES)
 	$(MAKE) $(make_args_xen) DESTDIR=$t $(make_args_xen) \
 		-C tools/firmware install-shim
 	:
-	@# pkgconfig files contain arch-specific paths so must
-	@# be in /usr/lib/<triplet>, not /usr/share.
-	mv $t/usr/share/pkgconfig $t/usr/lib/$(DEB_HOST_MULTIARCH)/
-	:
 	@# Inexplicably, upstream puts the efi binares in usr/lib64
 	case $(flavour) in \
 		armhf) ;; \
@@ -236,10 +241,10 @@ override_dh_auto_install: $(TEMPLATED_FILES)
 	@# in the hotplug scripts.  We have a patch to drop that.
 	sed -i '/^libdir=/d' $t/etc/xen/scripts/hotplugpath.sh
 
-# libfsimage not only has an unstable ABI, but also a very poor name.
-# Our makefile patch puts it in a different directory and fixes up the
-# rpath; this rules code excludes the header files.
-dh_install_excludes += -Xinclude/fsimage
+# libxenfsimage has an unstable ABI.  Our makefile patch puts it in a
+# different directory and fixes up the rpath; this rules code excludes the
+# header files.
+dh_install_excludes += -Xinclude/xenfsimage
 
 # The upstream build produces these.
 dh_install_excludes += -X'*.pyc'
@@ -273,17 +278,17 @@ override_dh_install:
 	:
 	debian/installsharedlibs
 
-# dh_python2 does not know to look in the funny directory where
+# dh_python3 does not know to look in the funny directory where
 # we put the versioned /usr/lib files including some python scripts.
-override_dh_python2:
-	dh_python2
-	dh_python2 -pxen-utils-$(upstream_version) \
+override_dh_python3:
+	dh_python3
+	dh_python3 -pxen-utils-$(upstream_version) \
 		usr/lib/xen-$(upstream_version)/bin
 
 # We have two init scripts.  (There used to be xend too.)
 override_dh_installinit:
-	dh_installinit --name xen --no-start -- defaults 20 21
-	dh_installinit --name xendomains --no-start -- defaults 21 20
+	dh_installinit --name xen --no-start -- defaults
+	dh_installinit --name xendomains --no-start -- defaults
 
 # dh_strip in dh compat 10 and earlier (which we are at so this
 # package builds on stretch) looks at filenames and modes to decide

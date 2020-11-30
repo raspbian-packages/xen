@@ -30,6 +30,15 @@
 ?	mc_notifydomain			arch-x86/xen-mca.h
 !	mc_physcpuinfo			arch-x86/xen-mca.h
 ?	page_offline_action		arch-x86/xen-mca.h
+?	argo_addr			argo.h
+!	argo_iov			argo.h
+?	argo_register_ring		argo.h
+?	argo_ring			argo.h
+?	argo_ring_data			argo.h
+?	argo_ring_data_ent		argo.h
+?	argo_ring_message_header	argo.h
+?	argo_send_addr			argo.h
+?	argo_unregister_ring		argo.h
 ?	evtchn_alloc_unbound		event_channel.h
 ?	evtchn_bind_interdomain		event_channel.h
 ?	evtchn_bind_ipi			event_channel.h
@@ -77,6 +86,8 @@
 ?	vcpu_hvm_context		hvm/hvm_vcpu.h
 ?	vcpu_hvm_x86_32			hvm/hvm_vcpu.h
 ?	vcpu_hvm_x86_64			hvm/hvm_vcpu.h
+?	hypfs_direntry			hypfs.h
+?	hypfs_dirlistentry		hypfs.h
 ?	kexec_exec			kexec.h
 !	kexec_image			kexec.h
 !	kexec_range			kexec.h
@@ -126,8 +137,6 @@
 ?	sched_pin_override		sched.h
 ?	sched_remote_shutdown		sched.h
 ?	sched_shutdown			sched.h
-?	tmem_oid			tmem.h
-!	tmem_op				tmem.h
 ?	t_buf				trace.h
 ?	vcpu_get_physid			vcpu.h
 ?	vcpu_register_vcpu_info		vcpu.h

@@ -34,9 +34,10 @@
 /* Enforce lock ordering when grabbing the "external" page_alloc lock */
 static inline void lock_page_alloc(struct p2m_domain *p2m)
 {
-    page_alloc_mm_pre_lock();
+    page_alloc_mm_pre_lock(p2m->domain);
     spin_lock(&(p2m->domain->page_alloc_lock));
-    page_alloc_mm_post_lock(p2m->domain->arch.page_alloc_unlock_level);
+    page_alloc_mm_post_lock(p2m->domain,
+                            p2m->domain->arch.page_alloc_unlock_level);
 }
 
 static inline void unlock_page_alloc(struct p2m_domain *p2m)
@@ -75,7 +76,7 @@ p2m_pod_cache_add(struct p2m_domain *p2m,
     {
         struct domain * od;
 
-        p = mfn_to_page(_mfn(mfn_x(mfn) + i));
+        p = mfn_to_page(mfn_add(mfn, i));
         od = page_get_owner(p);
         if ( od != d )
         {
@@ -273,9 +274,7 @@ p2m_pod_set_cache_target(struct p2m_domain *p2m, unsigned long pod_target, int p
             if ( test_and_clear_bit(_PGT_pinned, &(page+i)->u.inuse.type_info) )
                 put_page_and_type(page + i);
 
-            if ( test_and_clear_bit(_PGC_allocated, &(page+i)->count_info) )
-                put_page(page + i);
-
+            put_page_alloc_ref(page + i);
             put_page(page + i);
 
             if ( preemptible && pod_target != p2m->pod.count &&
@@ -303,7 +302,7 @@ out:
  * The following equations should hold:
  *  0 <= P <= T <= B <= M
  *  d->arch.p2m->pod.entry_count == B - P
- *  d->tot_pages == P + d->arch.p2m->pod.count
+ *  domain_tot_pages(d) == P + d->arch.p2m->pod.count
  *
  * Now we have the following potential cases to cover:
  *     B <T': Set the PoD cache size equal to the number of outstanding PoD
@@ -337,7 +336,7 @@ p2m_pod_set_mem_target(struct domain *d, unsigned long target)
     pod_lock(p2m);
 
     /* P == B: Nothing to do (unless the guest is being created). */
-    populated = d->tot_pages - p2m->pod.count;
+    populated = domain_tot_pages(d) - p2m->pod.count;
     if ( populated > 0 && p2m->pod.entry_count == 0 )
         goto out;
 
@@ -349,7 +348,7 @@ p2m_pod_set_mem_target(struct domain *d, unsigned long target)
      * T' < B: Don't reduce the cache size; let the balloon driver
      * take care of it.
      */
-    if ( target < d->tot_pages )
+    if ( target < domain_tot_pages(d) )
         goto out;
 
     pod_target = target - populated;
@@ -510,7 +509,7 @@ p2m_pod_decrease_reservation(struct domain *d, gfn_t gfn, unsigned int order)
     unsigned long ret = 0, i, n;
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
     bool_t steal_for_cache;
-    long pod, nonpod, ram;
+    long pod = 0, ram = 0;
 
     gfn_lock(p2m, gfn, order);
     pod_lock(p2m);
@@ -525,8 +524,6 @@ p2m_pod_decrease_reservation(struct domain *d, gfn_t gfn, unsigned int order)
     if ( unlikely(d->is_dying) )
         goto out_unlock;
 
-    pod = nonpod = ram = 0;
-
     /* Figure out if we need to steal some freed memory for our cache */
     steal_for_cache =  ( p2m->pod.entry_count > p2m->pod.count );
 
@@ -540,19 +537,15 @@ p2m_pod_decrease_reservation(struct domain *d, gfn_t gfn, unsigned int order)
         n = 1UL << min(order, cur_order);
         if ( t == p2m_populate_on_demand )
             pod += n;
-        else
-        {
-            nonpod += n;
-            if ( p2m_is_ram(t) )
-                ram += n;
-        }
+        else if ( p2m_is_ram(t) )
+            ram += n;
     }
 
     /* No populate-on-demand?  Don't need to steal anything?  Then we're done!*/
     if ( !pod && !steal_for_cache )
         goto out_unlock;
 
-    if ( !nonpod )
+    if ( i == pod )
     {
         /*
          * All PoD: Mark the whole region invalid and tell caller
@@ -588,7 +581,7 @@ p2m_pod_decrease_reservation(struct domain *d, gfn_t gfn, unsigned int order)
          p2m_pod_zero_check_superpage(p2m, _gfn(gfn_x(gfn) & ~(SUPERPAGE_PAGES - 1))) )
     {
         pod = 1UL << order;
-        ram = nonpod = 0;
+        ram = 0;
         ASSERT(steal_for_cache == (p2m->pod.entry_count > p2m->pod.count));
     }
 
@@ -656,7 +649,6 @@ p2m_pod_decrease_reservation(struct domain *d, gfn_t gfn, unsigned int order)
 
             steal_for_cache =  ( p2m->pod.entry_count > p2m->pod.count );
 
-            nonpod -= n;
             ram -= n;
             ret += n;
         }
@@ -757,8 +749,9 @@ p2m_pod_zero_check_superpage(struct p2m_domain *p2m, gfn_t gfn)
 
         n = 1UL << min(cur_order, SUPERPAGE_ORDER + 0U);
         for ( k = 0, page = mfn_to_page(mfn); k < n; ++k, ++page )
-            if ( !(page->count_info & PGC_allocated) ||
-                 (page->count_info & (PGC_page_table | PGC_xen_heap)) ||
+            if ( is_special_page(page) ||
+                 !(page->count_info & PGC_allocated) ||
+                 (page->count_info & PGC_page_table) ||
                  (page->count_info & PGC_count_mask) > max_ref )
                 goto out;
     }
@@ -862,16 +855,19 @@ out:
     return ret;
 }
 
-static void
-p2m_pod_zero_check(struct p2m_domain *p2m, const gfn_t *gfns, int count)
-{
-    mfn_t mfns[count];
-    p2m_type_t types[count];
-    unsigned long *map[count];
-    struct domain *d = p2m->domain;
+#define POD_SWEEP_LIMIT 1024
+#define POD_SWEEP_STRIDE  16
 
-    int i, j;
-    int max_ref = 1;
+static void
+p2m_pod_zero_check(struct p2m_domain *p2m, const gfn_t *gfns, unsigned int count)
+{
+    mfn_t mfns[POD_SWEEP_STRIDE];
+    p2m_type_t types[POD_SWEEP_STRIDE];
+    unsigned long *map[POD_SWEEP_STRIDE];
+    struct domain *d = p2m->domain;
+    unsigned int i, j, max_ref = 1;
+
+    BUG_ON(count > POD_SWEEP_STRIDE);
 
     /* Allow an extra refcount for one shadow pt mapping in shadowed domains */
     if ( paging_mode_shadow(d) )
@@ -881,22 +877,25 @@ p2m_pod_zero_check(struct p2m_domain *p2m, const gfn_t *gfns, int count)
     for ( i = 0; i < count; i++ )
     {
         p2m_access_t a;
-        struct page_info *pg;
 
         mfns[i] = p2m->get_entry(p2m, gfns[i], types + i, &a,
                                  0, NULL, NULL);
-        pg = mfn_to_page(mfns[i]);
 
         /*
-         * If this is ram, and not a pagetable or from the xen heap, and
+         * If this is ram, and not a pagetable or a special page, and
          * probably not mapped elsewhere, map it; otherwise, skip.
          */
-        if ( p2m_is_ram(types[i]) && (pg->count_info & PGC_allocated) &&
-             !(pg->count_info & (PGC_page_table | PGC_xen_heap)) &&
-             ((pg->count_info & PGC_count_mask) <= max_ref) )
-            map[i] = map_domain_page(mfns[i]);
-        else
-            map[i] = NULL;
+        map[i] = NULL;
+        if ( p2m_is_ram(types[i]) )
+        {
+            const struct page_info *pg = mfn_to_page(mfns[i]);
+
+            if ( !is_special_page(pg) &&
+                 (pg->count_info & PGC_allocated) &&
+                 !(pg->count_info & PGC_page_table) &&
+                 ((pg->count_info & PGC_count_mask) <= max_ref) )
+                map[i] = map_domain_page(mfns[i]);
+        }
     }
 
     /*
@@ -911,14 +910,7 @@ p2m_pod_zero_check(struct p2m_domain *p2m, const gfn_t *gfns, int count)
         /* Quick zero-check */
         for ( j = 0; j < 16; j++ )
             if ( *(map[i] + j) != 0 )
-                break;
-
-        if ( j < 16 )
-        {
-            unmap_domain_page(map[i]);
-            map[i] = NULL;
-            continue;
-        }
+                goto skip;
 
         /* Try to remove the page, restoring old mapping if it fails. */
         if ( p2m_set_entry(p2m, gfns[i], INVALID_MFN, PAGE_ORDER_4K,
@@ -1020,8 +1012,6 @@ out_unmap:
             unmap_domain_page(map[i]);
 }
 
-#define POD_SWEEP_LIMIT 1024
-#define POD_SWEEP_STRIDE  16
 static void
 p2m_pod_emergency_sweep(struct p2m_domain *p2m)
 {
@@ -1238,8 +1228,8 @@ out_of_memory:
     pod_unlock(p2m);
 
     printk("%s: Dom%d out of PoD memory! (tot=%"PRIu32" ents=%ld dom%d)\n",
-           __func__, d->domain_id, d->tot_pages, p2m->pod.entry_count,
-           current->domain->domain_id);
+           __func__, d->domain_id, domain_tot_pages(d),
+           p2m->pod.entry_count, current->domain->domain_id);
     domain_crash(d);
     return false;
 out_fail:
@@ -1333,3 +1323,14 @@ out:
     return rc;
 }
 
+void p2m_pod_init(struct p2m_domain *p2m)
+{
+    unsigned int i;
+
+    mm_lock_init(&p2m->pod.lock);
+    INIT_PAGE_LIST_HEAD(&p2m->pod.super);
+    INIT_PAGE_LIST_HEAD(&p2m->pod.single);
+
+    for ( i = 0; i < ARRAY_SIZE(p2m->pod.mrp.list); ++i )
+        p2m->pod.mrp.list[i] = gfn_x(INVALID_GFN);
+}

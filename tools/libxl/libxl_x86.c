@@ -5,17 +5,17 @@
 
 int libxl__arch_domain_prepare_config(libxl__gc *gc,
                                       libxl_domain_config *d_config,
-                                      xc_domain_configuration_t *xc_config)
+                                      struct xen_domctl_createdomain *config)
 {
     switch(d_config->c_info.type) {
     case LIBXL_DOMAIN_TYPE_HVM:
-        xc_config->emulation_flags = (XEN_X86_EMU_ALL & ~XEN_X86_EMU_VPCI);
+        config->arch.emulation_flags = (XEN_X86_EMU_ALL & ~XEN_X86_EMU_VPCI);
         break;
     case LIBXL_DOMAIN_TYPE_PVH:
-        xc_config->emulation_flags = XEN_X86_EMU_LAPIC;
+        config->arch.emulation_flags = XEN_X86_EMU_LAPIC;
         break;
     case LIBXL_DOMAIN_TYPE_PV:
-        xc_config->emulation_flags = 0;
+        config->arch.emulation_flags = 0;
         break;
     default:
         abort();
@@ -27,7 +27,7 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
 int libxl__arch_domain_save_config(libxl__gc *gc,
                                    libxl_domain_config *d_config,
                                    libxl__domain_build_state *state,
-                                   const xc_domain_configuration_t *xc_config)
+                                   const struct xen_domctl_createdomain *config)
 {
     return 0;
 }
@@ -285,13 +285,186 @@ static int libxl__e820_alloc(libxl__gc *gc, uint32_t domid,
     return 0;
 }
 
+static unsigned long timer_mode(const libxl_domain_build_info *info)
+{
+    const libxl_timer_mode mode = info->timer_mode;
+    assert(mode >= LIBXL_TIMER_MODE_DELAY_FOR_MISSED_TICKS &&
+           mode <= LIBXL_TIMER_MODE_ONE_MISSED_TICK_PENDING);
+    return ((unsigned long)mode);
+}
+
+static int hvm_set_viridian_features(libxl__gc *gc, uint32_t domid,
+                                     const libxl_domain_build_info *info)
+{
+    libxl_bitmap enlightenments;
+    libxl_viridian_enlightenment v;
+    uint64_t mask = 0;
+
+    libxl_bitmap_init(&enlightenments);
+    libxl_bitmap_alloc(CTX, &enlightenments,
+                       LIBXL_BUILDINFO_HVM_VIRIDIAN_ENABLE_DISABLE_WIDTH);
+
+    if (libxl_defbool_val(info->u.hvm.viridian)) {
+        /* Enable defaults */
+        libxl_bitmap_set(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_BASE);
+        libxl_bitmap_set(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_FREQ);
+        libxl_bitmap_set(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_TIME_REF_COUNT);
+        libxl_bitmap_set(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_APIC_ASSIST);
+        libxl_bitmap_set(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_CRASH_CTL);
+    }
+
+    libxl_for_each_set_bit(v, info->u.hvm.viridian_enable) {
+        if (libxl_bitmap_test(&info->u.hvm.viridian_disable, v)) {
+            LOG(ERROR, "%s group both enabled and disabled",
+                libxl_viridian_enlightenment_to_string(v));
+            goto err;
+        }
+        if (libxl_viridian_enlightenment_to_string(v)) /* check validity */
+            libxl_bitmap_set(&enlightenments, v);
+    }
+
+    libxl_for_each_set_bit(v, info->u.hvm.viridian_disable)
+        if (libxl_viridian_enlightenment_to_string(v)) /* check validity */
+            libxl_bitmap_reset(&enlightenments, v);
+
+    /* The base set is a pre-requisite for all others */
+    if (!libxl_bitmap_is_empty(&enlightenments) &&
+        !libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_BASE)) {
+        LOG(ERROR, "base group not enabled");
+        goto err;
+    }
+
+    libxl_for_each_set_bit(v, enlightenments)
+        LOG(DETAIL, "%s group enabled", libxl_viridian_enlightenment_to_string(v));
+
+    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_BASE)) {
+        mask |= HVMPV_base_freq;
+
+        if (!libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_FREQ))
+            mask |= HVMPV_no_freq;
+    }
+
+    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_TIME_REF_COUNT))
+        mask |= HVMPV_time_ref_count;
+
+    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_REFERENCE_TSC))
+        mask |= HVMPV_reference_tsc;
+
+    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_HCALL_REMOTE_TLB_FLUSH))
+        mask |= HVMPV_hcall_remote_tlb_flush;
+
+    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_APIC_ASSIST))
+        mask |= HVMPV_apic_assist;
+
+    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_CRASH_CTL))
+        mask |= HVMPV_crash_ctl;
+
+    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_SYNIC))
+        mask |= HVMPV_synic;
+
+    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_STIMER))
+        mask |= HVMPV_time_ref_count | HVMPV_synic | HVMPV_stimer;
+
+    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_HCALL_IPI))
+        mask |= HVMPV_hcall_ipi;
+
+    if (mask != 0 &&
+        xc_hvm_param_set(CTX->xch,
+                         domid,
+                         HVM_PARAM_VIRIDIAN,
+                         mask) != 0) {
+        LOGE(ERROR, "Couldn't set viridian feature mask (0x%"PRIx64")", mask);
+        goto err;
+    }
+
+    libxl_bitmap_dispose(&enlightenments);
+    return 0;
+
+err:
+    libxl_bitmap_dispose(&enlightenments);
+    return ERROR_FAIL;
+}
+
+static int hvm_set_conf_params(libxl__gc *gc, uint32_t domid,
+                               const libxl_domain_build_info *info)
+{
+    libxl_ctx *ctx = libxl__gc_owner(gc);
+    xc_interface *xch = ctx->xch;
+    int ret = ERROR_FAIL;
+    unsigned int altp2m = info->altp2m;
+
+    switch(info->type) {
+    case LIBXL_DOMAIN_TYPE_HVM:
+        /* The config parameter "altp2m" replaces the parameter "altp2mhvm". For
+         * legacy reasons, both parameters are accepted on x86 HVM guests.
+         *
+         * If the legacy field info->u.hvm.altp2m is set, activate altp2m.
+         * Otherwise set altp2m based on the field info->altp2m. */
+        if (info->altp2m == LIBXL_ALTP2M_MODE_DISABLED &&
+            libxl_defbool_val(info->u.hvm.altp2m))
+            altp2m = libxl_defbool_val(info->u.hvm.altp2m);
+
+        if (xc_hvm_param_set(xch, domid, HVM_PARAM_HPET_ENABLED,
+                             libxl_defbool_val(info->u.hvm.hpet))) {
+            LOG(ERROR, "Couldn't set HVM_PARAM_HPET_ENABLED");
+            goto out;
+        }
+        if (xc_hvm_param_set(xch, domid, HVM_PARAM_VPT_ALIGN,
+                             libxl_defbool_val(info->u.hvm.vpt_align))) {
+            LOG(ERROR, "Couldn't set HVM_PARAM_VPT_ALIGN");
+            goto out;
+        }
+        if (info->u.hvm.mca_caps &&
+            xc_hvm_param_set(CTX->xch, domid, HVM_PARAM_MCA_CAP,
+                             info->u.hvm.mca_caps)) {
+            LOG(ERROR, "Couldn't set HVM_PARAM_MCA_CAP");
+            goto out;
+        }
+
+        /* Fallthrough */
+    case LIBXL_DOMAIN_TYPE_PVH:
+        if (xc_hvm_param_set(xch, domid, HVM_PARAM_TIMER_MODE,
+                             timer_mode(info))) {
+            LOG(ERROR, "Couldn't set HVM_PARAM_TIMER_MODE");
+            goto out;
+        }
+        if (xc_hvm_param_set(xch, domid, HVM_PARAM_NESTEDHVM,
+                             libxl_defbool_val(info->nested_hvm))) {
+            LOG(ERROR, "Couldn't set HVM_PARAM_NESTEDHVM");
+            goto out;
+        }
+        if (xc_hvm_param_set(xch, domid, HVM_PARAM_ALTP2M, altp2m)) {
+            LOG(ERROR, "Couldn't set HVM_PARAM_ALTP2M");
+            goto out;
+        }
+        break;
+
+    default:
+        abort();
+    }
+
+    ret = 0;
+
+ out:
+    return ret;
+}
+
 int libxl__arch_domain_create(libxl__gc *gc, libxl_domain_config *d_config,
         uint32_t domid)
 {
+    const libxl_domain_build_info *info = &d_config->b_info;
     int ret = 0;
     int tsc_mode;
     uint32_t rtc_timeoffset;
     libxl_ctx *ctx = libxl__gc_owner(gc);
+
+    if (info->type != LIBXL_DOMAIN_TYPE_PV &&
+        (ret = hvm_set_conf_params(gc, domid, info)) != 0)
+        goto out;
+
+    if (info->type == LIBXL_DOMAIN_TYPE_HVM &&
+        (ret = hvm_set_viridian_features(gc, domid, info)) != 0)
+        goto out;
 
     if (d_config->b_info.type == LIBXL_DOMAIN_TYPE_PV)
         xc_domain_set_memmap_limit(ctx->xch, domid,
@@ -309,14 +482,19 @@ int libxl__arch_domain_create(libxl__gc *gc, libxl_domain_config *d_config,
         tsc_mode = 2;
         break;
     case LIBXL_TSC_MODE_NATIVE_PARAVIRT:
-        tsc_mode = 3;
-        break;
+        LOGD(ERROR, domid, "TSC Mode native_paravirt (a.k.a PVRDTSCP) has been removed");
+        ret = ERROR_FEATURE_REMOVED;
+        goto out;
     default:
         abort();
     }
-    xc_domain_set_tsc_info(ctx->xch, domid, tsc_mode, 0, 0, 0);
-    if (libxl_defbool_val(d_config->b_info.disable_migrate))
-        xc_domain_disable_migrate(ctx->xch, domid);
+
+    if (xc_domain_set_tsc_info(ctx->xch, domid, tsc_mode, 0, 0, 0)) {
+        LOGE(ERROR, "xc_domain_set_tsc_info() failed");
+        ret = ERROR_FAIL;
+        goto out;
+    }
+
     rtc_timeoffset = d_config->b_info.rtc_timeoffset;
     if (libxl_defbool_val(d_config->b_info.localtime)) {
         time_t t;
@@ -613,11 +791,57 @@ int libxl__arch_domain_finalise_hw_description(libxl__gc *gc,
     return rc;
 }
 
-void libxl__arch_domain_build_info_acpi_setdefault(
-                                        libxl_domain_build_info *b_info)
+void libxl__arch_domain_create_info_setdefault(libxl__gc *gc,
+                                               libxl_domain_create_info *c_info)
+{
+}
+
+void libxl__arch_domain_build_info_setdefault(libxl__gc *gc,
+                                              libxl_domain_build_info *b_info)
 {
     libxl_defbool_setdefault(&b_info->acpi, true);
 }
+
+int libxl__arch_passthrough_mode_setdefault(libxl__gc *gc,
+                                            uint32_t domid,
+                                            libxl_domain_config *d_config,
+                                            const libxl_physinfo *physinfo)
+{
+    int rc;
+    libxl_domain_create_info *const c_info = &d_config->c_info;
+
+    if (c_info->passthrough != LIBXL_PASSTHROUGH_DISABLED &&
+        c_info->type == LIBXL_DOMAIN_TYPE_PVH) {
+        LOGD(ERROR, domid,
+             "passthrough not yet supported for x86 PVH guests\n");
+        rc = ERROR_INVAL;
+        goto out;
+    }
+
+    const char *whynot_pt_share =
+        c_info->type == LIBXL_DOMAIN_TYPE_PV ? "not valid for PV domain" :
+        !physinfo->cap_iommu_hap_pt_share ? "not supported on this platform" :
+        !libxl_defbool_val(d_config->c_info.hap) ?"only valid for HAP guests":
+        NULL;
+
+    if (c_info->passthrough == LIBXL_PASSTHROUGH_ENABLED) {
+        c_info->passthrough = whynot_pt_share
+            ? LIBXL_PASSTHROUGH_SYNC_PT : LIBXL_PASSTHROUGH_SHARE_PT;
+    }
+
+    if (c_info->passthrough == LIBXL_PASSTHROUGH_SHARE_PT && whynot_pt_share) {
+        LOGD(ERROR, domid,
+             "passthrough=\"share_pt\" %s\n",
+             whynot_pt_share);
+        rc = ERROR_INVAL;
+        goto out;
+    }
+
+    rc = 0;
+ out:
+    return rc;
+}
+
 
 /*
  * Local variables:

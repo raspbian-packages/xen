@@ -20,6 +20,13 @@
 #ifndef __X86_SPEC_CTRL_H__
 #define __X86_SPEC_CTRL_H__
 
+/* Encoding of cpuinfo.spec_ctrl_flags */
+#define SCF_use_shadow (1 << 0)
+#define SCF_ist_wrmsr  (1 << 1)
+#define SCF_ist_rsb    (1 << 2)
+
+#ifndef __ASSEMBLY__
+
 #include <asm/alternative.h>
 #include <asm/current.h>
 #include <asm/msr-index.h>
@@ -30,6 +37,7 @@ extern bool opt_ibpb;
 extern bool opt_ssbd;
 extern int8_t opt_eager_fpu;
 extern int8_t opt_l1d_flush;
+extern bool opt_branch_harden;
 
 extern bool bsp_delay_spec_ctrl;
 extern uint8_t default_xen_spec_ctrl;
@@ -79,7 +87,7 @@ static always_inline void spec_ctrl_enter_idle(struct cpu_info *info)
     barrier();
     info->spec_ctrl_flags |= SCF_use_shadow;
     barrier();
-    alternative_input(ASM_NOP3, "wrmsr", X86_FEATURE_SC_MSR_IDLE,
+    alternative_input("", "wrmsr", X86_FEATURE_SC_MSR_IDLE,
                       "a" (val), "c" (MSR_SPEC_CTRL), "d" (0));
     barrier();
 
@@ -113,7 +121,7 @@ static always_inline void spec_ctrl_exit_idle(struct cpu_info *info)
      */
     info->spec_ctrl_flags &= ~SCF_use_shadow;
     barrier();
-    alternative_input(ASM_NOP3, "wrmsr", X86_FEATURE_SC_MSR_IDLE,
+    alternative_input("", "wrmsr", X86_FEATURE_SC_MSR_IDLE,
                       "a" (val), "c" (MSR_SPEC_CTRL), "d" (0));
     barrier();
 
@@ -129,6 +137,7 @@ static always_inline void spec_ctrl_exit_idle(struct cpu_info *info)
      */
 }
 
+#endif /* __ASSEMBLY__ */
 #endif /* !__X86_SPEC_CTRL_H__ */
 
 /*

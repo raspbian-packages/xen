@@ -74,6 +74,9 @@
 #define EVTCHNOP_init_control    11
 #define EVTCHNOP_expand_array    12
 #define EVTCHNOP_set_priority    13
+#ifdef __XEN__
+#define EVTCHNOP_reset_cont      14
+#endif
 /* ` } */
 
 typedef uint32_t evtchn_port_t;
@@ -307,7 +310,7 @@ typedef struct evtchn_expand_array evtchn_expand_array_t;
  */
 struct evtchn_set_priority {
     /* IN parameters. */
-    uint32_t port;
+    evtchn_port_t port;
     uint32_t priority;
 };
 typedef struct evtchn_set_priority evtchn_set_priority_t;

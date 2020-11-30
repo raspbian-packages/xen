@@ -6,11 +6,11 @@
 #include <xen/init.h>
 #include <xen/types.h>
 #include <xen/kernel.h>
+#include <xen/param.h>
 #include <xen/smp.h>
 #include <xen/errno.h>
 #include <xen/console.h>
 #include <xen/sched.h>
-#include <xen/sched-if.h>
 #include <xen/cpumask.h>
 #include <xen/event.h>
 #include <xen/guest_access.h>
@@ -34,8 +34,9 @@ bool __read_mostly opt_mce = true;
 boolean_param("mce", opt_mce);
 bool __read_mostly mce_broadcast;
 bool is_mc_panic;
-unsigned int __read_mostly nr_mce_banks;
+DEFINE_PER_CPU_READ_MOSTLY(unsigned int, nr_mce_banks);
 unsigned int __read_mostly firstbank;
+unsigned int __read_mostly ppin_msr;
 uint8_t __read_mostly cmci_apic_vector;
 
 DEFINE_PER_CPU_READ_MOSTLY(struct mca_banks *, poll_bankmask);
@@ -92,7 +93,9 @@ void x86_mce_vector_register(x86_mce_vector_t hdlr)
 
 void do_machine_check(const struct cpu_user_regs *regs)
 {
+    mce_enter();
     _machine_check_vector(regs);
+    mce_exit();
 }
 
 /*
@@ -120,13 +123,20 @@ void mce_recoverable_register(mce_recoverable_t cbfunc)
     mc_recoverable_scan = cbfunc;
 }
 
-struct mca_banks *mcabanks_alloc(void)
+struct mca_banks *mcabanks_alloc(unsigned int nr_mce_banks)
 {
     struct mca_banks *mb;
 
     mb = xmalloc(struct mca_banks);
     if ( !mb )
         return NULL;
+
+    /*
+     * For APs allocations get done by the BSP, i.e. when the bank count may
+     * may not be known yet. A zero bank count is a clear indication of this.
+     */
+    if ( !nr_mce_banks )
+        nr_mce_banks = MCG_CAP_COUNT;
 
     mb->bank_map = xzalloc_array(unsigned long,
                                  BITS_TO_LONGS(nr_mce_banks));
@@ -253,7 +263,7 @@ static int mca_init_global(uint32_t flags, struct mcinfo_global *mig)
                         &mig->mc_coreid, &mig->mc_core_threadid,
                         &mig->mc_apicid, NULL, NULL, NULL);
 
-    if ( curr != INVALID_VCPU )
+    if ( curr )
     {
         mig->mc_domid = curr->domain->domain_id;
         mig->mc_vcpuid = curr->vcpu_id;
@@ -319,7 +329,7 @@ mcheck_mca_logout(enum mca_source who, struct mca_banks *bankmask,
      */
     recover = mc_recoverable_scan ? 1 : 0;
 
-    for ( i = 0; i < nr_mce_banks; i++ )
+    for ( i = 0; i < this_cpu(nr_mce_banks); i++ )
     {
         /* Skip bank if corresponding bit in bankmask is clear */
         if ( !mcabanks_test(i, bankmask) )
@@ -466,7 +476,8 @@ void mcheck_cmn_handler(const struct cpu_user_regs *regs)
     static atomic_t found_error = ATOMIC_INIT(0);
     static cpumask_t mce_fatal_cpus;
     struct mca_banks *bankmask = mca_allbanks;
-    struct mca_banks *clear_bank = __get_cpu_var(mce_clear_banks);
+    unsigned int cpu = smp_processor_id();
+    struct mca_banks *clear_bank = per_cpu(mce_clear_banks, cpu);
     uint64_t gstatus;
     mctelem_cookie_t mctc = NULL;
     struct mca_summary bs;
@@ -497,17 +508,17 @@ void mcheck_cmn_handler(const struct cpu_user_regs *regs)
              * the telemetry after reboot (the MSRs are sticky)
              */
             if ( bs.pcc || !bs.recoverable )
-                cpumask_set_cpu(smp_processor_id(), &mce_fatal_cpus);
+                cpumask_set_cpu(cpu, &mce_fatal_cpus);
         }
         else if ( mctc != NULL )
             mctelem_commit(mctc);
         atomic_set(&found_error, 1);
 
         /* The last CPU will be take check/clean-up etc */
-        atomic_set(&severity_cpu, smp_processor_id());
+        atomic_set(&severity_cpu, cpu);
 
-        mce_printk(MCE_CRITICAL, "MCE: clear_bank map %lx on CPU%d\n",
-                   *((unsigned long *)clear_bank), smp_processor_id());
+        mce_printk(MCE_CRITICAL, "MCE: clear_bank map %lx on CPU%u\n",
+                   *((unsigned long *)clear_bank), cpu);
         if ( clear_bank != NULL )
             mcheck_mca_clearbanks(clear_bank);
     }
@@ -517,14 +528,14 @@ void mcheck_cmn_handler(const struct cpu_user_regs *regs)
 
     mce_barrier_enter(&mce_trap_bar, bcast);
     if ( mctc != NULL && mce_urgent_action(regs, mctc) )
-        cpumask_set_cpu(smp_processor_id(), &mce_fatal_cpus);
+        cpumask_set_cpu(cpu, &mce_fatal_cpus);
     mce_barrier_exit(&mce_trap_bar, bcast);
 
     /*
      * Wait until everybody has processed the trap.
      */
     mce_barrier_enter(&mce_trap_bar, bcast);
-    if ( lmce || atomic_read(&severity_cpu) == smp_processor_id() )
+    if ( lmce || atomic_read(&severity_cpu) == cpu )
     {
         /*
          * According to SDM, if no error bank found on any cpus,
@@ -535,9 +546,12 @@ void mcheck_cmn_handler(const struct cpu_user_regs *regs)
             mc_panic("MCE: No CPU found valid MCE, need reset");
         if ( !cpumask_empty(&mce_fatal_cpus) )
         {
-            char *ebufp, ebuf[96] = "MCE: Fatal error happened on CPUs ";
-            ebufp = ebuf + strlen(ebuf);
-            cpumask_scnprintf(ebufp, 95 - strlen(ebuf), &mce_fatal_cpus);
+            char ebuf[96];
+
+            snprintf(ebuf, sizeof(ebuf),
+                     "MCE: Fatal error happened on CPUs %*pb",
+                     CPUMASK_PR(&mce_fatal_cpus));
+
             mc_panic(ebuf);
         }
         atomic_set(&found_error, 0);
@@ -562,7 +576,7 @@ void mcheck_mca_clearbanks(struct mca_banks *bankmask)
 {
     int i;
 
-    for ( i = 0; i < nr_mce_banks; i++ )
+    for ( i = 0; i < this_cpu(nr_mce_banks); i++ )
     {
         if ( !mcabanks_test(i, bankmask) )
             continue;
@@ -596,7 +610,8 @@ int show_mca_info(int inited, struct cpuinfo_x86 *c)
         static const char *const type_str[] = {
             [mcheck_amd_famXX] = "AMD",
             [mcheck_amd_k8] = "AMD K8",
-            [mcheck_intel] = "Intel"
+            [mcheck_intel] = "Intel",
+            [mcheck_hygon] = "Hygon"
         };
 
         snprintf(prefix, ARRAY_SIZE(prefix), "%sCPU%u: ",
@@ -611,6 +626,7 @@ int show_mca_info(int inited, struct cpuinfo_x86 *c)
             break;
 
         case mcheck_amd_famXX:
+        case mcheck_hygon:
             printk("%s%s Fam%xh machine check reporting enabled\n",
                    prefix, type_str[inited], c->x86);
             break;
@@ -635,54 +651,56 @@ static void set_poll_bankmask(struct cpuinfo_x86 *c)
 
     if ( cmci_support && opt_mce )
     {
-        mb->num = per_cpu(no_cmci_banks, cpu)->num;
-        bitmap_copy(mb->bank_map, per_cpu(no_cmci_banks, cpu)->bank_map,
-                    nr_mce_banks);
+        const struct mca_banks *cmci = per_cpu(no_cmci_banks, cpu);
+
+        if ( unlikely(cmci->num < mb->num) )
+            bitmap_fill(mb->bank_map, mb->num);
+        bitmap_copy(mb->bank_map, cmci->bank_map, min(mb->num, cmci->num));
     }
     else
     {
-        bitmap_copy(mb->bank_map, mca_allbanks->bank_map, nr_mce_banks);
+        bitmap_copy(mb->bank_map, mca_allbanks->bank_map,
+                    per_cpu(nr_mce_banks, cpu));
         if ( mce_firstbank(c) )
             mcabanks_clear(0, mb);
     }
 }
 
 /* The perbank ctl/status init is platform specific because of AMD's quirk */
-int mca_cap_init(void)
+static int mca_cap_init(void)
 {
     uint64_t msr_content;
+    unsigned int nr, cpu = smp_processor_id();
 
     rdmsrl(MSR_IA32_MCG_CAP, msr_content);
 
     if ( msr_content & MCG_CTL_P ) /* Control register present ? */
         wrmsrl(MSR_IA32_MCG_CTL, 0xffffffffffffffffULL);
 
-    if ( nr_mce_banks && (msr_content & MCG_CAP_COUNT) != nr_mce_banks )
-    {
-        dprintk(XENLOG_WARNING, "Different bank number on cpu %x\n",
-                smp_processor_id());
-        return -ENODEV;
-    }
-    nr_mce_banks = msr_content & MCG_CAP_COUNT;
+    per_cpu(nr_mce_banks, cpu) = nr = MASK_EXTR(msr_content, MCG_CAP_COUNT);
 
-    if ( !nr_mce_banks )
+    if ( !nr )
     {
-        printk(XENLOG_INFO "CPU%u: No MCE banks present. "
-               "Machine check support disabled\n", smp_processor_id());
+        printk(XENLOG_INFO
+               "CPU%u: No MCE banks present. Machine check support disabled\n",
+               cpu);
         return -ENODEV;
     }
 
     /* mcabanks_alloc depends on nr_mce_banks */
-    if ( !mca_allbanks )
+    if ( !mca_allbanks || nr > mca_allbanks->num )
     {
-        int i;
+        unsigned int i;
+        struct mca_banks *all = mcabanks_alloc(nr);
 
-        mca_allbanks = mcabanks_alloc();
-        for ( i = 0; i < nr_mce_banks; i++ )
+        if ( !all )
+            return -ENOMEM;
+        for ( i = 0; i < nr; i++ )
             mcabanks_set(i, mca_allbanks);
+        mcabanks_free(xchg(&mca_allbanks, all));
     }
 
-    return mca_allbanks ? 0 : -ENOMEM;
+    return 0;
 }
 
 static void cpu_bank_free(unsigned int cpu)
@@ -699,8 +717,9 @@ static void cpu_bank_free(unsigned int cpu)
 
 static int cpu_bank_alloc(unsigned int cpu)
 {
-    struct mca_banks *poll = per_cpu(poll_bankmask, cpu) ?: mcabanks_alloc();
-    struct mca_banks *clr = per_cpu(mce_clear_banks, cpu) ?: mcabanks_alloc();
+    unsigned int nr = per_cpu(nr_mce_banks, cpu);
+    struct mca_banks *poll = per_cpu(poll_bankmask, cpu) ?: mcabanks_alloc(nr);
+    struct mca_banks *clr = per_cpu(mce_clear_banks, cpu) ?: mcabanks_alloc(nr);
 
     if ( !poll || !clr )
     {
@@ -749,6 +768,7 @@ static struct notifier_block cpu_nfb = {
 void mcheck_init(struct cpuinfo_x86 *c, bool bsp)
 {
     enum mcheck_type inited = mcheck_none;
+    unsigned int cpu = smp_processor_id();
 
     if ( !opt_mce )
     {
@@ -759,8 +779,7 @@ void mcheck_init(struct cpuinfo_x86 *c, bool bsp)
 
     if ( !mce_available(c) )
     {
-        printk(XENLOG_INFO "CPU%i: No machine check support available\n",
-               smp_processor_id());
+        printk(XENLOG_INFO "CPU%i: No machine check support available\n", cpu);
         return;
     }
 
@@ -768,13 +787,18 @@ void mcheck_init(struct cpuinfo_x86 *c, bool bsp)
     if ( mca_cap_init() )
         return;
 
-    /* Early MCE initialisation for BSP. */
-    if ( bsp && cpu_bank_alloc(smp_processor_id()) )
-        BUG();
+    if ( !bsp )
+    {
+        per_cpu(poll_bankmask, cpu)->num = per_cpu(nr_mce_banks, cpu);
+        per_cpu(mce_clear_banks, cpu)->num = per_cpu(nr_mce_banks, cpu);
+    }
+    else if ( cpu_bank_alloc(cpu) )
+        panic("Insufficient memory for MCE bank allocations\n");
 
     switch ( c->x86_vendor )
     {
     case X86_VENDOR_AMD:
+    case X86_VENDOR_HYGON:
         inited = amd_mcheck_init(c);
         break;
 
@@ -981,9 +1005,16 @@ static void do_mc_get_cpu_info(void *v)
     /*
      * This part needs to run on the CPU itself.
      */
-    xcp->mc_nmsrvals = __MC_NMSRS;
+    xcp->mc_nmsrvals = 1;
     xcp->mc_msrvalues[0].reg = MSR_IA32_MCG_CAP;
     rdmsrl(MSR_IA32_MCG_CAP, xcp->mc_msrvalues[0].value);
+
+    if ( ppin_msr && xcp->mc_nmsrvals < ARRAY_SIZE(xcp->mc_msrvalues) )
+    {
+        xcp->mc_msrvalues[xcp->mc_nmsrvals].reg = ppin_msr;
+        rdmsrl(ppin_msr, xcp->mc_msrvalues[xcp->mc_nmsrvals].value);
+        ++xcp->mc_nmsrvals;
+    }
 
     if ( c->cpuid_level >= 1 )
     {
@@ -1107,24 +1138,22 @@ bool intpose_inval(unsigned int cpu_nr, uint64_t msr)
     return true;
 }
 
-#define IS_MCA_BANKREG(r) \
+#define IS_MCA_BANKREG(r, cpu) \
     ((r) >= MSR_IA32_MC0_CTL && \
-    (r) <= MSR_IA32_MCx_MISC(nr_mce_banks - 1) && \
-    ((r) - MSR_IA32_MC0_CTL) % 4 != 0) /* excludes MCi_CTL */
+     (r) <= MSR_IA32_MCx_MISC(per_cpu(nr_mce_banks, cpu) - 1) && \
+     ((r) - MSR_IA32_MC0_CTL) % 4) /* excludes MCi_CTL */
 
 static bool x86_mc_msrinject_verify(struct xen_mc_msrinject *mci)
 {
-    struct cpuinfo_x86 *c;
+    const struct cpuinfo_x86 *c = &cpu_data[mci->mcinj_cpunr];
     int i, errs = 0;
-
-    c = &cpu_data[smp_processor_id()];
 
     for ( i = 0; i < mci->mcinj_count; i++ )
     {
         uint64_t reg = mci->mcinj_msr[i].reg;
         const char *reason = NULL;
 
-        if ( IS_MCA_BANKREG(reg) )
+        if ( IS_MCA_BANKREG(reg, mci->mcinj_cpunr) )
         {
             if ( c->x86_vendor == X86_VENDOR_AMD )
             {
@@ -1169,10 +1198,10 @@ static bool x86_mc_msrinject_verify(struct xen_mc_msrinject *mci)
 
             /* MSRs that the HV will take care of */
             case MSR_K8_HWCR:
-                if ( c->x86_vendor == X86_VENDOR_AMD )
+                if ( c->x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON) )
                     reason = "HV will operate HWCR";
                 else
-                    reason = "only supported on AMD";
+                    reason = "only supported on AMD or Hygon";
                 break;
 
             default:
@@ -1328,7 +1357,6 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
     } mc_physcpuinfo;
     uint32_t flags, cmdflags;
     int nlcpu;
-    xen_mc_logical_cpu_t *log_cpus = NULL;
     mctelem_cookie_t mctc;
     mctelem_class_t which;
     unsigned int target;
@@ -1421,11 +1449,13 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
              ? !guest_handle_is_null(mc_physcpuinfo.nat->info)
              : !compat_handle_is_null(mc_physcpuinfo.cmp->info) )
         {
+            xen_mc_logical_cpu_t *log_cpus;
+
             if ( mc_physcpuinfo.nat->ncpus <= 0 )
                 return x86_mcerr("do_mca cpuinfo: ncpus <= 0",
                                  -EINVAL);
             nlcpu = min(nlcpu, (int)mc_physcpuinfo.nat->ncpus);
-            log_cpus = xmalloc_array(xen_mc_logical_cpu_t, nlcpu);
+            log_cpus = xzalloc_array(xen_mc_logical_cpu_t, nlcpu);
             if ( log_cpus == NULL )
                 return x86_mcerr("do_mca cpuinfo", -ENOMEM);
             on_each_cpu(do_mc_get_cpu_info, log_cpus, 1);
@@ -1444,7 +1474,7 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
         break;
 
     case XEN_MC_msrinject:
-        if ( nr_mce_banks == 0 )
+        if ( !mca_allbanks || !mca_allbanks->num )
             return x86_mcerr("do_mca inject", -ENODEV);
 
         mc_msrinject = &op->u.mc_msrinject;
@@ -1456,6 +1486,9 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
         if ( !cpu_online(target) )
             return x86_mcerr("do_mca inject: target offline",
                              -EINVAL);
+
+        if ( !per_cpu(nr_mce_banks, target) )
+            return x86_mcerr("do_mca inject: no banks", -ENOENT);
 
         if ( mc_msrinject->mcinj_count == 0 )
             return 0;
@@ -1517,7 +1550,7 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
         break;
 
     case XEN_MC_mceinject:
-        if ( nr_mce_banks == 0 )
+        if ( !mca_allbanks || !mca_allbanks->num )
             return x86_mcerr("do_mca #MC", -ENODEV);
 
         mc_mceinject = &op->u.mc_mceinject;
@@ -1528,6 +1561,9 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
 
         if ( !cpu_online(target) )
             return x86_mcerr("do_mca #MC: target offline", -EINVAL);
+
+        if ( !per_cpu(nr_mce_banks, target) )
+            return x86_mcerr("do_mca #MC: no banks", -ENOENT);
 
         add_taint(TAINT_ERROR_INJECT);
 
@@ -1544,7 +1580,7 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
         cpumask_var_t cmv;
         bool broadcast = op->u.mc_inject_v2.flags & XEN_MC_INJECT_CPU_BROADCAST;
 
-        if ( nr_mce_banks == 0 )
+        if ( !mca_allbanks || !mca_allbanks->num )
             return x86_mcerr("do_mca #MC", -ENODEV);
 
         if ( broadcast )
@@ -1565,6 +1601,16 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
                 dprintk(XENLOG_INFO,
                         "Not all required CPUs are online\n");
         }
+
+        for_each_cpu(target, cpumap)
+            if ( cpu_online(target) && !per_cpu(nr_mce_banks, target) )
+            {
+                ret = x86_mcerr("do_mca #MC: CPU%u has no banks",
+                                -ENOENT, target);
+                break;
+            }
+        if ( ret )
+            break;
 
         switch ( op->u.mc_inject_v2.flags & XEN_MC_INJECT_TYPE_MASK )
         {
@@ -1660,7 +1706,7 @@ void mc_panic(char *s)
            "   The processor has reported a hardware error which cannot\n"
            "   be recovered from.  Xen will now reboot the machine.\n");
     mc_panic_dump();
-    panic("HARDWARE ERROR");
+    panic("HARDWARE ERROR\n");
 }
 
 /*
@@ -1756,7 +1802,7 @@ static int mce_delayed_action(mctelem_cookie_t mctc)
         dprintk(XENLOG_ERR, "MCE delayed action failed\n");
         is_mc_panic = true;
         x86_mcinfo_dump(mctelem_dataptr(mctc));
-        panic("MCE: Software recovery failed for the UCR");
+        panic("MCE: Software recovery failed for the UCR\n");
         break;
 
     case MCER_RECOVERED:

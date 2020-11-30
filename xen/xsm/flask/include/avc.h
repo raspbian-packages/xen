@@ -11,8 +11,9 @@
 
 #include <xen/errno.h>
 #include <xen/lib.h>
+#include <xen/percpu.h>
 #include <xen/spinlock.h>
-#include <asm/percpu.h>
+
 #include "flask.h"
 #include "av_permissions.h"
 #include "security.h"
@@ -40,8 +41,8 @@ struct avc_audit_data {
 #define AVC_AUDIT_DATA_RANGE 3
 #define AVC_AUDIT_DATA_MEMORY 4
 #define AVC_AUDIT_DATA_DTDEV 5
-    struct domain *sdom;
-    struct domain *tdom;
+    const struct domain *sdom;
+    const struct domain *tdom;
     union {
         unsigned long device;
         int irq;
@@ -90,12 +91,14 @@ int avc_has_perm_noaudit(u32 ssid, u32 tsid, u16 tclass, u32 requested,
 int avc_has_perm(u32 ssid, u32 tsid, u16 tclass, u32 requested,
                                              struct avc_audit_data *auditdata);
 
+void avc_prealloc(void);
+
 /* Exported to selinuxfs */
 struct xen_flask_hash_stats;
 int avc_get_hash_stats(struct xen_flask_hash_stats *arg);
 extern unsigned int avc_cache_threshold;
 
-#ifdef CONFIG_FLASK_AVC_STATS
+#ifdef CONFIG_XSM_FLASK_AVC_STATS
 DECLARE_PER_CPU(struct avc_cache_stats, avc_cache_stats);
 #endif
 

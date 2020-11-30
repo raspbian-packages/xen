@@ -64,6 +64,7 @@
 #define X86_CR4_OSFXSR     0x00000200 /* enable fast FPU save and restore */
 #define X86_CR4_OSXMMEXCPT 0x00000400 /* enable unmasked SSE exceptions */
 #define X86_CR4_UMIP       0x00000800 /* enable UMIP */
+#define X86_CR4_LA57       0x00001000 /* enable 5-level paging */
 #define X86_CR4_VMXE       0x00002000 /* enable VMX */
 #define X86_CR4_SMXE       0x00004000 /* enable SMX */
 #define X86_CR4_FSGSBASE   0x00010000 /* enable {rd,wr}{fs,gs}base */
@@ -72,6 +73,7 @@
 #define X86_CR4_SMEP       0x00100000 /* enable SMEP */
 #define X86_CR4_SMAP       0x00200000 /* enable SMAP */
 #define X86_CR4_PKE        0x00400000 /* enable PKE */
+#define X86_CR4_CET        0x00800000 /* Control-flow Enforcement Technology */
 
 /*
  * XSTATE component flags in XCR0
@@ -106,5 +108,49 @@
  * Debug control flags in DR7.
  */
 #define X86_DR7_DEFAULT         0x00000400  /* Default %dr7 value. */
+
+/*
+ * Invalidation types for the INVPCID instruction.
+ */
+#define X86_INVPCID_INDIV_ADDR      0
+#define X86_INVPCID_SINGLE_CTXT     1
+#define X86_INVPCID_ALL_INCL_GLOBAL 2
+#define X86_INVPCID_ALL_NON_GLOBAL  3
+
+#define X86_NR_VECTORS 256
+
+/* Exception Vectors */
+#define X86_EXC_DE             0 /* Divide Error */
+#define X86_EXC_DB             1 /* Debug Exception */
+#define X86_EXC_NMI            2 /* NMI */
+#define X86_EXC_BP             3 /* Breakpoint */
+#define X86_EXC_OF             4 /* Overflow */
+#define X86_EXC_BR             5 /* BOUND Range */
+#define X86_EXC_UD             6 /* Invalid Opcode */
+#define X86_EXC_NM             7 /* Device Not Available */
+#define X86_EXC_DF             8 /* Double Fault */
+#define X86_EXC_CSO            9 /* Coprocessor Segment Overrun */
+#define X86_EXC_TS            10 /* Invalid TSS */
+#define X86_EXC_NP            11 /* Segment Not Present */
+#define X86_EXC_SS            12 /* Stack-Segment Fault */
+#define X86_EXC_GP            13 /* General Porection Fault */
+#define X86_EXC_PF            14 /* Page Fault */
+#define X86_EXC_SPV           15 /* PIC Spurious Interrupt Vector */
+#define X86_EXC_MF            16 /* Maths fault (x87 FPU) */
+#define X86_EXC_AC            17 /* Alignment Check */
+#define X86_EXC_MC            18 /* Machine Check */
+#define X86_EXC_XM            19 /* SIMD Exception */
+#define X86_EXC_VE            20 /* Virtualisation Exception */
+#define X86_EXC_CP            21 /* Control-flow Protection */
+#define X86_EXC_HV            28 /* Hypervisor Injection */
+#define X86_EXC_VC            29 /* VMM Communication */
+#define X86_EXC_SX            30 /* Security Exception */
+
+/* Bitmap of exceptions which have error codes. */
+#define X86_EXC_HAVE_EC                                             \
+    ((1u << X86_EXC_DF) | (1u << X86_EXC_TS) | (1u << X86_EXC_NP) | \
+     (1u << X86_EXC_SS) | (1u << X86_EXC_GP) | (1u << X86_EXC_PF) | \
+     (1u << X86_EXC_AC) | (1u << X86_EXC_CP) |                      \
+     (1u << X86_EXC_VC) | (1u << X86_EXC_SX))
 
 #endif	/* __XEN_X86_DEFNS_H__ */

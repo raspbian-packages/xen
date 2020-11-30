@@ -128,35 +128,36 @@ typedef union {
     lpae_walk_t walk;
 } lpae_t;
 
-static inline bool lpae_valid(lpae_t pte)
+static inline bool lpae_is_valid(lpae_t pte)
 {
     return pte.walk.valid;
 }
 
 /*
- * These two can only be used on L0..L2 ptes because L3 mappings set
- * the table bit and therefore these would return the opposite to what
- * you would expect.
+ * lpae_is_* don't check the valid bit. This gives an opportunity for the
+ * callers to operate on the entry even if they are not valid. For
+ * instance to store information in advance.
  */
-static inline bool lpae_table(lpae_t pte)
+static inline bool lpae_is_table(lpae_t pte, unsigned int level)
 {
-    return lpae_valid(pte) && pte.walk.table;
+    return (level < 3) && pte.walk.table;
 }
 
-static inline bool lpae_mapping(lpae_t pte)
+static inline bool lpae_is_mapping(lpae_t pte, unsigned int level)
 {
-    return lpae_valid(pte) && !pte.walk.table;
+    if ( level == 3 )
+        return pte.walk.table;
+    else
+        return !pte.walk.table;
 }
 
 static inline bool lpae_is_superpage(lpae_t pte, unsigned int level)
 {
-    return (level < 3) && lpae_mapping(pte);
+    return (level < 3) && lpae_is_mapping(pte, level);
 }
 
-static inline bool lpae_is_page(lpae_t pte, unsigned int level)
-{
-    return (level == 3) && lpae_valid(pte) && pte.walk.table;
-}
+#define lpae_get_mfn(pte)    (_mfn((pte).walk.base))
+#define lpae_set_mfn(pte, mfn)  ((pte).walk.base = mfn_x(mfn))
 
 /*
  * AArch64 supports pages with different sizes (4K, 16K, and 64K). To enable
@@ -217,6 +218,15 @@ TABLE_OFFSET_HELPERS(64);
 #undef TABLE_OFFSET
 #undef TABLE_OFFSET_HELPERS
 
+/* Generate an array @var containing the offset for each level from @addr */
+#define DECLARE_OFFSETS(var, addr)          \
+    const unsigned int var[4] = {           \
+        zeroeth_table_offset(addr),         \
+        first_table_offset(addr),           \
+        second_table_offset(addr),          \
+        third_table_offset(addr)            \
+    }
+
 #endif /* __ASSEMBLY__ */
 
 /*
@@ -235,19 +245,19 @@ TABLE_OFFSET_HELPERS(64);
 
 #define THIRD_SHIFT    (PAGE_SHIFT)
 #define THIRD_ORDER    (THIRD_SHIFT - PAGE_SHIFT)
-#define THIRD_SIZE     ((paddr_t)1 << THIRD_SHIFT)
+#define THIRD_SIZE     (_AT(paddr_t, 1) << THIRD_SHIFT)
 #define THIRD_MASK     (~(THIRD_SIZE - 1))
 #define SECOND_SHIFT   (THIRD_SHIFT + LPAE_SHIFT)
 #define SECOND_ORDER   (SECOND_SHIFT - PAGE_SHIFT)
-#define SECOND_SIZE    ((paddr_t)1 << SECOND_SHIFT)
+#define SECOND_SIZE    (_AT(paddr_t, 1) << SECOND_SHIFT)
 #define SECOND_MASK    (~(SECOND_SIZE - 1))
 #define FIRST_SHIFT    (SECOND_SHIFT + LPAE_SHIFT)
 #define FIRST_ORDER    (FIRST_SHIFT - PAGE_SHIFT)
-#define FIRST_SIZE     ((paddr_t)1 << FIRST_SHIFT)
+#define FIRST_SIZE     (_AT(paddr_t, 1) << FIRST_SHIFT)
 #define FIRST_MASK     (~(FIRST_SIZE - 1))
 #define ZEROETH_SHIFT  (FIRST_SHIFT + LPAE_SHIFT)
 #define ZEROETH_ORDER  (ZEROETH_SHIFT - PAGE_SHIFT)
-#define ZEROETH_SIZE   ((paddr_t)1 << ZEROETH_SHIFT)
+#define ZEROETH_SIZE   (_AT(paddr_t, 1) << ZEROETH_SHIFT)
 #define ZEROETH_MASK   (~(ZEROETH_SIZE - 1))
 
 /* Calculate the offsets into the pagetables for a given VA */
@@ -256,7 +266,7 @@ TABLE_OFFSET_HELPERS(64);
 #define second_linear_offset(va) ((va) >> SECOND_SHIFT)
 #define third_linear_offset(va) ((va) >> THIRD_SHIFT)
 
-#define TABLE_OFFSET(offs) ((unsigned int)(offs) & LPAE_ENTRY_MASK)
+#define TABLE_OFFSET(offs) (_AT(unsigned int, offs) & LPAE_ENTRY_MASK)
 #define first_table_offset(va)  TABLE_OFFSET(first_linear_offset(va))
 #define second_table_offset(va) TABLE_OFFSET(second_linear_offset(va))
 #define third_table_offset(va)  TABLE_OFFSET(third_linear_offset(va))

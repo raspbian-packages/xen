@@ -27,6 +27,8 @@
 
 #include "_paths.h"
 
+//#define DEBUG 1
+
 libxl_domain_type libxl__domain_type(libxl__gc *gc, uint32_t domid)
 {
     libxl_ctx *ctx = libxl__gc_owner(gc);
@@ -138,16 +140,18 @@ static int numa_cmpf(const libxl__numa_candidate *c1,
 
 /* The actual automatic NUMA placement routine */
 static int numa_place_domain(libxl__gc *gc, uint32_t domid,
-                             libxl_domain_build_info *info)
+                             libxl_domain_config *d_config)
 {
+    libxl_domain_build_info *info = &d_config->b_info;
     int found;
     libxl__numa_candidate candidate;
-    libxl_bitmap cpupool_nodemap;
+    libxl_bitmap cpumap, cpupool_nodemap, *map;
     libxl_cpupoolinfo cpupool_info;
     int i, cpupool, rc = 0;
     uint64_t memkb;
 
     libxl__numa_candidate_init(&candidate);
+    libxl_bitmap_init(&cpumap);
     libxl_bitmap_init(&cpupool_nodemap);
     libxl_cpupoolinfo_init(&cpupool_info);
 
@@ -162,8 +166,37 @@ static int numa_place_domain(libxl__gc *gc, uint32_t domid,
     rc = libxl_cpupool_info(CTX, &cpupool_info, cpupool);
     if (rc)
         goto out;
+    map = &cpupool_info.cpumap;
 
-    rc = libxl_domain_need_memory(CTX, info, &memkb);
+    /*
+     * If there's a well defined hard affinity mask (i.e., the same one for all
+     * the vcpus), we can try to run the placement considering only the pcpus
+     * within such mask.
+     */
+    if (info->num_vcpu_hard_affinity)
+    {
+#ifdef DEBUG
+        int j;
+
+        for (j = 0; j < info->num_vcpu_hard_affinity; j++)
+            assert(libxl_bitmap_equal(&info->vcpu_hard_affinity[0],
+                                      &info->vcpu_hard_affinity[j], 0));
+#endif /* DEBUG */
+
+        rc = libxl_bitmap_and(CTX, &cpumap, &info->vcpu_hard_affinity[0],
+                              &cpupool_info.cpumap);
+        if (rc)
+            goto out;
+
+        /* Hard affinity must contain at least one cpu of our cpupool */
+        if (libxl_bitmap_is_empty(&cpumap)) {
+            LOG(ERROR, "Hard affinity completely outside of domain's cpupool!");
+            rc = ERROR_INVAL;
+            goto out;
+        }
+    }
+
+    rc = libxl__domain_need_memory_calculate(gc, info, &memkb);
     if (rc)
         goto out;
     if (libxl_node_bitmap_alloc(CTX, &cpupool_nodemap, 0)) {
@@ -174,8 +207,7 @@ static int numa_place_domain(libxl__gc *gc, uint32_t domid,
     /* Find the best candidate with enough free memory and at least
      * as much pcpus as the domain has vcpus.  */
     rc = libxl__get_numa_candidate(gc, memkb, info->max_vcpus,
-                                   0, 0, &cpupool_info.cpumap,
-                                   numa_cmpf, &candidate, &found);
+                                   0, 0, map, numa_cmpf, &candidate, &found);
     if (rc)
         goto out;
 
@@ -206,147 +238,13 @@ static int numa_place_domain(libxl__gc *gc, uint32_t domid,
  out:
     libxl__numa_candidate_dispose(&candidate);
     libxl_bitmap_dispose(&cpupool_nodemap);
+    libxl_bitmap_dispose(&cpumap);
     libxl_cpupoolinfo_dispose(&cpupool_info);
     return rc;
 }
 
-static unsigned long timer_mode(const libxl_domain_build_info *info)
-{
-    const libxl_timer_mode mode = info->timer_mode;
-    assert(mode >= LIBXL_TIMER_MODE_DELAY_FOR_MISSED_TICKS &&
-           mode <= LIBXL_TIMER_MODE_ONE_MISSED_TICK_PENDING);
-    return ((unsigned long)mode);
-}
-
-#if defined(__i386__) || defined(__x86_64__)
-static int hvm_set_viridian_features(libxl__gc *gc, uint32_t domid,
-                                     libxl_domain_build_info *const info)
-{
-    libxl_bitmap enlightenments;
-    libxl_viridian_enlightenment v;
-    uint64_t mask = 0;
-
-    libxl_bitmap_init(&enlightenments);
-    libxl_bitmap_alloc(CTX, &enlightenments,
-                       LIBXL_BUILDINFO_HVM_VIRIDIAN_ENABLE_DISABLE_WIDTH);
-
-    if (libxl_defbool_val(info->u.hvm.viridian)) {
-        /* Enable defaults */
-        libxl_bitmap_set(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_BASE);
-        libxl_bitmap_set(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_FREQ);
-        libxl_bitmap_set(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_TIME_REF_COUNT);
-        libxl_bitmap_set(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_APIC_ASSIST);
-        libxl_bitmap_set(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_CRASH_CTL);
-    }
-
-    libxl_for_each_set_bit(v, info->u.hvm.viridian_enable) {
-        if (libxl_bitmap_test(&info->u.hvm.viridian_disable, v)) {
-            LOG(ERROR, "%s group both enabled and disabled",
-                libxl_viridian_enlightenment_to_string(v));
-            goto err;
-        }
-        if (libxl_viridian_enlightenment_to_string(v)) /* check validity */
-            libxl_bitmap_set(&enlightenments, v);
-    }
-
-    libxl_for_each_set_bit(v, info->u.hvm.viridian_disable)
-        if (libxl_viridian_enlightenment_to_string(v)) /* check validity */
-            libxl_bitmap_reset(&enlightenments, v);
-
-    /* The base set is a pre-requisite for all others */
-    if (!libxl_bitmap_is_empty(&enlightenments) &&
-        !libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_BASE)) {
-        LOG(ERROR, "base group not enabled");
-        goto err;
-    }
-
-    libxl_for_each_set_bit(v, enlightenments)
-        LOG(DETAIL, "%s group enabled", libxl_viridian_enlightenment_to_string(v));
-
-    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_BASE)) {
-        mask |= HVMPV_base_freq;
-
-        if (!libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_FREQ))
-            mask |= HVMPV_no_freq;
-    }
-
-    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_TIME_REF_COUNT))
-        mask |= HVMPV_time_ref_count;
-
-    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_REFERENCE_TSC))
-        mask |= HVMPV_reference_tsc;
-
-    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_HCALL_REMOTE_TLB_FLUSH))
-        mask |= HVMPV_hcall_remote_tlb_flush;
-
-    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_APIC_ASSIST))
-        mask |= HVMPV_apic_assist;
-
-    if (libxl_bitmap_test(&enlightenments, LIBXL_VIRIDIAN_ENLIGHTENMENT_CRASH_CTL))
-        mask |= HVMPV_crash_ctl;
-
-    if (mask != 0 &&
-        xc_hvm_param_set(CTX->xch,
-                         domid,
-                         HVM_PARAM_VIRIDIAN,
-                         mask) != 0) {
-        LOGE(ERROR, "Couldn't set viridian feature mask (0x%"PRIx64")", mask);
-        goto err;
-    }
-
-    libxl_bitmap_dispose(&enlightenments);
-    return 0;
-
-err:
-    libxl_bitmap_dispose(&enlightenments);
-    return ERROR_FAIL;
-}
-
-static int hvm_set_mca_capabilities(libxl__gc *gc, uint32_t domid,
-                                    libxl_domain_build_info *const info)
-{
-    unsigned long caps = info->u.hvm.mca_caps;
-
-    if (!caps)
-        return 0;
-
-    return xc_hvm_param_set(CTX->xch, domid, HVM_PARAM_MCA_CAP, caps);
-}
-#endif
-
-static void hvm_set_conf_params(xc_interface *handle, uint32_t domid,
-                                libxl_domain_build_info *const info)
-{
-    switch(info->type) {
-    case LIBXL_DOMAIN_TYPE_PVH:
-        xc_hvm_param_set(handle, domid, HVM_PARAM_PAE_ENABLED, true);
-        xc_hvm_param_set(handle, domid, HVM_PARAM_TIMER_MODE,
-                         timer_mode(info));
-        xc_hvm_param_set(handle, domid, HVM_PARAM_NESTEDHVM,
-                         libxl_defbool_val(info->nested_hvm));
-        break;
-    case LIBXL_DOMAIN_TYPE_HVM:
-        xc_hvm_param_set(handle, domid, HVM_PARAM_PAE_ENABLED,
-                         libxl_defbool_val(info->u.hvm.pae));
-#if defined(__i386__) || defined(__x86_64__)
-        xc_hvm_param_set(handle, domid, HVM_PARAM_HPET_ENABLED,
-                         libxl_defbool_val(info->u.hvm.hpet));
-#endif
-        xc_hvm_param_set(handle, domid, HVM_PARAM_TIMER_MODE,
-                         timer_mode(info));
-        xc_hvm_param_set(handle, domid, HVM_PARAM_VPT_ALIGN,
-                         libxl_defbool_val(info->u.hvm.vpt_align));
-        xc_hvm_param_set(handle, domid, HVM_PARAM_NESTEDHVM,
-                         libxl_defbool_val(info->nested_hvm));
-        break;
-    default:
-        abort();
-    }
-}
-
 int libxl__build_pre(libxl__gc *gc, uint32_t domid,
-              libxl_domain_config *d_config, libxl__domain_build_state *state,
-              bool is_reset)
+              libxl_domain_config *d_config, libxl__domain_build_state *state)
 {
     libxl_domain_build_info *const info = &d_config->b_info;
     libxl_ctx *ctx = libxl__gc_owner(gc);
@@ -354,17 +252,15 @@ int libxl__build_pre(libxl__gc *gc, uint32_t domid,
     int rc;
     uint64_t size;
 
-    if (!is_reset) {
-        if (xc_domain_max_vcpus(ctx->xch, domid, info->max_vcpus) != 0) {
-            LOG(ERROR, "Couldn't set max vcpu count");
-            return ERROR_FAIL;
-        }
+    if (xc_domain_max_vcpus(ctx->xch, domid, info->max_vcpus) != 0) {
+        LOG(ERROR, "Couldn't set max vcpu count");
+        return ERROR_FAIL;
+    }
 
-        if (xc_domain_set_gnttab_limits(ctx->xch, domid, info->max_grant_frames,
-                                        info->max_maptrack_frames) != 0) {
-            LOG(ERROR, "Couldn't set grant table limits");
-            return ERROR_FAIL;
-        }
+    if (libxl_defbool_val(d_config->b_info.disable_migrate) &&
+        xc_domain_disable_migrate(ctx->xch, domid) != 0) {
+        LOG(ERROR, "Couldn't set nomigrate");
+        return ERROR_FAIL;
     }
 
     /*
@@ -382,9 +278,8 @@ int libxl__build_pre(libxl__gc *gc, uint32_t domid,
      * reflect the placement result if that is the case
      */
     if (libxl_defbool_val(info->numa_placement)) {
-        if (info->cpumap.size || info->num_vcpu_hard_affinity ||
-            info->num_vcpu_soft_affinity)
-            LOG(WARN, "Can't run NUMA placement, as an (hard or soft) "
+        if (info->cpumap.size || info->num_vcpu_soft_affinity)
+            LOG(WARN, "Can't run NUMA placement, as a soft "
                       "affinity has been specified explicitly");
         else if (info->nodemap.size)
             LOG(WARN, "Can't run NUMA placement, as the domain has "
@@ -401,7 +296,7 @@ int libxl__build_pre(libxl__gc *gc, uint32_t domid,
             if (rc)
                 return rc;
 
-            rc = numa_place_domain(gc, domid, info);
+            rc = numa_place_domain(gc, domid, d_config);
             if (rc) {
                 libxl_bitmap_dispose(&cpumap_soft);
                 return rc;
@@ -490,41 +385,13 @@ int libxl__build_pre(libxl__gc *gc, uint32_t domid,
     state->store_port = xc_evtchn_alloc_unbound(ctx->xch, domid, state->store_domid);
     state->console_port = xc_evtchn_alloc_unbound(ctx->xch, domid, state->console_domid);
 
-    if (info->type != LIBXL_DOMAIN_TYPE_PV)
-        hvm_set_conf_params(ctx->xch, domid, info);
-
-#if defined(__i386__) || defined(__x86_64__)
-    if (info->type == LIBXL_DOMAIN_TYPE_HVM) {
-        rc = hvm_set_viridian_features(gc, domid, info);
-        if (rc)
-            return rc;
-
-        rc = hvm_set_mca_capabilities(gc, domid, info);
-        if (rc)
-            return rc;
-    }
-#endif
-
-    /* Alternate p2m support on x86 is available only for PVH/HVM guests. */
-    if (info->type == LIBXL_DOMAIN_TYPE_HVM) {
-        /* The config parameter "altp2m" replaces the parameter "altp2mhvm". For
-         * legacy reasons, both parameters are accepted on x86 HVM guests.
-         *
-         * If the legacy field info->u.hvm.altp2m is set, activate altp2m.
-         * Otherwise set altp2m based on the field info->altp2m. */
-        if (info->altp2m == LIBXL_ALTP2M_MODE_DISABLED &&
-            libxl_defbool_val(info->u.hvm.altp2m))
-            xc_hvm_param_set(ctx->xch, domid, HVM_PARAM_ALTP2M,
-                             libxl_defbool_val(info->u.hvm.altp2m));
-        else
-            xc_hvm_param_set(ctx->xch, domid, HVM_PARAM_ALTP2M,
-                             info->altp2m);
-    } else if (info->type == LIBXL_DOMAIN_TYPE_PVH) {
-        xc_hvm_param_set(ctx->xch, domid, HVM_PARAM_ALTP2M,
-                         info->altp2m);
-    }
-
     rc = libxl__arch_domain_create(gc, d_config, domid);
+
+    /* Construct a CPUID policy, but only for brand new domains.  Domains
+     * being migrated-in/restored have CPUID handled during the
+     * static_data_done() callback. */
+    if (!state->restore)
+        libxl__cpuid_legacy(ctx, domid, false, info);
 
     return rc;
 }
@@ -592,17 +459,6 @@ int libxl__build_post(libxl__gc *gc, uint32_t domid,
     rc = libxl_domain_sched_params_set(CTX, domid, &info->sched_params);
     if (rc)
         return rc;
-
-    rc = xc_domain_set_max_evtchn(ctx->xch, domid, info->event_channels);
-    if (rc) {
-        LOG(ERROR, "Failed to set event channel limit to %d (%d)",
-            info->event_channels, rc);
-        return ERROR_FAIL;
-    }
-
-    libxl_cpuid_apply_policy(ctx, domid);
-    if (info->cpuid != NULL)
-        libxl_cpuid_set(ctx, domid, info->cpuid);
 
     if (info->type == LIBXL_DOMAIN_TYPE_HVM
         && !libxl_ms_vm_genid_is_zero(&info->u.hvm.ms_vm_genid)) {
@@ -819,6 +675,7 @@ int libxl__build_pv(libxl__gc *gc, uint32_t domid,
     dom->xenstore_evtchn = state->store_port;
     dom->xenstore_domid = state->store_domid;
     dom->claim_enabled = libxl_defbool_val(info->claim_mode);
+    dom->max_vcpus = info->max_vcpus;
 
     if (info->num_vnuma_nodes != 0) {
         unsigned int i;
@@ -908,7 +765,6 @@ static int hvm_build_set_params(xc_interface *handle, uint32_t domid,
     *store_mfn = str_mfn;
     *console_mfn = cons_mfn;
 
-    xc_dom_gnttab_hvm_seed(handle, domid, *console_mfn, *store_mfn, console_domid, store_domid);
     return 0;
 }
 
@@ -1132,6 +988,19 @@ static int libxl__domain_firmware(libxl__gc *gc,
     }
 
     if (info->type == LIBXL_DOMAIN_TYPE_HVM &&
+        info->u.hvm.bios == LIBXL_BIOS_TYPE_ROMBIOS &&
+        libxl__ipxe_path()) {
+        const char *fp = libxl__ipxe_path();
+        rc = xc_dom_module_file(dom, fp, "ipxe");
+
+        if (rc) {
+            LOGE(ERROR, "failed to load IPXE %s (%d)", fp, rc);
+            rc = ERROR_FAIL;
+            goto out;
+        }
+    }
+
+    if (info->type == LIBXL_DOMAIN_TYPE_HVM &&
         info->u.hvm.smbios_firmware) {
         data = NULL;
         e = libxl_read_file_contents(ctx, info->u.hvm.smbios_firmware,
@@ -1260,6 +1129,9 @@ int libxl__build_hvm(libxl__gc *gc, uint32_t domid,
     dom->mmio_start = mmio_start;
     dom->vga_hole_size = device_model ? LIBXL_VGA_HOLE_SIZE : 0;
     dom->device_model = device_model;
+    dom->max_vcpus = info->max_vcpus;
+    dom->console_domid = state->console_domid;
+    dom->xenstore_domid = state->store_domid;
 
     rc = libxl__domain_device_construct_rdm(gc, d_config,
                                             info->u.hvm.rdm_mem_boundary_memkb*1024,
@@ -1477,7 +1349,7 @@ int libxl_userdata_store(libxl_ctx *ctx, uint32_t domid,
 {
     GC_INIT(ctx);
     int rc;
-    libxl__domain_userdata_lock *lock;
+    libxl__flock *lock;
 
     CTX_LOCK;
     lock = libxl__lock_domain_userdata(gc, domid);
@@ -1489,7 +1361,7 @@ int libxl_userdata_store(libxl_ctx *ctx, uint32_t domid,
     rc = libxl__userdata_store(gc, domid, userdata_userid,
                                data, datalen);
 
-    libxl__unlock_domain_userdata(lock);
+    libxl__unlock_file(lock);
 
 out:
     CTX_UNLOCK;
@@ -1538,7 +1410,7 @@ int libxl_userdata_retrieve(libxl_ctx *ctx, uint32_t domid,
 {
     GC_INIT(ctx);
     int rc;
-    libxl__domain_userdata_lock *lock;
+    libxl__flock *lock;
 
     CTX_LOCK;
     lock = libxl__lock_domain_userdata(gc, domid);
@@ -1551,7 +1423,7 @@ int libxl_userdata_retrieve(libxl_ctx *ctx, uint32_t domid,
                                   data_r, datalen_r);
 
 
-    libxl__unlock_domain_userdata(lock);
+    libxl__unlock_file(lock);
 out:
     CTX_UNLOCK;
     GC_FREE;
@@ -1565,7 +1437,7 @@ int libxl_userdata_unlink(libxl_ctx *ctx, uint32_t domid,
     CTX_LOCK;
 
     int rc;
-    libxl__domain_userdata_lock *lock = NULL;
+    libxl__flock *lock = NULL;
     const char *filename;
 
     lock = libxl__lock_domain_userdata(gc, domid);
@@ -1588,7 +1460,7 @@ int libxl_userdata_unlink(libxl_ctx *ctx, uint32_t domid,
     rc = 0;
 out:
     if (lock)
-        libxl__unlock_domain_userdata(lock);
+        libxl__unlock_file(lock);
     CTX_UNLOCK;
     GC_FREE;
     return rc;

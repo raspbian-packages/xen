@@ -320,7 +320,7 @@ static int __vgic_v3_rdistr_rd_mmio_read(struct vcpu *v, mmio_info_t *info,
         printk(XENLOG_G_ERR
                "%pv: vGICR: unhandled read r%d offset %#08x\n",
                v, dabt.reg, gicr_reg);
-        return 0;
+        goto read_as_zero;
     }
 bad_width:
     printk(XENLOG_G_ERR "%pv vGICR: bad read width %d r%d offset %#08x\n",
@@ -334,6 +334,10 @@ read_as_zero_64:
 
 read_as_zero_32:
     if ( dabt.size != DABT_WORD ) goto bad_width;
+    *r = 0;
+    return 1;
+
+read_as_zero:
     *r = 0;
     return 1;
 
@@ -442,7 +446,7 @@ static uint64_t sanitize_pendbaser(uint64_t reg)
 static void vgic_vcpu_enable_lpis(struct vcpu *v)
 {
     uint64_t reg = v->domain->arch.vgic.rdist_propbase;
-    unsigned int nr_lpis = BIT((reg & 0x1f) + 1);
+    unsigned int nr_lpis = BIT((reg & 0x1f) + 1, UL);
 
     /* rdists_enabled is protected by the domain lock. */
     ASSERT(spin_is_locked(&v->domain->arch.vgic.lock));
@@ -638,7 +642,7 @@ static int __vgic_v3_rdistr_rd_mmio_write(struct vcpu *v, mmio_info_t *info,
     default:
         printk(XENLOG_G_ERR "%pv: vGICR: unhandled write r%d offset %#08x\n",
                v, dabt.reg, gicr_reg);
-        return 0;
+        goto write_ignore;
     }
 bad_width:
     printk(XENLOG_G_ERR
@@ -652,6 +656,9 @@ write_ignore_64:
 
 write_ignore_32:
     if ( dabt.size != DABT_WORD ) goto bad_width;
+    return 1;
+
+write_ignore:
     return 1;
 
 write_impl_defined:
@@ -706,7 +713,7 @@ static int __vgic_v3_distr_common_mmio_read(const char *name, struct vcpu *v,
         goto read_as_zero;
 
     /* Read the active status of an IRQ via GICD/GICR is not supported */
-    case VRANGE32(GICD_ISACTIVER, GICD_ISACTIVER):
+    case VRANGE32(GICD_ISACTIVER, GICD_ISACTIVERN):
     case VRANGE32(GICD_ICACTIVER, GICD_ICACTIVERN):
         goto read_as_zero;
 
@@ -925,7 +932,7 @@ static int vgic_v3_rdistr_sgi_mmio_read(struct vcpu *v, mmio_info_t *info,
         printk(XENLOG_G_ERR
                "%pv: vGICR: SGI: unhandled read r%d offset %#08x\n",
                v, dabt.reg, gicr_reg);
-        return 0;
+        goto read_as_zero;
     }
 bad_width:
     printk(XENLOG_G_ERR "%pv: vGICR: SGI: bad read width %d r%d offset %#08x\n",
@@ -1002,7 +1009,7 @@ static int vgic_v3_rdistr_sgi_mmio_write(struct vcpu *v, mmio_info_t *info,
         printk(XENLOG_G_ERR
                "%pv: vGICR: SGI: unhandled write r%d offset %#08x\n",
                v, dabt.reg, gicr_reg);
-        return 0;
+        goto write_ignore;
     }
 
 bad_width:
@@ -1013,6 +1020,9 @@ bad_width:
 
 write_ignore_32:
     if ( dabt.size != DABT_WORD ) goto bad_width;
+    return 1;
+
+write_ignore:
     return 1;
 }
 
@@ -1252,7 +1262,7 @@ static int vgic_v3_distr_mmio_read(struct vcpu *v, mmio_info_t *info,
     default:
         printk(XENLOG_G_ERR "%pv: vGICD: unhandled read r%d offset %#08x\n",
                v, dabt.reg, gicd_reg);
-        return 0;
+        goto read_as_zero;
     }
 
 bad_width:
@@ -1438,7 +1448,7 @@ static int vgic_v3_distr_mmio_write(struct vcpu *v, mmio_info_t *info,
         printk(XENLOG_G_ERR
                "%pv: vGICD: unhandled write r%d=%"PRIregister" offset %#08x\n",
                v, dabt.reg, r, gicd_reg);
-        return 0;
+        goto write_ignore;
     }
 
 bad_width:
@@ -1474,6 +1484,7 @@ static bool vgic_v3_to_sgi(struct vcpu *v, register_t sgir)
     enum gic_sgi_mode sgi_mode;
     struct sgi_target target;
 
+    sgi_target_init(&target);
     irqmode = (sgir >> ICH_SGI_IRQMODE_SHIFT) & ICH_SGI_IRQMODE_MASK;
     virq = (sgir >> ICH_SGI_IRQ_SHIFT ) & ICH_SGI_IRQ_MASK;
 
@@ -1481,7 +1492,6 @@ static bool vgic_v3_to_sgi(struct vcpu *v, register_t sgir)
     switch ( irqmode )
     {
     case ICH_SGI_TARGET_LIST:
-        sgi_target_init(&target);
         /* We assume that only AFF1 is used in ICC_SGI1R_EL1. */
         target.aff1 = (sgir >> ICH_SGI_AFFINITY_LEVEL(1)) & ICH_SGI_AFFx_MASK;
         target.list = sgir & ICH_SGI_TARGETLIST_MASK;
@@ -1573,30 +1583,15 @@ static const struct mmio_handler_ops vgic_distr_mmio_handler = {
     .write = vgic_v3_distr_mmio_write,
 };
 
-static int vgic_v3_real_domain_init(struct domain *d);
-
 static int vgic_v3_vcpu_init(struct vcpu *v)
 {
-    int i, rc;
+    int i;
     paddr_t rdist_base;
     struct vgic_rdist_region *region;
     unsigned int last_cpu;
 
     /* Convenient alias */
     struct domain *d = v->domain;
-
-    /*
-     * This is the earliest place where the number of vCPUs is
-     * known. This is required to initialize correctly the vGIC v3
-     * domain structure. We only to do that when vCPU 0 is
-     * initilialized.
-     */
-    if ( v->vcpu_id == 0 )
-    {
-        rc = vgic_v3_real_domain_init(d);
-        if ( rc )
-            return rc;
-    }
 
     /*
      * Find the region where the re-distributor lives. For this purpose,
@@ -1660,7 +1655,7 @@ static inline unsigned int vgic_v3_max_rdist_count(struct domain *d)
                GUEST_GICV3_RDIST_REGIONS;
 }
 
-static int vgic_v3_real_domain_init(struct domain *d)
+static int vgic_v3_domain_init(struct domain *d)
 {
     struct vgic_rdist_region *rdist_regions;
     int rdist_count, i, ret;
@@ -1763,16 +1758,6 @@ static int vgic_v3_real_domain_init(struct domain *d)
     return 0;
 }
 
-static int vgic_v3_domain_init(struct domain *d)
-{
-    /*
-     * The domain initialization for vGIC v3 is delayed until the first vCPU
-     * is created. This because the initialization may require to know the
-     * number of vCPUs that is not known when creating the domain.
-     */
-    return 0;
-}
-
 static void vgic_v3_domain_free(struct domain *d)
 {
     vgic_v3_its_free_domain(d);
@@ -1822,11 +1807,6 @@ static const struct vgic_ops v3_ops = {
     .emulate_reg  = vgic_v3_emulate_reg,
     .lpi_to_pending = vgic_v3_lpi_to_pending,
     .lpi_get_priority = vgic_v3_lpi_get_priority,
-    /*
-     * We use both AFF1 and AFF0 in (v)MPIDR. Thus, the max number of CPU
-     * that can be supported is up to 4096(==256*16) in theory.
-     */
-    .max_vcpus = 4096,
 };
 
 int vgic_v3_init(struct domain *d, int *mmio_count)

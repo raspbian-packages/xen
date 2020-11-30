@@ -17,15 +17,14 @@ INSTALL_BIN                    += xencov_split
 INSTALL_BIN += $(INSTALL_BIN-y)
 
 # Everything to be installed in regular sbin/
-INSTALL_SBIN                   += xen-bugtool
 INSTALL_SBIN-$(CONFIG_MIGRATE) += xen-hptool
 INSTALL_SBIN-$(CONFIG_X86)     += xen-hvmcrash
 INSTALL_SBIN-$(CONFIG_X86)     += xen-hvmctx
 INSTALL_SBIN-$(CONFIG_X86)     += xen-lowmemd
 INSTALL_SBIN-$(CONFIG_X86)     += xen-mfndump
-INSTALL_SBIN                   += xen-ringwatch
-INSTALL_SBIN                   += xen-tmem-list-parse
+INSTALL_SBIN-$(CONFIG_X86)     += xen-ucode
 INSTALL_SBIN                   += xencov
+INSTALL_SBIN                   += xenhypfs
 INSTALL_SBIN                   += xenlockprof
 INSTALL_SBIN                   += xenperf
 INSTALL_SBIN                   += xenpm
@@ -41,8 +40,6 @@ INSTALL_PRIVBIN                += xenpvnetboot
 TARGETS_ALL := $(INSTALL_BIN) $(INSTALL_SBIN) $(INSTALL_PRIVBIN)
 
 # Everything which only needs copying to install
-TARGETS_COPY += xen-bugtool
-TARGETS_COPY += xen-ringwatch
 TARGETS_COPY += xencons
 TARGETS_COPY += xencov_split
 TARGETS_COPY += xenpvnetboot
@@ -90,6 +87,9 @@ xenperf: xenperf.o
 xenpm: xenpm.o
 	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS_libxenctrl) $(APPEND_LDFLAGS)
 
+xenhypfs: xenhypfs.o
+	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS_libxenhypfs) $(APPEND_LDFLAGS)
+
 xenlockprof: xenlockprof.o
 	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS_libxenctrl) $(APPEND_LDFLAGS)
 
@@ -97,6 +97,8 @@ xenlockprof: xenlockprof.o
 xen-hptool.o: CFLAGS += -I$(XEN_ROOT)/tools/libxc $(CFLAGS_libxencall)
 xen-hptool: xen-hptool.o
 	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS_libxenevtchn) $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest) $(LDLIBS_libxenstore) $(APPEND_LDFLAGS)
+
+xenhypfs.o: CFLAGS += $(CFLAGS_libxenhypfs)
 
 # xen-mfndump incorrectly uses libxc internals
 xen-mfndump.o: CFLAGS += -I$(XEN_ROOT)/tools/libxc $(CFLAGS_libxencall)
@@ -116,6 +118,9 @@ xen-lowmemd: xen-lowmemd.o
 	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS_libxenevtchn) $(LDLIBS_libxenctrl) $(LDLIBS_libxenstore) $(APPEND_LDFLAGS)
 
 xencov: xencov.o
+	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS_libxenctrl) $(APPEND_LDFLAGS)
+
+xen-ucode: xen-ucode.o
 	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS_libxenctrl) $(APPEND_LDFLAGS)
 
 -include $(DEPS_INCLUDE)

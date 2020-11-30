@@ -37,7 +37,8 @@ struct nestedvmx {
      */
     paddr_t    vmxon_region_pa;
     void       *iobitmap[2];		/* map (va) of L1 guest I/O bitmap */
-    void       *msrbitmap;		/* map (va) of L1 guest MSR bitmap */
+    struct vmx_msr_bitmap *msrbitmap;	/* map (va) of L1 guest MSR bitmap */
+    struct vmx_msr_bitmap *msr_merged;	/* merged L1 and L2 MSR bitmap */
     /* deferred nested interrupt */
     struct {
         unsigned long intr_info;
@@ -184,8 +185,6 @@ enum vmx_insn_errno set_vvmcs_real_safe(const struct vcpu *, u32 encoding,
   (cpu_has_vmx_vmcs_shadowing ? \
    set_vvmcs_real_safe(vcpu, encoding, val) : \
    set_vvmcs_virtual_safe(vcpu_nestedhvm(vcpu).nv_vvmcx, encoding, val))
-
-uint64_t get_shadow_eptp(struct vcpu *v);
 
 void nvmx_destroy_vmcs(struct vcpu *v);
 int nvmx_handle_vmx_insn(struct cpu_user_regs *regs, unsigned int exit_reason);

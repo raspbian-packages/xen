@@ -1,6 +1,7 @@
 #include <xen/init.h>
 #include <xen/types.h>
 #include <xen/lib.h>
+#include <xen/param.h>
 #include <xen/sched.h>
 #include <xen/domain_page.h>
 #include <xen/iommu.h>
@@ -188,7 +189,7 @@ static void update_pagetable_mac(vmac_ctx_t *ctx)
 
         if ( !mfn_valid(_mfn(mfn)) )
             continue;
-        if ( is_page_in_use(page) && !is_xen_heap_page(page) )
+        if ( is_page_in_use(page) && !is_special_page(page) )
         {
             if ( page->count_info & PGC_page_table )
             {
@@ -212,7 +213,7 @@ static void tboot_gen_domain_integrity(const uint8_t key[TB_KEY_SIZE],
     vmac_set_key((uint8_t *)key, &ctx);
     for_each_domain( d )
     {
-        if ( !d->arch.s3_integrity )
+        if ( !(d->options & XEN_DOMCTL_CDF_s3_integrity) )
             continue;
         printk("MACing Domain %u\n", d->domain_id);
 
@@ -280,7 +281,7 @@ static void tboot_gen_xenheap_integrity(const uint8_t key[TB_KEY_SIZE],
 
         if ( !mfn_valid(_mfn(mfn)) )
             continue;
-        if ( is_xen_fixed_mfn(mfn) )
+        if ( is_xen_fixed_mfn(_mfn(mfn)) )
             continue; /* skip Xen */
         if ( (mfn >= PFN_DOWN(g_tboot_shared->tboot_base - 3 * PAGE_SIZE))
              && (mfn < PFN_UP(g_tboot_shared->tboot_base
@@ -288,7 +289,7 @@ static void tboot_gen_xenheap_integrity(const uint8_t key[TB_KEY_SIZE],
                               + 3 * PAGE_SIZE)) )
             continue; /* skip tboot and its page tables */
 
-        if ( is_page_in_use(page) && is_xen_heap_page(page) )
+        if ( is_page_in_use(page) && is_special_page(page) )
         {
             void *pg;
 
@@ -309,7 +310,7 @@ static void tboot_gen_frametable_integrity(const uint8_t key[TB_KEY_SIZE],
                                            vmac_t *mac)
 {
     unsigned int sidx, eidx, nidx;
-    unsigned int max_idx = (max_pdx + PDX_GROUP_COUNT - 1)/PDX_GROUP_COUNT;
+    unsigned int max_idx = DIV_ROUND_UP(max_pdx, PDX_GROUP_COUNT);
     uint8_t nonce[16] = {};
     vmac_ctx_t ctx;
 
@@ -370,16 +371,13 @@ void tboot_shutdown(uint32_t shutdown_type)
         g_tboot_shared->num_mac_regions = 3;
         /* S3 resume code (and other real mode trampoline code) */
         g_tboot_shared->mac_regions[0].start = bootsym_phys(trampoline_start);
-        g_tboot_shared->mac_regions[0].size = bootsym_phys(trampoline_end) -
-                                              bootsym_phys(trampoline_start);
+        g_tboot_shared->mac_regions[0].size = trampoline_end - trampoline_start;
         /* hypervisor .text + .rodata */
         g_tboot_shared->mac_regions[1].start = (uint64_t)__pa(&_stext);
-        g_tboot_shared->mac_regions[1].size = __pa(&__2M_rodata_end) -
-                                              __pa(&_stext);
+        g_tboot_shared->mac_regions[1].size = __2M_rodata_end - _stext;
         /* hypervisor .data + .bss */
         g_tboot_shared->mac_regions[2].start = (uint64_t)__pa(&__2M_rwdata_start);
-        g_tboot_shared->mac_regions[2].size = __pa(&__2M_rwdata_end) -
-                                              __pa(&__2M_rwdata_start);
+        g_tboot_shared->mac_regions[2].size = __2M_rwdata_end - __2M_rwdata_start;
 
         /*
          * MAC domains and other Xen memory
@@ -391,7 +389,12 @@ void tboot_shutdown(uint32_t shutdown_type)
         tboot_gen_xenheap_integrity(g_tboot_shared->s3_key, &xenheap_mac);
     }
 
-    write_ptbase(idle_vcpu[0]);
+    /*
+     * During early boot, we can be called by panic before idle_vcpu[0] is
+     * setup, but in that case we don't need to change page tables.
+     */
+    if ( idle_vcpu[0] )
+        write_ptbase(idle_vcpu[0]);
 
     ((void(*)(void))(unsigned long)g_tboot_shared->shutdown_entry)();
 
@@ -456,8 +459,6 @@ int __init tboot_parse_dmar_table(acpi_table_handler dmar_handler)
     if ( txt_heap_base == 0 )
         return 1;
 
-    /* map TXT heap into Xen addr space */
-
     /* walk heap to SinitMleData */
     pa = txt_heap_base;
     /* skip BiosData */
@@ -479,15 +480,13 @@ int __init tboot_parse_dmar_table(acpi_table_handler dmar_handler)
                       sizeof(dmar_table_length),
                       pa + sizeof(char) * ACPI_NAME_SIZE);
     dmar_table = xmalloc_bytes(dmar_table_length);
+    if ( !dmar_table )
+        return -ENOMEM;
     tboot_copy_memory(dmar_table, dmar_table_length, pa);
     clear_fixmap(FIX_TBOOT_MAP_ADDRESS);
 
     rc = dmar_handler(dmar_table);
     xfree(dmar_table);
-
-    /* acpi_parse_dmar() zaps APCI DMAR signature in TXT heap table */
-    /* but dom0 will read real table, so must zap it there too */
-    acpi_dmar_zap();
 
     return rc;
 }
@@ -533,7 +532,7 @@ void tboot_s3_error(int error)
 
     printk("MAC for %s before S3 is: 0x%08"PRIx64"\n", what, orig_mac);
     printk("MAC for %s after S3 is: 0x%08"PRIx64"\n", what, resume_mac);
-    panic("Memory integrity was lost on resume (%d)", error);
+    panic("Memory integrity was lost on resume (%d)\n", error);
 }
 
 int tboot_wake_ap(int apicid, unsigned long sipi_vec)

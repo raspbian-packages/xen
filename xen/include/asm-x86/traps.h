@@ -19,13 +19,6 @@
 #ifndef ASM_TRAP_H
 #define ASM_TRAP_H
 
-void async_exception_cleanup(struct vcpu *);
-
-uint32_t guest_io_read(unsigned int port, unsigned int bytes,
-                       struct domain *);
-void guest_io_write(unsigned int port, unsigned int bytes, uint32_t data,
-                    struct domain *);
-
 const char *trapstr(unsigned int trapnr);
 
 #endif /* ASM_TRAP_H */

@@ -19,6 +19,8 @@
 #include <stdlib.h>
 #include <xen/hvm/e820.h>
 #include <xen/hvm/params.h>
+#include <xen/io/sndif.h>
+#include <xen/io/kbdif.h>
 
 #include <libxl.h>
 #include <libxl_utils.h>
@@ -354,7 +356,7 @@ static void parse_vcpu_affinity(libxl_domain_build_info *b_info,
             j++;
         }
 
-        /* We have a list of cpumaps, disable automatic placement */
+        /* When we have a list of cpumaps, always disable automatic placement */
         libxl_defbool_set(&b_info->numa_placement, false);
     } else {
         int i;
@@ -378,7 +380,9 @@ static void parse_vcpu_affinity(libxl_domain_build_info *b_info,
                               &vcpu_affinity_array[0]);
         }
 
-        libxl_defbool_set(&b_info->numa_placement, false);
+        /* We have soft affinity already, disable automatic placement */
+        if (!is_hard)
+            libxl_defbool_set(&b_info->numa_placement, false);
     }
 }
 
@@ -819,15 +823,15 @@ int parse_vdispl_config(libxl_device_vdispl *vdispl, char *token)
         split_string_into_string_list(oparg, ";", &connectors);
 
         vdispl->num_connectors = libxl_string_list_length(&connectors);
-        vdispl->connectors = calloc(vdispl->num_connectors,
-                                    sizeof(*vdispl->connectors));
+        vdispl->connectors = xcalloc(vdispl->num_connectors,
+                                     sizeof(*vdispl->connectors));
 
         for(i = 0; i < vdispl->num_connectors; i++)
         {
             char *resolution;
 
             rc = split_string_into_pair(connectors[i], ":",
-                                        &vdispl->connectors[i].id,
+                                        &vdispl->connectors[i].unique_id,
                                         &resolution);
 
             rc= sscanf(resolution, "%ux%u", &vdispl->connectors[i].width,
@@ -851,11 +855,359 @@ out:
     return rc;
 }
 
+static int parse_vsnd_params(libxl_vsnd_params *params, char *token)
+{
+    char *oparg;
+    int i;
+
+    if (MATCH_OPTION(XENSND_FIELD_SAMPLE_RATES, token, oparg)) {
+        libxl_string_list rates = NULL;
+
+        split_string_into_string_list(oparg, ";", &rates);
+
+        params->num_sample_rates = libxl_string_list_length(&rates);
+        params->sample_rates = xcalloc(params->num_sample_rates,
+                                       sizeof(*params->sample_rates));
+
+        for (i = 0; i < params->num_sample_rates; i++) {
+            params->sample_rates[i] = strtoul(rates[i], NULL, 0);
+        }
+
+        libxl_string_list_dispose(&rates);
+    } else if (MATCH_OPTION(XENSND_FIELD_SAMPLE_FORMATS, token, oparg)) {
+        libxl_string_list formats = NULL;
+
+        split_string_into_string_list(oparg, ";", &formats);
+
+        params->num_sample_formats = libxl_string_list_length(&formats);
+        params->sample_formats = xcalloc(params->num_sample_formats,
+                                         sizeof(*params->sample_formats));
+
+        for (i = 0; i < params->num_sample_formats; i++) {
+            libxl_vsnd_pcm_format format;
+
+            if (libxl_vsnd_pcm_format_from_string(formats[i], &format)) {
+                fprintf(stderr, "Invalid pcm format: %s\n", formats[i]);
+                exit(EXIT_FAILURE);
+            }
+
+            params->sample_formats[i] = format;
+        }
+
+        libxl_string_list_dispose(&formats);
+    } else if (MATCH_OPTION(XENSND_FIELD_CHANNELS_MIN, token, oparg)) {
+        params->channels_min = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION(XENSND_FIELD_CHANNELS_MAX, token, oparg)) {
+        params->channels_max = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION(XENSND_FIELD_BUFFER_SIZE, token, oparg)) {
+        params->buffer_size = strtoul(oparg, NULL, 0);
+    } else {
+        return 1;
+    }
+
+    return 0;
+}
+
+static int parse_vsnd_pcm_stream(libxl_device_vsnd *vsnd, char *param)
+{
+    if (vsnd->num_vsnd_pcms == 0) {
+        fprintf(stderr, "No vsnd pcm device\n");
+        return -1;
+    }
+
+    libxl_vsnd_pcm *pcm = &vsnd->pcms[vsnd->num_vsnd_pcms - 1];
+
+    if (pcm->num_vsnd_streams == 0) {
+        fprintf(stderr, "No vsnd stream\n");
+        return -1;
+    }
+
+    libxl_vsnd_stream *stream = &pcm->streams[pcm->num_vsnd_streams - 1];
+
+    if (parse_vsnd_params(&stream->params, param)) {
+        char *oparg;
+
+        if (MATCH_OPTION(XENSND_FIELD_STREAM_UNIQUE_ID, param, oparg)) {
+            stream->unique_id = strdup(oparg);
+        } else if (MATCH_OPTION(XENSND_FIELD_TYPE, param, oparg)) {
+            if (libxl_vsnd_stream_type_from_string(oparg, &stream->type)) {
+                fprintf(stderr, "Invalid stream type: %s\n", oparg);
+                return -1;
+            }
+        } else {
+            fprintf(stderr, "Invalid parameter: %s\n", param);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int parse_vsnd_pcm_param(libxl_device_vsnd *vsnd, char *param)
+{
+    if (vsnd->num_vsnd_pcms == 0) {
+        fprintf(stderr, "No pcm device\n");
+        return -1;
+    }
+
+    libxl_vsnd_pcm *pcm = &vsnd->pcms[vsnd->num_vsnd_pcms - 1];
+
+    if (parse_vsnd_params(&pcm->params, param)) {
+        char *oparg;
+
+        if (MATCH_OPTION(XENSND_FIELD_DEVICE_NAME, param, oparg)) {
+            pcm->name = strdup(oparg);
+        } else {
+            fprintf(stderr, "Invalid parameter: %s\n", param);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int parse_vsnd_card_param(libxl_device_vsnd *vsnd, char *param)
+{
+    if (parse_vsnd_params(&vsnd->params, param)) {
+        char *oparg;
+
+        if (MATCH_OPTION("backend", param, oparg)) {
+            vsnd->backend_domname = strdup(oparg);
+        } else if (MATCH_OPTION(XENSND_FIELD_VCARD_SHORT_NAME, param, oparg)) {
+            vsnd->short_name = strdup(oparg);
+        } else if (MATCH_OPTION(XENSND_FIELD_VCARD_LONG_NAME, param, oparg)) {
+            vsnd->long_name = strdup(oparg);
+        } else {
+            fprintf(stderr, "Invalid parameter: %s\n", param);
+            return -1;
+        }
+    }
+
+    return 0;
+}
+
+static int parse_vsnd_create_item(libxl_device_vsnd *vsnd, const char *key)
+{
+    if (strcasecmp(key, "card") == 0) {
+
+    } else if (strcasecmp(key, "pcm") == 0) {
+        ARRAY_EXTEND_INIT_NODEVID(vsnd->pcms, vsnd->num_vsnd_pcms,
+                                  libxl_vsnd_pcm_init);
+    } else if (strcasecmp(key, "stream") == 0) {
+        if (vsnd->num_vsnd_pcms == 0) {
+            ARRAY_EXTEND_INIT_NODEVID(vsnd->pcms, vsnd->num_vsnd_pcms,
+                                      libxl_vsnd_pcm_init);
+        }
+
+        libxl_vsnd_pcm *pcm =  &vsnd->pcms[vsnd->num_vsnd_pcms - 1];
+
+        ARRAY_EXTEND_INIT_NODEVID(pcm->streams, pcm->num_vsnd_streams,
+                                  libxl_vsnd_stream_init);
+    } else {
+        fprintf(stderr, "Invalid key: %s\n", key);
+        return -1;
+    }
+
+    return 0;
+}
+
+int parse_vsnd_item(libxl_device_vsnd *vsnd, const char *spec)
+{
+    char *buf = strdup(spec);
+    char *token = strtok(buf, ",");
+    char *key = NULL;
+    int ret;
+
+    while (token) {
+        while (*token == ' ') token++;
+
+        if (!key) {
+            key = token;
+            ret = parse_vsnd_create_item(vsnd, key);
+            if (ret) goto out;
+        } else {
+            if (strcasecmp(key, "card") == 0) {
+                ret = parse_vsnd_card_param(vsnd, token);
+                if (ret) goto out;
+            } else if (strcasecmp(key, "pcm") == 0) {
+                ret = parse_vsnd_pcm_param(vsnd, token);
+                if (ret) goto out;
+            } else if (strcasecmp(key, "stream") == 0) {
+                ret = parse_vsnd_pcm_stream(vsnd, token);
+                if (ret) goto out;
+            }
+        }
+        token = strtok (NULL, ",");
+    }
+
+    ret = 0;
+
+out:
+    free(buf);
+    return ret;
+}
+
+static void parse_vsnd_card_config(const XLU_Config *config,
+                                   XLU_ConfigValue *card_value,
+                                   libxl_domain_config *d_config)
+{
+    int ret;
+    XLU_ConfigList *card_list;
+    libxl_device_vsnd *vsnd;
+    const char *card_item;
+    int item = 0;
+
+    ret = xlu_cfg_value_get_list(config, card_value,  &card_list, 0);
+
+    if (ret) {
+        fprintf(stderr, "Failed to get vsnd card list: %s\n", strerror(ret));
+        goto out;
+    }
+
+    vsnd = ARRAY_EXTEND_INIT(d_config->vsnds,
+                             d_config->num_vsnds,
+                             libxl_device_vsnd_init);
+
+    while ((card_item = xlu_cfg_get_listitem(card_list, item++)) != NULL) {
+        ret = parse_vsnd_item(vsnd, card_item);
+        if (ret) goto out;
+    }
+
+    ret = 0;
+
+out:
+
+    if (ret) exit(EXIT_FAILURE);
+}
+
+static void parse_vsnd_config(const XLU_Config *config,
+                              libxl_domain_config *d_config)
+{
+    XLU_ConfigList *vsnds;
+
+    if (!xlu_cfg_get_list(config, "vsnd", &vsnds, 0, 0)) {
+        XLU_ConfigValue *card_value;
+
+        d_config->num_vsnds = 0;
+        d_config->vsnds = NULL;
+
+        while ((card_value = xlu_cfg_get_listitem2(vsnds, d_config->num_vsnds))
+               != NULL) {
+            parse_vsnd_card_config(config, card_value, d_config);
+        }
+    }
+}
+
+int parse_vkb_config(libxl_device_vkb *vkb, char *token)
+{
+    char *oparg;
+
+    if (MATCH_OPTION("backend", token, oparg)) {
+        vkb->backend_domname = strdup(oparg);
+    } else if (MATCH_OPTION("backend-type", token, oparg)) {
+        libxl_vkb_backend backend_type;
+        if (libxl_vkb_backend_from_string(oparg, &backend_type)) {
+            fprintf(stderr, "Unknown backend_type \"%s\" in vkb spec\n",
+                            oparg);
+            return -1;
+        }
+        vkb->backend_type = backend_type;
+    } else if (MATCH_OPTION(XENKBD_FIELD_UNIQUE_ID, token, oparg)) {
+        vkb->unique_id = strdup(oparg);
+    } else if (MATCH_OPTION(XENKBD_FIELD_FEAT_DSBL_KEYBRD, token, oparg)) {
+        vkb->feature_disable_keyboard = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION(XENKBD_FIELD_FEAT_DSBL_POINTER, token, oparg)) {
+        vkb->feature_disable_pointer = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION(XENKBD_FIELD_FEAT_ABS_POINTER, token, oparg)) {
+        vkb->feature_abs_pointer = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION(XENKBD_FIELD_FEAT_RAW_POINTER, token, oparg)) {
+        vkb->feature_raw_pointer = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION(XENKBD_FIELD_FEAT_MTOUCH, token, oparg)) {
+        vkb->feature_multi_touch = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION(XENKBD_FIELD_MT_WIDTH, token, oparg)) {
+        vkb->multi_touch_width = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION(XENKBD_FIELD_MT_HEIGHT, token, oparg)) {
+        vkb->multi_touch_height = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION(XENKBD_FIELD_MT_NUM_CONTACTS, token, oparg)) {
+        vkb->multi_touch_num_contacts = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION(XENKBD_FIELD_WIDTH, token, oparg)) {
+        vkb->width = strtoul(oparg, NULL, 0);
+    } else if (MATCH_OPTION(XENKBD_FIELD_HEIGHT, token, oparg)) {
+        vkb->height = strtoul(oparg, NULL, 0);
+    } else {
+        fprintf(stderr, "Unknown string \"%s\" in vkb spec\n", token);
+        return -1;
+    }
+
+    return 0;
+}
+
+static void parse_vkb_list(const XLU_Config *config,
+                           libxl_domain_config *d_config)
+{
+    XLU_ConfigList *vkbs;
+    const char *item;
+    char *buf = NULL;
+    int rc;
+
+    if (!xlu_cfg_get_list (config, "vkb", &vkbs, 0, 0)) {
+        int entry = 0;
+        while ((item = xlu_cfg_get_listitem(vkbs, entry)) != NULL) {
+            libxl_device_vkb *vkb;
+            char *p;
+
+            vkb = ARRAY_EXTEND_INIT(d_config->vkbs,
+                                    d_config->num_vkbs,
+                                    libxl_device_vkb_init);
+
+            buf = strdup(item);
+
+            p = strtok (buf, ",");
+            while (p != NULL)
+            {
+                while (*p == ' ') p++;
+
+                rc = parse_vkb_config(vkb, p);
+                if (rc) goto out;
+
+                p = strtok (NULL, ",");
+            }
+
+            if (vkb->backend_type == LIBXL_VKB_BACKEND_UNKNOWN) {
+                fprintf(stderr, "backend-type should be set in vkb spec\n");
+                rc = ERROR_FAIL; goto out;
+            }
+
+            if (vkb->multi_touch_height || vkb->multi_touch_width ||
+                vkb->multi_touch_num_contacts) {
+                vkb->feature_multi_touch = true;
+            }
+
+            if (vkb->feature_multi_touch && !(vkb->multi_touch_height ||
+                vkb->multi_touch_width || vkb->multi_touch_num_contacts)) {
+                fprintf(stderr, XENKBD_FIELD_MT_WIDTH", "XENKBD_FIELD_MT_HEIGHT", "
+                                XENKBD_FIELD_MT_NUM_CONTACTS" should be set for "
+                                "multi touch in vkb spec\n");
+                rc = ERROR_FAIL; goto out;
+            }
+
+            entry++;
+        }
+    }
+
+    rc = 0;
+
+out:
+    free(buf);
+    if (rc) exit(EXIT_FAILURE);
+}
+
 void parse_config_data(const char *config_source,
                        const char *config_data,
                        int config_len,
                        libxl_domain_config *d_config)
 {
+    libxl_physinfo physinfo;
     const char *buf;
     long l, vcpus = 0;
     XLU_Config *config;
@@ -873,6 +1225,15 @@ void parse_config_data(const char *config_source,
 
     libxl_domain_create_info *c_info = &d_config->c_info;
     libxl_domain_build_info *b_info = &d_config->b_info;
+
+    libxl_physinfo_init(&physinfo);
+    if (libxl_get_physinfo(ctx, &physinfo) != 0) {
+        libxl_physinfo_dispose(&physinfo);
+        fprintf(stderr, "libxl_get_physinfo failed\n");
+        exit(EXIT_FAILURE);
+    }
+
+    libxl_physinfo_dispose(&physinfo);
 
     config= xlu_cfg_init(stderr, config_source);
     if (!config) {
@@ -937,7 +1298,11 @@ void parse_config_data(const char *config_source,
     }
 
     if (c_info->type == LIBXL_DOMAIN_TYPE_INVALID)
+#if defined(__arm__) || defined(__aarch64__)
+        c_info->type = LIBXL_DOMAIN_TYPE_PVH;
+#else
         c_info->type = LIBXL_DOMAIN_TYPE_PV;
+#endif
 
     xlu_cfg_get_defbool(config, "hap", &c_info->hap, 0);
 
@@ -1046,14 +1411,23 @@ void parse_config_data(const char *config_source,
         !xlu_cfg_get_string (config, "cpus_soft", &buf, 0))
         parse_vcpu_affinity(b_info, cpus, buf, num_cpus, false);
 
-    if (!xlu_cfg_get_long (config, "max_grant_frames", &l, 0))
+    e = xlu_cfg_get_bounded_long (config, "max_grant_frames", 0, INT_MAX,
+                                  &l, 1);
+    if (e == ESRCH) /* not specified */
+        b_info->max_grant_frames = max_grant_frames;
+    else if (!e)
         b_info->max_grant_frames = l;
     else
-        b_info->max_grant_frames = max_grant_frames;
-    if (!xlu_cfg_get_long (config, "max_maptrack_frames", &l, 0))
-        b_info->max_maptrack_frames = l;
-    else if (max_maptrack_frames != -1)
+        exit(1);
+
+    e = xlu_cfg_get_bounded_long (config, "max_maptrack_frames", 0,
+                                  INT_MAX, &l, 1);
+    if (e == ESRCH) /* not specified */
         b_info->max_maptrack_frames = max_maptrack_frames;
+    else if (!e)
+        b_info->max_maptrack_frames = l;
+    else
+        exit(1);
 
     libxl_defbool_set(&b_info->claim_mode, claim_mode);
 
@@ -1093,13 +1467,65 @@ void parse_config_data(const char *config_source,
         exit(1);
     }
 
-    /* libxl_get_required_shadow_memory() must be called after final values
-     * (default or specified) for vcpus and memory are set, because the
-     * calculation depends on those values. */
-    b_info->shadow_memkb = !xlu_cfg_get_long(config, "shadow_memory", &l, 0)
-        ? l * 1024
-        : libxl_get_required_shadow_memory(b_info->max_memkb,
-                                           b_info->max_vcpus);
+    if (!xlu_cfg_get_list (config, "pci", &pcis, 0, 0)) {
+        d_config->num_pcidevs = 0;
+        d_config->pcidevs = NULL;
+        for(i = 0; (buf = xlu_cfg_get_listitem (pcis, i)) != NULL; i++) {
+            libxl_device_pci *pcidev;
+
+            pcidev = ARRAY_EXTEND_INIT_NODEVID(d_config->pcidevs,
+                                               d_config->num_pcidevs,
+                                               libxl_device_pci_init);
+            pcidev->msitranslate = pci_msitranslate;
+            pcidev->power_mgmt = pci_power_mgmt;
+            pcidev->permissive = pci_permissive;
+            pcidev->seize = pci_seize;
+            /*
+             * Like other pci option, the per-device policy always follows
+             * the global policy by default.
+             */
+            pcidev->rdm_policy = b_info->u.hvm.rdm.policy;
+            e = xlu_pci_parse_bdf(config, pcidev, buf);
+            if (e) {
+                fprintf(stderr,
+                        "unable to parse PCI BDF `%s' for passthrough\n",
+                        buf);
+                exit(-e);
+            }
+        }
+        if (d_config->num_pcidevs && c_info->type == LIBXL_DOMAIN_TYPE_PV)
+            libxl_defbool_set(&b_info->u.pv.e820_host, true);
+    }
+
+    if (!xlu_cfg_get_list (config, "dtdev", &dtdevs, 0, 0)) {
+        d_config->num_dtdevs = 0;
+        d_config->dtdevs = NULL;
+        for (i = 0; (buf = xlu_cfg_get_listitem(dtdevs, i)) != NULL; i++) {
+            libxl_device_dtdev *dtdev;
+
+            dtdev = ARRAY_EXTEND_INIT_NODEVID(d_config->dtdevs,
+                                              d_config->num_dtdevs,
+                                              libxl_device_dtdev_init);
+
+            dtdev->path = strdup(buf);
+            if (dtdev->path == NULL) {
+                fprintf(stderr, "unable to duplicate string for dtdevs\n");
+                exit(-1);
+            }
+        }
+    }
+
+    if (!xlu_cfg_get_string(config, "passthrough", &buf, 0)) {
+        if (libxl_passthrough_from_string(buf, &c_info->passthrough)) {
+            fprintf(stderr,
+                    "ERROR: unknown passthrough option '%s'\n",
+                    buf);
+            exit(1);
+        }
+    }
+
+    if (!xlu_cfg_get_long(config, "shadow_memory", &l, 0))
+        b_info->shadow_memkb = l * 1024;
 
     xlu_cfg_get_defbool(config, "nomigrate", &b_info->disable_migrate, 0);
 
@@ -1726,6 +2152,8 @@ void parse_config_data(const char *config_source,
         }
     }
 
+    parse_vsnd_config(config, d_config);
+
     if (!xlu_cfg_get_list (config, "channel", &channels, 0, 0)) {
         d_config->num_channels = 0;
         d_config->channels = NULL;
@@ -1921,54 +2349,6 @@ skip_vfb:
         }
     }
 
-    if (!xlu_cfg_get_list (config, "pci", &pcis, 0, 0)) {
-        d_config->num_pcidevs = 0;
-        d_config->pcidevs = NULL;
-        for(i = 0; (buf = xlu_cfg_get_listitem (pcis, i)) != NULL; i++) {
-            libxl_device_pci *pcidev;
-
-            pcidev = ARRAY_EXTEND_INIT_NODEVID(d_config->pcidevs,
-                                               d_config->num_pcidevs,
-                                               libxl_device_pci_init);
-            pcidev->msitranslate = pci_msitranslate;
-            pcidev->power_mgmt = pci_power_mgmt;
-            pcidev->permissive = pci_permissive;
-            pcidev->seize = pci_seize;
-            /*
-             * Like other pci option, the per-device policy always follows
-             * the global policy by default.
-             */
-            pcidev->rdm_policy = b_info->u.hvm.rdm.policy;
-            e = xlu_pci_parse_bdf(config, pcidev, buf);
-            if (e) {
-                fprintf(stderr,
-                        "unable to parse PCI BDF `%s' for passthrough\n",
-                        buf);
-                exit(-e);
-            }
-        }
-        if (d_config->num_pcidevs && c_info->type == LIBXL_DOMAIN_TYPE_PV)
-            libxl_defbool_set(&b_info->u.pv.e820_host, true);
-    }
-
-    if (!xlu_cfg_get_list (config, "dtdev", &dtdevs, 0, 0)) {
-        d_config->num_dtdevs = 0;
-        d_config->dtdevs = NULL;
-        for (i = 0; (buf = xlu_cfg_get_listitem(dtdevs, i)) != NULL; i++) {
-            libxl_device_dtdev *dtdev;
-
-            dtdev = ARRAY_EXTEND_INIT_NODEVID(d_config->dtdevs,
-                                              d_config->num_dtdevs,
-                                              libxl_device_dtdev_init);
-
-            dtdev->path = strdup(buf);
-            if (dtdev->path == NULL) {
-                fprintf(stderr, "unable to duplicate string for dtdevs\n");
-                exit(-1);
-            }
-        }
-    }
-
     if (!xlu_cfg_get_list(config, "usbctrl", &usbctrls, 0, 0)) {
         d_config->num_usbctrls = 0;
         d_config->usbctrls = NULL;
@@ -2145,6 +2525,13 @@ skip_usbdev:
     xlu_cfg_replace_string(config, "device_model_user",
                            &b_info->device_model_user, 0);
 
+    xlu_cfg_replace_string (config, "stubdomain_kernel",
+                            &b_info->stubdomain_kernel, 0);
+    xlu_cfg_replace_string (config, "stubdomain_ramdisk",
+                            &b_info->stubdomain_ramdisk, 0);
+    if (!xlu_cfg_get_long (config, "stubdomain_memory", &l, 0))
+        b_info->stubdomain_memkb = l * 1024;
+
 #define parse_extra_args(type)                                            \
     e = xlu_cfg_get_list_as_string_list(config, "device_model_args"#type, \
                                     &b_info->extra##type, 0);            \
@@ -2295,6 +2682,7 @@ skip_usbdev:
             fprintf(stderr,"xl: Unable to parse usbdevice.\n");
             exit(-ERROR_FAIL);
         }
+        xlu_cfg_get_defbool(config, "vkb_device", &b_info->u.hvm.vkb_device, 0);
         xlu_cfg_replace_string (config, "soundhw", &b_info->u.hvm.soundhw, 0);
         xlu_cfg_get_defbool(config, "xen_platform_pci",
                             &b_info->u.hvm.xen_platform_pci, 0);
@@ -2331,7 +2719,21 @@ skip_usbdev:
                     "Unknown gic_version \"%s\" specified\n", buf);
             exit(-ERROR_FAIL);
         }
-     }
+    }
+
+    if (!xlu_cfg_get_string (config, "tee", &buf, 1)) {
+        e = libxl_tee_type_from_string(buf, &b_info->tee);
+        if (e) {
+            fprintf(stderr,
+                    "Unknown tee \"%s\" specified\n", buf);
+            exit(-ERROR_FAIL);
+        }
+    }
+
+    parse_vkb_list(config, d_config);
+
+    xlu_cfg_get_defbool(config, "xend_suspend_evtchn_compat",
+                        &c_info->xend_suspend_evtchn_compat, 0);
 
     xlu_cfg_destroy(config);
 }

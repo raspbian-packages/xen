@@ -23,9 +23,12 @@
  */
 
 #include <xen/vm_event.h>
+#include <xen/mem_access.h>
 #include <xen/monitor.h>
 #include <asm/hvm/monitor.h>
+#include <asm/altp2m.h>
 #include <asm/monitor.h>
+#include <asm/p2m.h>
 #include <asm/paging.h>
 #include <asm/vm_event.h>
 #include <public/vm_event.h>
@@ -35,9 +38,6 @@ bool hvm_monitor_cr(unsigned int index, unsigned long value, unsigned long old)
     struct vcpu *curr = current;
     struct arch_domain *ad = &curr->domain->arch;
     unsigned int ctrlreg_bitmask = monitor_ctrlreg_bitmask(index);
-
-    if ( index == VM_EVENT_X86_CR3 && hvm_pcid_enabled(curr) )
-        value &= ~X86_CR3_NOFLUSH; /* Clear the noflush bit. */
 
     if ( (ad->monitor.write_ctrlreg_enabled & ctrlreg_bitmask) &&
          (!(ad->monitor.write_ctrlreg_onchangeonly & ctrlreg_bitmask) ||
@@ -53,11 +53,11 @@ bool hvm_monitor_cr(unsigned int index, unsigned long value, unsigned long old)
             .u.write_ctrlreg.old_value = old
         };
 
-        if ( monitor_traps(curr, sync, &req) >= 0 )
-            return 1;
+        return monitor_traps(curr, sync, &req) >= 0 &&
+               curr->domain->arch.monitor.control_register_values;
     }
 
-    return 0;
+    return false;
 }
 
 bool hvm_monitor_emul_unimplemented(void)
@@ -77,7 +77,7 @@ bool hvm_monitor_emul_unimplemented(void)
         monitor_traps(curr, true, &req) == 1;
 }
 
-void hvm_monitor_msr(unsigned int msr, uint64_t new_value, uint64_t old_value)
+bool hvm_monitor_msr(unsigned int msr, uint64_t new_value, uint64_t old_value)
 {
     struct vcpu *curr = current;
 
@@ -92,8 +92,11 @@ void hvm_monitor_msr(unsigned int msr, uint64_t new_value, uint64_t old_value)
             .u.mov_to_msr.old_value = old_value
         };
 
-        monitor_traps(curr, 1, &req);
+        return monitor_traps(curr, 1, &req) >= 0 &&
+               curr->domain->arch.monitor.control_register_values;
     }
+
+    return false;
 }
 
 void hvm_monitor_descriptor_access(uint64_t exit_info,
@@ -110,10 +113,6 @@ void hvm_monitor_descriptor_access(uint64_t exit_info,
     {
         req.u.desc_access.arch.vmx.instr_info = exit_info;
         req.u.desc_access.arch.vmx.exit_qualification = vmx_exit_qualification;
-    }
-    else
-    {
-        req.u.desc_access.arch.svm.exitinfo = exit_info;
     }
 
     monitor_traps(current, true, &req);
@@ -134,7 +133,8 @@ static inline unsigned long gfn_of_rip(unsigned long rip)
 }
 
 int hvm_monitor_debug(unsigned long rip, enum hvm_monitor_debug_type type,
-                      unsigned long trap_type, unsigned long insn_length)
+                      unsigned int trap_type, unsigned int insn_length,
+                      unsigned int pending_dbg)
 {
    /*
     * rc < 0 error in monitor/vm_event, crash
@@ -161,6 +161,14 @@ int hvm_monitor_debug(unsigned long rip, enum hvm_monitor_debug_type type,
     case HVM_MONITOR_SINGLESTEP_BREAKPOINT:
         if ( !ad->monitor.singlestep_enabled )
             return 0;
+        if ( curr->arch.hvm.fast_single_step.enabled )
+        {
+            p2m_altp2m_check(curr, curr->arch.hvm.fast_single_step.p2midx);
+            curr->arch.hvm.single_step = false;
+            curr->arch.hvm.fast_single_step.enabled = false;
+            curr->arch.hvm.fast_single_step.p2midx = 0;
+            return 0;
+        }
         req.reason = VM_EVENT_REASON_SINGLESTEP;
         req.u.singlestep.gfn = gfn_of_rip(rip);
         sync = true;
@@ -171,6 +179,7 @@ int hvm_monitor_debug(unsigned long rip, enum hvm_monitor_debug_type type,
             return 0;
         req.reason = VM_EVENT_REASON_DEBUG_EXCEPTION;
         req.u.debug_exception.gfn = gfn_of_rip(rip);
+        req.u.debug_exception.pending_dbg = pending_dbg;
         req.u.debug_exception.type = trap_type;
         req.u.debug_exception.insn_length = insn_length;
         sync = !!ad->monitor.debug_exception_sync;
@@ -213,6 +222,82 @@ void hvm_monitor_interrupt(unsigned int vector, unsigned int type,
     };
 
     monitor_traps(current, 1, &req);
+}
+
+/*
+ * Send memory access vm_events based on pfec. Returns true if the event was
+ * sent and false for p2m_get_mem_access() error, no violation and event send
+ * error. Assumes the caller will enable/disable arch.vm_event->send_event.
+ */
+bool hvm_monitor_check_p2m(unsigned long gla, gfn_t gfn, uint32_t pfec,
+                           uint16_t kind)
+{
+    xenmem_access_t access;
+    struct vcpu *curr = current;
+    vm_event_request_t req = {};
+    paddr_t gpa = (gfn_to_gaddr(gfn) | (gla & ~PAGE_MASK));
+    int rc;
+
+    ASSERT(curr->arch.vm_event->send_event);
+
+    /*
+     * p2m_get_mem_access() can fail from a invalid MFN and return -ESRCH
+     * in which case access must be restricted.
+     */
+    rc = p2m_get_mem_access(curr->domain, gfn, &access, altp2m_vcpu_idx(curr));
+
+    if ( rc == -ESRCH )
+        access = XENMEM_access_n;
+    else if ( rc )
+        return false;
+
+    switch ( access )
+    {
+    case XENMEM_access_x:
+    case XENMEM_access_rx:
+        if ( pfec & PFEC_write_access )
+            req.u.mem_access.flags = MEM_ACCESS_R | MEM_ACCESS_W;
+        break;
+
+    case XENMEM_access_w:
+    case XENMEM_access_rw:
+        if ( pfec & PFEC_insn_fetch )
+            req.u.mem_access.flags = MEM_ACCESS_X;
+        break;
+
+    case XENMEM_access_r:
+    case XENMEM_access_n:
+        if ( pfec & PFEC_write_access )
+            req.u.mem_access.flags |= MEM_ACCESS_R | MEM_ACCESS_W;
+        if ( pfec & PFEC_insn_fetch )
+            req.u.mem_access.flags |= MEM_ACCESS_X;
+        break;
+
+    case XENMEM_access_wx:
+    case XENMEM_access_rwx:
+    case XENMEM_access_rx2rw:
+    case XENMEM_access_n2rwx:
+    case XENMEM_access_default:
+        break;
+    }
+
+    if ( !req.u.mem_access.flags )
+        return false; /* no violation */
+
+    if ( kind == npfec_kind_with_gla )
+        req.u.mem_access.flags |= MEM_ACCESS_FAULT_WITH_GLA |
+                                  MEM_ACCESS_GLA_VALID;
+    else if ( kind == npfec_kind_in_gpt )
+        req.u.mem_access.flags |= MEM_ACCESS_FAULT_IN_GPT |
+                                  MEM_ACCESS_GLA_VALID;
+
+
+    req.reason = VM_EVENT_REASON_MEM_ACCESS;
+    req.u.mem_access.gfn = gfn_x(gfn);
+    req.u.mem_access.gla = gla;
+    req.u.mem_access.offset = gpa & ~PAGE_MASK;
+
+    return monitor_traps(curr, true, &req) >= 0;
 }
 
 /*

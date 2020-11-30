@@ -45,10 +45,11 @@ static int pcidev_struct_fill(libxl_device_pci *pcidev, unsigned int domain,
 #define STATE_TYPE      9
 #define STATE_RDM_STRATEGY      10
 #define STATE_RESERVE_POLICY    11
+#define INVALID         0xffffffff
 int xlu_pci_parse_bdf(XLU_Config *cfg, libxl_device_pci *pcidev, const char *str)
 {
     unsigned state = STATE_DOMAIN;
-    unsigned dom, bus, dev, func, vslot = 0;
+    unsigned dom = INVALID, bus = INVALID, dev = INVALID, func = INVALID, vslot = 0;
     char *buf2, *tok, *ptr, *end, *optkey = NULL;
 
     if ( NULL == (buf2 = ptr = strdup(str)) )
@@ -170,6 +171,8 @@ int xlu_pci_parse_bdf(XLU_Config *cfg, libxl_device_pci *pcidev, const char *str
     if ( tok != ptr || state != STATE_TERMINAL )
         goto parse_error;
 
+    assert(dom != INVALID && bus != INVALID && dev != INVALID && func != INVALID);
+
     /* Just a pretty way to fill in the values */
     pcidev_struct_fill(pcidev, dom, bus, dev, func, vslot << 3);
 
@@ -194,9 +197,12 @@ int xlu_rdm_parse(XLU_Config *cfg, libxl_rdm_reserve *rdm, const char *str)
         switch(state) {
         case STATE_TYPE:
             if (*ptr == '=') {
-                state = STATE_RDM_STRATEGY;
                 *ptr = '\0';
-                if (strcmp(tok, "strategy")) {
+                if (!strcmp(tok, "strategy")) {
+                    state = STATE_RDM_STRATEGY;
+                } else if (!strcmp(tok, "policy")) {
+                    state = STATE_RESERVE_POLICY;
+                } else {
                     XLU__PCI_ERR(cfg, "Unknown RDM state option: %s", tok);
                     goto parse_error;
                 }
@@ -205,7 +211,7 @@ int xlu_rdm_parse(XLU_Config *cfg, libxl_rdm_reserve *rdm, const char *str)
             break;
         case STATE_RDM_STRATEGY:
             if (*ptr == '\0' || *ptr == ',') {
-                state = STATE_RESERVE_POLICY;
+                state = *ptr == ',' ? STATE_TYPE : STATE_TERMINAL;
                 *ptr = '\0';
                 if (!strcmp(tok, "host")) {
                     rdm->strategy = LIBXL_RDM_RESERVE_STRATEGY_HOST;
@@ -217,19 +223,8 @@ int xlu_rdm_parse(XLU_Config *cfg, libxl_rdm_reserve *rdm, const char *str)
             }
             break;
         case STATE_RESERVE_POLICY:
-            if (*ptr == '=') {
-                state = STATE_OPTIONS_V;
-                *ptr = '\0';
-                if (strcmp(tok, "policy")) {
-                    XLU__PCI_ERR(cfg, "Unknown RDM property value: %s", tok);
-                    goto parse_error;
-                }
-                tok = ptr + 1;
-            }
-            break;
-        case STATE_OPTIONS_V:
             if (*ptr == ',' || *ptr == '\0') {
-                state = STATE_TERMINAL;
+                state = *ptr == ',' ? STATE_TYPE : STATE_TERMINAL;
                 *ptr = '\0';
                 if (!strcmp(tok, "strict")) {
                     rdm->policy = LIBXL_RDM_RESERVE_POLICY_STRICT;

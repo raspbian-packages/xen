@@ -35,7 +35,7 @@ void svm_vmcb_dump(const char *from, const struct vmcb_struct *vmcb)
      * If we are dumping the VMCB currently in context, some guest state may
      * still be cached in hardware.  Retrieve it.
      */
-    if ( vmcb == curr->arch.hvm_svm.vmcb )
+    if ( vmcb == curr->arch.hvm.svm.vmcb )
         svm_sync_vmcb(curr, vmcb_in_sync);
 
     printk("Dumping guest's current state at %s...\n", from);
@@ -51,19 +51,19 @@ void svm_vmcb_dump(const char *from, const struct vmcb_struct *vmcb)
     printk("iopm_base_pa = %#"PRIx64" msrpm_base_pa = %#"PRIx64" tsc_offset = %#"PRIx64"\n",
            vmcb_get_iopm_base_pa(vmcb), vmcb_get_msrpm_base_pa(vmcb),
            vmcb_get_tsc_offset(vmcb));
-    printk("tlb_control = %#x vintr = %#"PRIx64" interrupt_shadow = %#"PRIx64"\n",
+    printk("tlb_control = %#x vintr = %#"PRIx64" int_stat = %#"PRIx64"\n",
            vmcb->tlb_control, vmcb_get_vintr(vmcb).bytes,
-           vmcb->interrupt_shadow);
-    printk("eventinj %016"PRIx64", valid? %d, ec? %d, type %u, vector %#x\n",
-           vmcb->eventinj.bytes, vmcb->eventinj.fields.v,
-           vmcb->eventinj.fields.ev, vmcb->eventinj.fields.type,
-           vmcb->eventinj.fields.vector);
-    printk("exitcode = %#"PRIx64" exitintinfo = %#"PRIx64"\n",
-           vmcb->exitcode, vmcb->exitintinfo.bytes);
+           vmcb->int_stat.raw);
+    printk("event_inj %016"PRIx64", valid? %d, ec? %d, type %u, vector %#x\n",
+           vmcb->event_inj.raw, vmcb->event_inj.v,
+           vmcb->event_inj.ev, vmcb->event_inj.type,
+           vmcb->event_inj.vector);
+    printk("exitcode = %#"PRIx64" exit_int_info = %#"PRIx64"\n",
+           vmcb->exitcode, vmcb->exit_int_info.raw);
     printk("exitinfo1 = %#"PRIx64" exitinfo2 = %#"PRIx64"\n",
            vmcb->exitinfo1, vmcb->exitinfo2);
-    printk("np_enable = %#"PRIx64" guest_asid = %#x\n",
-           vmcb_get_np_enable(vmcb), vmcb_get_guest_asid(vmcb));
+    printk("np_ctrl = %#"PRIx64" guest_asid = %#x\n",
+           vmcb_get_np_ctrl(vmcb), vmcb_get_guest_asid(vmcb));
     printk("virtual vmload/vmsave = %d, virt_ext = %#"PRIx64"\n",
            vmcb->virt_ext.fields.vloadsave_enable, vmcb->virt_ext.bytes);
     printk("cpl = %d efer = %#"PRIx64" star = %#"PRIx64" lstar = %#"PRIx64"\n",
@@ -83,7 +83,7 @@ void svm_vmcb_dump(const char *from, const struct vmcb_struct *vmcb)
     printk("KernGSBase = 0x%016"PRIx64" PAT = 0x%016"PRIx64"\n",
            vmcb->kerngsbase, vmcb_get_g_pat(vmcb));
     printk("H_CR3 = 0x%016"PRIx64" CleanBits = %#x\n",
-           vmcb_get_h_cr3(vmcb), vmcb->cleanbits.bytes);
+           vmcb_get_h_cr3(vmcb), vmcb->cleanbits.raw);
 
     /* print out all the selectors */
     printk("       sel attr  limit   base\n");
@@ -164,9 +164,9 @@ bool svm_vmcb_isvalid(const char *from, const struct vmcb_struct *vmcb,
         PRINTF("GENERAL2_INTERCEPT: VMRUN intercept bit is clear (%#"PRIx32")\n",
                vmcb_get_general2_intercepts(vmcb));
 
-    if ( vmcb->eventinj.fields.resvd1 )
+    if ( vmcb->event_inj.resvd1 )
         PRINTF("eventinj: MBZ bits are set (%#"PRIx64")\n",
-               vmcb->eventinj.bytes);
+               vmcb->event_inj.raw);
 
 #undef PRINTF
     return ret;

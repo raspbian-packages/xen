@@ -8,7 +8,10 @@
 #include <xen/sched.h>
 #include <xen/dmi.h>
 
-static bool ioemul_handle_proliant_quirk(
+unsigned int (*__read_mostly ioemul_handle_quirk)(
+    uint8_t opcode, char *io_emul_stub, struct cpu_user_regs *regs);
+
+static unsigned int ioemul_handle_proliant_quirk(
     u8 opcode, char *io_emul_stub, struct cpu_user_regs *regs)
 {
     static const char stub[] = {
@@ -19,34 +22,26 @@ static bool ioemul_handle_proliant_quirk(
         0xa8, 0x80, /*    test $0x80, %al */
         0x75, 0xfb, /*    jnz 1b          */
         0x9d,       /*    popf            */
-        0xc3,       /*    ret             */
     };
     uint16_t port = regs->dx;
     uint8_t value = regs->al;
 
     if ( (opcode != 0xee) || (port != 0xcd4) || !(value & 0x80) )
-        return false;
+        return 0;
 
     memcpy(io_emul_stub, stub, sizeof(stub));
     BUILD_BUG_ON(IOEMUL_QUIRK_STUB_BYTES < sizeof(stub));
 
-    return true;
-}
-
-static int __init proliant_quirk(struct dmi_system_id *d)
-{
-    ioemul_handle_quirk = ioemul_handle_proliant_quirk;
-    return 0;
+    return sizeof(stub);
 }
 
 /* This table is the set of system-specific I/O emulation hooks. */
-static struct dmi_system_id __initdata ioport_quirks_tbl[] = {
+static const struct dmi_system_id __initconstrel ioport_quirks_tbl[] = {
     /*
      * I/O emulation hook for certain HP ProLiant servers with
      * 'special' SMM goodness.
      */
     {
-        .callback = proliant_quirk,
         .ident = "HP ProLiant DL3xx",
         .matches = {
             DMI_MATCH(DMI_BIOS_VENDOR, "HP"),
@@ -54,7 +49,6 @@ static struct dmi_system_id __initdata ioport_quirks_tbl[] = {
         },
     },
     {
-        .callback = proliant_quirk,
         .ident = "HP ProLiant DL5xx",
         .matches = {
             DMI_MATCH(DMI_BIOS_VENDOR, "HP"),
@@ -62,7 +56,6 @@ static struct dmi_system_id __initdata ioport_quirks_tbl[] = {
         },
     },
     {
-        .callback = proliant_quirk,
         .ident = "HP ProLiant DL7xx",
         .matches = {
             DMI_MATCH(DMI_BIOS_VENDOR, "HP"),
@@ -70,7 +63,6 @@ static struct dmi_system_id __initdata ioport_quirks_tbl[] = {
         },
     },
     {
-        .callback = proliant_quirk,
         .ident = "HP ProLiant ML3xx",
         .matches = {
             DMI_MATCH(DMI_BIOS_VENDOR, "HP"),
@@ -78,7 +70,6 @@ static struct dmi_system_id __initdata ioport_quirks_tbl[] = {
         },
     },
     {
-        .callback = proliant_quirk,
         .ident = "HP ProLiant ML5xx",
         .matches = {
             DMI_MATCH(DMI_BIOS_VENDOR, "HP"),
@@ -86,7 +77,6 @@ static struct dmi_system_id __initdata ioport_quirks_tbl[] = {
         },
     },
     {
-        .callback = proliant_quirk,
         .ident = "HP ProLiant BL2xx",
         .matches = {
             DMI_MATCH(DMI_BIOS_VENDOR, "HP"),
@@ -94,7 +84,6 @@ static struct dmi_system_id __initdata ioport_quirks_tbl[] = {
         },
     },
     {
-        .callback = proliant_quirk,
         .ident = "HP ProLiant BL4xx",
         .matches = {
             DMI_MATCH(DMI_BIOS_VENDOR, "HP"),
@@ -102,7 +91,6 @@ static struct dmi_system_id __initdata ioport_quirks_tbl[] = {
         },
     },
     {
-        .callback = proliant_quirk,
         .ident = "HP ProLiant BL6xx",
         .matches = {
             DMI_MATCH(DMI_BIOS_VENDOR, "HP"),
@@ -114,7 +102,9 @@ static struct dmi_system_id __initdata ioport_quirks_tbl[] = {
 
 static int __init ioport_quirks_init(void)
 {
-    dmi_check_system(ioport_quirks_tbl);
+    if ( dmi_check_system(ioport_quirks_tbl) )
+        ioemul_handle_quirk = ioemul_handle_proliant_quirk;
+
     return 0;
 }
 __initcall(ioport_quirks_init);

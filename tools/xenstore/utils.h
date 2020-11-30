@@ -24,7 +24,7 @@ static inline bool strends(const char *a, const char *b)
 void barf(const char *fmt, ...) __attribute__((noreturn));
 void barf_perror(const char *fmt, ...) __attribute__((noreturn));
 
-void (*xprintf)(const char *fmt, ...);
+extern void (*xprintf)(const char *fmt, ...);
 
 #define eprintf(_fmt, _args...) xprintf("[ERR] %s" _fmt, __FUNCTION__, ##_args)
 
@@ -52,9 +52,9 @@ static inline long IS_ERR(const void *ptr)
 
 /*
  * Local variables:
+ *  mode: C
  *  c-file-style: "linux"
  *  indent-tabs-mode: t
- *  c-indent-level: 8
  *  c-basic-offset: 8
  *  tab-width: 8
  * End:

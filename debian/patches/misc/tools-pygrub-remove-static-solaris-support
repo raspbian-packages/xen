@@ -8,18 +8,18 @@ Patch-Name: tools-pygrub-remove-static-solaris-support
  1 file changed, 1 insertion(+), 50 deletions(-)
 
 diff --git a/tools/pygrub/src/pygrub b/tools/pygrub/src/pygrub
-index dd0c8f7..0977879 100755
+index ce7ab0e..8d48cf4 100755
 --- a/tools/pygrub/src/pygrub
 +++ b/tools/pygrub/src/pygrub
-@@ -16,7 +16,6 @@ import os, sys, string, struct, tempfile, re, traceback, stat, errno
+@@ -18,7 +18,6 @@ import os, sys, string, struct, tempfile, re, traceback, stat, errno
  import copy
  import logging
  import platform
 -import xen.lowlevel.xc
  
- import curses, _curses, curses.wrapper, curses.textpad, curses.ascii
+ import curses, _curses, curses.textpad, curses.ascii
  import getopt
-@@ -666,51 +665,6 @@ def run_grub(file, entry, fs, cfg_args):
+@@ -668,51 +667,6 @@ def run_grub(file, entry, fs, cfg_args):
  
      return grubcfg
  
@@ -71,9 +71,9 @@ index dd0c8f7..0977879 100755
  def sniff_netware(fs, cfg):
      if not fs.file_exists("/nwserver/xnloader.sys"):
          return cfg
-@@ -899,10 +853,7 @@ if __name__ == "__main__":
+@@ -901,10 +855,7 @@ if __name__ == "__main__":
          try:
-             fs = fsimage.open(file, offset, bootfsoptions)
+             fs = xenfsimage.open(file, offset, bootfsoptions)
  
 -            chosencfg = sniff_solaris(fs, incfg)
 -

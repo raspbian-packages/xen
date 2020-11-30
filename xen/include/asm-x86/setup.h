@@ -4,25 +4,16 @@
 #include <xen/multiboot.h>
 #include <asm/numa.h>
 
-/* vCPU pointer used prior to there being a valid one around */
-#define INVALID_VCPU ((struct vcpu *)0xccccccccccccc000UL)
-
 extern const char __2M_text_start[], __2M_text_end[];
 extern const char __2M_rodata_start[], __2M_rodata_end[];
 extern char __2M_init_start[], __2M_init_end[];
 extern char __2M_rwdata_start[], __2M_rwdata_end[];
 
 extern unsigned long xenheap_initial_phys_start;
+extern uint64_t boot_tsc_stamp;
 
 void early_cpu_init(void);
 void early_time_init(void);
-
-int intel_cpu_init(void);
-int amd_init_cpu(void);
-int cyrix_init_cpu(void);
-int nsc_init_cpu(void);
-int centaur_init_cpu(void);
-int transmeta_init_cpu(void);
 
 void set_nr_cpu_ids(unsigned int max_cpus);
 
@@ -51,8 +42,6 @@ unsigned long initial_images_nrpages(nodeid_t node);
 void discard_initial_images(void);
 void *bootstrap_map(const module_t *mod);
 
-unsigned int dom0_max_vcpus(void);
-
 int xen_in_range(unsigned long mfn);
 
 void microcode_grab_module(
@@ -73,6 +62,10 @@ extern bool opt_dom0_shadow;
 #else
 #define opt_dom0_shadow false
 #endif
-extern bool dom0_pvh;
+extern bool opt_dom0_pvh;
+extern bool opt_dom0_verbose;
+extern bool opt_dom0_cpuid_faulting;
+
+#define max_init_domid (0)
 
 #endif

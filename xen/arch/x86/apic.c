@@ -20,12 +20,14 @@
 #include <xen/errno.h>
 #include <xen/init.h>
 #include <xen/mm.h>
+#include <xen/param.h>
 #include <xen/sched.h>
 #include <xen/irq.h>
 #include <xen/delay.h>
 #include <xen/smp.h>
 #include <xen/softirq.h>
 #include <asm/mc146818rtc.h>
+#include <asm/microcode.h>
 #include <asm/msr.h>
 #include <asm/atomic.h>
 #include <asm/mpspec.h>
@@ -35,6 +37,7 @@
 #include <asm/io_apic.h>
 #include <mach_apic.h>
 #include <io_ports.h>
+#include <irq_vectors.h>
 #include <xen/kexec.h>
 #include <asm/guest.h>
 #include <asm/time.h>
@@ -42,6 +45,8 @@
 static bool __read_mostly tdt_enabled;
 static bool __initdata tdt_enable = true;
 boolean_param("tdt", tdt_enable);
+
+static bool __read_mostly iommu_x2apic_enabled;
 
 static struct {
     int active;
@@ -91,6 +96,11 @@ static int modern_apic(void)
     if (boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
         boot_cpu_data.x86 >= 0xf)
         return 1;
+
+    /* Hygon systems use modern APIC */
+    if (boot_cpu_data.x86_vendor == X86_VENDOR_HYGON)
+        return 1;
+
     lvr = apic_read(APIC_LVR);
     version = GET_APIC_VERSION(lvr);
     return version >= 0x14;
@@ -183,19 +193,15 @@ void clear_local_APIC(void)
         v = apic_read(APIC_LVTPC);
         apic_write(APIC_LVTPC, v | APIC_LVT_MASKED);
     }
-
-/* lets not touch this if we didn't frob it */
-#ifdef CONFIG_X86_MCE_THERMAL
     if (maxlvt >= 5) {
         v = apic_read(APIC_LVTTHMR);
         apic_write(APIC_LVTTHMR, v | APIC_LVT_MASKED);
     }
-#endif
-
     if (maxlvt >= 6) {
         v = apic_read(APIC_CMCI);
         apic_write(APIC_CMCI, v | APIC_LVT_MASKED);
     }
+
     /*
      * Clean APIC state for other OSs:
      */
@@ -206,13 +212,14 @@ void clear_local_APIC(void)
         apic_write(APIC_LVTERR, APIC_LVT_MASKED);
     if (maxlvt >= 4)
         apic_write(APIC_LVTPC, APIC_LVT_MASKED);
-
-#ifdef CONFIG_X86_MCE_THERMAL
     if (maxlvt >= 5)
         apic_write(APIC_LVTTHMR, APIC_LVT_MASKED);
-#endif
     if (maxlvt >= 6)
         apic_write(APIC_CMCI, APIC_LVT_MASKED);
+    if (!x2apic_enabled) {
+        v = apic_read(APIC_LDR) & ~APIC_LDR_MASK;
+        apic_write(APIC_LDR, v);
+    }
 
     if (maxlvt > 3)        /* Due to Pentium errata 3AP and 11AP. */
         apic_write(APIC_ESR, 0);
@@ -300,31 +307,31 @@ void disable_local_APIC(void)
 
     if (enabled_via_apicbase) {
         uint64_t msr_content;
-        rdmsrl(MSR_IA32_APICBASE, msr_content);
-        wrmsrl(MSR_IA32_APICBASE, msr_content &
-               ~(MSR_IA32_APICBASE_ENABLE|MSR_IA32_APICBASE_EXTD));
+        rdmsrl(MSR_APIC_BASE, msr_content);
+        wrmsrl(MSR_APIC_BASE, msr_content &
+               ~(APIC_BASE_ENABLE | APIC_BASE_EXTD));
     }
 
     if ( kexecing && (current_local_apic_mode() != apic_boot_mode) )
     {
         uint64_t msr_content;
-        rdmsrl(MSR_IA32_APICBASE, msr_content);
-        msr_content &= ~(MSR_IA32_APICBASE_ENABLE|MSR_IA32_APICBASE_EXTD);
-        wrmsrl(MSR_IA32_APICBASE, msr_content);
+        rdmsrl(MSR_APIC_BASE, msr_content);
+        msr_content &= ~(APIC_BASE_ENABLE | APIC_BASE_EXTD);
+        wrmsrl(MSR_APIC_BASE, msr_content);
 
         switch ( apic_boot_mode )
         {
         case APIC_MODE_DISABLED:
             break; /* Nothing to do - we did this above */
         case APIC_MODE_XAPIC:
-            msr_content |= MSR_IA32_APICBASE_ENABLE;
-            wrmsrl(MSR_IA32_APICBASE, msr_content);
+            msr_content |= APIC_BASE_ENABLE;
+            wrmsrl(MSR_APIC_BASE, msr_content);
             break;
         case APIC_MODE_X2APIC:
-            msr_content |= MSR_IA32_APICBASE_ENABLE;
-            wrmsrl(MSR_IA32_APICBASE, msr_content);
-            msr_content |= MSR_IA32_APICBASE_EXTD;
-            wrmsrl(MSR_IA32_APICBASE, msr_content);
+            msr_content |= APIC_BASE_ENABLE;
+            wrmsrl(MSR_APIC_BASE, msr_content);
+            msr_content |= APIC_BASE_EXTD;
+            wrmsrl(MSR_APIC_BASE, msr_content);
             break;
         default:
             printk("Default case when reverting #%d lapic to boot state\n",
@@ -476,49 +483,23 @@ static void __enable_x2apic(void)
 {
     uint64_t msr_content;
 
-    rdmsrl(MSR_IA32_APICBASE, msr_content);
-    if ( !(msr_content & MSR_IA32_APICBASE_EXTD) )
+    rdmsrl(MSR_APIC_BASE, msr_content);
+    if ( !(msr_content & APIC_BASE_EXTD) )
     {
-        msr_content |= MSR_IA32_APICBASE_ENABLE | MSR_IA32_APICBASE_EXTD;
+        msr_content |= APIC_BASE_ENABLE | APIC_BASE_EXTD;
         msr_content = (uint32_t)msr_content;
-        wrmsrl(MSR_IA32_APICBASE, msr_content);
+        wrmsrl(MSR_APIC_BASE, msr_content);
     }
 }
 
 static void resume_x2apic(void)
 {
-    struct IO_APIC_route_entry **ioapic_entries = NULL;
-
-    ASSERT(x2apic_enabled);
-
-    ioapic_entries = alloc_ioapic_entries();
-    if ( !ioapic_entries )
-    {
-        printk("Allocate ioapic_entries failed\n");
-        goto out;
-    }
-
-    if ( save_IO_APIC_setup(ioapic_entries) )
-    {
-        printk("Saving IO-APIC state failed\n");
-        goto out;
-    }
-
-    mask_8259A();
-    mask_IO_APIC_setup(ioapic_entries);
-
-    iommu_enable_x2apic_IR();
+    if ( iommu_x2apic_enabled )
+        iommu_enable_x2apic();
     __enable_x2apic();
-
-    restore_IO_APIC_setup(ioapic_entries);
-    unmask_8259A();
-
-out:
-    if ( ioapic_entries )
-        free_ioapic_entries(ioapic_entries);
 }
 
-void setup_local_APIC(void)
+void setup_local_APIC(bool bsp)
 {
     unsigned long oldvalue, value, maxlvt;
     int i, j;
@@ -547,9 +528,9 @@ void setup_local_APIC(void)
     init_apic_ldr();
 
     /*
-     * Set Task Priority to reject any interrupts below FIRST_DYNAMIC_VECTOR.
+     * Set Task Priority to reject any interrupts below FIRST_IRQ_VECTOR.
      */
-    apic_write(APIC_TASKPRI, (FIRST_DYNAMIC_VECTOR & 0xF0) - 0x10);
+    apic_write(APIC_TASKPRI, (FIRST_IRQ_VECTOR & 0xF0) - 0x10);
 
     /*
      * After a crash, we no longer service the interrupts and a pending
@@ -617,8 +598,8 @@ void setup_local_APIC(void)
     if ( directed_eoi_enabled )
     {
         value |= APIC_SPIV_DIRECTED_EOI;
-        apic_printk(APIC_VERBOSE, "Suppress EOI broadcast on CPU#%d\n",
-                    smp_processor_id());
+        if ( bsp )
+            apic_printk(APIC_VERBOSE, "Suppressing EOI broadcast\n");
     }
 
     apic_write(APIC_SPIV, value);
@@ -634,21 +615,22 @@ void setup_local_APIC(void)
      * TODO: set up through-local-APIC from through-I/O-APIC? --macro
      */
     value = apic_read(APIC_LVT0) & APIC_LVT_MASKED;
-    if (!smp_processor_id() && (pic_mode || !value)) {
+    if (bsp && (pic_mode || !value)) {
         value = APIC_DM_EXTINT;
         apic_printk(APIC_VERBOSE, "enabled ExtINT on CPU#%d\n",
                     smp_processor_id());
     } else {
         value = APIC_DM_EXTINT | APIC_LVT_MASKED;
-        apic_printk(APIC_VERBOSE, "masked ExtINT on CPU#%d\n",
-                    smp_processor_id());
+        if (bsp)
+            apic_printk(APIC_VERBOSE, "masked ExtINT on CPU#%d\n",
+                        smp_processor_id());
     }
     apic_write(APIC_LVT0, value);
 
     /*
      * only the BP should see the LINT1 NMI signal, obviously.
      */
-    if (!smp_processor_id())
+    if (bsp)
         value = APIC_DM_NMI;
     else
         value = APIC_DM_NMI | APIC_LVT_MASKED;
@@ -682,7 +664,7 @@ void setup_local_APIC(void)
         printk("Leaving ESR disabled.\n");
     }
 
-    if (nmi_watchdog == NMI_LOCAL_APIC && smp_processor_id())
+    if (nmi_watchdog == NMI_LOCAL_APIC && !bsp)
         setup_apic_nmi_watchdog();
     apic_pm_activate();
 }
@@ -717,7 +699,8 @@ int lapic_suspend(void)
 
     local_irq_save(flags);
     disable_local_APIC();
-    iommu_disable_x2apic_IR();
+    if ( iommu_x2apic_enabled )
+        iommu_disable_x2apic();
     local_irq_restore(flags);
     return 0;
 }
@@ -741,10 +724,10 @@ int lapic_resume(void)
      */
     if ( !x2apic_enabled )
     {
-        rdmsrl(MSR_IA32_APICBASE, msr_content);
-        msr_content &= ~MSR_IA32_APICBASE_BASE;
-        wrmsrl(MSR_IA32_APICBASE,
-            msr_content | MSR_IA32_APICBASE_ENABLE | mp_lapic_addr);
+        rdmsrl(MSR_APIC_BASE, msr_content);
+        msr_content &= ~APIC_BASE_ADDR_MASK;
+        wrmsrl(MSR_APIC_BASE,
+               msr_content | APIC_BASE_ENABLE | mp_lapic_addr);
     }
     else
         resume_x2apic();
@@ -815,7 +798,8 @@ static int __init detect_init_APIC (void)
     if (enable_local_apic < 0)
         return -1;
 
-    if (rdmsr_safe(MSR_IA32_APICBASE, msr_content)) {
+    if ( rdmsr_safe(MSR_APIC_BASE, msr_content) )
+    {
         printk("No local APIC present\n");
         return -1;
     }
@@ -836,11 +820,12 @@ static int __init detect_init_APIC (void)
          * software for Intel P6 or later and AMD K7
          * (Model > 1) or later.
          */
-        if (!(msr_content & MSR_IA32_APICBASE_ENABLE)) {
+        if ( !(msr_content & APIC_BASE_ENABLE) )
+        {
             printk("Local APIC disabled by BIOS -- reenabling.\n");
-            msr_content &= ~MSR_IA32_APICBASE_BASE;
-            msr_content |= MSR_IA32_APICBASE_ENABLE | APIC_DEFAULT_PHYS_BASE;
-            wrmsrl(MSR_IA32_APICBASE, msr_content);
+            msr_content &= ~APIC_BASE_ADDR_MASK;
+            msr_content |= APIC_BASE_ENABLE | APIC_DEFAULT_PHYS_BASE;
+            wrmsrl(MSR_APIC_BASE, msr_content);
             enabled_via_apicbase = true;
         }
     }
@@ -857,8 +842,8 @@ static int __init detect_init_APIC (void)
     mp_lapic_addr = APIC_DEFAULT_PHYS_BASE;
 
     /* The BIOS may have set up the APIC at some other address */
-    if (msr_content & MSR_IA32_APICBASE_ENABLE)
-        mp_lapic_addr = msr_content & MSR_IA32_APICBASE_BASE;
+    if ( msr_content & APIC_BASE_ENABLE )
+        mp_lapic_addr = msr_content & APIC_BASE_ADDR_MASK;
 
     if (nmi_watchdog != NMI_NONE)
         nmi_watchdog = NMI_LOCAL_APIC;
@@ -879,6 +864,7 @@ void x2apic_ap_setup(void)
 void __init x2apic_bsp_setup(void)
 {
     struct IO_APIC_route_entry **ioapic_entries = NULL;
+    const char *orig_name;
 
     if ( !cpu_has_x2apic )
         return;
@@ -893,54 +879,46 @@ void __init x2apic_bsp_setup(void)
         printk("x2APIC: Already enabled by BIOS: Ignoring cmdline disable.\n");
     }
 
-    if ( !iommu_supports_eim() )
+    if ( iommu_supports_x2apic() )
     {
-        if ( !x2apic_enabled )
+        if ( (ioapic_entries = alloc_ioapic_entries()) == NULL )
         {
-            printk("Not enabling x2APIC: depends on iommu_supports_eim.\n");
-            return;
+            printk("Allocate ioapic_entries failed\n");
+            goto out;
         }
-        panic("x2APIC: already enabled by BIOS, but "
-              "iommu_supports_eim failed");
-    }
 
-    if ( (ioapic_entries = alloc_ioapic_entries()) == NULL )
-    {
-        printk("Allocate ioapic_entries failed\n");
-        goto out;
-    }
-
-    if ( save_IO_APIC_setup(ioapic_entries) )
-    {
-        printk("Saving IO-APIC state failed\n");
-        goto out;
-    }
-
-    mask_8259A();
-    mask_IO_APIC_setup(ioapic_entries);
-
-    switch ( iommu_enable_x2apic_IR() )
-    {
-    case 0:
-        break;
-    case -ENXIO: /* ACPI_DMAR_X2APIC_OPT_OUT set */
-        if ( !x2apic_enabled )
+        if ( save_IO_APIC_setup(ioapic_entries) )
         {
+            printk("Saving IO-APIC state failed\n");
+            goto out;
+        }
+
+        mask_8259A();
+        mask_IO_APIC_setup(ioapic_entries);
+
+        switch ( iommu_enable_x2apic() )
+        {
+        case 0:
+            iommu_x2apic_enabled = true;
+            break;
+
+        case -ENXIO: /* ACPI_DMAR_X2APIC_OPT_OUT set */
+            if ( x2apic_enabled )
+                panic("IOMMU requests xAPIC mode, but x2APIC already enabled by firmware\n");
+
             printk("Not enabling x2APIC (upon firmware request)\n");
+            iommu_x2apic_enabled = false;
             goto restore_out;
+
+        default:
+            printk(XENLOG_ERR "Failed to enable Interrupt Remapping\n");
+            iommu_x2apic_enabled = false;
+            break;
         }
-        /* fall through */
-    default:
-        if ( x2apic_enabled )
-            panic("Interrupt remapping could not be enabled while "
-                  "x2APIC is already enabled by BIOS");
 
-        printk(XENLOG_ERR
-               "Failed to enable Interrupt Remapping: Will not enable x2APIC.\n");
-        goto restore_out;
+        if ( iommu_x2apic_enabled )
+            force_iommu = 1;
     }
-
-    force_iommu = 1;
 
     if ( !x2apic_enabled )
     {
@@ -948,12 +926,23 @@ void __init x2apic_bsp_setup(void)
         __enable_x2apic();
     }
 
-    genapic = apic_x2apic_probe();
-    printk("Switched to APIC driver %s\n", genapic->name);
+    orig_name = genapic.name;
+    genapic = *apic_x2apic_probe();
+    if ( genapic.name != orig_name )
+        printk("Switched to APIC driver %s\n", genapic.name);
 
 restore_out:
-    restore_IO_APIC_setup(ioapic_entries);
-    unmask_8259A();
+    /* iommu_x2apic_enabled cannot be used here in the error case. */
+    if ( iommu_supports_x2apic() )
+    {
+        /*
+         * NB: do not use raw mode when restoring entries if the iommu has
+         * been enabled during the process, because the entries need to be
+         * translated and added to the remapping table in that case.
+         */
+        restore_IO_APIC_setup(ioapic_entries, !iommu_x2apic_enabled);
+        unmask_8259A();
+    }
 
 out:
     if ( ioapic_entries )
@@ -990,7 +979,7 @@ __next:
         boot_cpu_physical_apicid = get_apic_id();
     x86_cpu_to_apicid[0] = get_apic_id();
 
-    init_ioapic_mappings();
+    ioapic_init();
 }
 
 /*****************************************************************************
@@ -1077,6 +1066,13 @@ static void __setup_APIC_LVTT(unsigned int clocks)
 
     apic_write(APIC_LVTT, lvtt_value);
 
+    /*
+     * See Intel SDM: TSC-Deadline Mode chapter. In xAPIC mode,
+     * writing to the APIC LVTT and TSC_DEADLINE MSR isn't serialized.
+     * According to Intel, MFENCE can do the serialization here.
+     */
+    asm volatile( "mfence" : : : "memory" );
+
     tmp_value = apic_read(APIC_TDCR);
     apic_write(APIC_TDCR, tmp_value | APIC_TDR_DIV_1);
 
@@ -1089,6 +1085,97 @@ static void setup_APIC_timer(void)
     local_irq_save(flags);
     __setup_APIC_LVTT(0);
     local_irq_restore(flags);
+}
+
+#define DEADLINE_MODEL_MATCH(m, fr) \
+    { .vendor = X86_VENDOR_INTEL, .family = 6, .model = (m), \
+      .feature = X86_FEATURE_TSC_DEADLINE, \
+      .driver_data = (void *)(unsigned long)(fr) }
+
+static unsigned int __init hsx_deadline_rev(void)
+{
+    switch ( boot_cpu_data.x86_mask )
+    {
+    case 0x02: return 0x3a; /* EP */
+    case 0x04: return 0x0f; /* EX */
+    }
+
+    return ~0U;
+}
+
+static unsigned int __init bdx_deadline_rev(void)
+{
+    switch ( boot_cpu_data.x86_mask )
+    {
+    case 0x02: return 0x00000011;
+    case 0x03: return 0x0700000e;
+    case 0x04: return 0x0f00000c;
+    case 0x05: return 0x0e000003;
+    }
+
+    return ~0U;
+}
+
+static unsigned int __init skx_deadline_rev(void)
+{
+    switch ( boot_cpu_data.x86_mask )
+    {
+    case 0x00 ... 0x02: return ~0U;
+    case 0x03: return 0x01000136;
+    case 0x04: return 0x02000014;
+    }
+
+    return 0;
+}
+
+static const struct x86_cpu_id __initconstrel deadline_match[] = {
+    DEADLINE_MODEL_MATCH(0x3c, 0x22),             /* Haswell */
+    DEADLINE_MODEL_MATCH(0x3f, hsx_deadline_rev), /* Haswell EP/EX */
+    DEADLINE_MODEL_MATCH(0x45, 0x20),             /* Haswell D */
+    DEADLINE_MODEL_MATCH(0x46, 0x17),             /* Haswell H */
+
+    DEADLINE_MODEL_MATCH(0x3d, 0x25),             /* Broadwell */
+    DEADLINE_MODEL_MATCH(0x47, 0x17),             /* Broadwell H */
+    DEADLINE_MODEL_MATCH(0x4f, 0x0b000020),       /* Broadwell EP/EX */
+    DEADLINE_MODEL_MATCH(0x56, bdx_deadline_rev), /* Broadwell D */
+
+    DEADLINE_MODEL_MATCH(0x4e, 0xb2),             /* Skylake M */
+    DEADLINE_MODEL_MATCH(0x55, skx_deadline_rev), /* Skylake X */
+    DEADLINE_MODEL_MATCH(0x5e, 0xb2),             /* Skylake D */
+
+    DEADLINE_MODEL_MATCH(0x8e, 0x52),             /* Kabylake M */
+    DEADLINE_MODEL_MATCH(0x9e, 0x52),             /* Kabylake D */
+
+    {}
+};
+
+static void __init check_deadline_errata(void)
+{
+    const struct x86_cpu_id *m;
+    unsigned int rev;
+
+    if ( cpu_has_hypervisor )
+        return;
+
+    m = x86_match_cpu(deadline_match);
+    if ( !m )
+        return;
+
+    /*
+     * Function pointers will have the MSB set due to address layout,
+     * immediate revisions will not.
+     */
+    if ( (long)m->driver_data < 0 )
+        rev = ((unsigned int (*)(void))(m->driver_data))();
+    else
+        rev = (unsigned long)m->driver_data;
+
+    if ( this_cpu(cpu_sig).rev >= rev )
+        return;
+
+    setup_clear_cpu_cap(X86_FEATURE_TSC_DEADLINE);
+    printk(XENLOG_WARNING "TSC_DEADLINE disabled due to Errata; "
+           "please update microcode to version %#x (or later)\n", rev);
 }
 
 static void wait_tick_pvh(void)
@@ -1118,24 +1205,22 @@ static void wait_tick_pvh(void)
  * APIC irq that way.
  */
 
-static int __init calibrate_APIC_clock(void)
+static void __init calibrate_APIC_clock(void)
 {
     unsigned long long t1, t2;
-    long tt1, tt2;
-    long result;
-    int i;
+    unsigned long tt1, tt2;
+    unsigned int i;
     unsigned long bus_freq; /* KAF: pointer-size avoids compile warns. */
-    u32 bus_cycle;          /* length of one bus cycle in pico-seconds */
-    const int LOOPS = HZ/10;
+    unsigned int bus_cycle; /* length of one bus cycle in pico-seconds */
+#define LOOPS_FRAC 10U      /* measure for one tenth of a second */
 
     apic_printk(APIC_VERBOSE, "calibrating APIC timer ...\n");
 
     /*
-     * Put whatever arbitrary (but long enough) timeout
-     * value into the APIC clock, we just want to get the
-     * counter running for calibration.
+     * Setup the APIC counter to maximum. There is no way the lapic
+     * can underflow in the 100ms detection time frame.
      */
-    __setup_APIC_LVTT(1000000000);
+    __setup_APIC_LVTT(0xffffffff);
 
     if ( !xen_guest )
         /*
@@ -1154,9 +1239,9 @@ static int __init calibrate_APIC_clock(void)
     tt1 = apic_read(APIC_TMCCT);
 
     /*
-     * Let's wait LOOPS ticks:
+     * Let's wait HZ / LOOPS_FRAC ticks:
      */
-    for (i = 0; i < LOOPS; i++)
+    for (i = 0; i < HZ / LOOPS_FRAC; i++)
         if ( !xen_guest )
             wait_8254_wraparound();
         else
@@ -1165,33 +1250,26 @@ static int __init calibrate_APIC_clock(void)
     tt2 = apic_read(APIC_TMCCT);
     t2 = rdtsc_ordered();
 
-    /*
-     * The APIC bus clock counter is 32 bits only, it
-     * might have overflown, but note that we use signed
-     * longs, thus no extra care needed.
-     *
-     * underflown to be exact, as the timer counts down ;)
-     */
+    bus_freq = (tt1 - tt2) * APIC_DIVISOR * LOOPS_FRAC;
 
-    result = (tt1-tt2)*APIC_DIVISOR/LOOPS;
-
-    apic_printk(APIC_VERBOSE, "..... CPU clock speed is %ld.%04ld MHz.\n",
-                ((long)(t2 - t1) / LOOPS) / (1000000 / HZ),
-                ((long)(t2 - t1) / LOOPS) % (1000000 / HZ));
+    apic_printk(APIC_VERBOSE, "..... CPU clock speed is %lu.%04lu MHz.\n",
+                ((unsigned long)(t2 - t1) * LOOPS_FRAC) / 1000000,
+                (((unsigned long)(t2 - t1) * LOOPS_FRAC) / 100) % 10000);
 
     apic_printk(APIC_VERBOSE, "..... host bus clock speed is %ld.%04ld MHz.\n",
-                result / (1000000 / HZ), result % (1000000 / HZ));
+                bus_freq / 1000000, (bus_freq / 100) % 10000);
 
     /* set up multipliers for accurate timer code */
-    bus_freq   = result*HZ;
-    bus_cycle  = (u32) (1000000000000LL/bus_freq); /* in pico seconds */
+    bus_cycle  = 1000000000000UL / bus_freq; /* in pico seconds */
+    bus_cycle += (1000000000000UL % bus_freq) * 2 > bus_freq;
     bus_scale  = (1000*262144)/bus_cycle;
+    bus_scale += ((1000 * 262144) % bus_cycle) * 2 > bus_cycle;
 
     apic_printk(APIC_VERBOSE, "..... bus_scale = %#x\n", bus_scale);
     /* reset APIC to zero timeout value */
     __setup_APIC_LVTT(0);
 
-    return result;
+#undef LOOPS_FRAC
 }
 
 void __init setup_boot_APIC_clock(void)
@@ -1199,6 +1277,8 @@ void __init setup_boot_APIC_clock(void)
     unsigned long flags;
     apic_printk(APIC_VERBOSE, "Using local APIC timer interrupts.\n");
     using_apic_timer = true;
+
+    check_deadline_errata();
 
     local_irq_save(flags);
 
@@ -1304,15 +1384,13 @@ void spurious_interrupt(struct cpu_user_regs *regs)
         if (this_cpu(state_dump_pending)) {
             this_cpu(state_dump_pending) = false;
             dump_execstate(regs);
-            goto out;
+            return;
         }
     }
 
     /* see sw-dev-man vol 3, chapter 7.4.13.5 */
     printk(KERN_INFO "spurious APIC interrupt on CPU#%d, should "
            "never happen.\n", smp_processor_id());
-
-out: ;
 }
 
 /*
@@ -1397,7 +1475,7 @@ int __init APIC_init_uniprocessor (void)
     physids_clear(phys_cpu_present_map);
     physid_set(boot_cpu_physical_apicid, phys_cpu_present_map);
 
-    setup_local_APIC();
+    setup_local_APIC(true);
 
     if (nmi_watchdog == NMI_LOCAL_APIC)
         check_nmi_watchdog();
@@ -1444,23 +1522,21 @@ void __init record_boot_APIC_mode(void)
                 apic_mode_to_str(apic_boot_mode));
 }
 
-/* Look at the bits in MSR_IA32_APICBASE and work out which
- * APIC mode we are in */
+/* Look at the bits in MSR_APIC_BASE and work out which APIC mode we are in */
 enum apic_mode current_local_apic_mode(void)
 {
     u64 msr_contents;
 
-    rdmsrl(MSR_IA32_APICBASE, msr_contents);
+    rdmsrl(MSR_APIC_BASE, msr_contents);
 
     /* Reading EXTD bit from the MSR is only valid if CPUID
      * says so, else reserved */
-    if ( boot_cpu_has(X86_FEATURE_X2APIC)
-         && (msr_contents & MSR_IA32_APICBASE_EXTD) )
+    if ( boot_cpu_has(X86_FEATURE_X2APIC) && (msr_contents & APIC_BASE_EXTD) )
         return APIC_MODE_X2APIC;
 
     /* EN bit should always be valid as long as we can read the MSR
      */
-    if ( msr_contents & MSR_IA32_APICBASE_ENABLE )
+    if ( msr_contents & APIC_BASE_ENABLE )
         return APIC_MODE_XAPIC;
 
     return APIC_MODE_DISABLED;

@@ -29,7 +29,7 @@ int pv_emul_read_descriptor(unsigned int sel, const struct vcpu *v,
                             unsigned long *base, unsigned long *limit,
                             unsigned int *ar, bool insn_fetch)
 {
-    struct desc_struct desc;
+    seg_desc_t desc;
 
     if ( sel < 4 ||
          /*
@@ -38,7 +38,7 @@ int pv_emul_read_descriptor(unsigned int sel, const struct vcpu *v,
           * action) for ones falling in the gap between guest populated
           * and Xen ones.
           */
-         ((sel & 4) && (sel >> 3) >= v->arch.pv_vcpu.ldt_ents) )
+         ((sel & 4) && (sel >> 3) >= v->arch.pv.ldt_ents) )
         desc.b = desc.a = 0;
     else if ( __get_user(desc, gdt_ldt_desc_ptr(sel)) )
         return 0;
@@ -85,7 +85,7 @@ void pv_emul_instruction_done(struct cpu_user_regs *regs, unsigned long rip)
     regs->eflags &= ~X86_EFLAGS_RF;
     if ( regs->eflags & X86_EFLAGS_TF )
     {
-        current->arch.debugreg[6] |= DR_STEP | DR_STATUS_RESERVED_ONE;
+        current->arch.dr6 |= DR_STEP | DR_STATUS_RESERVED_ONE;
         pv_inject_hw_exception(TRAP_debug, X86_EVENT_NO_EC);
     }
 }

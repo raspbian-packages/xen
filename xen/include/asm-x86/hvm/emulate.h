@@ -13,6 +13,8 @@
 #define __ASM_X86_HVM_EMULATE_H__
 
 #include <xen/err.h>
+#include <xen/mm.h>
+#include <xen/sched.h>
 #include <asm/hvm/hvm.h>
 #include <asm/x86_emulate.h>
 
@@ -46,6 +48,8 @@ struct hvm_emulate_ctxt {
 
     uint32_t intr_shadow;
 
+    bool is_mem_access;
+
     bool_t set_context;
 };
 
@@ -60,7 +64,8 @@ bool __nonnull(1, 2) hvm_emulate_one_insn(
     hvm_emulate_validate_t *validate,
     const char *descr);
 int hvm_emulate_one(
-    struct hvm_emulate_ctxt *hvmemul_ctxt);
+    struct hvm_emulate_ctxt *hvmemul_ctxt,
+    enum hvm_io_completion completion);
 void hvm_emulate_one_vm_event(enum emul_kind kind,
     unsigned int trapnr,
     unsigned int errcode);
@@ -76,8 +81,7 @@ void hvm_emulate_init_per_insn(
     unsigned int insn_bytes);
 void hvm_emulate_writeback(
     struct hvm_emulate_ctxt *hvmemul_ctxt);
-int hvmemul_cpuid(uint32_t leaf, uint32_t subleaf,
-                  struct cpuid_leaf *res, struct x86_emulate_ctxt *ctxt);
+void hvmemul_cancel(struct vcpu *v);
 struct segment_register *hvmemul_get_seg_reg(
     enum x86_segment seg,
     struct hvm_emulate_ctxt *hvmemul_ctxt);
@@ -97,6 +101,45 @@ int hvmemul_do_pio_buffer(uint16_t port,
                           unsigned int size,
                           uint8_t dir,
                           void *buffer);
+
+#ifdef CONFIG_HVM
+/*
+ * The cache controlled by the functions below is not like an ordinary CPU
+ * cache, i.e. aiming to help performance, but a "secret store" which is
+ * needed for correctness.  The issue it helps addressing is the need for
+ * re-execution of an insn (after data was provided by a device model) to
+ * observe the exact same memory state, i.e. to specifically not observe any
+ * updates which may have occurred in the meantime by other agents.
+ * Therefore this cache gets
+ * - enabled when emulation of an insn starts,
+ * - disabled across processing secondary things like a hypercall resulting
+ *   from insn emulation,
+ * - disabled again when an emulated insn is known to not require any
+ *   further re-execution.
+ */
+int __must_check hvmemul_cache_init(struct vcpu *v);
+static inline void hvmemul_cache_destroy(struct vcpu *v)
+{
+    XFREE(v->arch.hvm.hvm_io.cache);
+}
+bool hvmemul_read_cache(const struct vcpu *, paddr_t gpa,
+                        void *buffer, unsigned int size);
+void hvmemul_write_cache(const struct vcpu *, paddr_t gpa,
+                         const void *buffer, unsigned int size);
+unsigned int hvmemul_cache_disable(struct vcpu *);
+void hvmemul_cache_restore(struct vcpu *, unsigned int token);
+/* For use in ASSERT()s only: */
+static inline bool hvmemul_cache_disabled(struct vcpu *v)
+{
+    return hvmemul_cache_disable(v) == hvmemul_cache_disable(v);
+}
+#else
+static inline bool hvmemul_read_cache(const struct vcpu *v, paddr_t gpa,
+                                      void *buf,
+                                      unsigned int size) { return false; }
+static inline void hvmemul_write_cache(const struct vcpu *v, paddr_t gpa,
+                                       const void *buf, unsigned int size) {}
+#endif
 
 void hvm_dump_emulation_state(const char *loglvl, const char *prefix,
                               struct hvm_emulate_ctxt *hvmemul_ctxt, int rc);

@@ -21,30 +21,28 @@
  * GNU General Public License for more details.
  */
 
-#include <xen/lib.h>
-#include <xen/init.h>
-#include <xen/cpu.h>
-#include <xen/mm.h>
-#include <xen/irq.h>
-#include <xen/iocap.h>
-#include <xen/sched.h>
-#include <xen/errno.h>
+#include <xen/acpi.h>
 #include <xen/delay.h>
 #include <xen/device_tree.h>
-#include <xen/sizes.h>
+#include <xen/errno.h>
+#include <xen/init.h>
+#include <xen/iocap.h>
+#include <xen/irq.h>
+#include <xen/lib.h>
 #include <xen/libfdt/libfdt.h>
-#include <xen/sort.h>
-#include <xen/acpi.h>
+#include <xen/mm.h>
+#include <xen/sched.h>
+#include <xen/sizes.h>
+
 #include <acpi/actables.h>
-#include <asm/p2m.h>
-#include <asm/domain.h>
-#include <asm/io.h>
+
+#include <asm/cpufeature.h>
 #include <asm/device.h>
 #include <asm/gic.h>
 #include <asm/gic_v3_defs.h>
 #include <asm/gic_v3_its.h>
-#include <asm/cpufeature.h>
-#include <asm/acpi.h>
+#include <asm/io.h>
+#include <asm/sysregs.h>
 
 /* Global state */
 static struct {
@@ -995,6 +993,12 @@ static void gicv3_send_sgi_list(enum gic_sgi sgi, const cpumask_t *cpumask)
 static void gicv3_send_sgi(enum gic_sgi sgi, enum gic_sgi_mode mode,
                            const cpumask_t *cpumask)
 {
+    /*
+     * Ensure that stores to Normal memory are visible to the other CPUs
+     * before issuing the IPI.
+     */
+    dsb(st);
+
     switch ( mode )
     {
     case SGI_TARGET_OTHERS:
@@ -1357,7 +1361,7 @@ static void __init gicv3_init_v2(void)
 static void __init gicv3_ioremap_distributor(paddr_t dist_paddr)
 {
     if ( dist_paddr & ~PAGE_MASK )
-        panic("GICv3:  Found unaligned distributor address %"PRIpaddr"",
+        panic("GICv3:  Found unaligned distributor address %"PRIpaddr"\n",
               dbase);
 
     gicv3.map_dbase = ioremap_nocache(dist_paddr, SZ_64K);
@@ -1373,7 +1377,7 @@ static void __init gicv3_dt_init(void)
 
     res = dt_device_get_address(node, 0, &dbase, NULL);
     if ( res )
-        panic("GICv3: Cannot find a valid distributor address");
+        panic("GICv3: Cannot find a valid distributor address\n");
 
     gicv3_ioremap_distributor(dbase);
 
@@ -1404,7 +1408,7 @@ static void __init gicv3_dt_init(void)
 
     res = platform_get_irq(node, 0);
     if ( res < 0 )
-        panic("GICv3: Cannot find the maintenance IRQ");
+        panic("GICv3: Cannot find the maintenance IRQ\n");
     gicv3_info.maintenance_irq = res;
 
     /*
@@ -1668,7 +1672,7 @@ static void __init gicv3_acpi_init(void)
     count = acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_DISTRIBUTOR,
                                   gic_acpi_parse_madt_distributor, 0);
     if ( count <= 0 )
-        panic("GICv3: No valid GICD entries exists");
+        panic("GICv3: No valid GICD entries exists\n");
 
     gicv3_ioremap_distributor(dbase);
 
@@ -1680,7 +1684,7 @@ static void __init gicv3_acpi_init(void)
         count = acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_INTERRUPT,
                                       gic_acpi_get_madt_cpu_num, 0);
         if (count <= 0)
-            panic("GICv3: No valid GICR entries exists");
+            panic("GICv3: No valid GICR entries exists\n");
 
         gicr_table = false;
     }
@@ -1700,13 +1704,13 @@ static void __init gicv3_acpi_init(void)
         count = acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_INTERRUPT,
                                       gic_acpi_parse_cpu_redistributor, count);
     if ( count <= 0 )
-        panic("GICv3: Can't get Redistributor entry");
+        panic("GICv3: Can't get Redistributor entry\n");
 
     /* Collect CPU base addresses */
     count = acpi_table_parse_madt(ACPI_MADT_TYPE_GENERIC_INTERRUPT,
                                   gic_acpi_parse_madt_cpu, 0);
     if ( count <= 0 )
-        panic("GICv3: No valid GICC entries exists");
+        panic("GICv3: No valid GICC entries exists\n");
 
     gicv3.rdist_stride = 0;
 

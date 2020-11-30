@@ -1,8 +1,8 @@
 /******************************************************************************
  * xen-x86_64.h
- * 
+ *
  * Guest OS interface to x86 64-bit Xen.
- * 
+ *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to
  * deal in the Software without restriction, including without limitation the
@@ -44,11 +44,11 @@
  */
 
 #define FLAT_RING3_CS32 0xe023  /* GDT index 260 */
-#define FLAT_RING3_CS64 0xe033  /* GDT index 261 */
-#define FLAT_RING3_DS32 0xe02b  /* GDT index 262 */
+#define FLAT_RING3_CS64 0xe033  /* GDT index 262 */
+#define FLAT_RING3_DS32 0xe02b  /* GDT index 261 */
 #define FLAT_RING3_DS64 0x0000  /* NULL selector */
-#define FLAT_RING3_SS32 0xe02b  /* GDT index 262 */
-#define FLAT_RING3_SS64 0xe02b  /* GDT index 262 */
+#define FLAT_RING3_SS32 0xe02b  /* GDT index 261 */
+#define FLAT_RING3_SS64 0xe02b  /* GDT index 261 */
 
 #define FLAT_KERNEL_DS64 FLAT_RING3_DS64
 #define FLAT_KERNEL_DS32 FLAT_RING3_DS32
@@ -203,8 +203,8 @@ struct cpu_user_regs {
     uint16_t ss, _pad2[3];
     uint16_t es, _pad3[3];
     uint16_t ds, _pad4[3];
-    uint16_t fs, _pad5[3]; /* Non-nul => takes precedence over fs_base.      */
-    uint16_t gs, _pad6[3]; /* Non-nul => takes precedence over gs_base_user. */
+    uint16_t fs, _pad5[3];
+    uint16_t gs, _pad6[3];
 };
 typedef struct cpu_user_regs cpu_user_regs_t;
 DEFINE_XEN_GUEST_HANDLE(cpu_user_regs_t);

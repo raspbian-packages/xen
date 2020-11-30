@@ -3,12 +3,13 @@
 #define _MCE_H
 
 #include <xen/init.h>
+#include <xen/percpu.h>
 #include <xen/sched.h>
 #include <xen/smp.h>
+
 #include <asm/types.h>
 #include <asm/traps.h>
 #include <asm/atomic.h>
-#include <asm/percpu.h>
 
 #include "x86_mca.h"
 #include "mctelem.h"
@@ -35,7 +36,8 @@ enum mcheck_type {
     mcheck_none,
     mcheck_amd_famXX,
     mcheck_amd_k8,
-    mcheck_intel
+    mcheck_intel,
+    mcheck_hygon
 };
 
 extern uint8_t cmci_apic_vector;
@@ -48,6 +50,7 @@ enum mcheck_type intel_mcheck_init(struct cpuinfo_x86 *c, bool bsp);
 void amd_nonfatal_mcheck_init(struct cpuinfo_x86 *c);
 
 extern unsigned int firstbank;
+extern unsigned int ppin_msr;
 
 struct mcinfo_extended *intel_get_extended_msrs(
     struct mcinfo_global *mig, struct mc_info *mi);

@@ -10,6 +10,7 @@
 #define PAGE_SIZE           (_AC(1,L) << PAGE_SHIFT)
 #define PAGE_MASK           (~(PAGE_SIZE-1))
 #define PAGE_FLAG_MASK      (~0)
+#define PAGE_OFFSET(ptr)    ((unsigned long)(ptr) & ~PAGE_MASK)
 
 #define PAGE_ORDER_4K       0
 #define PAGE_ORDER_2M       9
@@ -196,6 +197,25 @@ static inline l4_pgentry_t l4e_from_paddr(paddr_t pa, unsigned int flags)
 #define map_l2t_from_l3e(x)        (l2_pgentry_t *)map_domain_page(l3e_get_mfn(x))
 #define map_l3t_from_l4e(x)        (l3_pgentry_t *)map_domain_page(l4e_get_mfn(x))
 
+/* Unlike lYe_to_lXe(), lXe_from_lYe() do not rely on the direct map. */
+#define l1e_from_l2e(l2e_, offset_) ({                      \
+        const l1_pgentry_t *l1t_ = map_l1t_from_l2e(l2e_);  \
+        l1_pgentry_t l1e_ = l1t_[offset_];                  \
+        unmap_domain_page(l1t_);                            \
+        l1e_; })
+
+#define l2e_from_l3e(l3e_, offset_) ({                      \
+        const l2_pgentry_t *l2t_ = map_l2t_from_l3e(l3e_);  \
+        l2_pgentry_t l2e_ = l2t_[offset_];                  \
+        unmap_domain_page(l2t_);                            \
+        l2e_; })
+
+#define l3e_from_l4e(l4e_, offset_) ({                      \
+        const l3_pgentry_t *l3t_ = map_l3t_from_l4e(l4e_);  \
+        l3_pgentry_t l3e_ = l3t_[offset_];                  \
+        unmap_domain_page(l3t_);                            \
+        l3e_; })
+
 /* Given a virtual address, get an entry offset into a page table. */
 #define l1_table_offset(a)         \
     (((a) >> L1_PAGETABLE_SHIFT) & (L1_PAGETABLE_ENTRIES - 1))
@@ -293,7 +313,7 @@ extern unsigned int   m2p_compat_vstart;
 extern l2_pgentry_t l2_xenmap[L2_PAGETABLE_ENTRIES],
     l2_bootmap[4*L2_PAGETABLE_ENTRIES];
 extern l3_pgentry_t l3_bootmap[L3_PAGETABLE_ENTRIES];
-extern l2_pgentry_t l2_identmap[4*L2_PAGETABLE_ENTRIES];
+extern l2_pgentry_t l2_directmap[4*L2_PAGETABLE_ENTRIES];
 extern l1_pgentry_t l1_fixmap[L1_PAGETABLE_ENTRIES];
 void paging_init(void);
 void efi_update_l4_pgtable(unsigned int l4idx, l4_pgentry_t);
@@ -316,7 +336,11 @@ void efi_update_l4_pgtable(unsigned int l4idx, l4_pgentry_t);
 #define _PAGE_AVAIL    _AC(0xE00,U)
 #define _PAGE_PSE_PAT  _AC(0x1000,U)
 #define _PAGE_AVAIL_HIGH (_AC(0x7ff, U) << 12)
+
+#ifndef __ASSEMBLY__
+/* Dependency on NX being available can't be expressed. */
 #define _PAGE_NX       (cpu_has_nx ? _PAGE_NX_BIT : 0)
+#endif
 
 #define PAGE_CACHE_ATTRS (_PAGE_PAT | _PAGE_PCD | _PAGE_PWT)
 
@@ -340,15 +364,11 @@ void efi_update_l4_pgtable(unsigned int l4idx, l4_pgentry_t);
                                    _PAGE_DIRTY | _PAGE_RW)
 #define __PAGE_HYPERVISOR_UCMINUS (__PAGE_HYPERVISOR | _PAGE_PCD)
 #define __PAGE_HYPERVISOR_UC      (__PAGE_HYPERVISOR | _PAGE_PCD | _PAGE_PWT)
+#define __PAGE_HYPERVISOR_SHSTK   (__PAGE_HYPERVISOR_RO | _PAGE_DIRTY)
 
 #define MAP_SMALL_PAGES _PAGE_AVAIL0 /* don't use superpages mappings */
 
 #ifndef __ASSEMBLY__
-
-/* Allocator functions for Xen pagetables. */
-void *alloc_xen_pagetable(void);
-void free_xen_pagetable(void *v);
-l1_pgentry_t *virt_to_xen_l1e(unsigned long v);
 
 /* Convert between PAT/PCD/PWT embedded in PTE flags and 3-bit cacheattr. */
 static inline unsigned int pte_flags_to_cacheattr(unsigned int flags)

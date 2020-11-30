@@ -209,15 +209,15 @@ static int paging_free_log_dirty_bitmap(struct domain *d, int rc)
     return rc;
 }
 
-int paging_log_dirty_enable(struct domain *d, bool_t log_global)
+int paging_log_dirty_enable(struct domain *d, bool log_global)
 {
     int ret;
 
-    if ( need_iommu(d) && log_global )
+    if ( has_arch_pdevs(d) && log_global )
     {
         /*
          * Refuse to turn on global log-dirty mode
-         * if the domain is using the IOMMU.
+         * if the domain is sharing the P2M with the IOMMU.
          */
         return -EINVAL;
     }
@@ -613,7 +613,7 @@ void paging_log_dirty_range(struct domain *d,
 
     p2m_unlock(p2m);
 
-    flush_tlb_mask(d->dirty_cpumask);
+    guest_flush_tlb_mask(d, d->dirty_cpumask);
 }
 
 /*
@@ -632,7 +632,7 @@ void paging_log_dirty_init(struct domain *d, const struct log_dirty_ops *ops)
 /*           CODE FOR PAGING SUPPORT            */
 /************************************************/
 /* Domain paging struct initialization. */
-int paging_domain_init(struct domain *d, unsigned int domcr_flags)
+int paging_domain_init(struct domain *d)
 {
     int rc;
 
@@ -653,7 +653,7 @@ int paging_domain_init(struct domain *d, unsigned int domcr_flags)
     if ( hap_enabled(d) )
         hap_domain_init(d);
     else
-        rc = shadow_domain_init(d, domcr_flags);
+        rc = shadow_domain_init(d);
 
     return rc;
 }
@@ -727,7 +727,7 @@ int paging_domctl(struct domain *d, struct xen_domctl_shadow_op *sc,
             break;
         /* Else fall through... */
     case XEN_DOMCTL_SHADOW_OP_ENABLE_LOGDIRTY:
-        return paging_log_dirty_enable(d, 1);
+        return paging_log_dirty_enable(d, true);
 
     case XEN_DOMCTL_SHADOW_OP_OFF:
         if ( (rc = paging_log_dirty_disable(d, resuming)) != 0 )
@@ -837,7 +837,9 @@ int paging_enable(struct domain *d, u32 mode)
     switch ( mode & (PG_external | PG_translate | PG_refcounts) )
     {
     case 0:
+#if PG_external | PG_translate | PG_refcounts
     case PG_external | PG_translate | PG_refcounts:
+#endif
         break;
     default:
         return -EINVAL;
@@ -849,21 +851,22 @@ int paging_enable(struct domain *d, u32 mode)
         return shadow_enable(d, mode);
 }
 
+#ifdef CONFIG_HVM
 /* Called from the guest to indicate that a process is being torn down
  * and therefore its pagetables will soon be discarded */
-void pagetable_dying(struct domain *d, paddr_t gpa)
+void pagetable_dying(paddr_t gpa)
 {
 #ifdef CONFIG_SHADOW_PAGING
-    struct vcpu *v;
+    struct vcpu *curr = current;
 
-    ASSERT(paging_mode_shadow(d));
+    ASSERT(paging_mode_shadow(curr->domain));
 
-    v = d->vcpu[0];
-    v->arch.paging.mode->shadow.pagetable_dying(v, gpa);
+    curr->arch.paging.mode->shadow.pagetable_dying(gpa);
 #else
     BUG();
 #endif
 }
+#endif /* CONFIG_HVM */
 
 /* Print paging-assistance info to the console */
 void paging_dump_domain_info(struct domain *d)
@@ -919,6 +922,7 @@ const struct paging_mode *paging_get_mode(struct vcpu *v)
     return paging_get_nestedmode(v);
 }
 
+#ifdef CONFIG_HVM
 void paging_update_nestedmode(struct vcpu *v)
 {
     ASSERT(nestedhvm_enabled(v->domain));
@@ -930,22 +934,29 @@ void paging_update_nestedmode(struct vcpu *v)
         v->arch.paging.nestedmode = NULL;
     hvm_asid_flush_vcpu(v);
 }
+#endif
 
-void paging_write_p2m_entry(struct p2m_domain *p2m, unsigned long gfn,
-                            l1_pgentry_t *p, l1_pgentry_t new,
-                            unsigned int level)
+int paging_write_p2m_entry(struct p2m_domain *p2m, unsigned long gfn,
+                           l1_pgentry_t *p, l1_pgentry_t new,
+                           unsigned int level)
 {
     struct domain *d = p2m->domain;
     struct vcpu *v = current;
+    int rc = 0;
+
     if ( v->domain != d )
         v = d->vcpu ? d->vcpu[0] : NULL;
     if ( likely(v && paging_mode_enabled(d) && paging_get_hostmode(v) != NULL) )
-        paging_get_hostmode(v)->write_p2m_entry(d, gfn, p, new, level);
+        rc = paging_get_hostmode(v)->write_p2m_entry(p2m, gfn, p, new, level);
     else
         safe_write_pte(p, new);
+
+    return rc;
 }
 
-int paging_set_allocation(struct domain *d, unsigned int pages, bool *preempted)
+#ifdef CONFIG_HVM
+int __init paging_set_allocation(struct domain *d, unsigned int pages,
+                                 bool *preempted)
 {
     int rc;
 
@@ -960,6 +971,7 @@ int paging_set_allocation(struct domain *d, unsigned int pages, bool *preempted)
 
     return rc;
 }
+#endif
 
 /*
  * Local variables:

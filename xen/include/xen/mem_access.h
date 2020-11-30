@@ -24,8 +24,15 @@
 
 #include <xen/types.h>
 #include <xen/mm.h>
-#include <public/memory.h>
-#include <public/vm_event.h>
+
+/*
+ * asm/mem_access.h has functions taking pointers to this as arguments,
+ * and we want to avoid having to include public/vm_event.h here (which
+ * would provide the full struct definition as well as its
+ * vm_event_{request,response}_t typedefs.
+ */
+struct vm_event_st;
+
 #include <asm/mem_access.h>
 
 /*
@@ -58,6 +65,11 @@ typedef enum {
     /* NOTE: Assumed to be only 4 bits right now on x86. */
 } p2m_access_t;
 
+struct p2m_domain;
+bool xenmem_access_to_p2m_access(const struct p2m_domain *p2m,
+                                 xenmem_access_t xaccess,
+                                 p2m_access_t *paccess);
+
 /*
  * Set access type for a region of gfns.
  * If gfn == INVALID_GFN, sets the default access type.
@@ -76,9 +88,10 @@ long p2m_set_mem_access_multi(struct domain *d,
  * Get access type for a gfn.
  * If gfn == INVALID_GFN, gets the default access type.
  */
-int p2m_get_mem_access(struct domain *d, gfn_t gfn, xenmem_access_t *access);
+int p2m_get_mem_access(struct domain *d, gfn_t gfn, xenmem_access_t *access,
+                       unsigned int altp2m_idx);
 
-#ifdef CONFIG_HAS_MEM_ACCESS
+#ifdef CONFIG_MEM_ACCESS
 int mem_access_memop(unsigned long cmd,
                      XEN_GUEST_HANDLE_PARAM(xen_mem_access_op_t) arg);
 #else
@@ -88,7 +101,7 @@ int mem_access_memop(unsigned long cmd,
 {
     return -ENOSYS;
 }
-#endif /* CONFIG_HAS_MEM_ACCESS */
+#endif /* CONFIG_MEM_ACCESS */
 
 #endif /* _XEN_MEM_ACCESS_H */
 

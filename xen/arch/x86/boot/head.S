@@ -2,10 +2,10 @@
 #include <xen/multiboot2.h>
 #include <public/xen.h>
 #include <asm/asm_defns.h>
-#include <asm/desc.h>
 #include <asm/fixmap.h>
 #include <asm/page.h>
-#include <asm/msr.h>
+#include <asm/processor.h>
+#include <asm/msr-index.h>
 #include <asm/cpufeature.h>
 #include <public/elfnote.h>
 
@@ -14,14 +14,12 @@
 
 #define sym_offs(sym)     ((sym) - __XEN_VIRT_START)
 #define sym_esi(sym)      sym_offs(sym)(%esi)
-#define sym_fs(sym)       %fs:sym_offs(sym)
 
 #define BOOT_CS32        0x0008
 #define BOOT_CS64        0x0010
 #define BOOT_DS          0x0018
 #define BOOT_PSEUDORM_CS 0x0020
 #define BOOT_PSEUDORM_DS 0x0028
-#define BOOT_FS          0x0030
 
 #define MB2_HT(name)      (MULTIBOOT2_HEADER_TAG_##name)
 #define MB2_TT(name)      (MULTIBOOT2_TAG_TYPE_##name)
@@ -129,7 +127,7 @@ multiboot2_header:
 
         .word   0
 gdt_boot_descr:
-        .word   7*8-1
+        .word   .Ltrampoline_gdt_end - trampoline_gdt - 1
 gdt_boot_base:
         .long   sym_offs(trampoline_gdt)
         .long   0 /* Needed for 64-bit lgdt */
@@ -400,9 +398,12 @@ __pvh_start:
         sub     $sym_offs(1b), %esi
 
         /* Set up stack. */
-        lea     STACK_SIZE + sym_esi(cpu0_stack), %esp
+        lea     STACK_SIZE - CPUINFO_sizeof + sym_esi(cpu0_stack), %esp
 
         mov     %ebx, sym_esi(pvh_start_info_pa)
+
+        /* Force xen console.  Will revert to user choice in init code. */
+        movb    $-1, sym_esi(opt_console_xen)
 
         /* Prepare gdt and segments */
         add     %esi, sym_esi(gdt_boot_base)
@@ -447,7 +448,7 @@ __start:
         sub     $sym_offs(1b), %esi
 
         /* Set up stack. */
-        lea     STACK_SIZE + sym_esi(cpu0_stack), %esp
+        lea     STACK_SIZE - CPUINFO_sizeof + sym_esi(cpu0_stack), %esp
 
         /* Bootloaders may set multiboot{1,2}.mem_lower to a nonzero value. */
         xor     %edx,%edx
@@ -555,31 +556,13 @@ trampoline_bios_setup:
 trampoline_setup:
         /*
          * Called on legacy BIOS and EFI platforms.
-         *
-         * Initialize bits 0-15 of BOOT_FS segment descriptor base address.
          */
-        mov     %si,BOOT_FS+2+sym_esi(trampoline_gdt)
-
-        /* Initialize bits 16-23 of BOOT_FS segment descriptor base address. */
-        shld    $16,%esi,%edx
-        mov     %dl,BOOT_FS+4+sym_esi(trampoline_gdt)
-
-        /* Initialize bits 24-31 of BOOT_FS segment descriptor base address. */
-        mov     %dh,BOOT_FS+7+sym_esi(trampoline_gdt)
-
-        /*
-         * Initialize %fs and later use it to access Xen data where possible.
-         * According to Intel 64 and IA-32 Architectures Software Developer's
-         * Manual it is safe to do that without reloading GDTR before.
-         */
-        mov     $BOOT_FS,%edx
-        mov     %edx,%fs
 
         /* Save Xen image load base address for later use. */
-        mov     %esi,sym_fs(xen_phys_start)
-        mov     %esi,sym_fs(trampoline_xen_phys_start)
+        mov     %esi, sym_esi(xen_phys_start)
+        mov     %esi, sym_esi(trampoline_xen_phys_start)
 
-        mov     sym_fs(trampoline_phys),%ecx
+        mov     sym_esi(trampoline_phys), %ecx
 
         /* Get bottom-most low-memory stack address. */
         add     $TRAMPOLINE_SPACE,%ecx
@@ -590,13 +573,13 @@ trampoline_setup:
         push    %eax                /* Magic number. */
         call    reloc
 #ifdef CONFIG_PVH_GUEST
-        cmpb    $0, sym_fs(pvh_boot)
+        cmpb    $0, sym_esi(pvh_boot)
         je      1f
-        mov     %eax, sym_fs(pvh_start_info_pa)
+        mov     %eax, sym_esi(pvh_start_info_pa)
         jmp     2f
 #endif
 1:
-        mov     %eax, sym_fs(multiboot_ptr)
+        mov     %eax, sym_esi(multiboot_ptr)
 2:
 
         /*
@@ -620,23 +603,27 @@ trampoline_setup:
          * Do not zero BSS on EFI platform here.
          * It was initialized earlier.
          */
-        cmpb    $0,sym_fs(efi_platform)
+        cmpb    $0, sym_esi(efi_platform)
         jnz     1f
 
-        /* Initialize BSS (no nasty surprises!). */
-        mov     $sym_offs(__bss_start),%edi
-        mov     $sym_offs(__bss_end),%ecx
-        push    %fs
-        pop     %es
+        /*
+         * Initialise the BSS.
+         *
+         * !!! WARNING - also zeroes the current stack !!!
+         */
+        lea     sym_esi(__bss_start), %edi
+        lea     sym_esi(__bss_end), %ecx
         sub     %edi,%ecx
         xor     %eax,%eax
         shr     $2,%ecx
         rep stosl
-        push    %ds
-        pop     %es
 
 1:
         /* Interrogate CPU extended features via CPUID. */
+        mov     $1, %eax
+        cpuid
+        mov     %ecx, CPUINFO_FEATURE_OFFSET(X86_FEATURE_HYPERVISOR) + sym_esi(boot_cpu_data)
+
         mov     $0x80000000,%eax
         cpuid
         shld    $16,%eax,%ecx
@@ -647,8 +634,13 @@ trampoline_setup:
         jbe     1f
         mov     $0x80000001,%eax
         cpuid
-1:      mov     %edx,sym_fs(cpuid_ext_features)
-        mov     %edx,sym_fs(boot_cpu_data)+CPUINFO_FEATURE_OFFSET(X86_FEATURE_LM)
+1:      mov     %edx, CPUINFO_FEATURE_OFFSET(X86_FEATURE_LM) + sym_esi(boot_cpu_data)
+
+        /* Check for NX. Adjust EFER setting if available. */
+        bt      $cpufeat_bit(X86_FEATURE_NX), %edx
+        jnc     1f
+        orb     $EFER_NX >> 8, 1 + sym_esi(trampoline_efer)
+1:
 
         /* Check for availability of long mode. */
         bt      $cpufeat_bit(X86_FEATURE_LM),%edx
@@ -656,72 +648,105 @@ trampoline_setup:
 
         /* Stash TSC to calculate a good approximation of time-since-boot */
         rdtsc
-        mov     %eax,sym_fs(boot_tsc_stamp)
-        mov     %edx,sym_fs(boot_tsc_stamp)+4
+        mov     %eax,     sym_esi(boot_tsc_stamp)
+        mov     %edx, 4 + sym_esi(boot_tsc_stamp)
 
-        /*
-         * Update frame addresses in page tables excluding l2_identmap
-         * without its first entry which points to l1_identmap.
-         */
-        mov     $((__page_tables_end-__page_tables_start)/8),%ecx
-        mov     $(((l2_identmap-__page_tables_start)/8)+1),%edx
-1:      cmp     $((l2_identmap+l2_identmap_sizeof-__page_tables_start)/8),%ecx
-        cmove   %edx,%ecx
-        testl   $_PAGE_PRESENT,sym_fs(__page_tables_start)-8(,%ecx,8)
+        /* Relocate pagetables to point at Xen's current location in memory. */
+        mov     $_PAGE_PRESENT, %edx
+        lea     sym_esi(__page_tables_start), %eax
+        lea     sym_esi(__page_tables_end), %edi
+
+1:      test    %edx, (%eax) /* if page present */
         jz      2f
-        add     %esi,sym_fs(__page_tables_start)-8(,%ecx,8)
-2:      loop    1b
+        add     %esi, (%eax) /* pte += base */
+2:      add     $8, %eax
 
-        /* Initialize L2 boot-map/direct map page table entries (16MB). */
-        lea     sym_esi(start),%ebx
-        lea     (1<<L2_PAGETABLE_SHIFT)*7+(PAGE_HYPERVISOR|_PAGE_PSE)(%ebx),%eax
-        shr     $(L2_PAGETABLE_SHIFT-3),%ebx
-        mov     $8,%ecx
-1:      mov     %eax,sym_fs(l2_bootmap)-8(%ebx,%ecx,8)
-        mov     %eax,sym_fs(l2_identmap)-8(%ebx,%ecx,8)
-        sub     $(1<<L2_PAGETABLE_SHIFT),%eax
-        loop    1b
+        cmp     %edi, %eax
+        jb      1b
 
-        /* Initialize L3 boot-map page directory entry. */
-        lea     __PAGE_HYPERVISOR+(L2_PAGETABLE_ENTRIES*8)*3+sym_esi(l2_bootmap),%eax
-        mov     $4,%ecx
-1:      mov     %eax,sym_fs(l3_bootmap)-8(,%ecx,8)
-        sub     $(L2_PAGETABLE_ENTRIES*8),%eax
-        loop    1b
+        /* Map Xen into the higher mappings using 2M superpages. */
+        lea     _PAGE_PSE + PAGE_HYPERVISOR_RWX + sym_esi(_start), %eax
+        mov     $sym_offs(_start),   %ecx   /* %eax = PTE to write ^      */
+        mov     $sym_offs(_end - 1), %edx
+        shr     $L2_PAGETABLE_SHIFT, %ecx   /* %ecx = First slot to write */
+        shr     $L2_PAGETABLE_SHIFT, %edx   /* %edx = Final slot to write */
+
+1:      mov     %eax, sym_offs(l2_xenmap)(%esi, %ecx, 8)
+        add     $1, %ecx
+        add     $1 << L2_PAGETABLE_SHIFT, %eax
+
+        cmp     %edx, %ecx
+        jbe     1b
 
         /*
-         * During boot, hook 4kB mappings of first 2MB of memory into L2.
-         * This avoids mixing cachability for the legacy VGA region.
+         * Map Xen into the directmap (needed for early-boot pagetable
+         * handling/walking), and identity map Xen into bootmap (needed for
+         * the transition into long mode), using 2M superpages.
          */
-        lea     __PAGE_HYPERVISOR+sym_esi(l1_identmap),%edi
-        mov     %edi,sym_fs(l2_bootmap)
+        lea     sym_esi(_start), %ecx
+        lea     -1 + sym_esi(_end), %edx
+        lea     _PAGE_PSE + PAGE_HYPERVISOR_RWX(%ecx), %eax /* PTE to write. */
+        shr     $L2_PAGETABLE_SHIFT, %ecx                   /* First slot to write. */
+        shr     $L2_PAGETABLE_SHIFT, %edx                   /* Final slot to write. */
+
+1:      mov     %eax, sym_offs(l2_bootmap)  (%esi, %ecx, 8)
+        mov     %eax, sym_offs(l2_directmap)(%esi, %ecx, 8)
+        add     $1, %ecx
+        add     $1 << L2_PAGETABLE_SHIFT, %eax
+
+        cmp     %edx, %ecx
+        jbe     1b
+
+        /* Map 4x l2_bootmap[] into l3_bootmap[0...3] */
+        lea     __PAGE_HYPERVISOR + sym_esi(l2_bootmap), %eax
+        mov     %eax, 0  + sym_esi(l3_bootmap)
+        add     $PAGE_SIZE, %eax
+        mov     %eax, 8  + sym_esi(l3_bootmap)
+        add     $PAGE_SIZE, %eax
+        mov     %eax, 16 + sym_esi(l3_bootmap)
+        add     $PAGE_SIZE, %eax
+        mov     %eax, 24 + sym_esi(l3_bootmap)
+
+        /* Map l1_bootmap[] into l2_bootmap[0]. */
+        lea     __PAGE_HYPERVISOR + sym_esi(l1_bootmap), %eax
+        mov     %eax, sym_esi(l2_bootmap)
+
+        /* Map the permanent trampoline page into l1_bootmap[]. */
+        mov     sym_esi(trampoline_phys), %ecx
+        lea     __PAGE_HYPERVISOR_RX(%ecx), %edx /* %edx = PTE to write  */
+        shr     $PAGE_SHIFT, %ecx                /* %ecx = Slot to write */
+        mov     %edx, sym_offs(l1_bootmap)(%esi, %ecx, 8)
 
         /* Apply relocations to bootstrap trampoline. */
-        mov     sym_fs(trampoline_phys),%edx
-        mov     $sym_offs(__trampoline_rel_start),%edi
+        mov     sym_esi(trampoline_phys), %edx
+        lea     sym_esi(__trampoline_rel_start), %edi
+        lea     sym_esi(__trampoline_rel_stop), %ecx
 1:
-        mov     %fs:(%edi),%eax
-        add     %edx,%fs:(%edi,%eax)
+        mov     (%edi), %eax
+        add     %edx, (%edi, %eax)
         add     $4,%edi
-        cmp     $sym_offs(__trampoline_rel_stop),%edi
+
+        cmp     %ecx, %edi
         jb      1b
 
         /* Patch in the trampoline segment. */
         shr     $4,%edx
-        mov     $sym_offs(__trampoline_seg_start),%edi
+        lea     sym_esi(__trampoline_seg_start), %edi
+        lea     sym_esi(__trampoline_seg_stop), %ecx
 1:
-        mov     %fs:(%edi),%eax
-        mov     %dx,%fs:(%edi,%eax)
+        mov     (%edi), %eax
+        mov     %dx, (%edi, %eax)
         add     $4,%edi
-        cmp     $sym_offs(__trampoline_seg_stop),%edi
+
+        cmp     %ecx, %edi
         jb      1b
 
         /* Do not parse command line on EFI platform here. */
-        cmpb    $0,sym_fs(efi_platform)
+        cmpb    $0, sym_esi(efi_platform)
         jnz     1f
 
         /* Bail if there is no command line to parse. */
-        mov     sym_fs(multiboot_ptr),%ebx
+        mov     sym_esi(multiboot_ptr), %ebx
         testl   $MBI_CMDLINE,MB_flags(%ebx)
         jz      1f
 
@@ -732,16 +757,16 @@ trampoline_setup:
 
 1:
         /* Switch to low-memory stack which lives at the end of trampoline region. */
-        mov     sym_fs(trampoline_phys),%edi
+        mov     sym_esi(trampoline_phys), %edi
         lea     TRAMPOLINE_SPACE+TRAMPOLINE_STACK_SPACE(%edi),%esp
         lea     trampoline_boot_cpu_entry-trampoline_start(%edi),%eax
         pushl   $BOOT_CS32
         push    %eax
 
         /* Copy bootstrap trampoline to low memory, below 1MB. */
-        mov     $sym_offs(trampoline_start),%esi
+        lea     sym_esi(trampoline_start), %esi
         mov     $((trampoline_end - trampoline_start) / 4),%ecx
-        rep movsl %fs:(%esi),%es:(%edi)
+        rep movsl
 
         /* Jump into the relocated trampoline. */
         lret

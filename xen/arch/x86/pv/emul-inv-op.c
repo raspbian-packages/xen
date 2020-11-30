@@ -19,59 +19,16 @@
  * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <xen/errno.h>
-#include <xen/event.h>
-#include <xen/guest_access.h>
-#include <xen/iocap.h>
-#include <xen/spinlock.h>
 #include <xen/trace.h>
 
-#include <asm/apic.h>
-#include <asm/debugreg.h>
-#include <asm/hpet.h>
-#include <asm/hypercall.h>
-#include <asm/mc146818rtc.h>
-#include <asm/p2m.h>
-#include <asm/pv/traps.h>
-#include <asm/shared.h>
-#include <asm/traps.h>
-#include <asm/x86_emulate.h>
-
-#include <xsm/xsm.h>
-
 #include "emulate.h"
-
-static int emulate_invalid_rdtscp(struct cpu_user_regs *regs)
-{
-    char opcode[3];
-    unsigned long eip, rc;
-    struct vcpu *v = current;
-    const struct domain *currd = v->domain;
-
-    eip = regs->rip;
-    if ( (rc = copy_from_user(opcode, (char *)eip, sizeof(opcode))) != 0 )
-    {
-        pv_inject_page_fault(0, eip + sizeof(opcode) - rc);
-        return EXCRET_fault_fixed;
-    }
-    if ( memcmp(opcode, "\xf\x1\xf9", sizeof(opcode)) )
-        return 0;
-    eip += sizeof(opcode);
-
-    msr_split(regs, pv_soft_rdtsc(v, regs));
-    regs->rcx = (currd->arch.tsc_mode == TSC_MODE_PVRDTSCP
-                 ? currd->arch.incarnation : 0);
-
-    pv_emul_instruction_done(regs, eip);
-    return EXCRET_fault_fixed;
-}
 
 static int emulate_forced_invalid_op(struct cpu_user_regs *regs)
 {
     char sig[5], instr[2];
     unsigned long eip, rc;
     struct cpuid_leaf res;
-    const struct msr_vcpu_policy *vp = current->arch.msr;
+    const struct vcpu_msrs *msrs = current->arch.msrs;
 
     eip = regs->rip;
 
@@ -95,7 +52,7 @@ static int emulate_forced_invalid_op(struct cpu_user_regs *regs)
         return 0;
 
     /* If cpuid faulting is enabled and CPL>0 inject a #GP in place of #UD. */
-    if ( vp->misc_features_enables.cpuid_faulting &&
+    if ( msrs->misc_features_enables.cpuid_faulting &&
          !guest_kernel_mode(current, regs) )
     {
         regs->rip = eip;
@@ -121,7 +78,7 @@ static int emulate_forced_invalid_op(struct cpu_user_regs *regs)
 
 bool pv_emulate_invalid_op(struct cpu_user_regs *regs)
 {
-    return !emulate_invalid_rdtscp(regs) && !emulate_forced_invalid_op(regs);
+    return !emulate_forced_invalid_op(regs);
 }
 
 /*

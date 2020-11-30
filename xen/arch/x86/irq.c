@@ -10,6 +10,7 @@
 #include <xen/errno.h>
 #include <xen/event.h>
 #include <xen/irq.h>
+#include <xen/param.h>
 #include <xen/perfc.h>
 #include <xen/sched.h>
 #include <xen/keyhandler.h>
@@ -24,6 +25,7 @@
 #include <asm/current.h>
 #include <asm/flushtlb.h>
 #include <asm/mach-generic/mach_apic.h>
+#include <irq_vectors.h>
 #include <public/physdev.h>
 
 static int parse_irq_vector_map_param(const char *s);
@@ -44,7 +46,7 @@ vmask_t global_used_vector_map;
 
 struct irq_desc __read_mostly *irq_desc = NULL;
 
-static DECLARE_BITMAP(used_vectors, NR_VECTORS);
+static DECLARE_BITMAP(used_vectors, X86_NR_VECTORS);
 
 static DEFINE_SPINLOCK(vector_lock);
 
@@ -99,8 +101,29 @@ void unlock_vector_lock(void)
     spin_unlock(&vector_lock);
 }
 
-static void trace_irq_mask(uint32_t event, int irq, int vector,
-                           const cpumask_t *mask)
+static inline bool valid_irq_vector(unsigned int vector)
+{
+    return vector >= FIRST_IRQ_VECTOR && vector <= LAST_IRQ_VECTOR;
+}
+
+static void release_old_vec(struct irq_desc *desc)
+{
+    unsigned int vector = desc->arch.old_vector;
+
+    desc->arch.old_vector = IRQ_VECTOR_UNASSIGNED;
+    cpumask_clear(desc->arch.old_cpu_mask);
+
+    if ( !valid_irq_vector(vector) )
+        ASSERT_UNREACHABLE();
+    else if ( desc->arch.used_vectors )
+    {
+        ASSERT(test_bit(vector, desc->arch.used_vectors));
+        clear_bit(vector, desc->arch.used_vectors);
+    }
+}
+
+static void _trace_irq_mask(uint32_t event, int irq, int vector,
+                            const cpumask_t *mask)
 {
     struct {
         unsigned int irq:16, vec:16;
@@ -115,14 +138,20 @@ static void trace_irq_mask(uint32_t event, int irq, int vector,
     trace_var(event, 1, sizeof(d), &d);
 }
 
-static int __init __bind_irq_vector(int irq, int vector, const cpumask_t *cpu_mask)
+static void trace_irq_mask(uint32_t event, int irq, int vector,
+                           const cpumask_t *mask)
+{
+    if ( unlikely(tb_init_done) )
+        _trace_irq_mask(event, irq, vector, mask);
+}
+
+static int __init _bind_irq_vector(struct irq_desc *desc, int vector,
+                                   const cpumask_t *cpu_mask)
 {
     cpumask_t online_mask;
     int cpu;
-    struct irq_desc *desc = irq_to_desc(irq);
 
-    BUG_ON((unsigned)irq >= nr_irqs);
-    BUG_ON((unsigned)vector >= NR_VECTORS);
+    BUG_ON((unsigned)vector >= X86_NR_VECTORS);
 
     cpumask_and(&online_mask, cpu_mask, &cpu_online_map);
     if (cpumask_empty(&online_mask))
@@ -132,9 +161,9 @@ static int __init __bind_irq_vector(int irq, int vector, const cpumask_t *cpu_ma
         return 0;
     if ( desc->arch.vector != IRQ_VECTOR_UNASSIGNED )
         return -EBUSY;
-    trace_irq_mask(TRC_HW_IRQ_BIND_VECTOR, irq, vector, &online_mask);
+    trace_irq_mask(TRC_HW_IRQ_BIND_VECTOR, desc->irq, vector, &online_mask);
     for_each_cpu(cpu, &online_mask)
-        per_cpu(vector_irq, cpu)[vector] = irq;
+        per_cpu(vector_irq, cpu)[vector] = desc->irq;
     desc->arch.vector = vector;
     cpumask_copy(desc->arch.cpu_mask, &online_mask);
     if ( desc->arch.used_vectors )
@@ -148,19 +177,87 @@ static int __init __bind_irq_vector(int irq, int vector, const cpumask_t *cpu_ma
 
 int __init bind_irq_vector(int irq, int vector, const cpumask_t *cpu_mask)
 {
+    struct irq_desc *desc = irq_to_desc(irq);
     unsigned long flags;
     int ret;
 
-    spin_lock_irqsave(&vector_lock, flags);
-    ret = __bind_irq_vector(irq, vector, cpu_mask);
-    spin_unlock_irqrestore(&vector_lock, flags);
+    BUG_ON((unsigned)irq >= nr_irqs);
+
+    spin_lock_irqsave(&desc->lock, flags);
+    spin_lock(&vector_lock);
+    ret = _bind_irq_vector(desc, vector, cpu_mask);
+    spin_unlock(&vector_lock);
+    spin_unlock_irqrestore(&desc->lock, flags);
+
     return ret;
+}
+
+static void _clear_irq_vector(struct irq_desc *desc)
+{
+    unsigned int cpu, old_vector, irq = desc->irq;
+    unsigned int vector = desc->arch.vector;
+    cpumask_t *tmp_mask = this_cpu(scratch_cpumask);
+
+    BUG_ON(!valid_irq_vector(vector));
+
+    /* Always clear desc->arch.vector */
+    cpumask_and(tmp_mask, desc->arch.cpu_mask, &cpu_online_map);
+
+    for_each_cpu(cpu, tmp_mask)
+    {
+        ASSERT(per_cpu(vector_irq, cpu)[vector] == irq);
+        per_cpu(vector_irq, cpu)[vector] = ~irq;
+    }
+
+    desc->arch.vector = IRQ_VECTOR_UNASSIGNED;
+    cpumask_clear(desc->arch.cpu_mask);
+
+    if ( desc->arch.used_vectors )
+    {
+        ASSERT(test_bit(vector, desc->arch.used_vectors));
+        clear_bit(vector, desc->arch.used_vectors);
+    }
+
+    desc->arch.used = IRQ_UNUSED;
+
+    trace_irq_mask(TRC_HW_IRQ_CLEAR_VECTOR, irq, vector, tmp_mask);
+
+    if ( likely(!desc->arch.move_in_progress) )
+        return;
+
+    /* If we were in motion, also clear desc->arch.old_vector */
+    old_vector = desc->arch.old_vector;
+    cpumask_and(tmp_mask, desc->arch.old_cpu_mask, &cpu_online_map);
+
+    for_each_cpu(cpu, tmp_mask)
+    {
+        ASSERT(per_cpu(vector_irq, cpu)[old_vector] == irq);
+        TRACE_3D(TRC_HW_IRQ_MOVE_FINISH, irq, old_vector, cpu);
+        per_cpu(vector_irq, cpu)[old_vector] = ~irq;
+    }
+
+    release_old_vec(desc);
+
+    desc->arch.move_in_progress = 0;
+}
+
+void __init clear_irq_vector(int irq)
+{
+    struct irq_desc *desc = irq_to_desc(irq);
+    unsigned long flags;
+
+    spin_lock_irqsave(&desc->lock, flags);
+    spin_lock(&vector_lock);
+    _clear_irq_vector(desc);
+    spin_unlock(&vector_lock);
+    spin_unlock_irqrestore(&desc->lock, flags);
 }
 
 /*
  * Dynamic irq allocate and deallocation for MSI
  */
-int create_irq(nodeid_t node)
+
+int create_irq(nodeid_t node, bool grant_access)
 {
     int irq, ret;
     struct irq_desc *desc;
@@ -188,18 +285,25 @@ int create_irq(nodeid_t node)
         }
         ret = assign_irq_vector(irq, mask);
     }
+
+    ASSERT(desc->arch.creator_domid == DOMID_INVALID);
+
     if (ret < 0)
     {
         desc->arch.used = IRQ_UNUSED;
         irq = ret;
     }
-    else if ( hardware_domain )
+    else if ( grant_access )
     {
-        ret = irq_permit_access(hardware_domain, irq);
+        struct domain *currd = current->domain;
+
+        ret = irq_permit_access(currd, irq);
         if ( ret )
             printk(XENLOG_G_ERR
-                   "Could not grant Dom0 access to IRQ%d (error %d)\n",
-                   irq, ret);
+                   "Could not grant %pd access to IRQ%d (error %d)\n",
+                   currd, irq, ret);
+        else
+            desc->arch.creator_domid = currd->domain_id;
     }
 
     return irq;
@@ -213,14 +317,23 @@ void destroy_irq(unsigned int irq)
 
     BUG_ON(!MSI_IRQ(irq));
 
-    if ( hardware_domain )
+    if ( desc->arch.creator_domid != DOMID_INVALID )
     {
-        int err = irq_deny_access(hardware_domain, irq);
+        struct domain *d = get_domain_by_id(desc->arch.creator_domid);
 
-        if ( err )
-            printk(XENLOG_G_ERR
-                   "Could not revoke Dom0 access to IRQ%u (error %d)\n",
-                   irq, err);
+        if ( d )
+        {
+            int err = irq_deny_access(d, irq);
+
+            if ( err )
+                printk(XENLOG_G_ERR
+                       "Could not revoke %pd access to IRQ%u (error %d)\n",
+                       d, irq, err);
+
+            put_domain(d);
+        }
+
+        desc->arch.creator_domid = DOMID_INVALID;
     }
 
     spin_lock_irqsave(&desc->lock, flags);
@@ -238,91 +351,37 @@ void destroy_irq(unsigned int irq)
 
     spin_lock_irqsave(&desc->lock, flags);
     desc->handler = &no_irq_type;
-    clear_irq_vector(irq);
+    spin_lock(&vector_lock);
+    _clear_irq_vector(desc);
+    spin_unlock(&vector_lock);
     desc->arch.used_vectors = NULL;
     spin_unlock_irqrestore(&desc->lock, flags);
 
     xfree(action);
 }
 
-static void __clear_irq_vector(int irq)
-{
-    int cpu, vector, old_vector;
-    cpumask_t tmp_mask;
-    struct irq_desc *desc = irq_to_desc(irq);
-
-    BUG_ON(!desc->arch.vector);
-
-    /* Always clear desc->arch.vector */
-    vector = desc->arch.vector;
-    cpumask_and(&tmp_mask, desc->arch.cpu_mask, &cpu_online_map);
-
-    for_each_cpu(cpu, &tmp_mask) {
-        ASSERT( per_cpu(vector_irq, cpu)[vector] == irq );
-        per_cpu(vector_irq, cpu)[vector] = ~irq;
-    }
-
-    desc->arch.vector = IRQ_VECTOR_UNASSIGNED;
-    cpumask_clear(desc->arch.cpu_mask);
-
-    if ( desc->arch.used_vectors )
-    {
-        ASSERT(test_bit(vector, desc->arch.used_vectors));
-        clear_bit(vector, desc->arch.used_vectors);
-    }
-
-    desc->arch.used = IRQ_UNUSED;
-
-    trace_irq_mask(TRC_HW_IRQ_CLEAR_VECTOR, irq, vector, &tmp_mask);
-
-    if ( likely(!desc->arch.move_in_progress) )
-        return;
-
-    /* If we were in motion, also clear desc->arch.old_vector */
-    old_vector = desc->arch.old_vector;
-    cpumask_and(&tmp_mask, desc->arch.old_cpu_mask, &cpu_online_map);
-
-    for_each_cpu(cpu, &tmp_mask) {
-        ASSERT( per_cpu(vector_irq, cpu)[old_vector] == irq );
-        TRACE_3D(TRC_HW_IRQ_MOVE_FINISH, irq, old_vector, cpu);
-        per_cpu(vector_irq, cpu)[old_vector] = ~irq;
-    }
-
-    desc->arch.old_vector = IRQ_VECTOR_UNASSIGNED;
-    cpumask_clear(desc->arch.old_cpu_mask);
-
-    if ( desc->arch.used_vectors )
-    {
-        ASSERT(test_bit(old_vector, desc->arch.used_vectors));
-        clear_bit(old_vector, desc->arch.used_vectors);
-    }
-
-    desc->arch.move_in_progress = 0;
-}
-
-void clear_irq_vector(int irq)
-{
-    unsigned long flags;
-
-    spin_lock_irqsave(&vector_lock, flags);
-    __clear_irq_vector(irq);
-    spin_unlock_irqrestore(&vector_lock, flags);
-}
-
 int irq_to_vector(int irq)
 {
-    int vector = -1;
+    int vector = IRQ_VECTOR_UNASSIGNED;
+    const struct irq_desc *desc;
 
     BUG_ON(irq >= nr_irqs || irq < 0);
+    desc = irq_to_desc(irq);
 
     if (IO_APIC_IRQ(irq))
     {
-        vector = irq_to_desc(irq)->arch.vector;
-        if (vector >= FIRST_LEGACY_VECTOR && vector <= LAST_LEGACY_VECTOR)
+        vector = desc->arch.vector;
+        /*
+         * Both parts of the condition are needed here during early boot, as
+         * at that time IRQ0 in particular may still have the 8259A chip set,
+         * but has already got its special IRQ0_VECTOR.
+         */
+        if ( desc->handler->enable == enable_8259A_irq &&
+             vector >= FIRST_LEGACY_VECTOR && vector <= LAST_LEGACY_VECTOR )
             vector = 0;
     }
     else if (MSI_IRQ(irq))
-        vector = irq_to_desc(irq)->arch.vector;
+        vector = desc->arch.vector;
     else
         vector = LEGACY_VECTOR(irq);
 
@@ -349,6 +408,7 @@ int arch_init_one_irq_desc(struct irq_desc *desc)
 
     desc->arch.vector = IRQ_VECTOR_UNASSIGNED;
     desc->arch.old_vector = IRQ_VECTOR_UNASSIGNED;
+    desc->arch.creator_domid = DOMID_INVALID;
 
     return 0;
 }
@@ -358,7 +418,7 @@ int __init init_irq_data(void)
     struct irq_desc *desc;
     int irq, vector;
 
-    for ( vector = 0; vector < NR_VECTORS; ++vector )
+    for ( vector = 0; vector < X86_NR_VECTORS; ++vector )
         this_cpu(vector_irq)[vector] = INT_MIN;
 
     irq_desc = xzalloc_array(struct irq_desc, nr_irqs);
@@ -386,8 +446,6 @@ int __init init_irq_data(void)
 
     return 0;
 }
-
-static void __do_IRQ_guest(int vector);
 
 static void ack_none(struct irq_desc *desc)
 {
@@ -421,15 +479,18 @@ static vmask_t *irq_get_used_vector_mask(int irq)
             int vector;
             
             vector = irq_to_vector(irq);
-            if ( vector > 0 )
+            if ( valid_irq_vector(vector) )
             {
-                printk(XENLOG_INFO "IRQ %d already assigned vector %d\n",
+                printk(XENLOG_INFO "IRQ%d already assigned vector %02x\n",
                        irq, vector);
                 
                 ASSERT(!test_bit(vector, ret));
 
                 set_bit(vector, ret);
             }
+            else if ( vector != IRQ_VECTOR_UNASSIGNED )
+                printk(XENLOG_WARNING "IRQ%d mapped to bogus vector %02x\n",
+                       irq, vector);
         }
     }
     else if ( IO_APIC_IRQ(irq) &&
@@ -441,8 +502,7 @@ static vmask_t *irq_get_used_vector_mask(int irq)
     return ret;
 }
 
-static int __assign_irq_vector(
-    int irq, struct irq_desc *desc, const cpumask_t *mask)
+static int _assign_irq_vector(struct irq_desc *desc, const cpumask_t *mask)
 {
     /*
      * NOTE! The local APIC isn't very good at handling
@@ -456,12 +516,15 @@ static int __assign_irq_vector(
      * 0x80, because int 0x80 is hm, kind of importantish. ;)
      */
     static int current_vector = FIRST_DYNAMIC_VECTOR, current_offset = 0;
-    int cpu, err, old_vector;
-    cpumask_t tmp_mask;
+    unsigned int cpu;
+    int err, old_vector, irq = desc->irq;
     vmask_t *irq_used_vectors = NULL;
 
     old_vector = irq_to_vector(irq);
-    if (old_vector > 0) {
+    if ( valid_irq_vector(old_vector) )
+    {
+        cpumask_t tmp_mask;
+
         cpumask_and(&tmp_mask, mask, &cpu_online_map);
         if (cpumask_intersects(&tmp_mask, desc->arch.cpu_mask)) {
             desc->arch.vector = old_vector;
@@ -484,7 +547,9 @@ static int __assign_irq_vector(
     else
         irq_used_vectors = irq_get_used_vector_mask(irq);
 
-    for_each_cpu(cpu, mask) {
+    for_each_cpu(cpu, mask)
+    {
+        const cpumask_t *vec_mask;
         int new_cpu;
         int vector, offset;
 
@@ -492,8 +557,7 @@ static int __assign_irq_vector(
         if (!cpu_online(cpu))
             continue;
 
-        cpumask_and(&tmp_mask, vector_allocation_cpumask(cpu),
-                    &cpu_online_map);
+        vec_mask = vector_allocation_cpumask(cpu);
 
         vector = current_vector;
         offset = current_offset;
@@ -514,22 +578,35 @@ next:
             && test_bit(vector, irq_used_vectors) )
             goto next;
 
-        for_each_cpu(new_cpu, &tmp_mask)
+        if ( cpumask_test_cpu(0, vec_mask) &&
+             vector >= FIRST_LEGACY_VECTOR && vector <= LAST_LEGACY_VECTOR )
+            goto next;
+
+        for_each_cpu(new_cpu, vec_mask)
             if (per_cpu(vector_irq, new_cpu)[vector] >= 0)
                 goto next;
         /* Found one! */
         current_vector = vector;
         current_offset = offset;
-        if (old_vector > 0) {
-            desc->arch.move_in_progress = 1;
-            cpumask_copy(desc->arch.old_cpu_mask, desc->arch.cpu_mask);
+
+        if ( valid_irq_vector(old_vector) )
+        {
+            cpumask_and(desc->arch.old_cpu_mask, desc->arch.cpu_mask,
+                        &cpu_online_map);
             desc->arch.old_vector = desc->arch.vector;
+            if ( !cpumask_empty(desc->arch.old_cpu_mask) )
+                desc->arch.move_in_progress = 1;
+            else
+                /* This can happen while offlining a CPU. */
+                release_old_vec(desc);
         }
-        trace_irq_mask(TRC_HW_IRQ_ASSIGN_VECTOR, irq, vector, &tmp_mask);
-        for_each_cpu(new_cpu, &tmp_mask)
+
+        trace_irq_mask(TRC_HW_IRQ_ASSIGN_VECTOR, irq, vector, vec_mask);
+
+        for_each_cpu(new_cpu, vec_mask)
             per_cpu(vector_irq, new_cpu)[vector] = irq;
         desc->arch.vector = vector;
-        cpumask_copy(desc->arch.cpu_mask, &tmp_mask);
+        cpumask_copy(desc->arch.cpu_mask, vec_mask);
 
         desc->arch.used = IRQ_USED;
         ASSERT((desc->arch.used_vectors == NULL)
@@ -557,26 +634,37 @@ int assign_irq_vector(int irq, const cpumask_t *mask)
     
     BUG_ON(irq >= nr_irqs || irq <0);
 
-    spin_lock_irqsave(&vector_lock, flags);
-    ret = __assign_irq_vector(irq, desc, mask ?: TARGET_CPUS);
-    if (!ret) {
+    spin_lock_irqsave(&desc->lock, flags);
+
+    spin_lock(&vector_lock);
+    ret = _assign_irq_vector(desc, mask ?: TARGET_CPUS);
+    spin_unlock(&vector_lock);
+
+    if ( !ret )
+    {
         ret = desc->arch.vector;
-        cpumask_copy(desc->affinity, desc->arch.cpu_mask);
+        if ( mask )
+            cpumask_copy(desc->affinity, mask);
+        else
+            cpumask_setall(desc->affinity);
     }
-    spin_unlock_irqrestore(&vector_lock, flags);
+
+    spin_unlock_irqrestore(&desc->lock, flags);
+
     return ret;
 }
 
 /*
  * Initialize vector_irq on a new cpu. This function must be called
- * with vector_lock held.
+ * with vector_lock held.  For this reason it may not itself acquire
+ * the IRQ descriptor locks, as lock nesting is the other way around.
  */
 void setup_vector_irq(unsigned int cpu)
 {
     unsigned int irq, vector;
 
     /* Clear vector_irq */
-    for ( vector = 0; vector < NR_VECTORS; ++vector )
+    for ( vector = 0; vector < X86_NR_VECTORS; ++vector )
         per_cpu(vector_irq, cpu)[vector] = INT_MIN;
     /* Mark the inuse vectors */
     for ( irq = 0; irq < nr_irqs; ++irq )
@@ -603,9 +691,6 @@ void move_masked_irq(struct irq_desc *desc)
         return;
     
     desc->status &= ~IRQ_MOVE_PENDING;
-
-    if (unlikely(cpumask_empty(pending_mask)))
-        return;
 
     if (!desc->handler->set_affinity)
         return;
@@ -642,21 +727,25 @@ void irq_move_cleanup_interrupt(struct cpu_user_regs *regs)
 {
     unsigned vector, me;
 
+    /* This interrupt should not nest inside others. */
+    BUILD_BUG_ON(APIC_PRIO_CLASS(IRQ_MOVE_CLEANUP_VECTOR) !=
+                 APIC_PRIO_CLASS(FIRST_DYNAMIC_VECTOR));
+
     ack_APIC_irq();
 
     me = smp_processor_id();
+    if ( !cpu_online(me) )
+        return;
+
     for ( vector = FIRST_DYNAMIC_VECTOR;
           vector <= LAST_HIPRIORITY_VECTOR; vector++)
     {
         unsigned int irq;
         unsigned int irr;
         struct irq_desc *desc;
-        irq = __get_cpu_var(vector_irq)[vector];
+        irq = per_cpu(vector_irq, me)[vector];
 
         if ((int)irq < 0)
-            continue;
-
-        if ( vector >= FIRST_LEGACY_VECTOR && vector <= LAST_LEGACY_VECTOR )
             continue;
 
         desc = irq_to_desc(irq);
@@ -664,6 +753,10 @@ void irq_move_cleanup_interrupt(struct cpu_user_regs *regs)
             continue;
 
         spin_lock(&desc->lock);
+
+        if (desc->handler->enable == enable_8259A_irq)
+            goto unlock;
+
         if (!desc->arch.move_cleanup_count)
             goto unlock;
 
@@ -690,19 +783,13 @@ void irq_move_cleanup_interrupt(struct cpu_user_regs *regs)
         TRACE_3D(TRC_HW_IRQ_MOVE_CLEANUP,
                  irq, vector, smp_processor_id());
 
-        __get_cpu_var(vector_irq)[vector] = ~irq;
+        per_cpu(vector_irq, me)[vector] = ~irq;
         desc->arch.move_cleanup_count--;
 
         if ( desc->arch.move_cleanup_count == 0 )
         {
-            desc->arch.old_vector = IRQ_VECTOR_UNASSIGNED;
-            cpumask_clear(desc->arch.old_cpu_mask);
-
-            if ( desc->arch.used_vectors )
-            {
-                ASSERT(test_bit(vector, desc->arch.used_vectors));
-                clear_bit(vector, desc->arch.used_vectors);
-            }
+            ASSERT(vector == desc->arch.old_vector);
+            release_old_vec(desc);
         }
 unlock:
         spin_unlock(&desc->lock);
@@ -711,11 +798,14 @@ unlock:
 
 static void send_cleanup_vector(struct irq_desc *desc)
 {
-    cpumask_t cleanup_mask;
+    cpumask_and(desc->arch.old_cpu_mask, desc->arch.old_cpu_mask,
+                &cpu_online_map);
+    desc->arch.move_cleanup_count = cpumask_weight(desc->arch.old_cpu_mask);
 
-    cpumask_and(&cleanup_mask, desc->arch.old_cpu_mask, &cpu_online_map);
-    desc->arch.move_cleanup_count = cpumask_weight(&cleanup_mask);
-    send_IPI_mask(&cleanup_mask, IRQ_MOVE_CLEANUP_VECTOR);
+    if ( desc->arch.move_cleanup_count )
+        send_IPI_mask(desc->arch.old_cpu_mask, IRQ_MOVE_CLEANUP_VECTOR);
+    else
+        release_old_vec(desc);
 
     desc->arch.move_in_progress = 0;
 }
@@ -737,25 +827,31 @@ void irq_complete_move(struct irq_desc *desc)
 
 unsigned int set_desc_affinity(struct irq_desc *desc, const cpumask_t *mask)
 {
-    unsigned int irq;
     int ret;
     unsigned long flags;
     cpumask_t dest_mask;
 
-    if (!cpumask_intersects(mask, &cpu_online_map))
+    if ( mask && !cpumask_intersects(mask, &cpu_online_map) )
         return BAD_APICID;
-
-    irq = desc->irq;
 
     spin_lock_irqsave(&vector_lock, flags);
-    ret = __assign_irq_vector(irq, desc, mask);
+    ret = _assign_irq_vector(desc, mask ?: TARGET_CPUS);
     spin_unlock_irqrestore(&vector_lock, flags);
 
-    if (ret < 0)
+    if ( ret < 0 )
         return BAD_APICID;
 
-    cpumask_copy(desc->affinity, mask);
-    cpumask_and(&dest_mask, mask, desc->arch.cpu_mask);
+    if ( mask )
+    {
+        cpumask_copy(desc->affinity, mask);
+        cpumask_and(&dest_mask, mask, desc->arch.cpu_mask);
+    }
+    else
+    {
+        cpumask_setall(desc->affinity);
+        cpumask_copy(&dest_mask, desc->arch.cpu_mask);
+    }
+    cpumask_and(&dest_mask, &dest_mask, &cpu_online_map);
 
     return cpu_mask_to_apicid(&dest_mask);
 }
@@ -786,6 +882,7 @@ void pirq_set_affinity(struct domain *d, int pirq, const cpumask_t *mask)
 }
 
 DEFINE_PER_CPU(unsigned int, irq_count);
+static DEFINE_PER_CPU(bool, check_eoi_deferral);
 
 uint8_t alloc_hipriority_vector(void)
 {
@@ -795,7 +892,7 @@ uint8_t alloc_hipriority_vector(void)
     return next++;
 }
 
-static void (*direct_apic_vector[NR_VECTORS])(struct cpu_user_regs *);
+static void (*direct_apic_vector[X86_NR_VECTORS])(struct cpu_user_regs *);
 void set_direct_apic_vector(
     uint8_t vector, void (*handler)(struct cpu_user_regs *))
 {
@@ -814,127 +911,6 @@ void alloc_direct_apic_vector(
         set_direct_apic_vector(*vector, handler);
     }
     spin_unlock(&lock);
-}
-
-void do_IRQ(struct cpu_user_regs *regs)
-{
-    struct irqaction *action;
-    uint32_t          tsc_in;
-    struct irq_desc  *desc;
-    unsigned int      vector = (u8)regs->entry_vector;
-    int irq = __get_cpu_var(vector_irq[vector]);
-    struct cpu_user_regs *old_regs = set_irq_regs(regs);
-    
-    perfc_incr(irqs);
-    this_cpu(irq_count)++;
-    irq_enter();
-
-    if (irq < 0) {
-        if (direct_apic_vector[vector] != NULL) {
-            (*direct_apic_vector[vector])(regs);
-        } else {
-            const char *kind = ", LAPIC";
-
-            if ( apic_isr_read(vector) )
-                ack_APIC_irq();
-            else
-                kind = "";
-            if ( ! ( vector >= FIRST_LEGACY_VECTOR &&
-                     vector <= LAST_LEGACY_VECTOR &&
-                     bogus_8259A_irq(vector - FIRST_LEGACY_VECTOR) ) )
-            {
-                printk("CPU%u: No irq handler for vector %02x (IRQ %d%s)\n",
-                       smp_processor_id(), vector, irq, kind);
-                desc = irq_to_desc(~irq);
-                if ( ~irq < nr_irqs && irq_desc_initialized(desc) )
-                {
-                    spin_lock(&desc->lock);
-                    printk("IRQ%d a=%04lx[%04lx,%04lx] v=%02x[%02x] t=%s s=%08x\n",
-                           ~irq, *cpumask_bits(desc->affinity),
-                           *cpumask_bits(desc->arch.cpu_mask),
-                           *cpumask_bits(desc->arch.old_cpu_mask),
-                           desc->arch.vector, desc->arch.old_vector,
-                           desc->handler->typename, desc->status);
-                    spin_unlock(&desc->lock);
-                }
-            }
-            TRACE_1D(TRC_HW_IRQ_UNMAPPED_VECTOR, vector);
-        }
-        goto out_no_unlock;
-    }
-
-    desc = irq_to_desc(irq);
-
-    spin_lock(&desc->lock);
-    desc->handler->ack(desc);
-
-    if ( likely(desc->status & IRQ_GUEST) )
-    {
-        if ( irq_ratelimit_timer.function && /* irq rate limiting enabled? */
-             unlikely(desc->rl_cnt++ >= irq_ratelimit_threshold) )
-        {
-            s_time_t now = NOW();
-            if ( now < (desc->rl_quantum_start + MILLISECS(10)) )
-            {
-                desc->handler->disable(desc);
-                /*
-                 * If handler->disable doesn't actually mask the interrupt, a 
-                 * disabled irq still can fire. This check also avoids possible 
-                 * deadlocks if ratelimit_timer_fn runs at the same time.
-                 */
-                if ( likely(list_empty(&desc->rl_link)) )
-                {
-                    spin_lock(&irq_ratelimit_lock);
-                    if ( list_empty(&irq_ratelimit_list) )
-                        set_timer(&irq_ratelimit_timer, now + MILLISECS(10));
-                    list_add(&desc->rl_link, &irq_ratelimit_list);
-                    spin_unlock(&irq_ratelimit_lock);
-                }
-                goto out;
-            }
-            desc->rl_cnt = 0;
-            desc->rl_quantum_start = now;
-        }
-
-        tsc_in = tb_init_done ? get_cycles() : 0;
-        __do_IRQ_guest(irq);
-        TRACE_3D(TRC_HW_IRQ_HANDLED, irq, tsc_in, get_cycles());
-        goto out_no_end;
-    }
-
-    desc->status &= ~IRQ_REPLAY;
-    desc->status |= IRQ_PENDING;
-
-    /*
-     * Since we set PENDING, if another processor is handling a different 
-     * instance of this same irq, the other processor will take care of it.
-     */
-    if ( desc->status & (IRQ_DISABLED | IRQ_INPROGRESS) )
-        goto out;
-
-    desc->status |= IRQ_INPROGRESS;
-
-    action = desc->action;
-    while ( desc->status & IRQ_PENDING )
-    {
-        desc->status &= ~IRQ_PENDING;
-        spin_unlock_irq(&desc->lock);
-        tsc_in = tb_init_done ? get_cycles() : 0;
-        action->handler(irq, action->dev_id, regs);
-        TRACE_3D(TRC_HW_IRQ_HANDLED, irq, tsc_in, get_cycles());
-        spin_lock_irq(&desc->lock);
-    }
-
-    desc->status &= ~IRQ_INPROGRESS;
-
- out:
-    if ( desc->handler->end )
-        desc->handler->end(desc, vector);
- out_no_end:
-    spin_unlock(&desc->lock);
- out_no_unlock:
-    irq_exit();
-    set_irq_regs(old_regs);
 }
 
 static void irq_ratelimit_timer_fn(void *data)
@@ -1084,6 +1060,29 @@ bool cpu_has_pending_apic_eoi(void)
     return pending_eoi_sp(this_cpu(pending_eoi)) != 0;
 }
 
+void end_nonmaskable_irq(struct irq_desc *desc, uint8_t vector)
+{
+    struct pending_eoi *peoi = this_cpu(pending_eoi);
+    unsigned int sp = pending_eoi_sp(peoi);
+
+    if ( !this_cpu(check_eoi_deferral) || !sp || peoi[sp - 1].vector < vector )
+    {
+        ack_APIC_irq();
+        return;
+    }
+
+    /* Defer this vector's EOI until all higher ones have been EOI-ed. */
+    pending_eoi_sp(peoi) = sp + 1;
+    do {
+        peoi[sp] = peoi[sp - 1];
+    } while ( --sp && peoi[sp - 1].vector > vector );
+    ASSERT(!sp || peoi[sp - 1].vector < vector);
+
+    peoi[sp].irq = desc->irq;
+    peoi[sp].vector = vector;
+    peoi[sp].ready = 1;
+}
+
 static inline void set_pirq_eoi(struct domain *d, unsigned int irq)
 {
     if ( d->arch.pirq_eoi_map )
@@ -1107,101 +1106,61 @@ static void set_eoi_ready(void *data);
 static void irq_guest_eoi_timer_fn(void *data)
 {
     struct irq_desc *desc = data;
-    unsigned int irq = desc - irq_desc;
+    unsigned int i, irq = desc - irq_desc;
     irq_guest_action_t *action;
-    cpumask_t cpu_eoi_map;
-    unsigned long flags;
 
-    spin_lock_irqsave(&desc->lock, flags);
+    spin_lock_irq(&desc->lock);
     
     if ( !(desc->status & IRQ_GUEST) )
         goto out;
 
     action = (irq_guest_action_t *)desc->action;
 
-    if ( action->ack_type != ACKTYPE_NONE )
+    ASSERT(action->ack_type != ACKTYPE_NONE);
+
+    /*
+     * Is no IRQ in flight at all, or another instance of this timer already
+     * running? Skip everything to avoid forcing an EOI early.
+     */
+    if ( !action->in_flight || timer_is_active(&action->eoi_timer) )
+        goto out;
+
+    for ( i = 0; i < action->nr_guests; i++ )
     {
-        unsigned int i;
-        for ( i = 0; i < action->nr_guests; i++ )
-        {
-            struct domain *d = action->guest[i];
-            unsigned int pirq = domain_irq_to_pirq(d, irq);
-            if ( test_and_clear_bool(pirq_info(d, pirq)->masked) )
-                action->in_flight--;
-        }
+        struct domain *d = action->guest[i];
+        unsigned int pirq = domain_irq_to_pirq(d, irq);
+
+        if ( test_and_clear_bool(pirq_info(d, pirq)->masked) )
+            action->in_flight--;
     }
 
-    if ( action->in_flight != 0 )
-        goto out;
+    if ( action->in_flight )
+    {
+        printk(XENLOG_G_WARNING
+               "IRQ%u: %d/%d handler(s) still in flight at forced EOI\n",
+               irq, action->in_flight, action->nr_guests);
+        ASSERT_UNREACHABLE();
+    }
 
     switch ( action->ack_type )
     {
+        cpumask_t *cpu_eoi_map;
+
     case ACKTYPE_UNMASK:
         if ( desc->handler->end )
             desc->handler->end(desc, 0);
         break;
+
     case ACKTYPE_EOI:
-        cpumask_copy(&cpu_eoi_map, action->cpu_eoi_map);
+        cpu_eoi_map = this_cpu(scratch_cpumask);
+        cpumask_copy(cpu_eoi_map, action->cpu_eoi_map);
         spin_unlock_irq(&desc->lock);
-        on_selected_cpus(&cpu_eoi_map, set_eoi_ready, desc, 0);
-        spin_lock_irq(&desc->lock);
-        break;
-    }
-
- out:
-    spin_unlock_irqrestore(&desc->lock, flags);
-}
-
-static void __do_IRQ_guest(int irq)
-{
-    struct irq_desc         *desc = irq_to_desc(irq);
-    irq_guest_action_t *action = (irq_guest_action_t *)desc->action;
-    struct domain      *d;
-    int                 i, sp;
-    struct pending_eoi *peoi = this_cpu(pending_eoi);
-    unsigned int        vector = (u8)get_irq_regs()->entry_vector;
-
-    if ( unlikely(action->nr_guests == 0) )
-    {
-        /* An interrupt may slip through while freeing an ACKTYPE_EOI irq. */
-        ASSERT(action->ack_type == ACKTYPE_EOI);
-        ASSERT(desc->status & IRQ_DISABLED);
-        if ( desc->handler->end )
-            desc->handler->end(desc, vector);
+        on_selected_cpus(cpu_eoi_map, set_eoi_ready, desc, 0);
         return;
     }
 
-    if ( action->ack_type == ACKTYPE_EOI )
-    {
-        sp = pending_eoi_sp(peoi);
-        ASSERT((sp == 0) || (peoi[sp-1].vector < vector));
-        ASSERT(sp < (NR_DYNAMIC_VECTORS-1));
-        peoi[sp].irq = irq;
-        peoi[sp].vector = vector;
-        peoi[sp].ready = 0;
-        pending_eoi_sp(peoi) = sp+1;
-        cpumask_set_cpu(smp_processor_id(), action->cpu_eoi_map);
-    }
-
-    for ( i = 0; i < action->nr_guests; i++ )
-    {
-        struct pirq *pirq;
-
-        d = action->guest[i];
-        pirq = pirq_info(d, domain_irq_to_pirq(d, irq));
-        if ( (action->ack_type != ACKTYPE_NONE) &&
-             !test_and_set_bool(pirq->masked) )
-            action->in_flight++;
-        if ( !is_hvm_domain(d) || !hvm_do_IRQ_dpci(d, pirq) )
-            send_guest_pirq(d, pirq);
-    }
-
-    if ( action->ack_type != ACKTYPE_NONE )
-    {
-        stop_timer(&action->eoi_timer);
-        migrate_timer(&action->eoi_timer, smp_processor_id());
-        set_timer(&action->eoi_timer, NOW() + MILLISECS(1));
-    }
+ out:
+    spin_unlock_irq(&desc->lock);
 }
 
 /*
@@ -1297,7 +1256,7 @@ int init_domain_irq_mapping(struct domain *d)
 
     radix_tree_init(&d->arch.irq_pirq);
     if ( is_hvm_domain(d) )
-        radix_tree_init(&d->arch.hvm_domain.emuirq_pirq);
+        radix_tree_init(&d->arch.hvm.emuirq_pirq);
 
     for ( i = 1; platform_legacy_irq(i); ++i )
     {
@@ -1323,7 +1282,7 @@ void cleanup_domain_irq_mapping(struct domain *d)
 {
     radix_tree_destroy(&d->arch.irq_pirq, NULL);
     if ( is_hvm_domain(d) )
-        radix_tree_destroy(&d->arch.hvm_domain.emuirq_pirq, NULL);
+        radix_tree_destroy(&d->arch.hvm.emuirq_pirq, NULL);
 }
 
 struct pirq *alloc_pirq_struct(struct domain *d)
@@ -1364,7 +1323,7 @@ void (pirq_cleanup_check)(struct pirq *pirq, struct domain *d)
     }
 
     if ( radix_tree_delete(&d->pirq_tree, pirq->pirq) != pirq )
-        BUG();
+        BUG_ON(!d->is_dying);
 }
 
 /* Flush all ready EOIs from the top of this CPU's pending-EOI stack. */
@@ -1461,6 +1420,8 @@ void desc_guest_eoi(struct irq_desc *desc, struct pirq *pirq)
         return;
     }
 
+    stop_timer(&action->eoi_timer);
+
     if ( action->ack_type == ACKTYPE_UNMASK )
     {
         ASSERT(cpumask_empty(action->cpu_eoi_map));
@@ -1510,17 +1471,8 @@ int pirq_guest_unmask(struct domain *d)
     return 0;
 }
 
-static int pirq_acktype(struct domain *d, int pirq)
+static int irq_acktype(const struct irq_desc *desc)
 {
-    struct irq_desc  *desc;
-    int irq;
-
-    irq = domain_pirq_to_irq(d, pirq);
-    if ( irq <= 0 )
-        return ACKTYPE_NONE;
-
-    desc = irq_to_desc(irq);
-
     if ( desc->handler == &no_irq_type )
         return ACKTYPE_NONE;
 
@@ -1551,7 +1503,8 @@ static int pirq_acktype(struct domain *d, int pirq)
     if ( !strcmp(desc->handler->typename, "XT-PIC") )
         return ACKTYPE_UNMASK;
 
-    printk("Unknown PIC type '%s' for IRQ %d\n", desc->handler->typename, irq);
+    printk("Unknown PIC type '%s' for IRQ%d\n",
+           desc->handler->typename, desc->irq);
     BUG();
 
     return 0;
@@ -1628,14 +1581,32 @@ int pirq_guest_bind(struct vcpu *v, struct pirq *pirq, int will_share)
         action->nr_guests   = 0;
         action->in_flight   = 0;
         action->shareable   = will_share;
-        action->ack_type    = pirq_acktype(v->domain, pirq->pirq);
+        action->ack_type    = irq_acktype(desc);
         init_timer(&action->eoi_timer, irq_guest_eoi_timer_fn, desc, 0);
 
         desc->status |= IRQ_GUEST;
 
-        /* Attempt to bind the interrupt target to the correct CPU. */
-        if ( !opt_noirqbalance && (desc->handler->set_affinity != NULL) )
-            desc->handler->set_affinity(desc, cpumask_of(v->processor));
+        /*
+         * Attempt to bind the interrupt target to the correct (or at least
+         * some online) CPU.
+         */
+        if ( desc->handler->set_affinity )
+        {
+            const cpumask_t *affinity = NULL;
+
+            if ( !opt_noirqbalance )
+                affinity = cpumask_of(v->processor);
+            else if ( !cpumask_intersects(desc->affinity, &cpu_online_map) )
+            {
+                cpumask_setall(desc->affinity);
+                affinity = &cpumask_all;
+            }
+            else if ( !cpumask_intersects(desc->arch.cpu_mask,
+                                          &cpu_online_map) )
+                affinity = desc->affinity;
+            if ( affinity )
+                desc->handler->set_affinity(desc, affinity);
+        }
 
         desc->status &= ~IRQ_DISABLED;
         desc->handler->startup(desc);
@@ -1860,6 +1831,201 @@ static bool pirq_guest_force_unbind(struct domain *d, struct pirq *pirq)
     return bound;
 }
 
+static void do_IRQ_guest(struct irq_desc *desc, unsigned int vector)
+{
+    irq_guest_action_t *action = (irq_guest_action_t *)desc->action;
+    unsigned int        i;
+    struct pending_eoi *peoi = this_cpu(pending_eoi);
+
+    if ( unlikely(!action->nr_guests) )
+    {
+        /* An interrupt may slip through while freeing an ACKTYPE_EOI irq. */
+        ASSERT(action->ack_type == ACKTYPE_EOI);
+        ASSERT(desc->status & IRQ_DISABLED);
+        if ( desc->handler->end )
+            desc->handler->end(desc, vector);
+        return;
+    }
+
+    /*
+     * Stop the timer as soon as we're certain we'll set it again further down,
+     * to prevent the current timeout (if any) to needlessly expire.
+     */
+    if ( action->ack_type != ACKTYPE_NONE )
+        stop_timer(&action->eoi_timer);
+
+    if ( action->ack_type == ACKTYPE_EOI )
+    {
+        unsigned int sp = pending_eoi_sp(peoi);
+
+        ASSERT(sp < (NR_DYNAMIC_VECTORS - 1));
+        ASSERT(!sp || (peoi[sp - 1].vector < vector));
+        peoi[sp].irq = desc->irq;
+        peoi[sp].vector = vector;
+        peoi[sp].ready = 0;
+        pending_eoi_sp(peoi) = sp + 1;
+        cpumask_set_cpu(smp_processor_id(), action->cpu_eoi_map);
+    }
+
+    for ( i = 0; i < action->nr_guests; i++ )
+    {
+        struct domain *d = action->guest[i];
+        struct pirq *pirq = pirq_info(d, domain_irq_to_pirq(d, desc->irq));;
+
+        if ( (action->ack_type != ACKTYPE_NONE) &&
+             !test_and_set_bool(pirq->masked) )
+            action->in_flight++;
+        if ( !is_hvm_domain(d) || !hvm_do_IRQ_dpci(d, pirq) )
+            send_guest_pirq(d, pirq);
+    }
+
+    if ( action->ack_type != ACKTYPE_NONE )
+    {
+        migrate_timer(&action->eoi_timer, smp_processor_id());
+        set_timer(&action->eoi_timer, NOW() + MILLISECS(1));
+    }
+}
+
+void do_IRQ(struct cpu_user_regs *regs)
+{
+    struct irqaction *action;
+    uint32_t          tsc_in;
+    struct irq_desc  *desc;
+    unsigned int      vector = (uint8_t)regs->entry_vector;
+    int               irq = this_cpu(vector_irq)[vector];
+    struct cpu_user_regs *old_regs = set_irq_regs(regs);
+
+    perfc_incr(irqs);
+    this_cpu(irq_count)++;
+    irq_enter();
+
+    if ( irq < 0 )
+    {
+        if ( direct_apic_vector[vector] )
+            direct_apic_vector[vector](regs);
+        else
+        {
+            const char *kind = ", LAPIC";
+
+            if ( apic_isr_read(vector) )
+                ack_APIC_irq();
+            else
+                kind = "";
+            if ( !(vector >= FIRST_LEGACY_VECTOR &&
+                   vector <= LAST_LEGACY_VECTOR &&
+                   !smp_processor_id() &&
+                   bogus_8259A_irq(vector - FIRST_LEGACY_VECTOR)) )
+            {
+                printk("CPU%u: No irq handler for vector %02x (IRQ %d%s)\n",
+                       smp_processor_id(), vector, irq, kind);
+                desc = irq_to_desc(~irq);
+                if ( ~irq < nr_irqs && irq_desc_initialized(desc) )
+                {
+                    spin_lock(&desc->lock);
+                    printk("IRQ%d a=%04lx[%04lx,%04lx] v=%02x[%02x] t=%s s=%08x\n",
+                           ~irq, *cpumask_bits(desc->affinity),
+                           *cpumask_bits(desc->arch.cpu_mask),
+                           *cpumask_bits(desc->arch.old_cpu_mask),
+                           desc->arch.vector, desc->arch.old_vector,
+                           desc->handler->typename, desc->status);
+                    spin_unlock(&desc->lock);
+                }
+            }
+            TRACE_1D(TRC_HW_IRQ_UNMAPPED_VECTOR, vector);
+        }
+        goto out_no_unlock;
+    }
+
+    desc = irq_to_desc(irq);
+
+    spin_lock(&desc->lock);
+    desc->handler->ack(desc);
+
+    if ( likely(desc->status & IRQ_GUEST) )
+    {
+        if ( irq_ratelimit_timer.function && /* irq rate limiting enabled? */
+             unlikely(desc->rl_cnt++ >= irq_ratelimit_threshold) )
+        {
+            s_time_t now = NOW();
+
+            if ( now < (desc->rl_quantum_start + MILLISECS(10)) )
+            {
+                desc->handler->disable(desc);
+                /*
+                 * If handler->disable doesn't actually mask the interrupt, a
+                 * disabled irq still can fire. This check also avoids possible
+                 * deadlocks if ratelimit_timer_fn runs at the same time.
+                 */
+                if ( likely(list_empty(&desc->rl_link)) )
+                {
+                    spin_lock(&irq_ratelimit_lock);
+                    if ( list_empty(&irq_ratelimit_list) )
+                        set_timer(&irq_ratelimit_timer, now + MILLISECS(10));
+                    list_add(&desc->rl_link, &irq_ratelimit_list);
+                    spin_unlock(&irq_ratelimit_lock);
+                }
+                goto out;
+            }
+            desc->rl_cnt = 0;
+            desc->rl_quantum_start = now;
+        }
+
+        tsc_in = tb_init_done ? get_cycles() : 0;
+        do_IRQ_guest(desc, vector);
+        TRACE_3D(TRC_HW_IRQ_HANDLED, irq, tsc_in, get_cycles());
+        goto out_no_end;
+    }
+
+    desc->status &= ~IRQ_REPLAY;
+    desc->status |= IRQ_PENDING;
+
+    /*
+     * Since we set PENDING, if another processor is handling a different
+     * instance of this same irq, the other processor will take care of it.
+     */
+    if ( desc->status & (IRQ_DISABLED | IRQ_INPROGRESS) )
+        goto out;
+
+    desc->status |= IRQ_INPROGRESS;
+
+    action = desc->action;
+    while ( desc->status & IRQ_PENDING )
+    {
+        desc->status &= ~IRQ_PENDING;
+        spin_unlock_irq(&desc->lock);
+
+        tsc_in = tb_init_done ? get_cycles() : 0;
+        action->handler(irq, action->dev_id, regs);
+        TRACE_3D(TRC_HW_IRQ_HANDLED, irq, tsc_in, get_cycles());
+
+        spin_lock_irq(&desc->lock);
+    }
+
+    desc->status &= ~IRQ_INPROGRESS;
+
+ out:
+    if ( desc->handler->end )
+    {
+        /*
+         * If higher priority vectors still have their EOIs pending, we may
+         * not issue an EOI here, as this would EOI the highest priority one.
+         */
+        this_cpu(check_eoi_deferral) = true;
+        desc->handler->end(desc, vector);
+        this_cpu(check_eoi_deferral) = false;
+
+        spin_unlock(&desc->lock);
+        flush_ready_eoi();
+        goto out_no_unlock;
+    }
+
+ out_no_end:
+    spin_unlock(&desc->lock);
+ out_no_unlock:
+    irq_exit();
+    set_irq_regs(old_regs);
+}
+
 static inline bool is_free_pirq(const struct domain *d,
                                 const struct pirq *pirq)
 {
@@ -2042,7 +2208,7 @@ int map_domain_pirq(
             spin_unlock_irqrestore(&desc->lock, flags);
 
             info = NULL;
-            irq = create_irq(NUMA_NO_NODE);
+            irq = create_irq(NUMA_NO_NODE, true);
             ret = irq >= 0 ? prepare_domain_irq_pirq(d, irq, pirq + nr, &info)
                            : irq;
             if ( ret < 0 )
@@ -2306,12 +2472,9 @@ static void dump_irqs(unsigned char key)
 
         spin_lock_irqsave(&desc->lock, flags);
 
-        cpumask_scnprintf(keyhandler_scratch, sizeof(keyhandler_scratch),
-                          desc->affinity);
-        printk("   IRQ:%4d affinity:%s vec:%02x type=%-15s"
-               " status=%08x ",
-               irq, keyhandler_scratch, desc->arch.vector,
-               desc->handler->typename, desc->status);
+        printk("   IRQ:%4d vec:%02x %-15s status=%03x aff:{%*pbl}/{%*pbl} ",
+               irq, desc->arch.vector, desc->handler->typename, desc->status,
+               CPUMASK_PR(desc->affinity), CPUMASK_PR(desc->arch.cpu_mask));
 
         if ( ssid )
             printk("Z=%-25s ", ssid);
@@ -2320,23 +2483,31 @@ static void dump_irqs(unsigned char key)
         {
             action = (irq_guest_action_t *)desc->action;
 
-            printk("in-flight=%d domain-list=", action->in_flight);
+            printk("in-flight=%d%c",
+                   action->in_flight, action->nr_guests ? ' ' : '\n');
 
-            for ( i = 0; i < action->nr_guests; i++ )
+            for ( i = 0; i < action->nr_guests; )
             {
-                d = action->guest[i];
+                struct evtchn *evtchn;
+                unsigned int pending = 2, masked = 2;
+
+                d = action->guest[i++];
                 pirq = domain_irq_to_pirq(d, irq);
                 info = pirq_info(d, pirq);
-                printk("%u:%3d(%c%c%c)",
-                       d->domain_id, pirq,
-                       evtchn_port_is_pending(d, info->evtchn) ? 'P' : '-',
-                       evtchn_port_is_masked(d, info->evtchn) ? 'M' : '-',
-                       (info->masked ? 'M' : '-'));
-                if ( i != action->nr_guests )
-                    printk(",");
+                evtchn = evtchn_from_port(d, info->evtchn);
+                local_irq_disable();
+                if ( spin_trylock(&evtchn->lock) )
+                {
+                    pending = evtchn_is_pending(d, evtchn);
+                    masked = evtchn_is_masked(d, evtchn);
+                    spin_unlock(&evtchn->lock);
+                }
+                local_irq_enable();
+                printk("d%d:%3d(%c%c%c)%c",
+                       d->domain_id, pirq, "-P?"[pending],
+                       "-M?"[masked], info->masked ? 'M' : '-',
+                       i < action->nr_guests ? ',' : '\n');
             }
-
-            printk("\n");
         }
         else if ( desc->action )
             printk("%ps()\n", desc->action->handler);
@@ -2350,7 +2521,7 @@ static void dump_irqs(unsigned char key)
 
     process_pending_softirqs();
     printk("Direct vector information:\n");
-    for ( i = FIRST_DYNAMIC_VECTOR; i < NR_VECTORS; ++i )
+    for ( i = FIRST_DYNAMIC_VECTOR; i < X86_NR_VECTORS; ++i )
         if ( direct_apic_vector[i] )
             printk("   %#02x -> %ps()\n", i, direct_apic_vector[i]);
 
@@ -2375,7 +2546,7 @@ void fixup_irqs(const cpumask_t *mask, bool verbose)
     {
         bool break_affinity = false, set_affinity = true;
         unsigned int vector;
-        cpumask_t affinity;
+        cpumask_t *affinity = this_cpu(scratch_cpumask);
 
         if ( irq == 2 )
             continue;
@@ -2389,42 +2560,94 @@ void fixup_irqs(const cpumask_t *mask, bool verbose)
         vector = irq_to_vector(irq);
         if ( vector >= FIRST_HIPRIORITY_VECTOR &&
              vector <= LAST_HIPRIORITY_VECTOR )
+        {
             cpumask_and(desc->arch.cpu_mask, desc->arch.cpu_mask, mask);
 
-        cpumask_copy(&affinity, desc->affinity);
-        if ( !desc->action || cpumask_subset(&affinity, mask) )
+            /*
+             * This can in particular happen when parking secondary threads
+             * during boot and when the serial console wants to use a PCI IRQ.
+             */
+            if ( desc->handler == &no_irq_type )
+            {
+                spin_unlock(&desc->lock);
+                continue;
+            }
+        }
+
+        if ( desc->arch.move_cleanup_count )
+        {
+            /* The cleanup IPI may have got sent while we were still online. */
+            cpumask_andnot(affinity, desc->arch.old_cpu_mask,
+                           &cpu_online_map);
+            desc->arch.move_cleanup_count -= cpumask_weight(affinity);
+            if ( !desc->arch.move_cleanup_count )
+                release_old_vec(desc);
+        }
+
+        if ( !desc->action || cpumask_subset(desc->affinity, mask) )
         {
             spin_unlock(&desc->lock);
             continue;
         }
 
-        cpumask_and(&affinity, &affinity, mask);
-        if ( cpumask_empty(&affinity) )
+        /*
+         * In order for the affinity adjustment below to be successful, we
+         * need _assign_irq_vector() to succeed. This in particular means
+         * clearing desc->arch.move_in_progress if this would otherwise
+         * prevent the function from succeeding. Since there's no way for the
+         * flag to get cleared anymore when there's no possible destination
+         * left (the only possibility then would be the IRQs enabled window
+         * after this loop), there's then also no race with us doing it here.
+         *
+         * Therefore the logic here and there need to remain in sync.
+         */
+        if ( desc->arch.move_in_progress &&
+             !cpumask_intersects(mask, desc->arch.cpu_mask) )
+        {
+            unsigned int cpu;
+
+            cpumask_and(affinity, desc->arch.old_cpu_mask, &cpu_online_map);
+
+            spin_lock(&vector_lock);
+            for_each_cpu(cpu, affinity)
+                per_cpu(vector_irq, cpu)[desc->arch.old_vector] = ~irq;
+            spin_unlock(&vector_lock);
+
+            release_old_vec(desc);
+            desc->arch.move_in_progress = 0;
+        }
+
+        if ( !cpumask_intersects(mask, desc->affinity) )
         {
             break_affinity = true;
-            cpumask_copy(&affinity, mask);
+            cpumask_setall(affinity);
         }
+        else
+            cpumask_copy(affinity, desc->affinity);
 
         if ( desc->handler->disable )
             desc->handler->disable(desc);
 
         if ( desc->handler->set_affinity )
-            desc->handler->set_affinity(desc, &affinity);
+            desc->handler->set_affinity(desc, affinity);
         else if ( !(warned++) )
             set_affinity = false;
 
         if ( desc->handler->enable )
             desc->handler->enable(desc);
 
+        cpumask_copy(affinity, desc->affinity);
+
         spin_unlock(&desc->lock);
 
         if ( !verbose )
             continue;
 
-        if ( break_affinity && set_affinity )
-            printk("Broke affinity for irq %i\n", irq);
-        else if ( !set_affinity )
-            printk("Cannot set affinity for irq %i\n", irq);
+        if ( !set_affinity )
+            printk("Cannot set affinity for IRQ%u\n", irq);
+        else if ( break_affinity )
+            printk("Broke affinity for IRQ%u, new: %*pb\n",
+                   irq, CPUMASK_PR(affinity));
     }
 
     /* That doesn't seem sufficient.  Give it 1ms. */
@@ -2494,7 +2717,7 @@ int map_domain_emuirq_pirq(struct domain *d, int pirq, int emuirq)
     /* do not store emuirq mappings for pt devices */
     if ( emuirq != IRQ_PT )
     {
-        int err = radix_tree_insert(&d->arch.hvm_domain.emuirq_pirq, emuirq,
+        int err = radix_tree_insert(&d->arch.hvm.emuirq_pirq, emuirq,
                                     radix_tree_int_to_ptr(pirq));
 
         switch ( err )
@@ -2504,7 +2727,7 @@ int map_domain_emuirq_pirq(struct domain *d, int pirq, int emuirq)
         case -EEXIST:
             radix_tree_replace_slot(
                 radix_tree_lookup_slot(
-                    &d->arch.hvm_domain.emuirq_pirq, emuirq),
+                    &d->arch.hvm.emuirq_pirq, emuirq),
                 radix_tree_int_to_ptr(pirq));
             break;
         default:
@@ -2546,7 +2769,7 @@ int unmap_domain_pirq_emuirq(struct domain *d, int pirq)
         pirq_cleanup_check(info, d);
     }
     if ( emuirq != IRQ_PT )
-        radix_tree_delete(&d->arch.hvm_domain.emuirq_pirq, emuirq);
+        radix_tree_delete(&d->arch.hvm.emuirq_pirq, emuirq);
 
  done:
     return ret;
@@ -2569,11 +2792,6 @@ void arch_evtchn_bind_pirq(struct domain *d, int pirq)
     if ( desc->msi_desc )
         guest_mask_msi_irq(desc, 0);
     spin_unlock_irqrestore(&desc->lock, flags);
-}
-
-bool hvm_domain_use_pirq(const struct domain *d, const struct pirq *pirq)
-{
-    return is_hvm_domain(d) && pirq && pirq->arch.hvm.emuirq != IRQ_UNBOUND;
 }
 
 static int allocate_pirq(struct domain *d, int index, int pirq, int irq,
@@ -2685,7 +2903,7 @@ int allocate_and_map_msi_pirq(struct domain *d, int index, int *pirq_p,
         if ( irq == -1 )
         {
     case MAP_PIRQ_TYPE_MULTI_MSI:
-            irq = create_irq(NUMA_NO_NODE);
+            irq = create_irq(NUMA_NO_NODE, true);
         }
 
         if ( irq < nr_irqs_gsi || irq >= nr_irqs )
@@ -2694,8 +2912,6 @@ int allocate_and_map_msi_pirq(struct domain *d, int index, int *pirq_p,
                     d->domain_id);
             return -EINVAL;
         }
-
-        msi->irq = irq;
         break;
 
     default:

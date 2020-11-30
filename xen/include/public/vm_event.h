@@ -29,7 +29,7 @@
 
 #include "xen.h"
 
-#define VM_EVENT_INTERFACE_VERSION 0x00000003
+#define VM_EVENT_INTERFACE_VERSION 0x00000006
 
 #if defined(__XEN__) || defined(__XEN_TOOLS__)
 
@@ -110,6 +110,15 @@
  * interrupt pending after resuming the VCPU.
  */
 #define VM_EVENT_FLAG_GET_NEXT_INTERRUPT (1 << 10)
+/*
+ * Execute fast singlestepping on vm_event response.
+ * Requires the vCPU to be paused already (synchronous events only).
+ *
+ * On a response requires setting the  p2midx field of fast_singlestep to which
+ * Xen will switch the vCPU to on the occurance of the first singlestep, after
+ * which singlestep gets automatically disabled.
+ */
+#define VM_EVENT_FLAG_FAST_SINGLESTEP    (1 << 11)
 
 /*
  * Reasons for the vm event request
@@ -157,6 +166,12 @@
 #define VM_EVENT_X86_CR4    2
 #define VM_EVENT_X86_XCR0   3
 
+/* The limit field is right-shifted by 12 bits if .ar.g is set. */
+struct vm_event_x86_selector_reg {
+    uint32_t limit  :    20;
+    uint32_t ar     :    12;
+};
+
 /*
  * Using custom vCPU structs (i.e. not hvm_hw_cpu) for both x86 and ARM
  * so as to not fill the vm_event ring buffer too quickly.
@@ -179,6 +194,7 @@ struct vm_event_regs_x86 {
     uint64_t r14;
     uint64_t r15;
     uint64_t rflags;
+    uint64_t dr6;
     uint64_t dr7;
     uint64_t rip;
     uint64_t cr0;
@@ -191,10 +207,28 @@ struct vm_event_regs_x86 {
     uint64_t msr_efer;
     uint64_t msr_star;
     uint64_t msr_lstar;
+    uint64_t gdtr_base;
+    uint32_t cs_base;
+    uint32_t ss_base;
+    uint32_t ds_base;
+    uint32_t es_base;
     uint64_t fs_base;
     uint64_t gs_base;
-    uint32_t cs_arbytes;
-    uint32_t _pad;
+    struct vm_event_x86_selector_reg cs;
+    struct vm_event_x86_selector_reg ss;
+    struct vm_event_x86_selector_reg ds;
+    struct vm_event_x86_selector_reg es;
+    struct vm_event_x86_selector_reg fs;
+    struct vm_event_x86_selector_reg gs;
+    uint64_t shadow_gs;
+    uint16_t gdtr_limit;
+    uint16_t cs_sel;
+    uint16_t ss_sel;
+    uint16_t ds_sel;
+    uint16_t es_sel;
+    uint16_t fs_sel;
+    uint16_t gs_sel;
+    uint16_t _pad;
 };
 
 /*
@@ -251,8 +285,13 @@ struct vm_event_singlestep {
     uint64_t gfn;
 };
 
+struct vm_event_fast_singlestep {
+    uint16_t p2midx;
+};
+
 struct vm_event_debug {
     uint64_t gfn;
+    uint64_t pending_dbg; /* Behaves like the VT-x PENDING_DBG field. */
     uint32_t insn_length;
     uint8_t type;        /* HVMOP_TRAP_* */
     uint8_t _pad[3];
@@ -276,10 +315,6 @@ struct vm_event_desc_access {
             uint32_t _pad1;
             uint64_t exit_qualification; /* VMX: VMCS Exit Qualification */
         } vmx;
-        struct {
-            uint64_t exitinfo;           /* SVM: VMCB EXITINFO */
-            uint64_t _pad2;
-        } svm;
     } arch;
     uint8_t descriptor;                  /* VM_EVENT_DESC_* */
     uint8_t is_write;
@@ -342,6 +377,7 @@ typedef struct vm_event_st {
         struct vm_event_mov_to_msr            mov_to_msr;
         struct vm_event_desc_access           desc_access;
         struct vm_event_singlestep            singlestep;
+        struct vm_event_fast_singlestep       fast_singlestep;
         struct vm_event_debug                 software_breakpoint;
         struct vm_event_debug                 debug_exception;
         struct vm_event_cpuid                 cpuid;

@@ -13,6 +13,7 @@
 #include <xen/init.h>
 #include <xen/errno.h>
 #include <xen/lib.h>
+#include <xen/param.h>
 
 #include <xen/hypercall.h>
 #include <xsm/xsm.h>
@@ -38,9 +39,9 @@ enum xsm_bootparam {
 };
 
 static enum xsm_bootparam __initdata xsm_bootparam =
-#if defined(CONFIG_XSM_FLASK_DEFAULT)
+#ifdef CONFIG_XSM_FLASK_DEFAULT
     XSM_BOOTPARAM_FLASK;
-#elif defined(CONFIG_XSM_SILO_DEFAULT)
+#elif CONFIG_XSM_SILO_DEFAULT
     XSM_BOOTPARAM_SILO;
 #else
     XSM_BOOTPARAM_DUMMY;
@@ -52,11 +53,11 @@ static int __init parse_xsm_param(const char *s)
 
     if ( !strcmp(s, "dummy") )
         xsm_bootparam = XSM_BOOTPARAM_DUMMY;
-#ifdef CONFIG_FLASK
+#ifdef CONFIG_XSM_FLASK
     else if ( !strcmp(s, "flask") )
         xsm_bootparam = XSM_BOOTPARAM_FLASK;
 #endif
-#ifdef CONFIG_SILO
+#ifdef CONFIG_XSM_SILO
     else if ( !strcmp(s, "silo") )
         xsm_bootparam = XSM_BOOTPARAM_SILO;
 #endif
@@ -78,11 +79,11 @@ static inline int verify(struct xsm_operations *ops)
 
 static int __init xsm_core_init(const void *policy_buffer, size_t policy_size)
 {
-#ifdef CONFIG_XSM_POLICY
+#ifdef CONFIG_XSM_FLASK_POLICY
     if ( policy_size == 0 )
     {
-        policy_buffer = xsm_init_policy;
-        policy_size = xsm_init_policy_size;
+        policy_buffer = xsm_flask_init_policy;
+        policy_size = xsm_flask_init_policy_size;
     }
 #endif
 

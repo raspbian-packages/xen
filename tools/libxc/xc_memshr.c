@@ -41,7 +41,7 @@ int xc_memshr_control(xc_interface *xch,
     return do_domctl(xch, &domctl);
 }
 
-int xc_memshr_ring_enable(xc_interface *xch, 
+int xc_memshr_ring_enable(xc_interface *xch,
                           uint32_t domid,
                           uint32_t *port)
 {
@@ -57,7 +57,7 @@ int xc_memshr_ring_enable(xc_interface *xch,
                                port);
 }
 
-int xc_memshr_ring_disable(xc_interface *xch, 
+int xc_memshr_ring_disable(xc_interface *xch,
                            uint32_t domid)
 {
     return xc_vm_event_control(xch, domid,
@@ -85,11 +85,12 @@ int xc_memshr_nominate_gfn(xc_interface *xch,
     memset(&mso, 0, sizeof(mso));
 
     mso.op = XENMEM_sharing_op_nominate_gfn;
-    mso.u.nominate.u.gfn = gfn; 
+    mso.u.nominate.u.gfn = gfn;
 
     rc = xc_memshr_memop(xch, domid, &mso);
 
-    if (!rc) *handle = mso.u.nominate.handle; 
+    if ( !rc )
+        *handle = mso.u.nominate.handle;
 
     return rc;
 }
@@ -105,11 +106,12 @@ int xc_memshr_nominate_gref(xc_interface *xch,
     memset(&mso, 0, sizeof(mso));
 
     mso.op = XENMEM_sharing_op_nominate_gref;
-    mso.u.nominate.u.grant_ref = gref; 
+    mso.u.nominate.u.grant_ref = gref;
 
     rc = xc_memshr_memop(xch, domid, &mso);
 
-    if (!rc) *handle = mso.u.nominate.handle; 
+    if ( !rc )
+        *handle = mso.u.nominate.handle;
 
     return rc;
 }
@@ -218,7 +220,7 @@ int xc_memshr_debug_gfn(xc_interface *xch,
     memset(&mso, 0, sizeof(mso));
 
     mso.op = XENMEM_sharing_op_debug_gfn;
-    mso.u.debug.u.gfn = gfn; 
+    mso.u.debug.u.gfn = gfn;
 
     return xc_memshr_memop(xch, domid, &mso);
 }
@@ -232,7 +234,35 @@ int xc_memshr_debug_gref(xc_interface *xch,
     memset(&mso, 0, sizeof(mso));
 
     mso.op = XENMEM_sharing_op_debug_gref;
-    mso.u.debug.u.gref = gref; 
+    mso.u.debug.u.gref = gref;
+
+    return xc_memshr_memop(xch, domid, &mso);
+}
+
+int xc_memshr_fork(xc_interface *xch, uint32_t pdomid, uint32_t domid,
+                   bool allow_with_iommu, bool block_interrupts)
+{
+    xen_mem_sharing_op_t mso;
+
+    memset(&mso, 0, sizeof(mso));
+
+    mso.op = XENMEM_sharing_op_fork;
+    mso.u.fork.parent_domain = pdomid;
+
+    if ( allow_with_iommu )
+        mso.u.fork.flags |= XENMEM_FORK_WITH_IOMMU_ALLOWED;
+    if ( block_interrupts )
+        mso.u.fork.flags |= XENMEM_FORK_BLOCK_INTERRUPTS;
+
+    return xc_memshr_memop(xch, domid, &mso);
+}
+
+int xc_memshr_fork_reset(xc_interface *xch, uint32_t domid)
+{
+    xen_mem_sharing_op_t mso;
+
+    memset(&mso, 0, sizeof(mso));
+    mso.op = XENMEM_sharing_op_fork_reset;
 
     return xc_memshr_memop(xch, domid, &mso);
 }
@@ -257,4 +287,3 @@ long xc_sharing_used_frames(xc_interface *xch)
 {
     return do_memory_op(xch, XENMEM_get_sharing_shared_pages, NULL, 0);
 }
-

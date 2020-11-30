@@ -21,6 +21,14 @@
 #ifndef __X86_PV_DOMAIN_H__
 #define __X86_PV_DOMAIN_H__
 
+#include <xen/sched.h>
+
+#ifdef CONFIG_PV32
+extern int8_t opt_pv32;
+#else
+# define opt_pv32 false
+#endif
+
 /*
  * PCID values for the address spaces of 64-bit pv domains:
  *
@@ -48,8 +56,13 @@
  */
 static inline unsigned long get_pcid_bits(const struct vcpu *v, bool is_xpti)
 {
+#ifdef CONFIG_PV
     return X86_CR3_NOFLUSH | (is_xpti ? PCID_PV_XPTI : 0) |
            ((v->arch.flags & TF_kernel_mode) ? PCID_PV_PRIV : PCID_PV_USER);
+#else
+    ASSERT_UNREACHABLE();
+    return 0;
+#endif
 }
 
 #ifdef CONFIG_PV
@@ -75,6 +88,8 @@ unsigned long pv_fixup_guest_cr4(const struct vcpu *v, unsigned long cr4);
 
 /* Create a cr4 value to load into hardware, based on vcpu settings. */
 unsigned long pv_make_cr4(const struct vcpu *v);
+
+bool xpti_pcid_enabled(void);
 
 #else  /* !CONFIG_PV */
 

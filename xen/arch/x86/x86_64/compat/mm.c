@@ -152,8 +152,10 @@ int compat_arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     case XENMEM_paging_op:
         return mem_paging_memop(guest_handle_cast(arg, xen_mem_paging_op_t));
 
+#ifdef CONFIG_MEM_SHARING
     case XENMEM_sharing_op:
         return mem_sharing_memop(guest_handle_cast(arg, xen_mem_sharing_op_t));
+#endif
 
     default:
         rc = -ENOSYS;
@@ -163,6 +165,7 @@ int compat_arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     return rc;
 }
 
+#ifdef CONFIG_PV
 DEFINE_XEN_GUEST_HANDLE(mmuext_op_compat_t);
 
 int compat_mmuext_op(XEN_GUEST_HANDLE_PARAM(void) arg,
@@ -313,6 +316,7 @@ int compat_mmuext_op(XEN_GUEST_HANDLE_PARAM(void) arg,
 
     return rc;
 }
+#endif /* CONFIG_PV */
 
 /*
  * Local variables:

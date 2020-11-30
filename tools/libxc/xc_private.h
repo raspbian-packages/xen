@@ -100,9 +100,6 @@ struct xc_interface_core {
     xendevicemodel_handle *dmod;
 };
 
-int osdep_privcmd_open(xc_interface *xch);
-int osdep_privcmd_close(xc_interface *xch);
-
 void *osdep_alloc_hypercall_buffer(xc_interface *xch, int npages);
 void osdep_free_hypercall_buffer(xc_interface *xch, void *ptr, int npages);
 
@@ -183,6 +180,14 @@ enum {
  * Declare a bounce buffer shadowing the named user data pointer.
  */
 #define DECLARE_HYPERCALL_BOUNCE(_ubuf, _sz, _dir) DECLARE_NAMED_HYPERCALL_BOUNCE(_ubuf, _ubuf, _sz, _dir)
+
+/*
+ * Declare a bounce buffer shadowing the named user data pointer that
+ * cannot be modified.
+ */
+#define DECLARE_HYPERCALL_BOUNCE_IN(_ubuf, _sz)                     \
+    DECLARE_NAMED_HYPERCALL_BOUNCE(_ubuf, (void *)(_ubuf), _sz,     \
+                                   XC_HYPERCALL_BUFFER_BOUNCE_IN)
 
 /*
  * Set the size of data to bounce. Useful when the size is not known
@@ -407,22 +412,6 @@ int xc_ffs8(uint8_t x);
 int xc_ffs16(uint16_t x);
 int xc_ffs32(uint32_t x);
 int xc_ffs64(uint64_t x);
-
-#define min(X, Y) ({                             \
-            const typeof (X) _x = (X);           \
-            const typeof (Y) _y = (Y);           \
-            (void) (&_x == &_y);                 \
-            (_x < _y) ? _x : _y; })
-#define max(X, Y) ({                             \
-            const typeof (X) _x = (X);           \
-            const typeof (Y) _y = (Y);           \
-            (void) (&_x == &_y);                 \
-            (_x > _y) ? _x : _y; })
-
-#define min_t(type,x,y) \
-        ({ type __x = (x); type __y = (y); __x < __y ? __x: __y; })
-#define max_t(type,x,y) \
-        ({ type __x = (x); type __y = (y); __x > __y ? __x: __y; })
 
 #define DOMPRINTF(fmt, args...) xc_dom_printf(dom->xch, fmt, ## args)
 #define DOMPRINTF_CALLED(xch) xc_dom_printf((xch), "%s: called", __FUNCTION__)

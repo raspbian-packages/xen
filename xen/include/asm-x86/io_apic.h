@@ -21,6 +21,7 @@
 
 /* I/O Unit Redirection Table */
 #define IO_APIC_REDIR_VECTOR_MASK   0x000FF
+#define IO_APIC_REDIR_DELIV_MODE_MASK 0x00700
 #define IO_APIC_REDIR_DEST_LOGICAL  0x00800
 #define IO_APIC_REDIR_DEST_PHYSICAL 0x00000
 #define IO_APIC_REDIR_SEND_PENDING  (1 << 12)
@@ -179,7 +180,7 @@ extern int io_apic_get_version (int ioapic);
 extern int io_apic_get_redir_entries (int ioapic);
 extern int io_apic_set_pci_routing (int ioapic, int pin, int irq, int edge_level, int active_high_low);
 
-extern void init_ioapic_mappings(void);
+extern void ioapic_init(void);
 
 extern void ioapic_suspend(void);
 extern void ioapic_resume(void);
@@ -196,7 +197,8 @@ extern struct IO_APIC_route_entry **alloc_ioapic_entries(void);
 extern void free_ioapic_entries(struct IO_APIC_route_entry **ioapic_entries);
 extern int save_IO_APIC_setup(struct IO_APIC_route_entry **ioapic_entries);
 extern void mask_IO_APIC_setup(struct IO_APIC_route_entry **ioapic_entries);
-extern int restore_IO_APIC_setup(struct IO_APIC_route_entry **ioapic_entries);
+extern int restore_IO_APIC_setup(struct IO_APIC_route_entry **ioapic_entries,
+                                 bool raw);
 
 unsigned highest_gsi(void);
 

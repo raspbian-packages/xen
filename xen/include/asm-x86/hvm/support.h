@@ -61,6 +61,7 @@ enum hvm_translation_result {
     HVMTRANS_unhandleable,
     HVMTRANS_gfn_paged_out,
     HVMTRANS_gfn_shared,
+    HVMTRANS_need_retry,
 };
 
 /*
@@ -69,9 +70,9 @@ enum hvm_translation_result {
  * address range does not map entirely onto ordinary machine memory.
  */
 enum hvm_translation_result hvm_copy_to_guest_phys(
-    paddr_t paddr, void *buf, int size, struct vcpu *v);
+    paddr_t paddr, void *buf, unsigned int size, struct vcpu *v);
 enum hvm_translation_result hvm_copy_from_guest_phys(
-    void *buf, paddr_t paddr, int size);
+    void *buf, paddr_t paddr, unsigned int size);
 
 /*
  * Copy to/from a guest linear address. @pfec should include PFEC_user_mode
@@ -95,13 +96,10 @@ typedef struct pagefault_info
 } pagefault_info_t;
 
 enum hvm_translation_result hvm_copy_to_guest_linear(
-    unsigned long addr, void *buf, int size, uint32_t pfec,
+    unsigned long addr, void *buf, unsigned int size, uint32_t pfec,
     pagefault_info_t *pfinfo);
 enum hvm_translation_result hvm_copy_from_guest_linear(
-    void *buf, unsigned long addr, int size, uint32_t pfec,
-    pagefault_info_t *pfinfo);
-enum hvm_translation_result hvm_fetch_from_guest_linear(
-    void *buf, unsigned long addr, int size, uint32_t pfec,
+    void *buf, unsigned long addr, unsigned int size, uint32_t pfec,
     pagefault_info_t *pfinfo);
 
 /*
@@ -137,9 +135,9 @@ void hvm_shadow_handle_cd(struct vcpu *v, unsigned long value);
  * returned.
  */
 int hvm_set_efer(uint64_t value);
-int hvm_set_cr0(unsigned long value, bool_t may_defer);
-int hvm_set_cr3(unsigned long value, bool_t may_defer);
-int hvm_set_cr4(unsigned long value, bool_t may_defer);
+int hvm_set_cr0(unsigned long value, bool may_defer);
+int hvm_set_cr3(unsigned long value, bool noflush, bool may_defer);
+int hvm_set_cr4(unsigned long value, bool may_defer);
 int hvm_descriptor_access_intercept(uint64_t exit_info,
                                     uint64_t vmx_exit_qualification,
                                     unsigned int descriptor, bool is_write);

@@ -1,13 +1,13 @@
-#################################
-__  __            _  _    _ _
-\ \/ /___ _ __   | || |  / / |
- \  // _ \ '_ \  | || |_ | | |
- /  \  __/ | | | |__   _|| | |
-/_/\_\___|_| |_|    |_|(_)_|_|
+###################################
+__  __            _  _    _ _  _
+\ \/ /___ _ __   | || |  / | || |
+ \  // _ \ '_ \  | || |_ | | || |_
+ /  \  __/ | | | |__   _|| |__   _|
+/_/\_\___|_| |_|    |_|(_)_|  |_|
 
-#################################
+###################################
 
-http://www.xen.org/
+https://www.xen.org/
 
 What is Xen?
 ============
@@ -17,19 +17,19 @@ Systems Research Group of the University of Cambridge Computer
 Laboratory, as part of the UK-EPSRC funded XenoServers project.  Xen
 is freely-distributable Open Source software, released under the GNU
 GPL. Since its initial public release, Xen has grown a large
-development community, spearheaded by xen.org (http://www.xen.org).
+development community, spearheaded by xen.org (https://www.xen.org).
 
 This file contains some quick-start instructions to install Xen on
-your system. For more information see http:/www.xen.org/ and
-http://wiki.xen.org/
+your system. For more information see https://www.xen.org/ and
+https://wiki.xen.org/
 
 Quick-Start Guide
 =================
 
 First, this is just a quick-start guide. For more comprehensive
 information see the INSTALL file and the Xen wiki at
-http://wiki.xenproject.org and in particular
-http://wiki.xenproject.org/wiki/Getting_Started.
+https://wiki.xenproject.org and in particular
+https://wiki.xenproject.org/wiki/Getting_Started.
 
 Second, there are a number of prerequisites for building a Xen source
 release. Make sure you have all the following installed, either by
@@ -46,7 +46,7 @@ provided by your OS distributor:
         - GCC 4.8 or later
         - GNU Binutils 2.24 or later
     * Development install of zlib (e.g., zlib-dev)
-    * Development install of Python v2.4 or later (e.g., python-dev)
+    * Development install of Python 2.6 or later (e.g., python-dev)
     * Development install of curses (e.g., libncurses-dev)
     * Development install of openssl (e.g., openssl-dev)
     * Development install of x11 (e.g. xorg-x11-dev)
@@ -73,7 +73,8 @@ disabled at compile time:
       ocaml-findlib). Required to build ocaml components which
       includes the alternative ocaml xenstored.
     * cmake (if building vtpm stub domains)
-    * markdown
+    * pandoc, transfig, pod2{man,html,text} for rendering various pieces of
+      documentation into alternative formats
     * figlet (for generating the traditional Xen start of day banner)
     * systemd daemon development files
     * Development install of libnl3 (e.g., libnl-3-200,
@@ -87,10 +88,10 @@ disabled at compile time:
 Second, you need to acquire a suitable kernel for use in domain 0. If
 possible you should use a kernel provided by your OS distributor. If
 no suitable kernel is available from your OS distributor then refer to
-http://wiki.xen.org/wiki/XenDom0Kernels for suggestions for
+https://wiki.xen.org/wiki/XenDom0Kernels for suggestions for
 suitable kernels to use.
 If you are looking to compile a Dom0 kernel from source, please refer to
-http://wiki.xen.org/wiki/XenParavirtOps.
+https://wiki.xen.org/wiki/XenParavirtOps.
 
 [NB. Unless noted otherwise, all the following steps should be
 performed with root privileges.]
@@ -98,7 +99,7 @@ performed with root privileges.]
 1. Download and untar the source tarball file. This will be a
    file named xen-unstable-src.tgz, or xen-$version-src.tgz.
    You can also pull the current version from the git or mercurial
-   repositories at http://xenbits.xen.org/
+   repositories at https://xenbits.xen.org/
 
     # tar xzf xen-unstable-src.tgz
 
@@ -152,8 +153,8 @@ implementations can be found on the wiki's xenstore reference guide [1] and
 the xenstored [2] page. You can choose which xenstore you want to enable as
 default on a system through configure:
 
-	./configure --with-xenstored=xenstored
-	./configure --with-xenstored=oxenstored
+        ./configure --with-xenstored=xenstored
+        ./configure --with-xenstored=oxenstored
 
 By default oxenstored will be used if the ocaml development tools are found.
 If you enable oxenstored the xenstored will still be built and installed,
@@ -167,18 +168,25 @@ You can change the preferred xenstored you want to use in the configuration
 but since we cannot stop the daemon a reboot will be required to make the
 change take effect.
 
-[0] http://wiki.xen.org/wiki/XenStore
-[1] http://wiki.xen.org/wiki/XenStoreReference
-[2] http://wiki.xen.org/wiki/Xenstored
+[0] https://wiki.xen.org/wiki/XenStore
+[1] https://wiki.xen.org/wiki/XenStoreReference
+[2] https://wiki.xen.org/wiki/Xenstored
 
 Python Runtime Libraries
 ========================
 
 Various tools, such as pygrub, have the following runtime dependencies:
 
-    * Python 2.3 or later.
+    * Python 2.6 or later.
           URL:    http://www.python.org/
           Debian: python
+
+Note that the build system expects `python` to be available. If your system
+only has `python2` or `python3` but not `python` (as in Linux From Scratch),
+you will need to create a symlink for it, or specify PYTHON= when invoking
+make, like (note the position of PYTHON= matters):
+
+    # make PYTHON=/usr/bin/python3
 
 Intel(R) Trusted Execution Technology Support
 =============================================
@@ -199,8 +207,3 @@ http://sourceforge.net/projects/tboot.  This project hosts the code in a
 mercurial repo at http://tboot.sourceforge.net/hg/tboot.hg and contains
 tarballs of the source.  Instructions in the tboot README describe how
 to modify grub.conf to use tboot to launch Xen.
-
-There are optional targets as part of Xen's top-level makefile that will
-download and build tboot: install-tboot, build-tboot, dist-tboot, clean-tboot.
-These will download the latest tar file from the SourceForge site using wget,
-then build/install/dist according to Xen's settings.

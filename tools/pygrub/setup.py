@@ -11,18 +11,18 @@ except KeyError: pass
 
 XEN_ROOT = "../.."
 
-fsimage = Extension("fsimage",
+xenfsimage = Extension("xenfsimage",
     extra_compile_args = extra_compile_args,
     extra_link_args = extra_link_args,
     include_dirs = [ XEN_ROOT + "/tools/libfsimage/common/" ],
     library_dirs = [ XEN_ROOT + "/tools/libfsimage/common/" ],
-    libraries = ["fsimage"],
+    libraries = ["xenfsimage"],
     sources = ["src/fsimage/fsimage.c"])
 
 pkgs = [ 'grub' ]
 
 setup(name='pygrub',
-      version='0.3',
+      version='0.6',
       description='Boot loader that looks a lot like grub for Xen',
       author='Jeremy Katz',
       author_email='katzj@redhat.com',
@@ -30,5 +30,5 @@ setup(name='pygrub',
       package_dir={'grub': 'src', 'fsimage': 'src'},
       scripts = ["src/pygrub"],
       packages=pkgs,
-      ext_modules = [ fsimage ]
+      ext_modules = [ xenfsimage ]
       )

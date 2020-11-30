@@ -16,7 +16,7 @@ CFLAGS += -O1 -fno-omit-frame-pointer
 
 ifeq (,$(findstring clean,$(MAKECMDGOALS)))
   ifeq ($(wildcard $(MINI_OS)/Config.mk),)
-    $(error Please run `make mini-os-dir' in top-level directory)
+    $(error Please run 'make mini-os-dir' in top-level directory)
   endif
   include $(XEN_ROOT)/Config.mk
 endif
@@ -87,6 +87,7 @@ newlib-$(NEWLIB_VERSION): newlib-$(NEWLIB_VERSION).tar.gz
 	patch -d $@ -p0 < newlib.patch
 	patch -d $@ -p0 < newlib-chk.patch
 	patch -d $@ -p1 < newlib-stdint-size_max-fix-from-1.17.0.patch
+	patch -d $@ -p1 < newlib-disable-texinfo.patch
 	find $@ -type f | xargs perl -i.bak \
 		-pe 's/\b_(tzname|daylight|timezone)\b/$$1/g'
 	touch $@
@@ -230,6 +231,7 @@ tpm_emulator-$(XEN_TARGET_ARCH): tpm_emulator-$(TPMEMU_VERSION).tar.gz
 	patch -d $@ -p1 < vtpm-cmake-Wextra.patch
 	patch -d $@ -p1 < vtpm-implicit-fallthrough.patch
 	patch -d $@ -p1 < vtpm_TPM_ChangeAuthAsymFinish.patch
+	patch -d $@ -p1 < vtpm_extern.patch
 	mkdir $@/build
 	cd $@/build; CC=${CC} $(CMAKE) .. -DCMAKE_C_FLAGS:STRING="-std=c99 -DTPM_NO_EXTERN $(TARGET_CPPFLAGS) $(TARGET_CFLAGS) -Wno-declaration-after-statement"
 	touch $@

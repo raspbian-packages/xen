@@ -42,7 +42,7 @@ asm(".file \"" __OBJECT_FILE__ "\"");
 unsigned long hap_gva_to_gfn(GUEST_PAGING_LEVELS)(
     struct vcpu *v, struct p2m_domain *p2m, unsigned long gva, uint32_t *pfec)
 {
-    unsigned long cr3 = v->arch.hvm_vcpu.guest_cr[3];
+    unsigned long cr3 = v->arch.hvm.guest_cr[3];
     return hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(v, p2m, cr3, gva, pfec, NULL);
 }
 
@@ -68,7 +68,7 @@ unsigned long hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
         *pfec = PFEC_page_paged;
         if ( top_page )
             put_page(top_page);
-        p2m_mem_paging_populate(p2m->domain, cr3 >> PAGE_SHIFT);
+        p2m_mem_paging_populate(p2m->domain, gaddr_to_gfn(cr3));
         return gfn_x(INVALID_GFN);
     }
     if ( p2m_is_shared(p2mt) )
@@ -91,7 +91,8 @@ unsigned long hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
 #if GUEST_PAGING_LEVELS == 3
     top_map += (cr3 & ~(PAGE_MASK | 31));
 #endif
-    walk_ok = guest_walk_tables(v, p2m, ga, &gw, *pfec, top_mfn, top_map);
+    walk_ok = guest_walk_tables(v, p2m, ga, &gw, *pfec,
+                                top_gfn, top_mfn, top_map);
     unmap_domain_page(top_map);
     put_page(top_page);
 
@@ -109,7 +110,7 @@ unsigned long hap_p2m_ga_to_gfn(GUEST_PAGING_LEVELS)(
         {
             ASSERT(p2m_is_hostp2m(p2m));
             *pfec = PFEC_page_paged;
-            p2m_mem_paging_populate(p2m->domain, gfn_x(gfn));
+            p2m_mem_paging_populate(p2m->domain, gfn);
             return gfn_x(INVALID_GFN);
         }
         if ( p2m_is_shared(p2mt) )

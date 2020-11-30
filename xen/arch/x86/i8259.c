@@ -20,6 +20,7 @@
 #include <asm/apic.h>
 #include <asm/asm_defns.h>
 #include <io_ports.h>
+#include <irq_vectors.h>
 
 /*
  * This is the 'legacy' 8259A Programmable Interrupt Controller,
@@ -341,17 +342,15 @@ void __init init_IRQ(void)
 
     init_8259A(0);
 
-    BUG_ON(init_irq_data() < 0);
-
     for (irq = 0; platform_legacy_irq(irq); irq++) {
         struct irq_desc *desc = irq_to_desc(irq);
         
         if ( irq == 2 ) /* IRQ2 doesn't exist */
             continue;
         desc->handler = &i8259A_irq_type;
-        per_cpu(vector_irq, cpu)[FIRST_LEGACY_VECTOR + irq] = irq;
+        per_cpu(vector_irq, cpu)[LEGACY_VECTOR(irq)] = irq;
         cpumask_copy(desc->arch.cpu_mask, cpumask_of(cpu));
-        desc->arch.vector = FIRST_LEGACY_VECTOR + irq;
+        desc->arch.vector = LEGACY_VECTOR(irq);
     }
     
     per_cpu(vector_irq, cpu)[IRQ0_VECTOR] = 0;

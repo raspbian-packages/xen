@@ -23,6 +23,32 @@
 #undef virt_to_mfn
 #define virt_to_mfn(va) _mfn(__virt_to_mfn(va))
 
+#define XENOPROF_DOMAIN_IGNORED    0
+#define XENOPROF_DOMAIN_ACTIVE     1
+#define XENOPROF_DOMAIN_PASSIVE    2
+
+#define XENOPROF_IDLE              0
+#define XENOPROF_INITIALIZED       1
+#define XENOPROF_COUNTERS_RESERVED 2
+#define XENOPROF_READY             3
+#define XENOPROF_PROFILING         4
+
+#ifndef CONFIG_COMPAT
+#define XENOPROF_COMPAT(x) false
+typedef struct xenoprof_buf xenoprof_buf_t;
+#define xenoprof_buf(d, b, field) ACCESS_ONCE((b)->field)
+#else
+#include <compat/xenoprof.h>
+#define XENOPROF_COMPAT(x) ((x)->is_compat)
+typedef union {
+    struct xenoprof_buf native;
+    struct compat_oprof_buf compat;
+} xenoprof_buf_t;
+#define xenoprof_buf(d, b, field) ACCESS_ONCE(*(!(d)->xenoprof->is_compat \
+                                                ? &(b)->native.field \
+                                                : &(b)->compat.field))
+#endif
+
 /* Limit amount of pages used for shared buffer (per domain) */
 #define MAX_OPROF_SHARED_PAGES 32
 
@@ -32,6 +58,23 @@ static DEFINE_SPINLOCK(xenoprof_lock);
 static DEFINE_SPINLOCK(pmu_owner_lock);
 int pmu_owner = 0;
 int pmu_hvm_refcount = 0;
+
+struct xenoprof_vcpu {
+    int event_size;
+    xenoprof_buf_t *buffer;
+};
+
+struct xenoprof {
+    char *rawbuf;
+    int npages;
+    int nbuf;
+    int bufsize;
+    int domain_type;
+#ifdef CONFIG_COMPAT
+    bool is_compat;
+#endif
+    struct xenoprof_vcpu *vcpu;
+};
 
 static struct domain *active_domains[MAX_OPROF_DOMAINS];
 static int active_ready[MAX_OPROF_DOMAINS];
@@ -173,8 +216,7 @@ unshare_xenoprof_page_with_guest(struct xenoprof *x)
         struct page_info *page = mfn_to_page(mfn_add(mfn, i));
 
         BUG_ON(page_get_owner(page) != current->domain);
-        if ( test_and_clear_bit(_PGC_allocated, &page->count_info) )
-            put_page(page);
+        put_page_alloc_ref(page);
     }
 }
 
@@ -260,7 +302,6 @@ static int alloc_xenoprof_struct(
     d->xenoprof->npages = npages;
     d->xenoprof->nbuf = nvcpu;
     d->xenoprof->bufsize = bufsize;
-    d->xenoprof->domain_ready = 0;
     d->xenoprof->domain_type = XENOPROF_DOMAIN_IGNORED;
 
     /* Update buffer pointers for active vcpus */
@@ -328,7 +369,6 @@ static int set_active(struct domain *d)
     if ( x == NULL )
         return -EPERM;
 
-    x->domain_ready = 1;
     x->domain_type = XENOPROF_DOMAIN_ACTIVE;
     active_ready[ind] = 1;
     activated++;
@@ -349,7 +389,6 @@ static int reset_active(struct domain *d)
     if ( x == NULL )
         return -EPERM;
 
-    x->domain_ready = 0;
     x->domain_type = XENOPROF_DOMAIN_IGNORED;
     active_ready[ind] = 0;
     active_domains[ind] = NULL;
@@ -373,8 +412,8 @@ static void reset_passive(struct domain *d)
     if ( x == NULL )
         return;
 
-    unshare_xenoprof_page_with_guest(x);
     x->domain_type = XENOPROF_DOMAIN_IGNORED;
+    unshare_xenoprof_page_with_guest(x);
 }
 
 static void reset_active_list(void)
@@ -655,6 +694,8 @@ static int xenoprof_op_get_buffer(XEN_GUEST_HANDLE_PARAM(void) arg)
         if ( ret < 0 )
             return ret;
     }
+    else
+        d->xenoprof->domain_type = XENOPROF_DOMAIN_IGNORED;
 
     ret = share_xenoprof_page_with_guest(
         d, virt_to_mfn(d->xenoprof->rawbuf), d->xenoprof->npages);
@@ -663,10 +704,6 @@ static int xenoprof_op_get_buffer(XEN_GUEST_HANDLE_PARAM(void) arg)
 
     xenoprof_reset_buf(d);
 
-    d->xenoprof->domain_type  = XENOPROF_DOMAIN_IGNORED;
-    d->xenoprof->domain_ready = 0;
-    d->xenoprof->is_primary   = (xenoprof_primary_profiler == current->domain);
-        
     xenoprof_get_buffer.nbuf = d->xenoprof->nbuf;
     xenoprof_get_buffer.bufsize = d->xenoprof->bufsize;
     if ( !paging_mode_translate(d) )

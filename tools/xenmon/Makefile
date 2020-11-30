@@ -13,10 +13,6 @@
 XEN_ROOT=$(CURDIR)/../..
 include $(XEN_ROOT)/tools/Rules.mk
 
-DEFAULT_PYTHON_PATH := $(shell $(XEN_ROOT)/tools/python/get-path)
-PYTHON_PATH ?= $(DEFAULT_PYTHON_PATH)
-INSTALL_PYTHON_PROG = $(XEN_ROOT)/tools/python/install-wrap "$(PYTHON_PATH)" $(INSTALL_PROG)
-
 CFLAGS  += -Werror
 CFLAGS  += $(CFLAGS_libxenevtchn)
 CFLAGS  += $(CFLAGS_libxenctrl)
@@ -36,7 +32,7 @@ install: build
 	$(INSTALL_DIR) $(DESTDIR)$(sbindir)
 	$(INSTALL_PROG) xenbaked $(DESTDIR)$(sbindir)/xenbaked
 	$(INSTALL_PROG) xentrace_setmask  $(DESTDIR)$(sbindir)/xentrace_setmask
-	$(INSTALL_PROG) xenmon.py  $(DESTDIR)$(sbindir)/xenmon
+	$(INSTALL_PYTHON_PROG) xenmon.py  $(DESTDIR)$(sbindir)/xenmon
 
 .PHONY: uninstall
 uninstall:

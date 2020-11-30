@@ -4,8 +4,8 @@ include $(XEN_ROOT)/Config.mk
 
 $(call cc-options-add,CFLAGS,CC,$(EMBEDDED_EXTRA_CFLAGS))
 
-CFLAGS += -Werror -fno-asynchronous-unwind-tables -fno-builtin -g0 -msoft-float
-CFLAGS += -I$(XEN_ROOT)/xen/include
+CFLAGS += -Werror -fno-builtin -g0 -msoft-float
+CFLAGS += -I$(BASEDIR)/include
 CFLAGS := $(filter-out -flto,$(CFLAGS)) 
 
 # NB. awk invocation is a portable alternative to 'head -n -1'

@@ -15,6 +15,7 @@
 #include <xen/nodemask.h>
 #include <xen/radix-tree.h>
 #include <xen/multicall.h>
+#include <xen/nospec.h>
 #include <xen/tasklet.h>
 #include <xen/mm.h>
 #include <xen/smp.h>
@@ -26,7 +27,6 @@
 #include <public/domctl.h>
 #include <public/sysctl.h>
 #include <public/vcpu.h>
-#include <public/vm_event.h>
 #include <public/event_channel.h>
 
 #ifdef CONFIG_COMPAT
@@ -48,6 +48,9 @@ DEFINE_XEN_GUEST_HANDLE(vcpu_runstate_info_compat_t);
 
 /* A global pointer to the hardware domain (usually DOM0). */
 extern struct domain *hardware_domain;
+
+/* A global pointer to the initial cpupool (POOL0). */
+extern struct cpupool *cpupool0;
 
 #ifdef CONFIG_LATE_HWDOM
 extern domid_t hardware_domid;
@@ -122,7 +125,7 @@ struct evtchn
          */
         void *generic;
 #endif
-#ifdef CONFIG_FLASK
+#ifdef CONFIG_XSM_FLASK
         /*
          * Inlining the contents of the structure for FLASK avoids unneeded
          * allocations, and on 64-bit platforms with only FLASK enabled,
@@ -134,8 +137,8 @@ struct evtchn
 #endif
 } __attribute__((aligned(64)));
 
-int  evtchn_init(struct domain *d); /* from domain_create */
-void evtchn_destroy(struct domain *d); /* from domain_kill */
+int  evtchn_init(struct domain *d, unsigned int max_port);
+int  evtchn_destroy(struct domain *d); /* from domain_kill */
 void evtchn_destroy_final(struct domain *d); /* from complete_domain_destroy */
 
 struct waitqueue_vcpu;
@@ -152,6 +155,7 @@ struct vcpu
 
     struct vcpu     *next_in_list;
 
+    spinlock_t       periodic_timer_lock;
     s_time_t         periodic_period;
     s_time_t         periodic_last_event;
     struct timer     periodic_timer;
@@ -159,7 +163,7 @@ struct vcpu
 
     struct timer     poll_timer;    /* timeout for SCHEDOP_poll */
 
-    void            *sched_priv;    /* scheduler-specific data */
+    struct sched_unit *sched_unit;
 
     struct vcpu_runstate_info runstate;
 #ifndef CONFIG_COMPAT
@@ -172,9 +176,7 @@ struct vcpu
         XEN_GUEST_HANDLE(vcpu_runstate_info_compat_t) compat;
     } runstate_guest; /* guest address */
 #endif
-
-    /* last time when vCPU is scheduled out */
-    uint64_t last_run_time;
+    unsigned int     new_state;
 
     /* Has the FPU been initialised? */
     bool             fpu_initialised;
@@ -186,23 +188,16 @@ struct vcpu
     bool             is_running;
     /* VCPU should wake fast (do not deep sleep the CPU). */
     bool             is_urgent;
-
-#ifdef VCPU_TRAP_LAST
-#define VCPU_TRAP_NONE    0
-    struct {
-        bool             pending;
-        uint8_t          old_mask;
-    }                async_exception_state[VCPU_TRAP_LAST];
-#define async_exception_state(t) async_exception_state[(t)-1]
-    uint8_t          async_exception_mask;
-#endif
-
+    /* VCPU must context_switch without scheduling unit. */
+    bool             force_context_switch;
     /* Require shutdown to be deferred for some asynchronous operation? */
     bool             defer_shutdown;
     /* VCPU is paused following shutdown request (d->is_shutting_down)? */
     bool             paused_for_shutdown;
     /* VCPU need affinity restored */
-    bool             affinity_broken;
+    uint8_t          affinity_broken;
+#define VCPU_AFFINITY_OVERRIDE    0x01
+#define VCPU_AFFINITY_WAIT        0x02
 
     /* A hypercall has been preempted. */
     bool             hcall_preempted;
@@ -210,9 +205,6 @@ struct vcpu
     /* A hypercall is using the compat ABI? */
     bool             hcall_compat;
 #endif
-
-    /* Does soft affinity actually play a role (given hard affinity)? */
-    bool             soft_aff_effective;
 
     /* The CPU, if any, which is holding onto this VCPU's state. */
 #define VCPU_CPU_CLEAN (~0u)
@@ -245,16 +237,6 @@ struct vcpu
     evtchn_port_t    virq_to_evtchn[NR_VIRQS];
     spinlock_t       virq_lock;
 
-    /* Bitmask of CPUs on which this VCPU may run. */
-    cpumask_var_t    cpu_hard_affinity;
-    /* Used to change affinity temporarily. */
-    cpumask_var_t    cpu_hard_affinity_tmp;
-    /* Used to restore affinity across S3. */
-    cpumask_var_t    cpu_hard_affinity_saved;
-
-    /* Bitmask of CPUs on which this VCPU prefers to run. */
-    cpumask_var_t    cpu_soft_affinity;
-
     /* Tasklet for continue_hypercall_on_cpu(). */
     struct tasklet   continue_hypercall_tasklet;
 
@@ -274,40 +256,63 @@ struct vcpu
     struct arch_vcpu arch;
 };
 
+struct sched_unit {
+    struct domain         *domain;
+    struct vcpu           *vcpu_list;
+    void                  *priv;      /* scheduler private data */
+    struct sched_unit     *next_in_list;
+    struct sched_resource *res;
+    unsigned int           unit_id;
+
+    /* Currently running on a CPU? */
+    bool                   is_running;
+    /* Does soft affinity actually play a role (given hard affinity)? */
+    bool                   soft_aff_effective;
+    /* Item has been migrated to other cpu(s). */
+    bool                   migrated;
+
+    /* Last time unit got (de-)scheduled. */
+    uint64_t               state_entry_time;
+    /* Vcpu state summary. */
+    unsigned int           runstate_cnt[4];
+
+    /* Bitmask of CPUs on which this VCPU may run. */
+    cpumask_var_t          cpu_hard_affinity;
+    /* Used to save affinity during temporary pinning. */
+    cpumask_var_t          cpu_hard_affinity_saved;
+    /* Bitmask of CPUs on which this VCPU prefers to run. */
+    cpumask_var_t          cpu_soft_affinity;
+
+    /* Next unit to run. */
+    struct sched_unit      *next_task;
+    s_time_t                next_time;
+
+    /* Number of vcpus not yet joined for context switch. */
+    unsigned int            rendezvous_in_cnt;
+
+    /* Number of vcpus not yet finished with context switch. */
+    atomic_t                rendezvous_out_cnt;
+};
+
+#define for_each_sched_unit(d, u)                                         \
+    for ( (u) = (d)->sched_unit_list; (u) != NULL; (u) = (u)->next_in_list )
+
+/*
+ * All vcpus of a domain are in a single linked list with unit->vcpu_list
+ * pointing to the first vcpu of the unit. The loop must be terminated when
+ * a vcpu is hit not being part of the unit to loop over.
+ */
+#define for_each_sched_unit_vcpu(u, v)                                    \
+    for ( (v) = (u)->vcpu_list;                                           \
+          (v) != NULL && (!(u)->next_in_list ||                           \
+                          (v)->vcpu_id < (u)->next_in_list->unit_id);     \
+          (v) = (v)->next_in_list )
+
 /* Per-domain lock can be recursively acquired in fault handlers. */
 #define domain_lock(d) spin_lock_recursive(&(d)->domain_lock)
 #define domain_unlock(d) spin_unlock_recursive(&(d)->domain_lock)
 
-/* VM event */
-struct vm_event_domain
-{
-    /* ring lock */
-    spinlock_t ring_lock;
-    /* The ring has 64 entries */
-    unsigned char foreign_producers;
-    unsigned char target_producers;
-    /* shared ring page */
-    void *ring_page;
-    struct page_info *ring_pg_struct;
-    /* front-end ring */
-    vm_event_front_ring_t front_ring;
-    /* event channel port (vcpu0 only) */
-    int xen_port;
-    /* vm_event bit for vcpu->pause_flags */
-    int pause_flag;
-    /* list of vcpus waiting for room in the ring */
-    struct waitqueue_head wq;
-    /* the number of vCPUs blocked */
-    unsigned int blocked;
-    /* The last vcpu woken up */
-    unsigned int last_vcpu_wake_up;
-};
-
 struct evtchn_port_ops;
-
-enum guest_type {
-    guest_type_pv, guest_type_hvm
-};
 
 struct domain
 {
@@ -318,20 +323,31 @@ struct domain
 
     shared_info_t   *shared_info;     /* shared data area */
 
+    rcu_read_lock_t  rcu_lock;
+
     spinlock_t       domain_lock;
 
     spinlock_t       page_alloc_lock; /* protects all the following fields  */
     struct page_list_head page_list;  /* linked list */
+    struct page_list_head extra_page_list; /* linked list (size extra_pages) */
     struct page_list_head xenpage_list; /* linked list (size xenheap_pages) */
-    unsigned int     tot_pages;       /* number of pages currently possesed */
-    unsigned int     xenheap_pages;   /* # pages allocated from Xen heap    */
-    unsigned int     outstanding_pages; /* pages claimed but not possessed  */
-    unsigned int     max_pages;       /* maximum value for tot_pages        */
-    atomic_t         shr_pages;       /* number of shared pages             */
-    atomic_t         paged_pages;     /* number of paged-out pages          */
+
+    /*
+     * This field should only be directly accessed by domain_adjust_tot_pages()
+     * and the domain_tot_pages() helper function defined below.
+     */
+    unsigned int     tot_pages;
+
+    unsigned int     xenheap_pages;     /* pages allocated from Xen heap */
+    unsigned int     outstanding_pages; /* pages claimed but not possessed */
+    unsigned int     max_pages;         /* maximum value for domain_tot_pages() */
+    unsigned int     extra_pages;       /* pages not included in domain_tot_pages() */
+    atomic_t         shr_pages;         /* shared pages */
+    atomic_t         paged_pages;       /* paged-out pages */
 
     /* Scheduling. */
     void            *sched_priv;    /* scheduler-specific data */
+    struct sched_unit *sched_unit_list;
     struct cpupool  *cpupool;
 
     struct domain   *next_in_list;
@@ -343,9 +359,20 @@ struct domain
     /* Event channel information. */
     struct evtchn   *evtchn;                         /* first bucket only */
     struct evtchn  **evtchn_group[NR_EVTCHN_GROUPS]; /* all other buckets */
-    unsigned int     max_evtchns;     /* number supported by ABI */
     unsigned int     max_evtchn_port; /* max permitted port number */
     unsigned int     valid_evtchns;   /* number of allocated event channels */
+    /*
+     * Number of in-use event channels.  Writers should use write_atomic().
+     * Readers need to use read_atomic() only when not holding event_lock.
+     */
+    unsigned int     active_evtchns;
+    /*
+     * Number of event channels used internally by Xen (not subject to
+     * EVTCHNOP_reset).  Read/write access like for active_evtchns.
+     */
+    unsigned int     xen_evtchns;
+    /* Port to resume from in evtchn_reset(), when in a continuation. */
+    unsigned int     next_evtchn;
     spinlock_t       event_lock;
     const struct evtchn_port_ops *evtchn_port_ops;
     struct evtchn_fifo_domain *evtchn_fifo;
@@ -359,7 +386,7 @@ struct domain
     struct radix_tree_root pirq_tree;
     unsigned int     nr_pirqs;
 
-    enum guest_type guest_type;
+    unsigned int     options;         /* copy of createdomain flags */
 
     /* Is this guest dying (i.e., a zombie)? */
     enum { DOMDYING_alive, DOMDYING_dying, DOMDYING_dead } is_dying;
@@ -367,22 +394,24 @@ struct domain
     /* Domain is paused by controller software? */
     int              controller_pause_count;
 
-    int64_t          time_offset_seconds;
+    struct {
+        int64_t seconds;
+        bool set;
+    } time_offset;
+
+#ifdef CONFIG_HAS_PCI
+    struct list_head pdev_list;
+#endif
 
 #ifdef CONFIG_HAS_PASSTHROUGH
     struct domain_iommu iommu;
-
-    /* Does this guest need iommu mappings (-1 meaning "being set up")? */
-    s8               need_iommu;
 #endif
     /* is node-affinity automatically computed? */
     bool             auto_node_affinity;
     /* Is this guest fully privileged (aka dom0)? */
     bool             is_privileged;
-    /* Is this a xenstore domain (not dom0)? */
-    bool             is_xenstore;
-    /* Domain's VCPUs are pinned 1:1 to physical CPUs? */
-    bool             is_pinned;
+    /* Can this guest access the Xen console? */
+    bool             is_console;
     /* Non-migratable and non-restoreable? */
     bool             disable_migrate;
     /* Is this guest being debugged by dom0? */
@@ -456,16 +485,14 @@ struct domain
      */
     spinlock_t hypercall_deadlock_mutex;
 
-    /* transcendent memory, auto-allocated on first tmem op by each domain */
-    struct client *tmem_client;
-
     struct lock_profile_qhead profile_head;
 
     /* Various vm_events */
 
     /* Memory sharing support */
-#ifdef CONFIG_HAS_MEM_SHARING
+#ifdef CONFIG_MEM_SHARING
     struct vm_event_domain *vm_event_share;
+    struct domain *parent; /* VM fork parent */
 #endif
     /* Memory paging support */
 #ifdef CONFIG_HAS_MEM_PAGING
@@ -491,7 +518,32 @@ struct domain
         unsigned int guest_request_enabled       : 1;
         unsigned int guest_request_sync          : 1;
     } monitor;
+
+#ifdef CONFIG_ARGO
+    /* Argo interdomain communication support */
+    struct argo_domain *argo;
+#endif
 };
+
+static inline struct page_list_head *page_to_list(
+    struct domain *d, const struct page_info *pg)
+{
+    if ( is_xen_heap_page(pg) )
+        return &d->xenpage_list;
+
+    if ( pg->count_info & PGC_extra )
+        return &d->extra_page_list;
+
+    return &d->page_list;
+}
+
+/* Return number of pages currently posessed by the domain */
+static inline unsigned int domain_tot_pages(const struct domain *d)
+{
+    ASSERT(d->extra_pages <= d->tot_pages);
+
+    return d->tot_pages - d->extra_pages;
+}
 
 /* Protect updates/reads (resp.) of domain_list and domain_hash. */
 extern spinlock_t domlist_update_lock;
@@ -514,18 +566,18 @@ static inline bool is_system_domain(const struct domain *d)
  * Use this when you don't have an existing reference to @d. It returns
  * FALSE if @d is being destroyed.
  */
-static always_inline int get_domain(struct domain *d)
+static always_inline bool get_domain(struct domain *d)
 {
     int old, seen = atomic_read(&d->refcnt);
     do
     {
         old = seen;
         if ( unlikely(old & DOMAIN_DESTROYED) )
-            return 0;
+            return false;
         seen = atomic_cmpxchg(&d->refcnt, old, old + 1);
     }
     while ( unlikely(seen != old) );
-    return 1;
+    return true;
 }
 
 /*
@@ -542,11 +594,18 @@ int domain_set_node_affinity(struct domain *d, const nodemask_t *affinity);
 void domain_update_node_affinity(struct domain *d);
 
 /*
+ * To be implemented by each architecture, sanity checking the configuration
+ * and filling in any appropriate defaults.
+ */
+int arch_sanitise_domain_config(struct xen_domctl_createdomain *config);
+
+/*
  * Create a domain: the configuration is only necessary for real domain
  * (domid < DOMID_FIRST_RESERVED).
  */
 struct domain *domain_create(domid_t domid,
-                             struct xen_domctl_createdomain *config);
+                             struct xen_domctl_createdomain *config,
+                             bool is_priv);
 
 /*
  * rcu_lock_domain_by_id() is more efficient than get_domain_by_id().
@@ -577,13 +636,13 @@ int rcu_lock_live_remote_domain_by_id(domid_t dom, struct domain **d);
 static inline void rcu_unlock_domain(struct domain *d)
 {
     if ( d != current->domain )
-        rcu_read_unlock(d);
+        rcu_read_unlock(&d->rcu_lock);
 }
 
 static inline struct domain *rcu_lock_domain(struct domain *d)
 {
     if ( d != current->domain )
-        rcu_read_lock(d);
+        rcu_read_lock(&d->rcu_lock);
     return d;
 }
 
@@ -593,13 +652,20 @@ static inline struct domain *rcu_lock_current_domain(void)
 }
 
 struct domain *get_domain_by_id(domid_t dom);
+
+struct domain *get_pg_owner(domid_t domid);
+
+static inline void put_pg_owner(struct domain *pg_owner)
+{
+    rcu_unlock_domain(pg_owner);
+}
+
 void domain_destroy(struct domain *d);
 int domain_kill(struct domain *d);
 int domain_shutdown(struct domain *d, u8 reason);
 void domain_resume(struct domain *d);
-void domain_pause_for_debugger(void);
 
-int domain_soft_reset(struct domain *d);
+int domain_soft_reset(struct domain *d, bool resuming);
 
 int vcpu_start_shutdown_deferral(struct vcpu *v);
 void vcpu_end_shutdown_deferral(struct vcpu *v);
@@ -616,34 +682,20 @@ void __domain_crash(struct domain *d);
 } while (0)
 
 /*
- * Mark current domain as crashed and synchronously deschedule from the local
- * processor. This function never returns.
- */
-void noreturn __domain_crash_synchronous(void);
-#define domain_crash_synchronous() do {                                   \
-    printk("domain_crash_sync called from %s:%d\n", __FILE__, __LINE__);  \
-    __domain_crash_synchronous();                                         \
-} while (0)
-
-/*
  * Called from assembly code, with an optional address to help indicate why
  * the crash occurred.  If addr is 0, look up address from last extable
  * redirection.
  */
 void noreturn asm_domain_crash_synchronous(unsigned long addr);
 
-#define set_current_state(_s) do { current->state = (_s); } while (0)
 void scheduler_init(void);
-int  sched_init_vcpu(struct vcpu *v, unsigned int processor);
+int  sched_init_vcpu(struct vcpu *v);
 void sched_destroy_vcpu(struct vcpu *v);
 int  sched_init_domain(struct domain *d, int poolid);
 void sched_destroy_domain(struct domain *d);
-int sched_move_domain(struct domain *d, struct cpupool *c);
 long sched_adjust(struct domain *, struct xen_domctl_scheduler_op *);
 long sched_adjust_global(struct xen_sysctl_scheduler_op *);
 int  sched_id(void);
-void sched_tick_suspend(void);
-void sched_tick_resume(void);
 void vcpu_wake(struct vcpu *v);
 long vcpu_yield(void);
 void vcpu_sleep_nosync(struct vcpu *v);
@@ -661,10 +713,10 @@ void sync_local_execstate(void);
 
 /*
  * Called by the scheduler to switch to another VCPU. This function must
- * call context_saved(@prev) when the local CPU is no longer running in
- * @prev's context, and that context is saved to memory. Alternatively, if
- * implementing lazy context switching, it suffices to ensure that invoking
- * sync_vcpu_execstate() will switch and commit @prev's state.
+ * call sched_context_switched(@prev, @next) when the local CPU is no longer
+ * running in @prev's context, and that context is saved to memory.
+ * Alternatively, if implementing lazy context switching, it suffices to ensure
+ * that invoking sync_vcpu_execstate() will switch and commit @prev's state.
  */
 void context_switch(
     struct vcpu *prev,
@@ -676,7 +728,7 @@ void context_switch(
  * saved to memory. Alternatively, if implementing lazy context switching,
  * ensure that invoking sync_vcpu_execstate() will switch and commit @prev.
  */
-void context_saved(struct vcpu *prev);
+void sched_context_switched(struct vcpu *prev, struct vcpu *vnext);
 
 /* Called by the scheduler to continue running the current VCPU. */
 void continue_running(
@@ -727,7 +779,7 @@ static inline void hypercall_cancel_continuation(struct vcpu *v)
 extern struct domain *domain_list;
 
 /* Caller must hold the domlist_read_lock or domlist_update_lock. */
-static inline struct domain *first_domain_in_cpupool( struct cpupool *c)
+static inline struct domain *first_domain_in_cpupool(const struct cpupool *c)
 {
     struct domain *d;
     for (d = rcu_dereference(domain_list); d && d->cpupool != c;
@@ -735,7 +787,7 @@ static inline struct domain *first_domain_in_cpupool( struct cpupool *c)
     return d;
 }
 static inline struct domain *next_domain_in_cpupool(
-    struct domain *d, struct cpupool *c)
+    struct domain *d, const struct cpupool *c)
 {
     for (d = rcu_dereference(d->next_in_list); d && d->cpupool != c;
          d = rcu_dereference(d->next_in_list));
@@ -803,7 +855,7 @@ static inline bool is_vcpu_dirty_cpu(unsigned int cpu)
 
 static inline bool vcpu_cpu_dirty(const struct vcpu *v)
 {
-    return is_vcpu_dirty_cpu(v->dirty_cpu);
+    return is_vcpu_dirty_cpu(read_atomic(&v->dirty_cpu));
 }
 
 void vcpu_block(void);
@@ -830,29 +882,61 @@ static inline int domain_pause_by_systemcontroller_nosync(struct domain *d)
 }
 
 /* domain_pause() but safe against trying to pause current. */
-void domain_pause_except_self(struct domain *d);
+int __must_check domain_pause_except_self(struct domain *d);
 void domain_unpause_except_self(struct domain *d);
+
+/*
+ * For each allocated vcpu, d->vcpu[X]->vcpu_id == X
+ *
+ * During construction, all vcpus in d->vcpu[] are allocated sequentially, and
+ * in ascending order.  Therefore, if d->vcpu[N] exists (e.g. derived from
+ * current), all vcpus with an id less than N also exist.
+ *
+ * SMP considerations: The idle domain is constructed before APs are started.
+ * All other domains have d->vcpu[] allocated and d->max_vcpus set before the
+ * domain is made visible in the domlist, which is serialised on the global
+ * domlist_update_lock.
+ *
+ * Therefore, all observations of d->max_vcpus vs d->vcpu[] will be consistent
+ * despite the lack of smp_* barriers, either by being on the same CPU as the
+ * one which issued the writes, or because of barrier properties of the domain
+ * having been inserted into the domlist.
+ */
+static inline struct vcpu *domain_vcpu(const struct domain *d,
+                                       unsigned int vcpu_id)
+{
+    unsigned int idx = array_index_nospec(vcpu_id, d->max_vcpus);
+
+    return vcpu_id >= d->max_vcpus ? NULL : d->vcpu[idx];
+}
 
 void cpu_init(void);
 
-struct scheduler;
+/*
+ * vcpu is urgent if vcpu is polling event channel
+ *
+ * if urgent vcpu exists, CPU should not enter deep C state
+ */
+DECLARE_PER_CPU(atomic_t, sched_urgent_count);
+static inline bool sched_has_urgent_vcpu(void)
+{
+    return atomic_read(&this_cpu(sched_urgent_count));
+}
 
-struct scheduler *scheduler_get_default(void);
-struct scheduler *scheduler_alloc(unsigned int sched_id, int *perr);
-void scheduler_free(struct scheduler *sched);
-int schedule_cpu_switch(unsigned int cpu, struct cpupool *c);
-void vcpu_force_reschedule(struct vcpu *v);
-int cpu_disable_scheduler(unsigned int cpu);
-/* We need it in dom0_setup_vcpu */
-void sched_set_affinity(struct vcpu *v, const cpumask_t *hard,
-                        const cpumask_t *soft);
+void vcpu_set_periodic_timer(struct vcpu *v, s_time_t value);
+void sched_setup_dom0_vcpus(struct domain *d);
+int vcpu_temporary_affinity(struct vcpu *v, unsigned int cpu, uint8_t reason);
 int vcpu_set_hard_affinity(struct vcpu *v, const cpumask_t *affinity);
-int vcpu_set_soft_affinity(struct vcpu *v, const cpumask_t *affinity);
 void restore_vcpu_affinity(struct domain *d);
-int vcpu_pin_override(struct vcpu *v, int cpu);
+int vcpu_affinity_domctl(struct domain *d, uint32_t cmd,
+                         struct xen_domctl_vcpuaffinity *vcpuaff);
 
-void vcpu_runstate_get(struct vcpu *v, struct vcpu_runstate_info *runstate);
+void vcpu_runstate_get(const struct vcpu *v,
+                       struct vcpu_runstate_info *runstate);
 uint64_t get_cpu_idle_time(unsigned int cpu);
+void sched_guest_idle(void (*idle) (void), unsigned int cpu);
+void scheduler_enable(void);
+void scheduler_disable(void);
 
 /*
  * Used by idle loop to decide whether there is work to do:
@@ -879,45 +963,134 @@ void watchdog_domain_destroy(struct domain *d);
  *    (that is, this would not be suitable for a driver domain)
  *  - There is never a reason to deny the hardware domain access to this
  */
-#define is_hardware_domain(_d) ((_d) == hardware_domain)
+static always_inline bool is_hardware_domain(const struct domain *d)
+{
+    if ( IS_ENABLED(CONFIG_PV_SHIM_EXCLUSIVE) )
+        return false;
+
+    return evaluate_nospec(d == hardware_domain);
+}
 
 /* This check is for functionality specific to a control domain */
-#define is_control_domain(_d) ((_d)->is_privileged)
+static always_inline bool is_control_domain(const struct domain *d)
+{
+    if ( IS_ENABLED(CONFIG_PV_SHIM_EXCLUSIVE) )
+        return false;
+
+    return evaluate_nospec(d->is_privileged);
+}
 
 #define VM_ASSIST(d, t) (test_bit(VMASST_TYPE_ ## t, &(d)->vm_assist))
 
-#define is_pv_domain(d) ((d)->guest_type == guest_type_pv)
-#define is_pv_vcpu(v)   (is_pv_domain((v)->domain))
-#define is_hvm_domain(d) ((d)->guest_type == guest_type_hvm)
-#define is_hvm_vcpu(v)   (is_hvm_domain(v->domain))
-#define is_pinned_vcpu(v) ((v)->domain->is_pinned || \
-                           cpumask_weight((v)->cpu_hard_affinity) == 1)
-#ifdef CONFIG_HAS_PASSTHROUGH
-#define need_iommu(d)    ((d)->need_iommu)
+static always_inline bool is_pv_domain(const struct domain *d)
+{
+    return IS_ENABLED(CONFIG_PV) &&
+        evaluate_nospec(!(d->options & XEN_DOMCTL_CDF_hvm));
+}
+
+static always_inline bool is_pv_vcpu(const struct vcpu *v)
+{
+    return is_pv_domain(v->domain);
+}
+
+#ifdef CONFIG_COMPAT
+static always_inline bool is_pv_32bit_domain(const struct domain *d)
+{
+#ifdef CONFIG_PV32
+    return is_pv_domain(d) && d->arch.pv.is_32bit;
 #else
-#define need_iommu(d)    (0)
+    return false;
 #endif
+}
+
+static always_inline bool is_pv_32bit_vcpu(const struct vcpu *v)
+{
+    return is_pv_32bit_domain(v->domain);
+}
+
+static always_inline bool is_pv_64bit_domain(const struct domain *d)
+{
+    if ( !is_pv_domain(d) )
+        return false;
+
+#ifdef CONFIG_PV32
+    return !d->arch.pv.is_32bit;
+#else
+    return true;
+#endif
+}
+
+static always_inline bool is_pv_64bit_vcpu(const struct vcpu *v)
+{
+    return is_pv_64bit_domain(v->domain);
+}
+#endif
+static always_inline bool is_hvm_domain(const struct domain *d)
+{
+    return IS_ENABLED(CONFIG_HVM) &&
+        evaluate_nospec(d->options & XEN_DOMCTL_CDF_hvm);
+}
+
+static always_inline bool is_hvm_vcpu(const struct vcpu *v)
+{
+    return is_hvm_domain(v->domain);
+}
+
+static always_inline bool hap_enabled(const struct domain *d)
+{
+    /* sanitise_domain_config() rejects HAP && !HVM */
+    return IS_ENABLED(CONFIG_HVM) &&
+        evaluate_nospec(d->options & XEN_DOMCTL_CDF_hap);
+}
+
+static inline bool is_hwdom_pinned_vcpu(const struct vcpu *v)
+{
+    return (is_hardware_domain(v->domain) &&
+            cpumask_weight(v->sched_unit->cpu_hard_affinity) == 1);
+}
 
 static inline bool is_vcpu_online(const struct vcpu *v)
 {
     return !test_bit(_VPF_down, &v->pause_flags);
 }
 
+static inline bool is_xenstore_domain(const struct domain *d)
+{
+    return d->options & XEN_DOMCTL_CDF_xs_domain;
+}
+
+static always_inline bool is_iommu_enabled(const struct domain *d)
+{
+    return evaluate_nospec(d->options & XEN_DOMCTL_CDF_iommu);
+}
+
 extern bool sched_smt_power_savings;
+extern bool sched_disable_smt_switching;
 
 extern enum cpufreq_controller {
     FREQCTL_none, FREQCTL_dom0_kernel, FREQCTL_xen
 } cpufreq_controller;
 
-#define CPUPOOLID_NONE    -1
+static always_inline bool is_cpufreq_controller(const struct domain *d)
+{
+    /*
+     * A PV dom0 can be nominated as the cpufreq controller, instead of using
+     * Xen's cpufreq driver, at which point dom0 gets direct access to certain
+     * MSRs.
+     *
+     * This interface only works when dom0 is identity pinned and has the same
+     * number of vCPUs as pCPUs on the system.
+     *
+     * It would be far better to paravirtualise the interface.
+     */
+    return (is_pv_domain(d) && is_hardware_domain(d) &&
+            cpufreq_controller == FREQCTL_dom0_kernel);
+}
 
-struct cpupool *cpupool_get_by_id(int poolid);
-void cpupool_put(struct cpupool *pool);
-int cpupool_add_domain(struct domain *d, int poolid);
-void cpupool_rm_domain(struct domain *d);
 int cpupool_move_domain(struct domain *d, struct cpupool *c);
 int cpupool_do_sysctl(struct xen_sysctl_cpupool_op *op);
-void schedule_dump(struct cpupool *c);
+int cpupool_get_id(const struct domain *d);
+const cpumask_t *cpupool_valid_cpus(const struct cpupool *pool);
 extern void dump_runq(unsigned char key);
 
 void arch_do_physinfo(struct xen_sysctl_physinfo *pi);

@@ -18,7 +18,6 @@
 #include <xen/smp.h>
 #include <xen/errno.h>
 #include <xen/sched.h>
-#include <xen/sched-if.h>
 #include <xen/cpumask.h>
 #include <xen/event.h>
 
@@ -383,7 +382,7 @@ mctelem_cookie_t mctelem_reserve(mctelem_class_t which)
 
 		if (bit >= MC_NENT) {
 			mctelem_drop_count++;
-			return (NULL);
+			return NULL;
 		}
 
 		/* try to allocate, atomically clear free bit */

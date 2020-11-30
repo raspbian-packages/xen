@@ -116,6 +116,8 @@ unsigned long scratch_start = SCRATCH_PHYSICAL_ADDRESS;
 uint32_t ioapic_base_address = 0xfec00000;
 uint8_t ioapic_version;
 
+bool acpi_enabled;
+
 static void init_hypercalls(void)
 {
     uint32_t eax, ebx, ecx, edx;
@@ -321,7 +323,6 @@ const struct hvm_modlist_entry *get_module_entry(
 int main(void)
 {
     const struct bios_config *bios;
-    int acpi_enabled;
     const struct hvm_modlist_entry *bios_module;
 
     /* Initialise hypercall stubs with RET, rendering them no-ops. */
@@ -363,12 +364,18 @@ int main(void)
     {
         uint32_t paddr = bios_module->paddr;
 
-        bios->bios_load(bios, (void*)paddr, bios_module->size);
+        bios->bios_load(bios, (void *)paddr, bios_module->size, NULL);
     }
 #ifdef ENABLE_ROMBIOS
     else if ( bios == &rombios_config )
     {
-        bios->bios_load(bios, NULL, 0);
+        const struct hvm_modlist_entry *ipxe;
+        uint32_t paddr = 0;
+
+        ipxe = get_module_entry(hvm_start_info, "ipxe");
+        if ( ipxe )
+            paddr = ipxe->paddr;
+        bios->bios_load(bios, NULL, 0, (void *)paddr);
     }
 #endif
     else

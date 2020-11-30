@@ -5,9 +5,6 @@
 #include <xen/lib.h>
 #include <public/arch-arm.h>
 
-#define nop() \
-    asm volatile ( "nop" )
-
 #define sev()           asm volatile("sev" : : : "memory")
 #define wfe()           asm volatile("wfe" : : : "memory")
 #define wfi()           asm volatile("wfi" : : : "memory")
@@ -32,6 +29,9 @@
 #endif
 
 #define smp_wmb()       dmb(ishst)
+
+#define smp_mb__before_atomic()    smp_mb()
+#define smp_mb__after_atomic()     smp_mb()
 
 /*
  * This is used to ensure the compiler did actually allocate the register we

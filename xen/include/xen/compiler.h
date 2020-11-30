@@ -18,6 +18,14 @@
 
 #define __packed      __attribute__((__packed__))
 
+#define __weak        __attribute__((__weak__))
+
+#if !defined(__clang__)
+# define nocall       __attribute__((__error__("Nonstandard ABI")))
+#else
+# define nocall
+#endif
+
 #if (!defined(__clang__) && (__GNUC__ == 4) && (__GNUC_MINOR__ < 5))
 #define unreachable() do {} while (1)
 #else
@@ -76,7 +84,7 @@
 #define __must_be_array(a) \
   BUILD_BUG_ON_ZERO(__builtin_types_compatible_p(typeof(a), typeof(&a[0])))
 
-#ifdef GCC_HAS_VISIBILITY_ATTRIBUTE
+#ifdef CONFIG_CC_HAS_VISIBILITY_ATTRIBUTE
 /* Results in more efficient PIC code (no indirections through GOT or PLT). */
 #pragma GCC visibility push(hidden)
 #endif

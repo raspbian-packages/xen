@@ -20,7 +20,7 @@ static inline int vcpu_event_delivery_is_enabled(struct vcpu *v)
 }
 
 int hvm_local_events_need_delivery(struct vcpu *v);
-static inline int local_events_need_delivery(void)
+static always_inline bool local_events_need_delivery(void)
 {
     struct vcpu *v = current;
 
@@ -46,5 +46,11 @@ static inline bool arch_virq_is_global(unsigned int virq)
 {
     return true;
 }
+
+#ifdef CONFIG_PV_SHIM
+# include <asm/pv/shim.h>
+# define arch_evtchn_is_special(chn) \
+             (pv_shim && (chn)->port && (chn)->state == ECS_RESERVED)
+#endif
 
 #endif

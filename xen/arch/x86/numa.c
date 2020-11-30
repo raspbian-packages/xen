@@ -11,6 +11,7 @@
 #include <xen/nodemask.h>
 #include <xen/numa.h>
 #include <xen/keyhandler.h>
+#include <xen/param.h>
 #include <xen/time.h>
 #include <xen/smp.h>
 #include <xen/pfn.h>
@@ -192,9 +193,7 @@ void __init numa_init_array(void)
         if ( cpu_to_node[i] != NUMA_NO_NODE )
             continue;
         numa_set_node(i, rr);
-        rr = next_node(rr, node_online_map);
-        if ( rr == MAX_NUMNODES )
-            rr = first_node(node_online_map);
+        rr = cycle_node(rr, node_online_map);
     }
 }
 
@@ -357,7 +356,7 @@ unsigned int __init arch_get_dma_bitsize(void)
              !(node_start_pfn(node) >> (32 - PAGE_SHIFT)) )
             break;
     if ( node >= MAX_NUMNODES )
-        panic("No node with memory below 4Gb");
+        panic("No node with memory below 4Gb\n");
 
     /*
      * Try to not reserve the whole node's memory for DMA, but dividing
@@ -372,14 +371,13 @@ static void dump_numa(unsigned char key)
 {
     s_time_t now = NOW();
     unsigned int i, j, n;
-    int err;
     struct domain *d;
     struct page_info *page;
     unsigned int page_num_node[MAX_NUMNODES];
     const struct vnuma_info *vnuma;
 
-    printk("'%c' pressed -> dumping numa info (now-0x%X:%08X)\n", key,
-           (u32)(now>>32), (u32)now);
+    printk("'%c' pressed -> dumping numa info (now = %"PRI_stime")\n", key,
+           now);
 
     for_each_online_node ( i )
     {
@@ -422,7 +420,7 @@ static void dump_numa(unsigned char key)
     {
         process_pending_softirqs();
 
-        printk("Domain %u (total: %u):\n", d->domain_id, d->tot_pages);
+        printk("Domain %u (total: %u):\n", d->domain_id, domain_tot_pages(d));
 
         for_each_online_node ( i )
             page_num_node[i] = 0;
@@ -454,12 +452,10 @@ static void dump_numa(unsigned char key)
         {
             unsigned int start_cpu = ~0U;
 
-            err = snprintf(keyhandler_scratch, 12, "%3u",
-                    vnuma->vnode_to_pnode[i]);
-            if ( err < 0 || vnuma->vnode_to_pnode[i] == NUMA_NO_NODE )
-                strlcpy(keyhandler_scratch, "???", sizeof(keyhandler_scratch));
-
-            printk("       %3u: pnode %s,", i, keyhandler_scratch);
+            if ( vnuma->vnode_to_pnode[i] == NUMA_NO_NODE )
+                printk("       %3u: pnode ???,", i);
+            else
+                printk("       %3u: pnode %3u,", i, vnuma->vnode_to_pnode[i]);
 
             printk(" vcpus ");
 

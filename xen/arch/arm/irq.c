@@ -68,11 +68,13 @@ static DEFINE_PER_CPU(irq_desc_t[NR_LOCAL_IRQS], local_irq_desc);
 
 irq_desc_t *__irq_to_desc(int irq)
 {
-    if (irq < NR_LOCAL_IRQS) return &this_cpu(local_irq_desc)[irq];
+    if ( irq < NR_LOCAL_IRQS )
+        return &this_cpu(local_irq_desc)[irq];
+
     return &irq_desc[irq-NR_LOCAL_IRQS];
 }
 
-int __init arch_init_one_irq_desc(struct irq_desc *desc)
+int arch_init_one_irq_desc(struct irq_desc *desc)
 {
     desc->arch.type = IRQ_TYPE_INVALID;
     return 0;
@@ -83,7 +85,8 @@ static int __init init_irq_data(void)
 {
     int irq;
 
-    for (irq = NR_LOCAL_IRQS; irq < NR_IRQS; irq++) {
+    for ( irq = NR_LOCAL_IRQS; irq < NR_IRQS; irq++ )
+    {
         struct irq_desc *desc = irq_to_desc(irq);
         init_one_irq_desc(desc);
         desc->irq = irq;
@@ -99,7 +102,8 @@ static int init_local_irq_data(void)
 
     spin_lock(&local_irqs_type_lock);
 
-    for (irq = 0; irq < NR_LOCAL_IRQS; irq++) {
+    for ( irq = 0; irq < NR_LOCAL_IRQS; irq++ )
+    {
         struct irq_desc *desc = irq_to_desc(irq);
         init_one_irq_desc(desc);
         desc->irq = irq;
@@ -195,12 +199,13 @@ int request_irq(unsigned int irq, unsigned int irqflags,
 void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
 {
     struct irq_desc *desc = irq_to_desc(irq);
+    struct irqaction *action;
 
     perfc_incr(irqs);
 
     ASSERT(irq >= 16); /* SGIs do not come down this path */
 
-    if (irq < 32)
+    if ( irq < 32 )
         perfc_incr(ppis);
     else
         perfc_incr(spis);
@@ -212,12 +217,14 @@ void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
     spin_lock(&desc->lock);
     desc->handler->ack(desc);
 
+#ifndef NDEBUG
     if ( !desc->action )
     {
         printk("Unknown %s %#3.3x\n",
                is_fiq ? "FIQ" : "IRQ", irq);
         goto out;
     }
+#endif
 
     if ( test_bit(_IRQ_GUEST, &desc->status) )
     {
@@ -231,40 +238,27 @@ void do_IRQ(struct cpu_user_regs *regs, unsigned int irq, int is_fiq)
         /*
          * The irq cannot be a PPI, we only support delivery of SPIs to
          * guests.
-	 */
+         */
         vgic_inject_irq(info->d, NULL, info->virq, true);
         goto out_no_end;
     }
 
-    set_bit(_IRQ_PENDING, &desc->status);
-
-    /*
-     * Since we set PENDING, if another processor is handling a different
-     * instance of this same irq, the other processor will take care of it.
-     */
-    if ( test_bit(_IRQ_DISABLED, &desc->status) ||
-         test_bit(_IRQ_INPROGRESS, &desc->status) )
+    if ( test_bit(_IRQ_DISABLED, &desc->status) )
         goto out;
 
     set_bit(_IRQ_INPROGRESS, &desc->status);
 
-    while ( test_bit(_IRQ_PENDING, &desc->status) )
+    action = desc->action;
+
+    spin_unlock_irq(&desc->lock);
+
+    do
     {
-        struct irqaction *action;
+        action->handler(irq, action->dev_id, regs);
+        action = action->next;
+    } while ( action );
 
-        clear_bit(_IRQ_PENDING, &desc->status);
-        action = desc->action;
-
-        spin_unlock_irq(&desc->lock);
-
-        do
-        {
-            action->handler(irq, action->dev_id, regs);
-            action = action->next;
-        } while ( action );
-
-        spin_lock_irq(&desc->lock);
-    }
+    spin_lock_irq(&desc->lock);
 
     clear_bit(_IRQ_INPROGRESS, &desc->status);
 

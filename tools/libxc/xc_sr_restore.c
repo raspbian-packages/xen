@@ -28,18 +28,21 @@ static int read_headers(struct xc_sr_context *ctx)
         ERROR("Invalid marker: Got 0x%016"PRIx64, ihdr.marker);
         return -1;
     }
-    else if ( ihdr.id != IHDR_ID )
+
+    if ( ihdr.id != IHDR_ID )
     {
         ERROR("Invalid ID: Expected 0x%08x, Got 0x%08x", IHDR_ID, ihdr.id);
         return -1;
     }
-    else if ( ihdr.version != IHDR_VERSION )
+
+    if ( ihdr.version < 2 || ihdr.version > 3 )
     {
-        ERROR("Invalid Version: Expected %d, Got %d",
-              IHDR_VERSION, ihdr.version);
+        ERROR("Invalid Version: Expected 2 <= ver <= 3, Got %d",
+              ihdr.version);
         return -1;
     }
-    else if ( ihdr.options & IHDR_OPT_BIG_ENDIAN )
+
+    if ( ihdr.options & IHDR_OPT_BIG_ENDIAN )
     {
         ERROR("Unable to handle big endian streams");
         return -1;
@@ -131,13 +134,13 @@ static int pfn_set_populated(struct xc_sr_context *ctx, xen_pfn_t pfn)
  * unpopulated subset.  If types is NULL, no page type checking is performed
  * and all unpopulated pfns are populated.
  */
-int populate_pfns(struct xc_sr_context *ctx, unsigned count,
+int populate_pfns(struct xc_sr_context *ctx, unsigned int count,
                   const xen_pfn_t *original_pfns, const uint32_t *types)
 {
     xc_interface *xch = ctx->xch;
     xen_pfn_t *mfns = malloc(count * sizeof(*mfns)),
         *pfns = malloc(count * sizeof(*pfns));
-    unsigned i, nr_pfns = 0;
+    unsigned int i, nr_pfns = 0;
     int rc = -1;
 
     if ( !mfns || !pfns )
@@ -199,7 +202,7 @@ int populate_pfns(struct xc_sr_context *ctx, unsigned count,
  * stream, populate and record their types, map the relevant subset and copy
  * the data into the guest.
  */
-static int process_page_data(struct xc_sr_context *ctx, unsigned count,
+static int process_page_data(struct xc_sr_context *ctx, unsigned int count,
                              xen_pfn_t *pfns, uint32_t *types, void *page_data)
 {
     xc_interface *xch = ctx->xch;
@@ -207,8 +210,8 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
     int *map_errs = malloc(count * sizeof(*map_errs));
     int rc;
     void *mapping = NULL, *guest_page = NULL;
-    unsigned i,    /* i indexes the pfns from the record. */
-        j,         /* j indexes the subset of pfns we decide to map. */
+    unsigned int i, /* i indexes the pfns from the record. */
+        j,          /* j indexes the subset of pfns we decide to map. */
         nr_pages = 0;
 
     if ( !mfns || !map_errs )
@@ -255,8 +258,8 @@ static int process_page_data(struct xc_sr_context *ctx, unsigned count,
     if ( nr_pages == 0 )
         goto done;
 
-    mapping = guest_page = xenforeignmemory_map(xch->fmem,
-        ctx->domid, PROT_READ | PROT_WRITE,
+    mapping = guest_page = xenforeignmemory_map(
+        xch->fmem, ctx->domid, PROT_READ | PROT_WRITE,
         nr_pages, mfns, map_errs);
     if ( !mapping )
     {
@@ -333,11 +336,36 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
 {
     xc_interface *xch = ctx->xch;
     struct xc_sr_rec_page_data_header *pages = rec->data;
-    unsigned i, pages_of_data = 0;
+    unsigned int i, pages_of_data = 0;
     int rc = -1;
 
     xen_pfn_t *pfns = NULL, pfn;
     uint32_t *types = NULL, type;
+
+    /*
+     * v2 compatibility only exists for x86 streams.  This is a bit of a
+     * bodge, but it is less bad than duplicating handle_page_data() between
+     * different architectures.
+     */
+#if defined(__i386__) || defined(__x86_64__)
+    /* v2 compat.  Infer the position of STATIC_DATA_END. */
+    if ( ctx->restore.format_version < 3 && !ctx->restore.seen_static_data_end )
+    {
+        rc = handle_static_data_end(ctx);
+        if ( rc )
+        {
+            ERROR("Inferred STATIC_DATA_END record failed");
+            goto err;
+        }
+        rc = -1;
+    }
+
+    if ( !ctx->restore.seen_static_data_end )
+    {
+        ERROR("No STATIC_DATA_END seen");
+        goto err;
+    }
+#endif
 
     if ( rec->length < sizeof(*pages) )
     {
@@ -345,12 +373,14 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
               rec->length, sizeof(*pages));
         goto err;
     }
-    else if ( pages->count < 1 )
+
+    if ( pages->count < 1 )
     {
         ERROR("Expected at least 1 pfn in PAGE_DATA record");
         goto err;
     }
-    else if ( rec->length < sizeof(*pages) + (pages->count * sizeof(uint64_t)) )
+
+    if ( rec->length < sizeof(*pages) + (pages->count * sizeof(uint64_t)) )
     {
         ERROR("PAGE_DATA record (length %u) too short to contain %u"
               " pfns worth of information", rec->length, pages->count);
@@ -383,7 +413,8 @@ static int handle_page_data(struct xc_sr_context *ctx, struct xc_sr_record *rec)
                   type, pfn, i);
             goto err;
         }
-        else if ( type < XEN_DOMCTL_PFINFO_BROKEN )
+
+        if ( type < XEN_DOMCTL_PFINFO_BROKEN )
             /* NOTAB and all L1 through L4 tables (including pinned) should
              * have a page worth of data in the record. */
             pages_of_data++;
@@ -418,12 +449,11 @@ static int send_checkpoint_dirty_pfn_list(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
     int rc = -1;
-    unsigned count, written;
+    unsigned int count, written;
     uint64_t i, *pfns = NULL;
     struct iovec *iov = NULL;
     xc_shadow_op_stats_t stats = { 0, ctx->restore.p2m_size };
-    struct xc_sr_record rec =
-    {
+    struct xc_sr_record rec = {
         .type = REC_TYPE_CHECKPOINT_DIRTY_PFN_LIST,
     };
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
@@ -504,9 +534,9 @@ static int handle_checkpoint(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
     int rc = 0, ret;
-    unsigned i;
+    unsigned int i;
 
-    if ( !ctx->restore.checkpointed )
+    if ( ctx->stream_type == XC_STREAM_PLAIN )
     {
         ERROR("Found checkpoint in non-checkpointed stream");
         rc = -1;
@@ -548,7 +578,7 @@ static int handle_checkpoint(struct xc_sr_context *ctx)
     else
         ctx->restore.buffer_all_records = true;
 
-    if ( ctx->restore.checkpointed == XC_MIG_STREAM_COLO )
+    if ( ctx->stream_type == XC_STREAM_COLO )
     {
 #define HANDLE_CALLBACK_RETURN_VALUE(ret)                   \
     do {                                                    \
@@ -581,7 +611,7 @@ static int handle_checkpoint(struct xc_sr_context *ctx)
 
         /* Wait for a new checkpoint */
         ret = ctx->restore.callbacks->wait_checkpoint(
-                                                ctx->restore.callbacks->data);
+            ctx->restore.callbacks->data);
         HANDLE_CALLBACK_RETURN_VALUE(ret);
 
         /* suspend secondary vm */
@@ -602,7 +632,7 @@ static int handle_checkpoint(struct xc_sr_context *ctx)
 static int buffer_record(struct xc_sr_context *ctx, struct xc_sr_record *rec)
 {
     xc_interface *xch = ctx->xch;
-    unsigned new_alloc_num;
+    unsigned int new_alloc_num;
     struct xc_sr_record *p;
 
     if ( ctx->restore.buffered_rec_num >= ctx->restore.allocated_rec_num )
@@ -624,6 +654,32 @@ static int buffer_record(struct xc_sr_context *ctx, struct xc_sr_record *rec)
            rec, sizeof(*rec));
 
     return 0;
+}
+
+int handle_static_data_end(struct xc_sr_context *ctx)
+{
+    xc_interface *xch = ctx->xch;
+    unsigned int missing = 0;
+    int rc = 0;
+
+    if ( ctx->restore.seen_static_data_end )
+    {
+        ERROR("Multiple STATIC_DATA_END records found");
+        return -1;
+    }
+
+    ctx->restore.seen_static_data_end = true;
+
+    rc = ctx->restore.ops.static_data_complete(ctx, &missing);
+    if ( rc )
+        return rc;
+
+    if ( ctx->restore.callbacks->static_data_done &&
+         (rc = ctx->restore.callbacks->static_data_done(
+             missing, ctx->restore.callbacks->data) != 0) )
+        ERROR("static_data_done() callback failed: %d\n", rc);
+
+    return rc;
 }
 
 static int process_record(struct xc_sr_context *ctx, struct xc_sr_record *rec)
@@ -649,6 +705,10 @@ static int process_record(struct xc_sr_context *ctx, struct xc_sr_record *rec)
         rc = handle_checkpoint(ctx);
         break;
 
+    case REC_TYPE_STATIC_DATA_END:
+        rc = handle_static_data_end(ctx);
+        break;
+
     default:
         rc = ctx->restore.ops.process_record(ctx, rec);
         break;
@@ -667,10 +727,10 @@ static int setup(struct xc_sr_context *ctx)
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->restore.dirty_bitmap_hbuf);
 
-    if ( ctx->restore.checkpointed == XC_MIG_STREAM_COLO )
+    if ( ctx->stream_type == XC_STREAM_COLO )
     {
-        dirty_bitmap = xc_hypercall_buffer_alloc_pages(xch, dirty_bitmap,
-                                NRPAGES(bitmap_size(ctx->restore.p2m_size)));
+        dirty_bitmap = xc_hypercall_buffer_alloc_pages(
+            xch, dirty_bitmap, NRPAGES(bitmap_size(ctx->restore.p2m_size)));
 
         if ( !dirty_bitmap )
         {
@@ -711,18 +771,20 @@ static int setup(struct xc_sr_context *ctx)
 static void cleanup(struct xc_sr_context *ctx)
 {
     xc_interface *xch = ctx->xch;
-    unsigned i;
+    unsigned int i;
     DECLARE_HYPERCALL_BUFFER_SHADOW(unsigned long, dirty_bitmap,
                                     &ctx->restore.dirty_bitmap_hbuf);
 
     for ( i = 0; i < ctx->restore.buffered_rec_num; i++ )
         free(ctx->restore.buffered_records[i].data);
 
-    if ( ctx->restore.checkpointed == XC_MIG_STREAM_COLO )
-        xc_hypercall_buffer_free_pages(xch, dirty_bitmap,
-                                   NRPAGES(bitmap_size(ctx->restore.p2m_size)));
+    if ( ctx->stream_type == XC_STREAM_COLO )
+        xc_hypercall_buffer_free_pages(
+            xch, dirty_bitmap, NRPAGES(bitmap_size(ctx->restore.p2m_size)));
+
     free(ctx->restore.buffered_records);
     free(ctx->restore.populated_pfns);
+
     if ( ctx->restore.ops.cleanup(ctx) )
         PERROR("Failed to clean up");
 }
@@ -786,8 +848,7 @@ static int restore(struct xc_sr_context *ctx)
     } while ( rec.type != REC_TYPE_END );
 
  remus_failover:
-
-    if ( ctx->restore.checkpointed == XC_MIG_STREAM_COLO )
+    if ( ctx->stream_type == XC_STREAM_COLO )
     {
         /* With COLO, we have already called stream_complete */
         rc = 0;
@@ -827,41 +888,43 @@ int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
                       unsigned int store_evtchn, unsigned long *store_mfn,
                       uint32_t store_domid, unsigned int console_evtchn,
                       unsigned long *console_gfn, uint32_t console_domid,
-                      unsigned int hvm, unsigned int pae,
-                      xc_migration_stream_t stream_type,
+                      xc_stream_type_t stream_type,
                       struct restore_callbacks *callbacks, int send_back_fd)
 {
     xen_pfn_t nr_pfns;
-    struct xc_sr_context ctx =
-        {
-            .xch = xch,
-            .fd = io_fd,
-        };
+    struct xc_sr_context ctx = {
+        .xch = xch,
+        .fd = io_fd,
+        .stream_type = stream_type,
+    };
 
     /* GCC 4.4 (of CentOS 6.x vintage) can' t initialise anonymous unions. */
     ctx.restore.console_evtchn = console_evtchn;
     ctx.restore.console_domid = console_domid;
     ctx.restore.xenstore_evtchn = store_evtchn;
     ctx.restore.xenstore_domid = store_domid;
-    ctx.restore.checkpointed = stream_type;
     ctx.restore.callbacks = callbacks;
     ctx.restore.send_back_fd = send_back_fd;
 
-    /* Sanity checks for callbacks. */
-    if ( stream_type )
-        assert(callbacks->checkpoint);
-
-    if ( ctx.restore.checkpointed == XC_MIG_STREAM_COLO )
+    /* Sanity check stream_type-related parameters */
+    switch ( stream_type )
     {
-        /* this is COLO restore */
+    case XC_STREAM_COLO:
         assert(callbacks->suspend &&
                callbacks->postcopy &&
                callbacks->wait_checkpoint &&
                callbacks->restore_results);
-    }
+        /* Fallthrough */
+    case XC_STREAM_REMUS:
+        assert(callbacks->checkpoint);
+        /* Fallthrough */
+    case XC_STREAM_PLAIN:
+        break;
 
-    DPRINTF("fd %d, dom %u, hvm %u, pae %u, stream_type %d",
-            io_fd, dom, hvm, pae, stream_type);
+    default:
+        assert(!"Bad stream_type");
+        break;
+    }
 
     if ( xc_domain_getinfo(xch, dom, 1, &ctx.dominfo) != 1 )
     {
@@ -875,6 +938,9 @@ int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
         return -1;
     }
 
+    DPRINTF("fd %d, dom %u, hvm %u, stream_type %d",
+            io_fd, dom, ctx.dominfo.hvm, stream_type);
+
     ctx.domid = dom;
 
     if ( read_headers(&ctx) )
@@ -887,19 +953,11 @@ int xc_domain_restore(xc_interface *xch, int io_fd, uint32_t dom,
     }
 
     ctx.restore.p2m_size = nr_pfns;
+    ctx.restore.ops = ctx.dominfo.hvm
+        ? restore_ops_x86_hvm : restore_ops_x86_pv;
 
-    if ( ctx.dominfo.hvm )
-    {
-        ctx.restore.ops = restore_ops_x86_hvm;
-        if ( restore(&ctx) )
-            return -1;
-    }
-    else
-    {
-        ctx.restore.ops = restore_ops_x86_pv;
-        if ( restore(&ctx) )
-            return -1;
-    }
+    if ( restore(&ctx) )
+        return -1;
 
     IPRINTF("XenStore: mfn %#"PRIpfn", dom %d, evt %u",
             ctx.restore.xenstore_gfn,

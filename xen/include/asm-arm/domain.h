@@ -9,10 +9,10 @@
 #include <asm/mmio.h>
 #include <asm/gic.h>
 #include <asm/vgic.h>
+#include <asm/vpl011.h>
 #include <public/hvm/params.h>
 #include <xen/serial.h>
 #include <xen/rbtree.h>
-#include <asm-arm/vpl011.h>
 
 struct hvm_domain
 {
@@ -31,15 +31,15 @@ enum domain_type {
 #define is_64bit_domain(d) (0)
 #endif
 
-extern int dom0_11_mapping;
-#define is_domain_direct_mapped(d) ((d) == hardware_domain && dom0_11_mapping)
+/* The hardware domain has always its memory direct mapped. */
+#define is_domain_direct_mapped(d) ((d) == hardware_domain)
 
 struct vtimer {
-        struct vcpu *v;
-        int irq;
-        struct timer timer;
-        uint32_t ctl;
-        uint64_t cval;
+    struct vcpu *v;
+    int irq;
+    struct timer timer;
+    uint32_t ctl;
+    uint64_t cval;
 };
 
 struct arch_domain
@@ -51,22 +51,13 @@ struct arch_domain
     /* Virtual MMU */
     struct p2m_domain p2m;
 
-    struct hvm_domain hvm_domain;
+    struct hvm_domain hvm;
 
     struct vmmio vmmio;
 
     /* Continuable domain_relinquish_resources(). */
-    enum {
-        RELMEM_not_started,
-        RELMEM_xen,
-        RELMEM_page,
-        RELMEM_mapping,
-        RELMEM_done,
-    } relmem;
+    unsigned int rel_priv;
 
-    struct {
-        uint64_t offset;
-    } phys_timer_base;
     struct {
         uint64_t offset;
     } virt_timer_base;
@@ -97,6 +88,9 @@ struct arch_domain
     struct vpl011 vpl011;
 #endif
 
+#ifdef CONFIG_TEE
+    void *tee;
+#endif
 }  __cacheline_aligned;
 
 struct arch_vcpu
@@ -203,17 +197,20 @@ struct arch_vcpu
     struct vtimer phys_timer;
     struct vtimer virt_timer;
     bool   vtimer_initialized;
+
+    /*
+     * The full P2M may require some cleaning (e.g when emulation
+     * set/way). As the action can take a long time, it requires
+     * preemption. It is deferred until we return to guest, where we can
+     * more easily check for softirqs and preempt the vCPU safely.
+     */
+    bool need_flush_to_ram;
+
 }  __cacheline_aligned;
 
 void vcpu_show_execution_state(struct vcpu *);
 void vcpu_show_registers(const struct vcpu *);
 void vcpu_switch_to_aarch64_mode(struct vcpu *);
-
-/* On ARM, the number of VCPUs is limited by the type of GIC emulated. */
-static inline unsigned int domain_max_vcpus(const struct domain *d)
-{
-    return vgic_max_vcpus(d);
-}
 
 /*
  * Due to the restriction of GICv3, the number of vCPUs in AFF0 is
@@ -264,6 +261,8 @@ static inline void free_vcpu_guest_context(struct vcpu_guest_context *vgc)
 }
 
 static inline void arch_vcpu_block(struct vcpu *v) {}
+
+#define arch_vm_assist_valid_mask(d) (1UL << VMASST_TYPE_runstate_update_flag)
 
 #endif /* __ASM_DOMAIN_H__ */
 

@@ -23,6 +23,7 @@
 
 #include <asm/e820.h>
 #include <asm/fixmap.h>
+#include <asm/guest/hypervisor.h>
 
 #define XEN_shared_info ((struct shared_info *)fix_to_virt(FIX_XEN_SHARED_INFO))
 
@@ -30,16 +31,11 @@
 
 extern bool xen_guest;
 extern bool pv_console;
+extern uint32_t xen_cpuid_base;
 
-void probe_hypervisor(void);
-void hypervisor_setup(void);
-void hypervisor_ap_setup(void);
-int hypervisor_alloc_unused_page(mfn_t *mfn);
-int hypervisor_free_unused_page(mfn_t mfn);
-void hypervisor_fixup_e820(struct e820map *e820);
-const struct platform_bad_page *hypervisor_reserved_pages(unsigned int *size);
-uint32_t hypervisor_cpuid_base(void);
-void hypervisor_resume(void);
+const struct hypervisor_ops *xg_probe(void);
+int xg_alloc_unused_page(mfn_t *mfn);
+int xg_free_unused_page(mfn_t mfn);
 
 DECLARE_PER_CPU(unsigned int, vcpu_id);
 DECLARE_PER_CPU(struct vcpu_info *, vcpu_info);
@@ -49,27 +45,7 @@ DECLARE_PER_CPU(struct vcpu_info *, vcpu_info);
 #define xen_guest 0
 #define pv_console 0
 
-static inline void probe_hypervisor(void) {}
-
-static inline void hypervisor_setup(void)
-{
-    ASSERT_UNREACHABLE();
-}
-static inline void hypervisor_ap_setup(void)
-{
-    ASSERT_UNREACHABLE();
-}
-
-static inline void hypervisor_fixup_e820(struct e820map *e820)
-{
-    ASSERT_UNREACHABLE();
-}
-
-static inline const struct platform_bad_page *hypervisor_reserved_pages(unsigned int *size)
-{
-    ASSERT_UNREACHABLE();
-    return NULL;
-}
+static inline const struct hypervisor_ops *xg_probe(void) { return NULL; }
 
 #endif /* CONFIG_XEN_GUEST */
 #endif /* __X86_GUEST_XEN_H__ */

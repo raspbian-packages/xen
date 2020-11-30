@@ -11,7 +11,6 @@
 #include <xen/err.h>
 #include <xen/mm.h>
 #include <xen/sched.h>
-#include <xen/sched-if.h>
 #include <xen/domain.h>
 #include <xen/event.h>
 #include <xen/grant_table.h>
@@ -34,7 +33,6 @@
 #include <xsm/xsm.h>
 
 static DEFINE_SPINLOCK(domctl_lock);
-DEFINE_SPINLOCK(vcpu_alloc_lock);
 
 static int bitmap_to_xenctl_bitmap(struct xenctl_bitmap *xenctl_bitmap,
                                    const unsigned long *bitmap,
@@ -66,9 +64,9 @@ static int bitmap_to_xenctl_bitmap(struct xenctl_bitmap *xenctl_bitmap,
     return err;
 }
 
-static int xenctl_bitmap_to_bitmap(unsigned long *bitmap,
-                                   const struct xenctl_bitmap *xenctl_bitmap,
-                                   unsigned int nbits)
+int xenctl_bitmap_to_bitmap(unsigned long *bitmap,
+                            const struct xenctl_bitmap *xenctl_bitmap,
+                            unsigned int nbits)
 {
     unsigned int guest_bytes, copy_bytes;
     int err = 0;
@@ -124,14 +122,14 @@ int xenctl_bitmap_to_cpumask(cpumask_var_t *cpumask,
 static int nodemask_to_xenctl_bitmap(struct xenctl_bitmap *xenctl_nodemap,
                                      const nodemask_t *nodemask)
 {
-    return bitmap_to_xenctl_bitmap(xenctl_nodemap, nodes_addr(*nodemask),
+    return bitmap_to_xenctl_bitmap(xenctl_nodemap, nodemask_bits(nodemask),
                                    MAX_NUMNODES);
 }
 
 static int xenctl_bitmap_to_nodemask(nodemask_t *nodemask,
                                      const struct xenctl_bitmap *xenctl_nodemap)
 {
-    return xenctl_bitmap_to_bitmap(nodes_addr(*nodemask), xenctl_nodemap,
+    return xenctl_bitmap_to_bitmap(nodemask_bits(nodemask), xenctl_nodemap,
                                    MAX_NUMNODES);
 }
 
@@ -187,21 +185,13 @@ void getdomaininfo(struct domain *d, struct xen_domctl_getdomaininfo *info)
         (d->is_shut_down                ? XEN_DOMINF_shutdown  : 0) |
         (d->controller_pause_count > 0  ? XEN_DOMINF_paused    : 0) |
         (d->debugger_attached           ? XEN_DOMINF_debugged  : 0) |
-        (d->is_xenstore                 ? XEN_DOMINF_xs_domain : 0) |
+        (is_xenstore_domain(d)          ? XEN_DOMINF_xs_domain : 0) |
+        (is_hvm_domain(d)               ? XEN_DOMINF_hvm_guest : 0) |
         d->shutdown_code << XEN_DOMINF_shutdownshift;
-
-    switch ( d->guest_type )
-    {
-    case guest_type_hvm:
-        info->flags |= XEN_DOMINF_hvm_guest;
-        break;
-    default:
-        break;
-    }
 
     xsm_security_domaininfo(d, info);
 
-    info->tot_pages         = d->tot_pages;
+    info->tot_pages         = domain_tot_pages(d);
     info->max_pages         = d->max_pages;
     info->outstanding_pages = d->outstanding_pages;
     info->shr_pages         = atomic_read(&d->shr_pages);
@@ -209,7 +199,7 @@ void getdomaininfo(struct domain *d, struct xen_domctl_getdomaininfo *info)
     info->shared_info_frame = mfn_to_gmfn(d, virt_to_mfn(d->shared_info));
     BUG_ON(SHARED_M2P(info->shared_info_frame));
 
-    info->cpupool = d->cpupool ? d->cpupool->cpupool_id : CPUPOOLID_NONE;
+    info->cpupool = cpupool_get_id(d);
 
     memcpy(info->handle, d->handle, sizeof(xen_domain_handle_t));
 
@@ -243,16 +233,6 @@ void domctl_lock_release(void)
     spin_unlock(&current->domain->hypercall_deadlock_mutex);
 }
 
-static inline
-int vcpuaffinity_params_invalid(const struct xen_domctl_vcpuaffinity *vcpuaff)
-{
-    return vcpuaff->flags == 0 ||
-           ((vcpuaff->flags & XEN_VCPUAFFINITY_HARD) &&
-            guest_handle_is_null(vcpuaff->cpumap_hard.bitmap)) ||
-           ((vcpuaff->flags & XEN_VCPUAFFINITY_SOFT) &&
-            guest_handle_is_null(vcpuaff->cpumap_soft.bitmap));
-}
-
 void vnuma_destroy(struct vnuma_info *vnuma)
 {
     if ( vnuma )
@@ -283,7 +263,8 @@ static struct vnuma_info *vnuma_alloc(unsigned int nr_vnodes,
      * Check if any of the allocations are bigger than PAGE_SIZE.
      * See XSA-77.
      */
-    if ( nr_vnodes * nr_vnodes > (PAGE_SIZE / sizeof(*vnuma->vdistance)) ||
+    if ( nr_vnodes == 0 ||
+         nr_vnodes > (PAGE_SIZE / sizeof(*vnuma->vdistance) / nr_vnodes) ||
          nr_ranges > (PAGE_SIZE / sizeof(*vnuma->vmemrange)) )
         return ERR_PTR(-EINVAL);
 
@@ -322,7 +303,7 @@ static struct vnuma_info *vnuma_init(const struct xen_domctl_vnuma *uinfo,
 
     nr_vnodes = uinfo->nr_vnodes;
 
-    if ( nr_vnodes == 0 || uinfo->nr_vcpus != d->max_vcpus || uinfo->pad != 0 )
+    if ( uinfo->nr_vcpus != d->max_vcpus || uinfo->pad != 0 )
         return ERR_PTR(ret);
 
     info = vnuma_alloc(nr_vnodes, uinfo->nr_vmemranges, d->max_vcpus);
@@ -403,6 +384,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
             return -ESRCH;
         /* fall through */
     case XEN_DOMCTL_test_assign_device:
+    case XEN_DOMCTL_vm_event_op:
         if ( op->domain == DOMID_INVALID )
         {
     case XEN_DOMCTL_createdomain:
@@ -509,19 +491,10 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         domid_t        dom;
         static domid_t rover = 0;
 
-        ret = -EINVAL;
-        if ( (op->u.createdomain.flags &
-             ~(XEN_DOMCTL_CDF_hvm_guest
-               | XEN_DOMCTL_CDF_hap
-               | XEN_DOMCTL_CDF_s3_integrity
-               | XEN_DOMCTL_CDF_oos_off
-               | XEN_DOMCTL_CDF_xs_domain)) )
-            break;
-
         dom = op->domain;
         if ( (dom > 0) && (dom < DOMID_FIRST_RESERVED) )
         {
-            ret = -EINVAL;
+            ret = -EEXIST;
             if ( !is_free_domid(dom) )
                 break;
         }
@@ -542,7 +515,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
             rover = dom;
         }
 
-        d = domain_create(dom, &op->u.createdomain);
+        d = domain_create(dom, &op->u.createdomain, false);
         if ( IS_ERR(d) )
         {
             ret = PTR_ERR(d);
@@ -559,101 +532,52 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 
     case XEN_DOMCTL_max_vcpus:
     {
-        unsigned int i, max = op->u.max_vcpus.max, cpu;
-        cpumask_t *online;
+        unsigned int i, max = op->u.max_vcpus.max;
 
         ret = -EINVAL;
         if ( (d == current->domain) || /* no domain_pause() */
-             (max > domain_max_vcpus(d)) )
+             (max != d->max_vcpus) )   /* max_vcpus set up in createdomain */
             break;
-
-        /* Until Xenoprof can dynamically grow its vcpu-s array... */
-        if ( d->xenoprof )
-        {
-            ret = -EAGAIN;
-            break;
-        }
 
         /* Needed, for example, to ensure writable p.t. state is synced. */
         domain_pause(d);
 
-        /*
-         * Certain operations (e.g. CPU microcode updates) modify data which is
-         * used during VCPU allocation/initialization
-         */
-        while ( !spin_trylock(&vcpu_alloc_lock) )
-        {
-            if ( hypercall_preempt_check() )
-            {
-                ret =  hypercall_create_continuation(
-                    __HYPERVISOR_domctl, "h", u_domctl);
-                goto maxvcpu_out_novcpulock;
-            }
-        }
-
-        /* We cannot reduce maximum VCPUs. */
-        ret = -EINVAL;
-        if ( (max < d->max_vcpus) && (d->vcpu[max] != NULL) )
-            goto maxvcpu_out;
-
-        /*
-         * For now don't allow increasing the vcpu count from a non-zero
-         * value: This code and all readers of d->vcpu would otherwise need
-         * to be converted to use RCU, but at present there's no tools side
-         * code path that would issue such a request.
-         */
-        ret = -EBUSY;
-        if ( (d->max_vcpus > 0) && (max > d->max_vcpus) )
-            goto maxvcpu_out;
-
         ret = -ENOMEM;
-        online = cpupool_domain_cpumask(d);
-        if ( max > d->max_vcpus )
-        {
-            struct vcpu **vcpus;
-
-            BUG_ON(d->vcpu != NULL);
-            BUG_ON(d->max_vcpus != 0);
-
-            if ( (vcpus = xzalloc_array(struct vcpu *, max)) == NULL )
-                goto maxvcpu_out;
-
-            /* Install vcpu array /then/ update max_vcpus. */
-            d->vcpu = vcpus;
-            smp_wmb();
-            d->max_vcpus = max;
-        }
 
         for ( i = 0; i < max; i++ )
         {
             if ( d->vcpu[i] != NULL )
                 continue;
 
-            cpu = (i == 0) ?
-                cpumask_any(online) :
-                cpumask_cycle(d->vcpu[i-1]->processor, online);
-
-            if ( alloc_vcpu(d, i, cpu) == NULL )
+            if ( vcpu_create(d, i) == NULL )
                 goto maxvcpu_out;
         }
 
+        domain_update_node_affinity(d);
         ret = 0;
 
     maxvcpu_out:
-        spin_unlock(&vcpu_alloc_lock);
-
-    maxvcpu_out_novcpulock:
         domain_unpause(d);
         break;
     }
 
     case XEN_DOMCTL_soft_reset:
+    case XEN_DOMCTL_soft_reset_cont:
         if ( d == current->domain ) /* no domain_pause() */
         {
             ret = -EINVAL;
             break;
         }
-        ret = domain_soft_reset(d);
+        ret = domain_soft_reset(d, op->cmd == XEN_DOMCTL_soft_reset_cont);
+        if ( ret == -ERESTART )
+        {
+            op->cmd = XEN_DOMCTL_soft_reset_cont;
+            if ( !__copy_field_to_guest(u_domctl, op, cmd) )
+                ret = hypercall_create_continuation(__HYPERVISOR_domctl,
+                                                    "h", u_domctl);
+            else
+                ret = -EFAULT;
+        }
         break;
 
     case XEN_DOMCTL_destroydomain:
@@ -684,119 +608,8 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 
     case XEN_DOMCTL_setvcpuaffinity:
     case XEN_DOMCTL_getvcpuaffinity:
-    {
-        struct vcpu *v;
-        struct xen_domctl_vcpuaffinity *vcpuaff = &op->u.vcpuaffinity;
-
-        ret = -EINVAL;
-        if ( vcpuaff->vcpu >= d->max_vcpus )
-            break;
-
-        ret = -ESRCH;
-        if ( (v = d->vcpu[vcpuaff->vcpu]) == NULL )
-            break;
-
-        ret = -EINVAL;
-        if ( vcpuaffinity_params_invalid(vcpuaff) )
-            break;
-
-        if ( op->cmd == XEN_DOMCTL_setvcpuaffinity )
-        {
-            cpumask_var_t new_affinity, old_affinity;
-            cpumask_t *online = cpupool_domain_cpumask(v->domain);
-
-            /*
-             * We want to be able to restore hard affinity if we are trying
-             * setting both and changing soft affinity (which happens later,
-             * when hard affinity has been succesfully chaged already) fails.
-             */
-            if ( !alloc_cpumask_var(&old_affinity) )
-            {
-                ret = -ENOMEM;
-                break;
-            }
-            cpumask_copy(old_affinity, v->cpu_hard_affinity);
-
-            if ( !alloc_cpumask_var(&new_affinity) )
-            {
-                free_cpumask_var(old_affinity);
-                ret = -ENOMEM;
-                break;
-            }
-
-            /* Undo a stuck SCHED_pin_override? */
-            if ( vcpuaff->flags & XEN_VCPUAFFINITY_FORCE )
-                vcpu_pin_override(v, -1);
-
-            ret = 0;
-
-            /*
-             * We both set a new affinity and report back to the caller what
-             * the scheduler will be effectively using.
-             */
-            if ( vcpuaff->flags & XEN_VCPUAFFINITY_HARD )
-            {
-                ret = xenctl_bitmap_to_bitmap(cpumask_bits(new_affinity),
-                                              &vcpuaff->cpumap_hard,
-                                              nr_cpu_ids);
-                if ( !ret )
-                    ret = vcpu_set_hard_affinity(v, new_affinity);
-                if ( ret )
-                    goto setvcpuaffinity_out;
-
-                /*
-                 * For hard affinity, what we return is the intersection of
-                 * cpupool's online mask and the new hard affinity.
-                 */
-                cpumask_and(new_affinity, online, v->cpu_hard_affinity);
-                ret = cpumask_to_xenctl_bitmap(&vcpuaff->cpumap_hard,
-                                               new_affinity);
-            }
-            if ( vcpuaff->flags & XEN_VCPUAFFINITY_SOFT )
-            {
-                ret = xenctl_bitmap_to_bitmap(cpumask_bits(new_affinity),
-                                              &vcpuaff->cpumap_soft,
-                                              nr_cpu_ids);
-                if ( !ret)
-                    ret = vcpu_set_soft_affinity(v, new_affinity);
-                if ( ret )
-                {
-                    /*
-                     * Since we're returning error, the caller expects nothing
-                     * happened, so we rollback the changes to hard affinity
-                     * (if any).
-                     */
-                    if ( vcpuaff->flags & XEN_VCPUAFFINITY_HARD )
-                        vcpu_set_hard_affinity(v, old_affinity);
-                    goto setvcpuaffinity_out;
-                }
-
-                /*
-                 * For soft affinity, we return the intersection between the
-                 * new soft affinity, the cpupool's online map and the (new)
-                 * hard affinity.
-                 */
-                cpumask_and(new_affinity, new_affinity, online);
-                cpumask_and(new_affinity, new_affinity, v->cpu_hard_affinity);
-                ret = cpumask_to_xenctl_bitmap(&vcpuaff->cpumap_soft,
-                                               new_affinity);
-            }
-
- setvcpuaffinity_out:
-            free_cpumask_var(new_affinity);
-            free_cpumask_var(old_affinity);
-        }
-        else
-        {
-            if ( vcpuaff->flags & XEN_VCPUAFFINITY_HARD )
-                ret = cpumask_to_xenctl_bitmap(&vcpuaff->cpumap_hard,
-                                               v->cpu_hard_affinity);
-            if ( vcpuaff->flags & XEN_VCPUAFFINITY_SOFT )
-                ret = cpumask_to_xenctl_bitmap(&vcpuaff->cpumap_soft,
-                                               v->cpu_soft_affinity);
-        }
+        ret = vcpu_affinity_domctl(d, op->cmd, &op->u.vcpuaffinity);
         break;
-    }
 
     case XEN_DOMCTL_scheduler_op:
         ret = sched_adjust(d, &op->u.scheduler_op);
@@ -1090,20 +903,20 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         break;
 
     case XEN_DOMCTL_vm_event_op:
-        ret = vm_event_domctl(d, &op->u.vm_event_op,
-                              guest_handle_cast(u_domctl, void));
-        copyback = 1;
+        ret = vm_event_domctl(d, &op->u.vm_event_op);
+        if ( ret == 0 )
+            copyback = true;
         break;
 
-#ifdef CONFIG_HAS_MEM_ACCESS
+#ifdef CONFIG_MEM_ACCESS
     case XEN_DOMCTL_set_access_required:
         if ( unlikely(current->domain == d) ) /* no domain_pause() */
             ret = -EPERM;
         else
         {
             domain_pause(d);
-            p2m_get_hostp2m(d)->access_required =
-                op->u.access_required.access_required;
+            arch_p2m_set_access_required(d,
+                op->u.access_required.access_required);
             domain_unpause(d);
         }
         break;
@@ -1111,12 +924,6 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 
     case XEN_DOMCTL_set_virq_handler:
         ret = set_global_virq_handler(d, op->u.set_virq_handler.virq);
-        break;
-
-    case XEN_DOMCTL_set_max_evtchn:
-        d->max_evtchn_port = min_t(unsigned int,
-                                   op->u.set_max_evtchn.max_port,
-                                   INT_MAX);
         break;
 
     case XEN_DOMCTL_setvnumainfo:
@@ -1143,11 +950,6 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         ret = monitor_domctl(d, &op->u.monitor_op);
         if ( !ret )
             copyback = 1;
-        break;
-
-    case XEN_DOMCTL_set_gnttab_limits:
-        ret = grant_table_set_limits(d, op->u.set_gnttab_limits.grant_frames,
-                                     op->u.set_gnttab_limits.maptrack_frames);
         break;
 
     default:

@@ -18,7 +18,7 @@ static void _clean_dirty_bitmap(struct domain *d)
     ASSERT(is_pv_domain(d));
 }
 
-int shadow_domain_init(struct domain *d, unsigned int domcr_flags)
+int shadow_domain_init(struct domain *d)
 {
     static const struct log_dirty_ops sh_none_ops = {
         .enable  = _enable_log_dirty,
@@ -37,7 +37,7 @@ static int _page_fault(struct vcpu *v, unsigned long va,
     return 0;
 }
 
-static bool _invlpg(struct vcpu *v, unsigned long va)
+static bool _invlpg(struct vcpu *v, unsigned long linear)
 {
     ASSERT_UNREACHABLE();
     return true;
@@ -60,11 +60,12 @@ static void _update_paging_modes(struct vcpu *v)
     ASSERT_UNREACHABLE();
 }
 
-static void _write_p2m_entry(struct domain *d, unsigned long gfn,
-                             l1_pgentry_t *p, l1_pgentry_t new,
-                             unsigned int level)
+static int _write_p2m_entry(struct p2m_domain *p2m, unsigned long gfn,
+                            l1_pgentry_t *p, l1_pgentry_t new,
+                            unsigned int level)
 {
     ASSERT_UNREACHABLE();
+    return -EOPNOTSUPP;
 }
 
 static const struct paging_mode sh_paging_none = {
