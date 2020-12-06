@@ -296,6 +296,8 @@ override_dh_python3:
 	dh_python3
 	dh_python3 -pxen-utils-$(upstream_version) \
 		usr/lib/xen-$(upstream_version)/bin
+	dh_python3 -pxen-utils-$(upstream_version) \
+		usr/lib/xen-$(upstream_version)/lib/python
 
 # We have two init scripts.  (There used to be xend too.)
 override_dh_installinit:
