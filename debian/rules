@@ -165,12 +165,9 @@ export XEN_BUILD_TIME=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%T")
 export SMBIOS_REL_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%m/%d/%Y")
 export VGABIOS_REL_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%d %b %Y")
 
-export PYBUILD_NAME=xen
-export PYBUILD_DISABLE=test
-export PYBUILD_SYSTEM=distutils
 
 %:
-	dh $@ --with=python3 --buildsystem=pybuild
+	dh $@ --with=python3
 
 # Without this, something on stretch passes CFLAGS in the environment
 # to the Xen build system, which then (with 4.11) chokes printing
