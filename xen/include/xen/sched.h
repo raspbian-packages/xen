@@ -82,7 +82,7 @@ extern domid_t hardware_domid;
 
 struct evtchn
 {
-    spinlock_t lock;
+    rwlock_t lock;
 #define ECS_FREE         0 /* Channel is available for use.                  */
 #define ECS_RESERVED     1 /* Channel is reserved.                           */
 #define ECS_UNBOUND      2 /* Channel is waiting to bind to a remote domain. */
@@ -111,8 +111,10 @@ struct evtchn
         u16 virq;      /* state == ECS_VIRQ */
     } u;
     u8 priority;
-    u8 last_priority;
-    u16 last_vcpu_id;
+#ifndef NDEBUG
+    u8 old_state;      /* State when taking lock in write mode. */
+#endif
+    u32 fifo_lastq;    /* Data for fifo events identifying last queue. */
 #ifdef CONFIG_XSM
     union {
 #ifdef XSM_NEED_GENERIC_EVTCHN_SSID
@@ -919,6 +921,22 @@ extern bool sched_smt_power_savings;
 extern enum cpufreq_controller {
     FREQCTL_none, FREQCTL_dom0_kernel, FREQCTL_xen
 } cpufreq_controller;
+
+static always_inline bool is_cpufreq_controller(const struct domain *d)
+{
+    /*
+     * A PV dom0 can be nominated as the cpufreq controller, instead of using
+     * Xen's cpufreq driver, at which point dom0 gets direct access to certain
+     * MSRs.
+     *
+     * This interface only works when dom0 is identity pinned and has the same
+     * number of vCPUs as pCPUs on the system.
+     *
+     * It would be far better to paravirtualise the interface.
+     */
+    return (is_pv_domain(d) && is_hardware_domain(d) &&
+            cpufreq_controller == FREQCTL_dom0_kernel);
+}
 
 #define CPUPOOLID_NONE    -1
 

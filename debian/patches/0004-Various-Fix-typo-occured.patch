@@ -106,10 +106,10 @@ index 6c180c4..5a5a2fb 100644
  #define VIRQ_ENOMEM     12 /* G. (DOM0) Low on heap memory       */
  #define VIRQ_XENPMU     13 /* V.  PMC interrupt                              */
 diff --git a/xen/include/xen/sched.h b/xen/include/xen/sched.h
-index c0cc5d9..1ce89fc 100644
+index 81af120..98c58c8 100644
 --- a/xen/include/xen/sched.h
 +++ b/xen/include/xen/sched.h
-@@ -638,7 +638,7 @@ void noreturn __domain_crash_synchronous(void);
+@@ -640,7 +640,7 @@ void noreturn __domain_crash_synchronous(void);
  
  /*
   * Called from assembly code, with an optional address to help indicate why

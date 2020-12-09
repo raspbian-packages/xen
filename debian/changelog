@@ -1,4 +1,4 @@
-xen (4.11.4+37-g3263f257ca-1+rpi1) buster-staging; urgency=medium
+xen (4.11.4+57-g41a822c392-1+rpi1) buster-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,7 +9,26 @@ xen (4.11.4+37-g3263f257ca-1+rpi1) buster-staging; urgency=medium
   [changes introduced in 4.11.1+26-g87f51bf366-3+rpi1 by Peter Michael Green]
   * Do not fail on files that are not installed.
 
- -- Raspbian forward porter <root@raspbian.org>  Fri, 02 Oct 2020 23:52:54 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Wed, 09 Dec 2020 23:42:56 +0000
+
+xen (4.11.4+57-g41a822c392-1) buster-security; urgency=high
+
+  * Update to new upstream version 4.11.4+57-g41a822c392, which also contains
+    security fixes for the following issues:
+    - x86: Race condition in Xen mapping code
+      XSA-345 (CVE-2020-27672)
+    - undue deferral of IOMMU TLB flushes
+      XSA-346 (CVE-2020-27671)
+    - unsafe AMD IOMMU page table updates
+      XSA-347 (CVE-2020-27670)
+    - x86 PV guest INVLPG-like flushes may leave stale TLB entries
+      XSA-286 (CVE-2020-27674)
+    - Information leak via power sidechannel
+      XSA-351 (CVE-2020-28368)
+    - stack corruption from XSA-346 change
+      XSA-355 (CVE-2020-29040)
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Thu, 03 Dec 2020 13:56:29 +0100
 
 xen (4.11.4+37-g3263f257ca-1) buster-security; urgency=high
 
