@@ -153,10 +153,10 @@ do_stop_migrate()
 {
   [ -n "$XENDOMAINS_MIGRATE" ] || return
 
-  while read id name rest; do
+  /usr/lib/xen-common/bin/xen-init-list | while read id name discard; do
     log_action_begin_msg "Migrating Xen domain $name ($id)"
     (timeout_coproc "$XENDOMAINS_STOP_MAXWAIT" xen migrate $id $XENDOMAINS_MIGRATE)
-  done < <(/usr/lib/xen-common/bin/xen-init-list)
+  done
 }
 
 do_stop_save()
@@ -164,24 +164,24 @@ do_stop_save()
   [ -n "$XENDOMAINS_SAVE" ] || return
   [ -d "$XENDOMAINS_SAVE" ] || mkdir -m 0700 -p "$XENDOMAINS_SAVE"
 
-  while read id name rest; do
+  /usr/lib/xen-common/bin/xen-init-list | while read id name discard; do
     log_action_begin_msg "Saving Xen domain $name ($id)"
     (timeout_coproc "$XENDOMAINS_STOP_MAXWAIT" xen save $id $XENDOMAINS_SAVE/$name)
-  done < <(/usr/lib/xen-common/bin/xen-init-list)
+  done
 }
 
 do_stop_shutdown()
 {
-  while read id name rest; do
+  /usr/lib/xen-common/bin/xen-init-list | while read id name discard; do
     log_action_begin_msg "Shutting down Xen domain $name ($id)"
     xen shutdown $id 2>&1 1>/dev/null
     log_action_end_msg $?
-  done < <(/usr/lib/xen-common/bin/xen-init-list)
-  while read id name rest; do
+  done
+  /usr/lib/xen-common/bin/xen-init-list | while read id name discard; do
     log_action_begin_msg "Waiting for Xen domain $name ($id) to shut down"
     timeout_domain "$name" "$XENDOMAINS_STOP_MAXWAIT"
     log_action_end_msg $?
-  done < <(/usr/lib/xen-common/bin/xen-init-list)
+  done
 }
 
 do_stop()
