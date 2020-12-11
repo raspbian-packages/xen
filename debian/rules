@@ -150,6 +150,12 @@ make_args_tools := $(make_args_common) \
 	EXTRA_CFLAGS_XEN_TOOLS='$(dpkg_CFLAGS) $(dpkg_CPPFLAGS)' \
 	PREPEND_LDFLAGS_XEN_TOOLS='$(dpkg_LDFLAGS)'
 
+# use the date from SOURCE_DATE_EPOCH for reproducible builds
+export XEN_BUILD_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)")
+export XEN_BUILD_TIME=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%T")
+export SMBIOS_REL_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%m/%d/%Y")
+export VGABIOS_REL_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%d %b %Y")
+
 export PYBUILD_NAME=xen
 export PYBUILD_DISABLE=test
 export PYBUILD_SYSTEM=distutils
