@@ -19,7 +19,7 @@ SHELL    := bash -e
 # Inexplicably, if you tell make `export V=value' and `$(shell ...)'
 # it does not pass V to the shell.  WTF.  So we set a variable
 # dbmo which we include in the relevant $(shell ...) invocations.
-dbmo= DEB_BUILD_MAINT_OPTIONS=hardening=+all
+dbmo= DEB_BUILD_MAINT_OPTIONS="hardening=+all reproducible=+fixfilepath"
 
 # Architecture handling.
 #
@@ -140,8 +140,14 @@ make_args_common := \
 	XEN_COMPILE_ARCH=$(xen_arch_$(DEB_BUILD_ARCH)) \
 	V=1
 
+# Passing -ffile-prefix-map is needed for reproducible builds.
+# Additionally passing -fdebug-prefix-map in necessary to work around a gcc bug
+# where -ffile-prefix-map is ignored with assembly files. See
+# https://gcc.gnu.org/bugzilla/show_bug.cgi?id=93371
 make_args_xen := $(make_args_common) \
-	XEN_TARGET_ARCH=$(xen_arch_$(flavour))
+	XEN_TARGET_ARCH=$(xen_arch_$(flavour)) \
+	EXTRA_CFLAGS_XEN_CORE='-ffile-prefix-map=$(shell pwd)=. -fdebug-prefix-map=$(shell pwd)=.'
+
 # (Xen upstream does not offer a separate CPPFLAGS,
 # so we pass those in CFLAGS.)
 
