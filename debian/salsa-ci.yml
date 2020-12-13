@@ -16,9 +16,6 @@ extract-source:
     - test -d .git/info || mkdir .git/info
     - echo ".gitarchive-info -export-subst" >> .git/info/attributes
 
-reprotest:
-  allow_failure: true
-
 variables:
   # disable shallow cloning of git repository. This is needed for git-debrebase
   GIT_DEPTH: 0
