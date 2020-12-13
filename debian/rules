@@ -150,11 +150,13 @@ make_args_xen := $(make_args_common) \
 
 # (Xen upstream does not offer a separate CPPFLAGS,
 # so we pass those in CFLAGS.)
-
+# The BUILD_PATH_PREFIX_MAP is needed for ocaml to reproducibly build
+# oxenstored
 make_args_tools := $(make_args_common) \
 	XEN_TARGET_ARCH=$(xen_arch_$(DEB_HOST_ARCH)) \
 	EXTRA_CFLAGS_XEN_TOOLS='$(dpkg_CFLAGS) $(dpkg_CPPFLAGS)' \
-	PREPEND_LDFLAGS_XEN_TOOLS='$(dpkg_LDFLAGS)'
+	PREPEND_LDFLAGS_XEN_TOOLS='$(dpkg_LDFLAGS)' \
+	BUILD_PATH_PREFIX_MAP='.=$(shell pwd)'
 
 # use the date from SOURCE_DATE_EPOCH for reproducible builds
 export XEN_BUILD_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)")
