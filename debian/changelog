@@ -1,6 +1,51 @@
 xen (4.14.0+88-g1d1d1f5391-1) UNRELEASED; urgency=medium
 
-  * Update to new upstream version 4.14.0+88-g1d1d1f5391.
+  * Update to new upstream version 4.14.0+88-g1d1d1f5391, which also contains
+    security fixes for the following issues:
+    - stack corruption from XSA-346 change
+      XSA-355 CVE-2020-29040 (Closes: #976109)
+
+  Packaging bugfixes and improvements:
+  * d/rules: do not compress /usr/share/doc/xen/html (Closes: #942611)
+  * Add missing CVE numbers to the previous changelog entries
+
+  Packaging bugfixes and improvements [Elliott Mitchell]:
+  * d/shuffle-binaries: Make error detection/message overt
+  * d/shuffle-binaries: Add quoting for potentially changeable variables
+  * d/shuffle-boot-files: Add lots of double-quotes when handling variables
+  * debian/rules: Set CC/LD to enable cross-building
+  * debian/xen.init: Load xen_acpi_processor on boot
+  * d/shuffle-binaries: Remove useless extra argument being passed in
+
+  Packaging bugfixes and improvements [Maximilian Engelhardt]:
+  * d/xen-hypervisor-V-F.postinst.vsn-in: use reboot-required
+    (Closes: #862408)
+  * d/xen-hypervisor-V-F.postrm: actually install script
+  * d/xen-hypervisor-V.*: clean up unused files
+  * d/xen-hypervisor-V.bug-control.vsn-in: actually install script
+  * debian/rules: enable verbose build
+
+  Fixes to patches for upstream code:
+  * t/h/L/vif-common.sh: force handle_iptable return value to be 0
+    (Closes: #955994)
+
+  * Pick the following upstream commits to improve Raspberry Pi 4 support,
+    requested by Elliott Mitchell:
+    - 25849c8b16 ("xen/rpi4: implement watchdog-based reset")
+    - 17d192e023 ("tools/python: Pass linker to Python build process")
+    - 861f0c1109 ("xen/arm: acpi: Don't fail if SPCR table is absent")
+    - 1c4aa69ca1 ("xen/acpi: Rework acpi_os_map_memory() and
+                   acpi_os_unmap_memory()")
+    - 4d625ff3c3 ("xen/arm: acpi: The fixmap area should always be cleared
+                   during failure/unmap")
+    - dac867bf9a ("xen/arm: Check if the platform is not using ACPI before
+                   initializing Dom0less")
+    - 9c2bc0f24b ("xen/arm: Introduce fw_unreserved_regions() and use it")
+    - 7056f2f89f ("xen/arm: acpi: add BAD_MADT_GICC_ENTRY() macro")
+    - 957708c2d1 ("xen/arm: traps: Don't panic when receiving an unknown debug
+                   trap")
+
+  * Pick upstream commit ba6e78f0db ("fix spelling errors"). Thanks, Diederik.
 
  -- Hans van Kranenburg <hans@knorrie.org>  Tue, 15 Dec 2020 10:15:41 +0100
 
