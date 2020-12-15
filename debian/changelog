@@ -1,3 +1,10 @@
+xen (4.14.0+88-g1d1d1f5391-2) unstable; urgency=high
+
+  * For now, revert "debian/rules: Set CC/LD to enable cross-building", since
+    it causes an FTBFS on i386.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Tue, 15 Dec 2020 14:57:41 +0100
+
 xen (4.14.0+88-g1d1d1f5391-1) unstable; urgency=high
 
   * Update to new upstream version 4.14.0+88-g1d1d1f5391, which also contains
