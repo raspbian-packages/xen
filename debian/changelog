@@ -21,15 +21,15 @@ xen (4.14.0+80-gd101b417b7-1~exp1) experimental; urgency=medium
   * Update to new upstream version 4.14.0+80-gd101b417b7, which also contains
     security fixes for the following issues:
     - Information leak via power sidechannel
-      XSA-351 (no CVE yet)
+      XSA-351 CVE-2020-28368
     - x86 PV guest INVLPG-like flushes may leave stale TLB entries
-      XSA-286 (no CVE yet)
+      XSA-286 CVE-2020-27674
     - unsafe AMD IOMMU page table updates
-      XSA-347 (no CVE yet)
+      XSA-347 CVE-2020-27670
     - undue deferral of IOMMU TLB flushes
-      XSA-346 (no CVE yet)
+      XSA-346 CVE-2020-27671
     - x86: Race condition in Xen mapping code
-      XSA-345 (no CVE yet)
+      XSA-345 CVE-2020-27672
     - lack of preemption in evtchn_reset() / evtchn_destroy()
       XSA-344 CVE-2020-25601
     - races with evtchn_reset()
