@@ -1,3 +1,9 @@
+xen (4.14.0+88-g1d1d1f5391-1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.14.0+88-g1d1d1f5391.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Tue, 15 Dec 2020 10:15:41 +0100
+
 xen (4.14.0+80-gd101b417b7-1) unstable; urgency=medium
 
   * Re-upload to unstable for rebuild.
