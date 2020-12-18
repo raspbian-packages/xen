@@ -184,8 +184,9 @@ static void __init processor_id(void)
     processor_setup();
 }
 
-void __init dt_unreserved_regions(paddr_t s, paddr_t e,
-                                  void (*cb)(paddr_t, paddr_t), int first)
+static void __init dt_unreserved_regions(paddr_t s, paddr_t e,
+                                         void (*cb)(paddr_t, paddr_t),
+                                         int first)
 {
     int i, nr = fdt_num_mem_rsv(device_tree_flattened);
 
@@ -231,6 +232,17 @@ void __init dt_unreserved_regions(paddr_t s, paddr_t e,
 
     cb(s, e);
 }
+
+void __init fw_unreserved_regions(paddr_t s, paddr_t e,
+                                  void (*cb)(paddr_t, paddr_t), int first)
+{
+    if ( acpi_disabled )
+        dt_unreserved_regions(s, e, cb, first);
+    else
+        cb(s, e);
+}
+
+
 
 struct bootmodule __init *add_boot_module(bootmodule_kind kind,
                                           paddr_t start, paddr_t size,
@@ -393,7 +405,7 @@ void __init discard_initial_modules(void)
              !mfn_valid(maddr_to_mfn(e)) )
             continue;
 
-        dt_unreserved_regions(s, e, init_domheap_pages, 0);
+        fw_unreserved_regions(s, e, init_domheap_pages, 0);
     }
 
     mi->nr_mods = 0;
@@ -700,7 +712,7 @@ static void __init setup_mm(void)
                 n = mfn_to_maddr(mfn_add(xenheap_mfn_start, xenheap_pages));
             }
 
-            dt_unreserved_regions(s, e, init_boot_pages, 0);
+            fw_unreserved_regions(s, e, init_boot_pages, 0);
 
             s = n;
         }
@@ -753,7 +765,7 @@ static void __init setup_mm(void)
             if ( e > bank_end )
                 e = bank_end;
 
-            dt_unreserved_regions(s, e, init_boot_pages, 0);
+            fw_unreserved_regions(s, e, init_boot_pages, 0);
             s = n;
         }
     }
@@ -975,7 +987,8 @@ void __init start_xen(unsigned long boot_phys_offset,
 
     system_state = SYS_STATE_active;
 
-    create_domUs();
+    if ( acpi_disabled )
+        create_domUs();
 
     domain_unpause_by_systemcontroller(dom0);
 

@@ -135,7 +135,8 @@ dpkg_CPPFLAGS := $(shell $(dbmo) dpkg-buildflags --get CPPFLAGS)
 dpkg_LDFLAGS  := $(shell $(dbmo) dpkg-buildflags --get LDFLAGS)
 
 make_args_common := \
-	XEN_COMPILE_ARCH=$(xen_arch_$(DEB_BUILD_ARCH))
+	XEN_COMPILE_ARCH=$(xen_arch_$(DEB_BUILD_ARCH)) \
+	V=1
 
 make_args_xen := $(make_args_common) \
 	XEN_TARGET_ARCH=$(xen_arch_$(flavour))
@@ -269,7 +270,7 @@ xenstore_rm = $(addprefix debian/xen-utils-common/,		\
 		))
 
 override_dh_install:
-	debian/shuffle-binaries $(upstream_version) $(flavour)
+	debian/shuffle-binaries $(upstream_version)
 	:
 	debian/shuffle-boot-files $(upstream_version) $(flavour)
 	:
@@ -311,7 +312,7 @@ override_dh_compress:
 	rdfind -makehardlinks true -makeresultsfile false \
 		debian/xenstore-utils/usr/bin
 	:
-	dh_compress
+	dh_compress -Xusr/share/doc/xen/html
 	find debian/xen-hypervisor-*/usr/lib/debug -type f -print0 \
 		| xargs -0r gzip -9vn
 

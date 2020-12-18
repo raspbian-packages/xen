@@ -1,4 +1,4 @@
-xen (4.14.0+80-gd101b417b7-1+rpi1) bullseye-staging; urgency=medium
+xen (4.14.0+88-g1d1d1f5391-2+rpi1) bullseye-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,7 +9,93 @@ xen (4.14.0+80-gd101b417b7-1+rpi1) bullseye-staging; urgency=medium
   [changes introduced in 4.11.1+26-g87f51bf366-3+rpi1 by Peter Michael Green]
   * Do not fail on files that are not installed.
 
- -- Raspbian forward porter <root@raspbian.org>  Mon, 30 Nov 2020 02:51:13 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Fri, 18 Dec 2020 18:13:06 +0000
+
+xen (4.14.0+88-g1d1d1f5391-2) unstable; urgency=high
+
+  * For now, revert "debian/rules: Set CC/LD to enable cross-building", since
+    it causes an FTBFS on i386.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Tue, 15 Dec 2020 14:57:41 +0100
+
+xen (4.14.0+88-g1d1d1f5391-1) unstable; urgency=high
+
+  * Update to new upstream version 4.14.0+88-g1d1d1f5391, which also contains
+    security fixes for the following issues:
+    - stack corruption from XSA-346 change
+      XSA-355 CVE-2020-29040 (Closes: #976109)
+  * Apply security fixes for the following issues:
+    - oxenstored: permissions not checked on root node
+      XSA-353 CVE-2020-29479
+    - xenstore watch notifications lacking permission checks
+      XSA-115 CVE-2020-29480
+    - Xenstore: new domains inheriting existing node permissions
+      XSA-322 CVE-2020-29481
+    - Xenstore: wrong path length check
+      XSA-323 CVE-2020-29482
+    - Xenstore: guests can crash xenstored via watchs
+      XSA-324 CVE-2020-29484
+    - Xenstore: guests can disturb domain cleanup
+      XSA-325 CVE-2020-29483
+    - oxenstored memory leak in reset_watches
+      XSA-330 CVE-2020-29485
+    - oxenstored: node ownership can be changed by unprivileged clients
+      XSA-352 CVE-2020-29486
+    - undue recursion in x86 HVM context switch code
+      XSA-348 CVE-2020-29566
+    - infinite loop when cleaning up IRQ vectors
+      XSA-356 CVE-2020-29567
+    - FIFO event channels control block related ordering
+      XSA-358 CVE-2020-29570
+    - FIFO event channels control structure ordering
+      XSA-359 CVE-2020-29571
+  * Note that the following XSA are not listed, because...
+    - XSA-349 and XSA-350 have patches for the Linux kernel
+    - XSA-354 has patches for the XAPI toolstack
+
+  Packaging bugfixes and improvements:
+  * d/rules: do not compress /usr/share/doc/xen/html (Closes: #942611)
+  * Add missing CVE numbers to the previous changelog entries
+
+  Packaging bugfixes and improvements [Elliott Mitchell]:
+  * d/shuffle-binaries: Make error detection/message overt
+  * d/shuffle-binaries: Add quoting for potentially changeable variables
+  * d/shuffle-boot-files: Add lots of double-quotes when handling variables
+  * debian/rules: Set CC/LD to enable cross-building
+  * debian/xen.init: Load xen_acpi_processor on boot
+  * d/shuffle-binaries: Remove useless extra argument being passed in
+
+  Packaging bugfixes and improvements [Maximilian Engelhardt]:
+  * d/xen-hypervisor-V-F.postinst.vsn-in: use reboot-required
+    (Closes: #862408)
+  * d/xen-hypervisor-V-F.postrm: actually install script
+  * d/xen-hypervisor-V.*: clean up unused files
+  * d/xen-hypervisor-V.bug-control.vsn-in: actually install script
+  * debian/rules: enable verbose build
+
+  Fixes to patches for upstream code:
+  * t/h/L/vif-common.sh: force handle_iptable return value to be 0
+    (Closes: #955994)
+
+  * Pick the following upstream commits to improve Raspberry Pi 4 support,
+    requested by Elliott Mitchell:
+    - 25849c8b16 ("xen/rpi4: implement watchdog-based reset")
+    - 17d192e023 ("tools/python: Pass linker to Python build process")
+    - 861f0c1109 ("xen/arm: acpi: Don't fail if SPCR table is absent")
+    - 1c4aa69ca1 ("xen/acpi: Rework acpi_os_map_memory() and
+                   acpi_os_unmap_memory()")
+    - 4d625ff3c3 ("xen/arm: acpi: The fixmap area should always be cleared
+                   during failure/unmap")
+    - dac867bf9a ("xen/arm: Check if the platform is not using ACPI before
+                   initializing Dom0less")
+    - 9c2bc0f24b ("xen/arm: Introduce fw_unreserved_regions() and use it")
+    - 7056f2f89f ("xen/arm: acpi: add BAD_MADT_GICC_ENTRY() macro")
+    - 957708c2d1 ("xen/arm: traps: Don't panic when receiving an unknown debug
+                   trap")
+
+  * Pick upstream commit ba6e78f0db ("fix spelling errors"). Thanks, Diederik.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Tue, 15 Dec 2020 13:00:00 +0100
 
 xen (4.14.0+80-gd101b417b7-1) unstable; urgency=medium
 
@@ -28,15 +114,15 @@ xen (4.14.0+80-gd101b417b7-1~exp1) experimental; urgency=medium
   * Update to new upstream version 4.14.0+80-gd101b417b7, which also contains
     security fixes for the following issues:
     - Information leak via power sidechannel
-      XSA-351 (no CVE yet)
+      XSA-351 CVE-2020-28368
     - x86 PV guest INVLPG-like flushes may leave stale TLB entries
-      XSA-286 (no CVE yet)
+      XSA-286 CVE-2020-27674
     - unsafe AMD IOMMU page table updates
-      XSA-347 (no CVE yet)
+      XSA-347 CVE-2020-27670
     - undue deferral of IOMMU TLB flushes
-      XSA-346 (no CVE yet)
+      XSA-346 CVE-2020-27671
     - x86: Race condition in Xen mapping code
-      XSA-345 (no CVE yet)
+      XSA-345 CVE-2020-27672
     - lack of preemption in evtchn_reset() / evtchn_destroy()
       XSA-344 CVE-2020-25601
     - races with evtchn_reset()
