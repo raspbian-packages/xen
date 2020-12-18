@@ -3,7 +3,13 @@ include $(XEN_ROOT)/Config.mk
 -include $(XEN_ROOT)/config/Docs.mk
 
 VERSION		:= $(shell $(MAKE) -C $(XEN_ROOT)/xen --no-print-directory xenversion)
-DATE		:= $(shell date +%Y-%m-%d)
+
+DATE_FMT	:= +%Y-%m-%d
+ifdef SOURCE_DATE_EPOCH
+DATE		:= $(shell date -u -d "@$(SOURCE_DATE_EPOCH)" "$(DATE_FMT)" 2>/dev/null || date -u -r "$(SOURCE_DATE_EPOCH)" "$(DATE_FMT)" 2>/dev/null || date -u "$(DATE_FMT)")
+else
+DATE		:= $(shell date "$(DATE_FMT)")
+endif
 
 DOC_ARCHES      := arm x86_32 x86_64
 MAN_SECTIONS    := 1 5 7 8
