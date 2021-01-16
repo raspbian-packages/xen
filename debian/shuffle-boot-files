@@ -23,9 +23,12 @@ mkdir -p "$dest"
 
 verstring="$(readlink debian/tmp/boot/xen.gz ||
             readlink debian/tmp/boot/xen)"
-verstring="${verstring##*/}"
+verstring="${verstring##*xen-}"
 verstring="${verstring%.gz}"
 
-for f in `cd "$t/boot" && find * -type f -print`; do
-	cp -v "$t/boot/$f" "$dest/${f/$verstring/xen-$version-$flavour}"
+find "$t/boot" -type f -print | while read f; do
+	basename="${f#$t/boot/}"
+	head="${basename%$verstring*}"
+	tail="${basename#*$verstring}"
+	cp -v "$f" "${dest}/${head}${version}-${flavour}${tail}"
 done
