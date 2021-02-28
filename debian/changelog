@@ -1,8 +1,46 @@
-xen (4.14.1+11-gb0b734a8b3-1) UNRELEASED; urgency=medium
+xen (4.14.1+11-gb0b734a8b3-1) unstable; urgency=medium
 
-  * Update to new upstream version 4.14.1+11-gb0b734a8b3.
+  * Update to new upstream version 4.14.1+11-gb0b734a8b3, which also contains
+    security fixes for the following issues:
+    - IRQ vector leak on x86
+      XSA-360 CVE-2021-3308  (Closes: #981052)
+    - arm: The cache may not be cleaned for newly allocated scrubbed pages
+      XSA-364 CVE-2021-26933
+  * Drop separate patches for XSAs up to 359 that are now included in the
+    upstream stable branch.
 
- -- Hans van Kranenburg <hans@knorrie.org>  Fri, 26 Feb 2021 20:10:35 +0100
+  Packaging bugfixes and improvements [Elliott Mitchell]:
+  * debian/rules: Set CC/LD to enable cross-building
+  * d/shuffle-binaries: Fix binary shuffling script for cross-building
+  * Rework "debian/rules: Do not try to move EFI binaries on armhf"
+  * debian/scripts: Optimize runtime scripts
+  * debian/xen-utils-common.examples: Remove xm examples
+  * d/shuffle-boot-files: make it POSIX compliant  [Hans van Kranenburg, based
+    on a patch by Elliott Mitchell]
+  * d/shuffle-binaries: Switch loop from for to while
+  * d/shuffle-binaries: Switch to POSIX shell, instead of Bash
+  * d/shuffle-boot-files: Switch to POSIX shell, instead of Bash
+  * debian/xendomains.init: Pipe xen-init-list instead of tmp file
+
+  Make the package build reproducibly [Maximilian Engelhardt]:
+  * debian/salsa-ci.yml: enable salsa-ci
+  * debian/salsa-ci.yml: enable diffoscope in reprotest
+  * debian/rules: use SOURCE_DATE_EPOCH for xen build dates
+  * debian/rules: don't include build path in binaries
+  * debian/rules: reproducibly build oxenstored
+  * Pick the following upstream commits:
+    - 5816d327e4 ("xen: don't have timestamp inserted in config.gz")
+    - ee41b5c450 ("x86/EFI: don't insert timestamp when SOURCE_DATE_EPOCH is
+                   defined")
+    - e18dadc5b7 ("docs: use predictable ordering in generated documentation")
+  * Include upstream patch that is not committed yet, but needed:
+    - docs: set date to SOURCE_DATE_EPOCH if available
+  * debian/salsa-ci.yml: don't allow reprotest to fail
+
+  Packaging bugfixes and improvements:
+  * d/shuffle-boot-files: Document more inner workings
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Sun, 28 Feb 2021 19:49:45 +0100
 
 xen (4.14.0+88-g1d1d1f5391-2) unstable; urgency=high
 
