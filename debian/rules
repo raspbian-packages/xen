@@ -24,7 +24,7 @@ export SOURCE_BASE_DIR=$(shell pwd)
 # Inexplicably, if you tell make `export V=value' and `$(shell ...)'
 # it does not pass V to the shell.  WTF.  So we set a variable
 # dbmo which we include in the relevant $(shell ...) invocations.
-dbmo= DEB_BUILD_MAINT_OPTIONS="hardening=+all reproducible=+fixfilepath"
+dbmo= DEB_BUILD_MAINT_OPTIONS="hardening=+all"
 
 # Architecture handling.
 #
