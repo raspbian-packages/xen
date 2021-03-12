@@ -1,6 +1,5 @@
-#!/bin/bash
+#!/bin/sh
 set -e
-set -o pipefail
 
 version="$1"; shift
 
@@ -9,11 +8,9 @@ version="$1"; shift
 # currently-running version of Xen.  The actual binaries go
 # in xen-utils-$version:usr/lib/xen-$version/bin
 #
-# We use ldd to see what libraries the binary is linked against.
-# We ignore errors from ldd because we are running it on scripts
-# and things too and it is hard to distinguish these errors.
-#
-# We then match against the libraries listed for inclusion here:
+# We first have to figure out what libraries the binary is linked
+# against.  We then match against the libraries listed for inclusion
+# here:
 list=debian/libxenmiscV.install.vsn-in
 
 t=debian/tmp
@@ -22,29 +19,29 @@ cd=/usr/lib/xen-common/bin
 
 mkdir -p "$t/$vd"
 
-for binary in `find $t/usr/{bin,sbin} -type f`; do
-	reason=''
-	{ ldd "$binary" ||: ; } | { fgrep '=>' ||: ; } \
-	| (
-		while read lib dummy; do
+find "$t"/usr/*bin -type f | while read binary; do
+	# filter for executables (ignore scripts)
+	file "$binary" | grep -q -eELF.\\+version.\\+interpreter || continue
+
+	reason=$(
+		strings "$binary" | grep -e^lib.\\+\\.so\\.\[.0-9\]\\+\$ | \
+		while read lib; do
 			lib=${lib%.so.*}
-			if grep -F "usr/lib/*/$lib.so.*" $list >/dev/null; then
-				reason+=" $lib"
+			if grep -q -F "usr/lib/*/$lib.so.*" $list; then
+				printf " %s" "$lib"
 			fi
 		done
-
-		if [ "x$reason" = x ]; then
-			exit 0
-		fi
-
-		echo "shuffling $binary $reason"
-
-		leaf=${binary##*}
-		mv -v $binary $t/$vd/$leaf
-		ln -vs $cd/xen-utils-wrapper $binary
-
-		touch debian/shuffle-binaries.stamp
 	)
+
+	# if no reason, then skip
+	[ -n "$reason" ] || continue
+
+	echo "shuffling $binary$reason"
+
+	mv -v "$binary" "$t/$vd/"
+	ln -vs "$cd/xen-utils-wrapper" "$binary"
+
+	touch "$0.stamp"
 done
 
 if [ ! -e "$0.stamp" ]; then

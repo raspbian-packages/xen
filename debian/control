@@ -8,6 +8,7 @@ Build-Depends:
    debhelper (>= 10),
    dh-exec,
    dpkg-dev (>= 1.16.0~),
+   file,
    rdfind,
    lsb-release,
    flex, bison,

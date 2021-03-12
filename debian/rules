@@ -19,7 +19,7 @@ SHELL    := bash -e
 # Inexplicably, if you tell make `export V=value' and `$(shell ...)'
 # it does not pass V to the shell.  WTF.  So we set a variable
 # dbmo which we include in the relevant $(shell ...) invocations.
-dbmo= DEB_BUILD_MAINT_OPTIONS=hardening=+all
+dbmo= DEB_BUILD_MAINT_OPTIONS="hardening=+all reproducible=+fixfilepath"
 
 # Architecture handling.
 #
@@ -135,18 +135,34 @@ dpkg_CPPFLAGS := $(shell $(dbmo) dpkg-buildflags --get CPPFLAGS)
 dpkg_LDFLAGS  := $(shell $(dbmo) dpkg-buildflags --get LDFLAGS)
 
 make_args_common := \
+	CC=$(DEB_HOST_GNU_TYPE)-gcc \
+	LD=$(DEB_HOST_GNU_TYPE)-ld \
 	XEN_COMPILE_ARCH=$(xen_arch_$(DEB_BUILD_ARCH)) \
 	V=1
 
+# Passing -ffile-prefix-map is needed for reproducible builds.
+# Additionally passing -fdebug-prefix-map in necessary to work around a gcc bug
+# where -ffile-prefix-map is ignored with assembly files. See
+# https://gcc.gnu.org/bugzilla/show_bug.cgi?id=93371
 make_args_xen := $(make_args_common) \
-	XEN_TARGET_ARCH=$(xen_arch_$(flavour))
+	XEN_TARGET_ARCH=$(xen_arch_$(flavour)) \
+	EXTRA_CFLAGS_XEN_CORE='-ffile-prefix-map=$(shell pwd)=. -fdebug-prefix-map=$(shell pwd)=.'
+
 # (Xen upstream does not offer a separate CPPFLAGS,
 # so we pass those in CFLAGS.)
-
+# The BUILD_PATH_PREFIX_MAP is needed for ocaml to reproducibly build
+# oxenstored
 make_args_tools := $(make_args_common) \
 	XEN_TARGET_ARCH=$(xen_arch_$(DEB_HOST_ARCH)) \
 	EXTRA_CFLAGS_XEN_TOOLS='$(dpkg_CFLAGS) $(dpkg_CPPFLAGS)' \
-	PREPEND_LDFLAGS_XEN_TOOLS='$(dpkg_LDFLAGS)'
+	PREPEND_LDFLAGS_XEN_TOOLS='$(dpkg_LDFLAGS)' \
+	BUILD_PATH_PREFIX_MAP='.=$(shell pwd)'
+
+# use the date from SOURCE_DATE_EPOCH for reproducible builds
+export XEN_BUILD_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)")
+export XEN_BUILD_TIME=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%T")
+export SMBIOS_REL_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%m/%d/%Y")
+export VGABIOS_REL_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%d %b %Y")
 
 export PYBUILD_NAME=xen
 export PYBUILD_DISABLE=test
@@ -231,10 +247,7 @@ override_dh_auto_install: $(TEMPLATED_FILES)
 		-C tools/firmware install-shim
 	:
 	@# Inexplicably, upstream puts the efi binares in usr/lib64
-	case $(flavour) in \
-		armhf) ;; \
-		*) mv $t/usr/lib64/efi/* $t/boot/. ;; \
-	esac
+	find "$t"/usr/lib*/efi -mindepth 1 -maxdepth 1 -print0 | xargs -r -0 mv -t "$t/boot"
 	:
 	@# This file contains an arch-specific path and we put it
 	@# in xen-utils-common, an arch-all package.  But the
