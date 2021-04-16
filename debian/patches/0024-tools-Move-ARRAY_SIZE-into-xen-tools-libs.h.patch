@@ -43,7 +43,7 @@ index e874fb8..63e3507 100644
 +
  #endif	/* __XEN_TOOLS_LIBS__ */
 diff --git a/tools/libxc/xc_private.h b/tools/libxc/xc_private.h
-index 03bdfca..a0b203e 100644
+index c2921e1..ca9aaaf 100644
 --- a/tools/libxc/xc_private.h
 +++ b/tools/libxc/xc_private.h
 @@ -40,6 +40,8 @@

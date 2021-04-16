@@ -40,12 +40,12 @@ CAMLprim value stub_header_of_string(value s)
 {
 	CAMLparam1(s);
 	CAMLlocal1(ret);
-	struct xsd_sockmsg *hdr;
+	const struct xsd_sockmsg *hdr;
 
 	if (caml_string_length(s) != sizeof(struct xsd_sockmsg))
 		caml_failwith("xb header incomplete");
 	ret = caml_alloc_tuple(4);
-	hdr = (struct xsd_sockmsg *) String_val(s);
+	hdr = (const struct xsd_sockmsg *) String_val(s);
 	Store_field(ret, 0, Val_int(hdr->tx_id));
 	Store_field(ret, 1, Val_int(hdr->req_id));
 	Store_field(ret, 2, Val_int(hdr->type));
@@ -65,7 +65,7 @@ CAMLprim value stub_string_of_header(value tid, value rid, value ty, value len)
 	};
 
 	ret = caml_alloc_string(sizeof(struct xsd_sockmsg));
-	memcpy(String_val(ret), &xsd, sizeof(struct xsd_sockmsg));
+	memcpy((char *) String_val(ret), &xsd, sizeof(struct xsd_sockmsg));
 
 	CAMLreturn(ret);
 }

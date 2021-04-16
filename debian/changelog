@@ -1,4 +1,4 @@
-xen (4.11.4+57-g41a822c392-2+rpi1) buster-staging; urgency=medium
+xen (4.11.4+99-g8bce4698f6-1+rpi1) buster-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,33 +9,51 @@ xen (4.11.4+57-g41a822c392-2+rpi1) buster-staging; urgency=medium
   [changes introduced in 4.11.1+26-g87f51bf366-3+rpi1 by Peter Michael Green]
   * Do not fail on files that are not installed.
 
- -- Raspbian forward porter <root@raspbian.org>  Fri, 18 Dec 2020 04:56:58 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Fri, 16 Apr 2021 02:50:14 +0000
+
+xen (4.11.4+99-g8bce4698f6-1) buster-security; urgency=high
+
+  * Update to new upstream version 4.11.4+99-g8bce4698f6, which also contains
+    security fixes for the following issues:
+    - arm: The cache may not be cleaned for newly allocated scrubbed pages
+      XSA-364 CVE-2021-26933
+    - missed flush in XSA-321 backport
+      XSA-366 CVE-2021-27379
+  * Note that the following XSA are not listed, because...
+    - XSA-360 and XSA-368 only apply to Xen 4.12 and newer.
+    - XSA-361, XSA-362, XSA-363, XSA-365, XSA-367 and XSA-369 have patches for
+      the Linux kernel.
+  * Drop separate patches for XSAs up to 359 that are now included in the
+    upstream stable branch.
+  * Fix cosmetics wrt. XSA/CVE text formatting in the previous entry.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Wed, 24 Mar 2021 19:52:15 +0100
 
 xen (4.11.4+57-g41a822c392-2) buster-security; urgency=high
 
   * Apply security fixes for the following issues:
     - oxenstored: permissions not checked on root node
-      XSA-353 (CVE-2020-29479)
+      XSA-353 CVE-2020-29479
     - xenstore watch notifications lacking permission checks
-      XSA-115 (CVE-2020-29480)
+      XSA-115 CVE-2020-29480
     - Xenstore: new domains inheriting existing node permissions
-      XSA-322 (CVE-2020-29481)
+      XSA-322 CVE-2020-29481
     - Xenstore: wrong path length check
-      XSA-323 (CVE-2020-29482)
+      XSA-323 CVE-2020-29482
     - Xenstore: guests can crash xenstored via watchs
-      XSA-324 (CVE-2020-29484)
+      XSA-324 CVE-2020-29484
     - Xenstore: guests can disturb domain cleanup
-      XSA-325 (CVE-2020-29483)
+      XSA-325 CVE-2020-29483
     - oxenstored memory leak in reset_watches
-      XSA-330 (CVE-2020-29485)
+      XSA-330 CVE-2020-29485
     - oxenstored: node ownership can be changed by unprivileged clients
-      XSA-352 (CVE-2020-29486)
+      XSA-352 CVE-2020-29486
     - undue recursion in x86 HVM context switch code
-      XSA-348 (CVE-2020-29566)
+      XSA-348 CVE-2020-29566
     - FIFO event channels control block related ordering
-      XSA-358 (CVE-2020-29570)
+      XSA-358 CVE-2020-29570
     - FIFO event channels control structure ordering
-      XSA-359 (CVE-2020-29571)
+      XSA-359 CVE-2020-29571
   * Note that the following XSA are not listed, because...
     - XSA-349 and XSA-350 have patches for the Linux kernel
     - XSA-354 has patches for the XAPI toolstack
@@ -48,17 +66,17 @@ xen (4.11.4+57-g41a822c392-1) buster-security; urgency=high
   * Update to new upstream version 4.11.4+57-g41a822c392, which also contains
     security fixes for the following issues:
     - x86: Race condition in Xen mapping code
-      XSA-345 (CVE-2020-27672)
+      XSA-345 CVE-2020-27672
     - undue deferral of IOMMU TLB flushes
-      XSA-346 (CVE-2020-27671)
+      XSA-346 CVE-2020-27671
     - unsafe AMD IOMMU page table updates
-      XSA-347 (CVE-2020-27670)
+      XSA-347 CVE-2020-27670
     - x86 PV guest INVLPG-like flushes may leave stale TLB entries
-      XSA-286 (CVE-2020-27674)
+      XSA-286 CVE-2020-27674
     - Information leak via power sidechannel
-      XSA-351 (CVE-2020-28368)
+      XSA-351 CVE-2020-28368
     - stack corruption from XSA-346 change
-      XSA-355 (CVE-2020-29040)
+      XSA-355 CVE-2020-29040
 
  -- Hans van Kranenburg <hans@knorrie.org>  Thu, 03 Dec 2020 13:56:29 +0100
 
