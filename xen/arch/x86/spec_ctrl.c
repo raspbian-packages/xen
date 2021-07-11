@@ -885,7 +885,7 @@ void __init init_speculation_mitigations(void)
     bool cpu_has_bug_taa;
     uint64_t caps = 0;
 
-    if ( boot_cpu_has(X86_FEATURE_ARCH_CAPS) )
+    if ( cpu_has_arch_caps )
         rdmsrl(MSR_ARCH_CAPABILITIES, caps);
 
     hw_smt_enabled = check_smt_enabled();
@@ -1158,9 +1158,6 @@ void __init init_speculation_mitigations(void)
          ((hw_smt_enabled && opt_smt) ||
           !boot_cpu_has(X86_FEATURE_SC_VERW_IDLE)) )
     {
-        setup_clear_cpu_cap(X86_FEATURE_HLE);
-        setup_clear_cpu_cap(X86_FEATURE_RTM);
-
         opt_tsx = 0;
         tsx_init();
     }

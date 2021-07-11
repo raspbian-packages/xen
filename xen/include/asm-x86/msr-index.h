@@ -61,6 +61,8 @@
 
 #define MSR_TSX_FORCE_ABORT                 0x0000010f
 #define  TSX_FORCE_ABORT_RTM                (_AC(1, ULL) <<  0)
+#define  TSX_CPUID_CLEAR                    (_AC(1, ULL) <<  1)
+#define  TSX_ENABLE_RTM                     (_AC(1, ULL) <<  2)
 
 #define MSR_TSX_CTRL                        0x00000122
 #define  TSX_CTRL_RTM_DISABLE               (_AC(1, ULL) <<  0)
@@ -616,15 +618,21 @@
 #define NUM_MSR_C2_LASTBRANCH_FROM_TO	4
 #define NUM_MSR_ATOM_LASTBRANCH_FROM_TO	8
 
+/* Nehalem (and newer) last-branch recording */
+#define MSR_NHL_LBR_SELECT		0x000001c8
+#define MSR_NHL_LASTBRANCH_TOS		0x000001c9
+
 /* Skylake (and newer) last-branch recording */
-#define MSR_SKL_LASTBRANCH_TOS		0x000001c9
 #define MSR_SKL_LASTBRANCH_0_FROM_IP	0x00000680
 #define MSR_SKL_LASTBRANCH_0_TO_IP	0x000006c0
 #define MSR_SKL_LASTBRANCH_0_INFO	0x00000dc0
 #define NUM_MSR_SKL_LASTBRANCH		32
 
+/* Silvermont (and newer) last-branch recording */
+#define MSR_SM_LBR_SELECT		0x000001c8
+#define MSR_SM_LASTBRANCH_TOS		0x000001c9
+
 /* Goldmont last-branch recording */
-#define MSR_GM_LASTBRANCH_TOS		0x000001c9
 #define MSR_GM_LASTBRANCH_0_FROM_IP	0x00000680
 #define MSR_GM_LASTBRANCH_0_TO_IP	0x000006c0
 #define NUM_MSR_GM_LASTBRANCH_FROM_TO	32

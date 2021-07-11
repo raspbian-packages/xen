@@ -197,14 +197,14 @@ XEN_CPUFEATURE(FSGSBASE,      5*32+ 0) /*A  {RD,WR}{FS,GS}BASE instructions */
 XEN_CPUFEATURE(TSC_ADJUST,    5*32+ 1) /*S  TSC_ADJUST MSR available */
 XEN_CPUFEATURE(SGX,           5*32+ 2) /*   Software Guard extensions */
 XEN_CPUFEATURE(BMI1,          5*32+ 3) /*A  1st bit manipulation extensions */
-XEN_CPUFEATURE(HLE,           5*32+ 4) /*A  Hardware Lock Elision */
+XEN_CPUFEATURE(HLE,           5*32+ 4) /*!a Hardware Lock Elision */
 XEN_CPUFEATURE(AVX2,          5*32+ 5) /*A  AVX2 instructions */
 XEN_CPUFEATURE(FDP_EXCP_ONLY, 5*32+ 6) /*!  x87 FDP only updated on exception. */
 XEN_CPUFEATURE(SMEP,          5*32+ 7) /*S  Supervisor Mode Execution Protection */
 XEN_CPUFEATURE(BMI2,          5*32+ 8) /*A  2nd bit manipulation extensions */
 XEN_CPUFEATURE(ERMS,          5*32+ 9) /*A  Enhanced REP MOVSB/STOSB */
 XEN_CPUFEATURE(INVPCID,       5*32+10) /*H  Invalidate Process Context ID */
-XEN_CPUFEATURE(RTM,           5*32+11) /*A  Restricted Transactional Memory */
+XEN_CPUFEATURE(RTM,           5*32+11) /*!A Restricted Transactional Memory */
 XEN_CPUFEATURE(PQM,           5*32+12) /*   Platform QoS Monitoring */
 XEN_CPUFEATURE(NO_FPU_SEL,    5*32+13) /*!  FPU CS/DS stored as zero */
 XEN_CPUFEATURE(MPX,           5*32+14) /*s  Memory Protection Extensions */
@@ -261,6 +261,7 @@ XEN_CPUFEATURE(AVX512_4VNNIW, 9*32+ 2) /*A  AVX512 Neural Network Instructions *
 XEN_CPUFEATURE(AVX512_4FMAPS, 9*32+ 3) /*A  AVX512 Multiply Accumulation Single Precision */
 XEN_CPUFEATURE(SRBDS_CTRL,    9*32+ 9) /*   MSR_MCU_OPT_CTRL and RNGDS_MITG_DIS. */
 XEN_CPUFEATURE(MD_CLEAR,      9*32+10) /*A  VERW clears microarchitectural buffers */
+XEN_CPUFEATURE(RTM_ALWAYS_ABORT, 9*32+11) /*! June 2021 TSX defeaturing in microcode. */
 XEN_CPUFEATURE(TSX_FORCE_ABORT, 9*32+13) /* MSR_TSX_FORCE_ABORT.RTM_ABORT */
 XEN_CPUFEATURE(SERIALIZE,     9*32+14) /*a  SERIALIZE insn */
 XEN_CPUFEATURE(CET_IBT,       9*32+20) /*   CET - Indirect Branch Tracking */

@@ -29,7 +29,8 @@
 #include "extern.h"
 #include "../ats.h"
 
-#define VTD_QI_TIMEOUT	1
+static unsigned int __read_mostly qi_pg_order;
+static unsigned int __read_mostly qi_entry_nr;
 
 static int __must_check invalidate_sync(struct vtd_iommu *iommu);
 
@@ -55,9 +56,13 @@ static unsigned int qinval_next_index(struct vtd_iommu *iommu)
     tail >>= QINVAL_INDEX_SHIFT;
 
     /* (tail+1 == head) indicates a full queue, wait for HW */
-    while ( ( tail + 1 ) % QINVAL_ENTRY_NR ==
+    while ( ((tail + 1) & (qi_entry_nr - 1)) ==
             ( dmar_readq(iommu->reg, DMAR_IQH_REG) >> QINVAL_INDEX_SHIFT ) )
+    {
+        printk_once(XENLOG_ERR VTDPREFIX " IOMMU#%u: no QI slot available\n",
+                    iommu->index);
         cpu_relax();
+    }
 
     return tail;
 }
@@ -68,7 +73,7 @@ static void qinval_update_qtail(struct vtd_iommu *iommu, unsigned int index)
 
     /* Need hold register lock when update tail */
     ASSERT( spin_is_locked(&iommu->register_lock) );
-    val = (index + 1) % QINVAL_ENTRY_NR;
+    val = (index + 1) & (qi_entry_nr - 1);
     dmar_writeq(iommu->reg, DMAR_IQT_REG, (val << QINVAL_INDEX_SHIFT));
 }
 
@@ -177,23 +182,32 @@ static int __must_check queue_invalidate_wait(struct vtd_iommu *iommu,
     /* Now we don't support interrupt method */
     if ( sw )
     {
-        s_time_t timeout;
-
-        /* In case all wait descriptor writes to same addr with same data */
-        timeout = NOW() + MILLISECS(flush_dev_iotlb ?
-                                    iommu_dev_iotlb_timeout : VTD_QI_TIMEOUT);
+        static unsigned int __read_mostly threshold = 1;
+        s_time_t start = NOW();
+        s_time_t timeout = start + (flush_dev_iotlb
+                                    ? iommu_dev_iotlb_timeout
+                                    : 100) * MILLISECS(threshold);
 
         while ( ACCESS_ONCE(*this_poll_slot) != QINVAL_STAT_DONE )
         {
-            if ( NOW() > timeout )
+            if ( timeout && NOW() > timeout )
             {
-                print_qi_regs(iommu);
+                threshold |= threshold << 1;
                 printk(XENLOG_WARNING VTDPREFIX
-                       " Queue invalidate wait descriptor timed out\n");
-                return -ETIMEDOUT;
+                       " IOMMU#%u: QI%s wait descriptor taking too long\n",
+                       iommu->index, flush_dev_iotlb ? " dev" : "");
+                print_qi_regs(iommu);
+                timeout = 0;
             }
             cpu_relax();
         }
+
+        if ( !timeout )
+            printk(XENLOG_WARNING VTDPREFIX
+                   " IOMMU#%u: QI%s wait descriptor took %lums\n",
+                   iommu->index, flush_dev_iotlb ? " dev" : "",
+                   (NOW() - start) / 10000000);
+
         return 0;
     }
 
@@ -403,8 +417,28 @@ int enable_qinval(struct vtd_iommu *iommu)
 
     if ( iommu->qinval_maddr == 0 )
     {
-        iommu->qinval_maddr = alloc_pgtable_maddr(QINVAL_ARCH_PAGE_NR,
-                                                  iommu->node);
+        if ( !qi_entry_nr )
+        {
+            /*
+             * With the present synchronous model, we need two slots for every
+             * operation (the operation itself and a wait descriptor).  There
+             * can be one such pair of requests pending per CPU.  One extra
+             * entry is needed as the ring is considered full when there's
+             * only one entry left.
+             */
+            BUILD_BUG_ON(CONFIG_NR_CPUS * 2 >= QINVAL_MAX_ENTRY_NR);
+            qi_pg_order = get_order_from_bytes((num_present_cpus() * 2 + 1) <<
+                                               (PAGE_SHIFT -
+                                                QINVAL_ENTRY_ORDER));
+            qi_entry_nr = 1u << (qi_pg_order + QINVAL_ENTRY_ORDER);
+
+            dprintk(XENLOG_INFO VTDPREFIX,
+                    "QI: using %u-entry ring(s)\n", qi_entry_nr);
+        }
+
+        iommu->qinval_maddr =
+            alloc_pgtable_maddr(qi_entry_nr >> QINVAL_ENTRY_ORDER,
+                                iommu->node);
         if ( iommu->qinval_maddr == 0 )
         {
             dprintk(XENLOG_WARNING VTDPREFIX,
@@ -418,15 +452,16 @@ int enable_qinval(struct vtd_iommu *iommu)
 
     spin_lock_irqsave(&iommu->register_lock, flags);
 
-    /* Setup Invalidation Queue Address(IQA) register with the
-     * address of the page we just allocated.  QS field at
-     * bits[2:0] to indicate size of queue is one 4KB page.
-     * That's 256 entries.  Queued Head (IQH) and Queue Tail (IQT)
-     * registers are automatically reset to 0 with write
-     * to IQA register.
+    /*
+     * Setup Invalidation Queue Address (IQA) register with the address of the
+     * pages we just allocated.  The QS field at bits[2:0] indicates the size
+     * (page order) of the queue.
+     *
+     * Queued Head (IQH) and Queue Tail (IQT) registers are automatically
+     * reset to 0 with write to IQA register.
      */
     dmar_writeq(iommu->reg, DMAR_IQA_REG,
-                iommu->qinval_maddr | QINVAL_PAGE_ORDER);
+                iommu->qinval_maddr | qi_pg_order);
 
     dmar_writeq(iommu->reg, DMAR_IQT_REG, 0);
 
@@ -440,6 +475,23 @@ int enable_qinval(struct vtd_iommu *iommu)
     spin_unlock_irqrestore(&iommu->register_lock, flags);
 
     return 0;
+}
+
+static int vtd_flush_context_noop(struct vtd_iommu *iommu, uint16_t did,
+                                  uint16_t source_id, uint8_t function_mask,
+                                  uint64_t type, bool flush_non_present_entry)
+{
+    WARN();
+    return -EIO;
+}
+
+static int vtd_flush_iotlb_noop(struct vtd_iommu *iommu, uint16_t did,
+                                uint64_t addr, unsigned int size_order,
+                                uint64_t type, bool flush_non_present_entry,
+                                bool flush_dev_iotlb)
+{
+    WARN();
+    return -EIO;
 }
 
 void disable_qinval(struct vtd_iommu *iommu)
@@ -462,4 +514,19 @@ void disable_qinval(struct vtd_iommu *iommu)
                   !(sts & DMA_GSTS_QIES), sts);
 out:
     spin_unlock_irqrestore(&iommu->register_lock, flags);
+
+    /*
+     * Assign callbacks to noop to catch errors if register-based invalidation
+     * isn't supported.
+     */
+    if ( has_register_based_invalidation(iommu) )
+    {
+        iommu->flush.context = vtd_flush_context_reg;
+        iommu->flush.iotlb   = vtd_flush_iotlb_reg;
+    }
+    else
+    {
+        iommu->flush.context = vtd_flush_context_noop;
+        iommu->flush.iotlb   = vtd_flush_iotlb_noop;
+    }
 }

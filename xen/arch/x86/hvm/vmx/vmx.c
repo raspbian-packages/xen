@@ -2397,7 +2397,7 @@ static bool __init has_if_pschange_mc(void)
     if ( cpu_has_hypervisor )
         return false;
 
-    if ( boot_cpu_has(X86_FEATURE_ARCH_CAPS) )
+    if ( cpu_has_arch_caps )
         rdmsrl(MSR_ARCH_CAPABILITIES, caps);
 
     if ( caps & ARCH_CAPS_IF_PSCHANGE_MC_NO )
@@ -2722,14 +2722,16 @@ static const struct lbr_info {
 }, nh_lbr[] = {
     { MSR_IA32_LASTINTFROMIP,       1 },
     { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_C2_LASTBRANCH_TOS,        1 },
+    { MSR_NHL_LBR_SELECT,           1 },
+    { MSR_NHL_LASTBRANCH_TOS,       1 },
     { MSR_P4_LASTBRANCH_0_FROM_LIP, NUM_MSR_P4_LASTBRANCH_FROM_TO },
     { MSR_P4_LASTBRANCH_0_TO_LIP,   NUM_MSR_P4_LASTBRANCH_FROM_TO },
     { 0, 0 }
 }, sk_lbr[] = {
     { MSR_IA32_LASTINTFROMIP,       1 },
     { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_SKL_LASTBRANCH_TOS,       1 },
+    { MSR_NHL_LBR_SELECT,           1 },
+    { MSR_NHL_LASTBRANCH_TOS,       1 },
     { MSR_SKL_LASTBRANCH_0_FROM_IP, NUM_MSR_SKL_LASTBRANCH },
     { MSR_SKL_LASTBRANCH_0_TO_IP,   NUM_MSR_SKL_LASTBRANCH },
     { MSR_SKL_LASTBRANCH_0_INFO,    NUM_MSR_SKL_LASTBRANCH },
@@ -2741,10 +2743,19 @@ static const struct lbr_info {
     { MSR_C2_LASTBRANCH_0_FROM_IP,  NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
     { MSR_C2_LASTBRANCH_0_TO_IP,    NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
     { 0, 0 }
+}, sm_lbr[] = {
+    { MSR_IA32_LASTINTFROMIP,       1 },
+    { MSR_IA32_LASTINTTOIP,         1 },
+    { MSR_SM_LBR_SELECT,            1 },
+    { MSR_SM_LASTBRANCH_TOS,        1 },
+    { MSR_C2_LASTBRANCH_0_FROM_IP,  NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
+    { MSR_C2_LASTBRANCH_0_TO_IP,    NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
+    { 0, 0 }
 }, gm_lbr[] = {
     { MSR_IA32_LASTINTFROMIP,       1 },
     { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_GM_LASTBRANCH_TOS,        1 },
+    { MSR_SM_LBR_SELECT,            1 },
+    { MSR_SM_LASTBRANCH_TOS,        1 },
     { MSR_GM_LASTBRANCH_0_FROM_IP,  NUM_MSR_GM_LASTBRANCH_FROM_TO },
     { MSR_GM_LASTBRANCH_0_TO_IP,    NUM_MSR_GM_LASTBRANCH_FROM_TO },
     { 0, 0 }
@@ -2786,7 +2797,9 @@ static const struct lbr_info *last_branch_msr_get(void)
         /* Goldmont Plus */
         case 0x7a:
         /* Ice Lake */
-        case 0x7d: case 0x7e:
+        case 0x6a: case 0x6c: case 0x7d: case 0x7e:
+        /* Tiger Lake */
+        case 0x8c: case 0x8d:
         /* Tremont */
         case 0x86:
         /* Kaby Lake */
@@ -2796,6 +2809,7 @@ static const struct lbr_info *last_branch_msr_get(void)
             return sk_lbr;
         /* Atom */
         case 0x1c: case 0x26: case 0x27: case 0x35: case 0x36:
+            return at_lbr;
         /* Silvermont */
         case 0x37: case 0x4a: case 0x4d: case 0x5a: case 0x5d:
         /* Xeon Phi Knights Landing */
@@ -2804,7 +2818,7 @@ static const struct lbr_info *last_branch_msr_get(void)
         case 0x85:
         /* Airmont */
         case 0x4c:
-            return at_lbr;
+            return sm_lbr;
         /* Goldmont */
         case 0x5c: case 0x5f:
             return gm_lbr;
