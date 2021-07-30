@@ -1,3 +1,10 @@
+xen (4.14.2+25-gb6a8c4f72d-2) unstable; urgency=medium
+
+  * Add README.Debian.security containing a note about the end of upstream
+    security support for Xen 4.14. Install it into xen-hypervisor-common.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Fri, 30 Jul 2021 16:57:52 +0200
+
 xen (4.14.2+25-gb6a8c4f72d-1) unstable; urgency=medium
 
   * Update to new upstream version 4.14.2+25-gb6a8c4f72d, which also contains
