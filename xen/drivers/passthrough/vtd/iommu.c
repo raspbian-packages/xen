@@ -326,17 +326,16 @@ static void iommu_flush_write_buffer(struct vtd_iommu *iommu)
     dmar_writel(iommu->reg, DMAR_GCMD_REG, val | DMA_GCMD_WBF);
 
     /* Make sure hardware complete it */
-    IOMMU_WAIT_OP(iommu, DMAR_GSTS_REG, dmar_readl,
-                  !(val & DMA_GSTS_WBFS), val);
+    IOMMU_FLUSH_WAIT("write buffer", iommu, DMAR_GSTS_REG, dmar_readl,
+                     !(val & DMA_GSTS_WBFS), val);
 
     spin_unlock_irqrestore(&iommu->register_lock, flags);
 }
 
 /* return value determine if we need a write buffer flush */
-static int __must_check flush_context_reg(struct vtd_iommu *iommu, u16 did,
-                                          u16 source_id, u8 function_mask,
-                                          u64 type,
-                                          bool flush_non_present_entry)
+int vtd_flush_context_reg(struct vtd_iommu *iommu, uint16_t did,
+                          uint16_t source_id, uint8_t function_mask,
+                          uint64_t type, bool flush_non_present_entry)
 {
     u64 val = 0;
     unsigned long flags;
@@ -377,8 +376,8 @@ static int __must_check flush_context_reg(struct vtd_iommu *iommu, u16 did,
     dmar_writeq(iommu->reg, DMAR_CCMD_REG, val);
 
     /* Make sure hardware complete it */
-    IOMMU_WAIT_OP(iommu, DMAR_CCMD_REG, dmar_readq,
-                  !(val & DMA_CCMD_ICC), val);
+    IOMMU_FLUSH_WAIT("context", iommu, DMAR_CCMD_REG, dmar_readq,
+                     !(val & DMA_CCMD_ICC), val);
 
     spin_unlock_irqrestore(&iommu->register_lock, flags);
     /* flush context entry will implicitly flush write buffer */
@@ -402,11 +401,9 @@ static int __must_check iommu_flush_context_device(struct vtd_iommu *iommu,
 }
 
 /* return value determine if we need a write buffer flush */
-static int __must_check flush_iotlb_reg(struct vtd_iommu *iommu, u16 did,
-                                        u64 addr,
-                                        unsigned int size_order, u64 type,
-                                        bool flush_non_present_entry,
-                                        bool flush_dev_iotlb)
+int vtd_flush_iotlb_reg(struct vtd_iommu *iommu, uint16_t did, uint64_t addr,
+                        unsigned int size_order, uint64_t type,
+                        bool flush_non_present_entry, bool flush_dev_iotlb)
 {
     int tlb_offset = ecap_iotlb_offset(iommu->ecap);
     u64 val = 0;
@@ -457,8 +454,8 @@ static int __must_check flush_iotlb_reg(struct vtd_iommu *iommu, u16 did,
     dmar_writeq(iommu->reg, tlb_offset + 8, val);
 
     /* Make sure hardware complete it */
-    IOMMU_WAIT_OP(iommu, (tlb_offset + 8), dmar_readq,
-                  !(val & DMA_TLB_IVT), val);
+    IOMMU_FLUSH_WAIT("iotlb", iommu, (tlb_offset + 8), dmar_readq,
+                     !(val & DMA_TLB_IVT), val);
     spin_unlock_irqrestore(&iommu->register_lock, flags);
 
     /* check IOTLB invalidation granularity */
@@ -1163,10 +1160,10 @@ int __init iommu_alloc(struct acpi_drhd_unit *drhd)
     unsigned long sagaw, nr_dom;
     int agaw;
 
-    if ( nr_iommus > MAX_IOMMUS )
+    if ( nr_iommus >= MAX_IOMMUS )
     {
         dprintk(XENLOG_ERR VTDPREFIX,
-                 "IOMMU: nr_iommus %d > MAX_IOMMUS\n", nr_iommus);
+                "IOMMU: nr_iommus %d > MAX_IOMMUS\n", nr_iommus + 1);
         return -ENOMEM;
     }
 
@@ -1191,6 +1188,14 @@ int __init iommu_alloc(struct acpi_drhd_unit *drhd)
 
     iommu->cap = dmar_readq(iommu->reg, DMAR_CAP_REG);
     iommu->ecap = dmar_readq(iommu->reg, DMAR_ECAP_REG);
+    iommu->version = dmar_readl(iommu->reg, DMAR_VER_REG);
+
+    if ( !iommu_qinval && !has_register_based_invalidation(iommu) )
+    {
+        printk(XENLOG_WARNING VTDPREFIX "IOMMU %d: cannot disable Queued Invalidation\n",
+               iommu->index);
+        iommu_qinval = true;
+    }
 
     if ( iommu_verbose )
     {
@@ -2112,7 +2117,7 @@ static int adjust_vtd_irq_affinities(void)
 }
 __initcall(adjust_vtd_irq_affinities);
 
-static int __must_check init_vtd_hw(void)
+static int __must_check init_vtd_hw(bool resume)
 {
     struct acpi_drhd_unit *drhd;
     struct vtd_iommu *iommu;
@@ -2121,7 +2126,7 @@ static int __must_check init_vtd_hw(void)
     u32 sts;
 
     /*
-     * Basic VT-d HW init: set VT-d interrupt, clear VT-d faults.  
+     * Basic VT-d HW init: set VT-d interrupt, clear VT-d faults, etc.
      */
     for_each_drhd_unit ( drhd )
     {
@@ -2130,6 +2135,20 @@ static int __must_check init_vtd_hw(void)
         iommu = drhd->iommu;
 
         clear_fault_bits(iommu);
+
+        /*
+         * Disable interrupt remapping and queued invalidation if
+         * already enabled by BIOS in case we've not initialized it yet.
+         */
+        if ( !iommu_x2apic_enabled )
+        {
+            disable_intremap(iommu);
+            disable_qinval(iommu);
+        }
+
+        if ( resume )
+            /* FECTL write done by vtd_resume(). */
+            continue;
 
         spin_lock_irqsave(&iommu->register_lock, flags);
         sts = dmar_readl(iommu->reg, DMAR_FECTL_REG);
@@ -2150,8 +2169,12 @@ static int __must_check init_vtd_hw(void)
          */
         if ( enable_qinval(iommu) != 0 )
         {
-            iommu->flush.context = flush_context_reg;
-            iommu->flush.iotlb   = flush_iotlb_reg;
+            /* Ensure register-based invalidation is available */
+            if ( !has_register_based_invalidation(iommu) )
+                return -EIO;
+
+            iommu->flush.context = vtd_flush_context_reg;
+            iommu->flush.iotlb   = vtd_flush_iotlb_reg;
         }
     }
 
@@ -2240,6 +2263,7 @@ static int __init vtd_setup(void)
     struct acpi_drhd_unit *drhd;
     struct vtd_iommu *iommu;
     int ret;
+    bool reg_inval_supported = true;
 
     if ( list_empty(&acpi_drhd_units) )
     {
@@ -2261,8 +2285,8 @@ static int __init vtd_setup(void)
     }
 
     /* We enable the following features only if they are supported by all VT-d
-     * engines: Snoop Control, DMA passthrough, Queued Invalidation, Interrupt
-     * Remapping, and Posted Interrupt
+     * engines: Snoop Control, DMA passthrough, Register-based Invalidation,
+     * Queued Invalidation, Interrupt Remapping, and Posted Interrupt.
      */
     for_each_drhd_unit ( drhd )
     {
@@ -2283,6 +2307,9 @@ static int __init vtd_setup(void)
 
         if ( iommu_qinval && !ecap_queued_inval(iommu->ecap) )
             iommu_qinval = 0;
+
+        if ( !has_register_based_invalidation(iommu) )
+            reg_inval_supported = false;
 
         if ( iommu_intremap && !ecap_intr_remap(iommu->ecap) )
             iommu_intremap = iommu_intremap_off;
@@ -2310,6 +2337,13 @@ static int __init vtd_setup(void)
 
     softirq_tasklet_init(&vtd_fault_tasklet, do_iommu_page_fault, NULL);
 
+    if ( !iommu_qinval && !reg_inval_supported )
+    {
+        dprintk(XENLOG_ERR VTDPREFIX, "No available invalidation interface\n");
+        ret = -ENODEV;
+        goto error;
+    }
+
     if ( !iommu_qinval && iommu_intremap )
     {
         iommu_intremap = iommu_intremap_off;
@@ -2330,7 +2364,7 @@ static int __init vtd_setup(void)
     P(iommu_hap_pt_share, "Shared EPT tables");
 #undef P
 
-    ret = init_vtd_hw();
+    ret = init_vtd_hw(false);
     if ( ret )
         goto error;
 
@@ -2601,7 +2635,22 @@ static void vtd_resume(void)
     if ( !iommu_enabled )
         return;
 
-    if ( init_vtd_hw() != 0  && force_iommu )
+    for_each_drhd_unit ( drhd )
+    {
+        iommu = drhd->iommu;
+        i = iommu->index;
+
+        spin_lock_irqsave(&iommu->register_lock, flags);
+        dmar_writel(iommu->reg, DMAR_FEDATA_REG,
+                    iommu_state[i][DMAR_FEDATA_REG]);
+        dmar_writel(iommu->reg, DMAR_FEADDR_REG,
+                    iommu_state[i][DMAR_FEADDR_REG]);
+        dmar_writel(iommu->reg, DMAR_FEUADDR_REG,
+                    iommu_state[i][DMAR_FEUADDR_REG]);
+        spin_unlock_irqrestore(&iommu->register_lock, flags);
+    }
+
+    if ( init_vtd_hw(true) != 0 && force_iommu )
          panic("IOMMU setup failed, crash Xen for security purpose\n");
 
     for_each_drhd_unit ( drhd )
@@ -2612,12 +2661,6 @@ static void vtd_resume(void)
         spin_lock_irqsave(&iommu->register_lock, flags);
         dmar_writel(iommu->reg, DMAR_FECTL_REG,
                     (u32) iommu_state[i][DMAR_FECTL_REG]);
-        dmar_writel(iommu->reg, DMAR_FEDATA_REG,
-                    (u32) iommu_state[i][DMAR_FEDATA_REG]);
-        dmar_writel(iommu->reg, DMAR_FEADDR_REG,
-                    (u32) iommu_state[i][DMAR_FEADDR_REG]);
-        dmar_writel(iommu->reg, DMAR_FEUADDR_REG,
-                    (u32) iommu_state[i][DMAR_FEUADDR_REG]);
         spin_unlock_irqrestore(&iommu->register_lock, flags);
 
         iommu_enable_translation(drhd);

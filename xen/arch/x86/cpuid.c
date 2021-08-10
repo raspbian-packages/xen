@@ -357,6 +357,16 @@ static void __init guest_common_default_feature_adjustments(uint32_t *fs)
          boot_cpu_data.x86 == 6 && boot_cpu_data.x86_model == 0x3a &&
          cpu_has_rdrand && !is_forced_cpu_cap(X86_FEATURE_RDRAND) )
         __clear_bit(X86_FEATURE_RDRAND, fs);
+
+    /*
+     * On certain hardware, speculative or errata workarounds can result in
+     * TSX being placed in "force-abort" mode, where it doesn't actually
+     * function as expected, but is technically compatible with the ISA.
+     *
+     * Do not advertise RTM to guests by default if it won't actually work.
+     */
+    if ( rtm_disabled )
+        __clear_bit(X86_FEATURE_RTM, fs);
 }
 
 static void __init guest_common_feature_adjustments(uint32_t *fs)
@@ -628,20 +638,6 @@ void recalculate_cpuid_policy(struct domain *d)
     if ( cpu_has_itsc && (d->disable_migrate || d->arch.vtsc) )
         __set_bit(X86_FEATURE_ITSC, max_fs);
 
-    /*
-     * On hardware with MSR_TSX_CTRL, the admin may have elected to disable
-     * TSX and hide the feature bits.  Migrating-in VMs may have been booted
-     * pre-mitigation when the TSX features were visbile.
-     *
-     * This situation is compatible (albeit with a perf hit to any TSX code in
-     * the guest), so allow the feature bits to remain set.
-     */
-    if ( cpu_has_tsx_ctrl )
-    {
-        __set_bit(X86_FEATURE_HLE, max_fs);
-        __set_bit(X86_FEATURE_RTM, max_fs);
-    }
-
     /* Clamp the toolstacks choices to reality. */
     for ( i = 0; i < ARRAY_SIZE(fs); i++ )
         fs[i] &= max_fs[i];
@@ -652,9 +648,11 @@ void recalculate_cpuid_policy(struct domain *d)
     sanitise_featureset(fs);
 
     /* Fold host's FDP_EXCP_ONLY and NO_FPU_SEL into guest's view. */
-    fs[FEATURESET_7b0] &= ~special_features[FEATURESET_7b0];
+    fs[FEATURESET_7b0] &= ~(cpufeat_mask(X86_FEATURE_FDP_EXCP_ONLY) |
+                            cpufeat_mask(X86_FEATURE_NO_FPU_SEL));
     fs[FEATURESET_7b0] |= (host_cpuid_policy.feat._7b0 &
-                           special_features[FEATURESET_7b0]);
+                           (cpufeat_mask(X86_FEATURE_FDP_EXCP_ONLY) |
+                            cpufeat_mask(X86_FEATURE_NO_FPU_SEL)));
 
     cpuid_featureset_to_policy(fs, p);
 
@@ -724,7 +722,7 @@ int init_domain_cpuid_policy(struct domain *d)
      * so dom0 can turn off workarounds as appropriate.  Temporary, until the
      * domain policy logic gains a better understanding of MSRs.
      */
-    if ( is_hardware_domain(d) && boot_cpu_has(X86_FEATURE_ARCH_CAPS) )
+    if ( is_hardware_domain(d) && cpu_has_arch_caps )
         p->feat.arch_caps = true;
 
     d->arch.cpuid = p;

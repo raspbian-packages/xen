@@ -121,7 +121,7 @@ index a485779..0efbe8d 100644
          xorw    %bx, %bx
          xorw    %di, %di
 diff --git a/xen/arch/x86/cpu/vpmu.c b/xen/arch/x86/cpu/vpmu.c
-index 1ed39ef..ab66736 100644
+index 0c3f378..fb1b296 100644
 --- a/xen/arch/x86/cpu/vpmu.c
 +++ b/xen/arch/x86/cpu/vpmu.c
 @@ -680,7 +680,7 @@ static void pvpmu_finish(struct domain *d, xen_pmu_params_t *params)
@@ -147,10 +147,10 @@ index d532575..dff02b1 100644
  		return -ENOSPC;
  	}
 diff --git a/xen/arch/x86/x86_emulate/x86_emulate.c b/xen/arch/x86/x86_emulate/x86_emulate.c
-index 9b29548..5d91f03 100644
+index f186ae6..bf17208 100644
 --- a/xen/arch/x86/x86_emulate/x86_emulate.c
 +++ b/xen/arch/x86/x86_emulate/x86_emulate.c
-@@ -3243,7 +3243,7 @@ x86_decode(
+@@ -3244,7 +3244,7 @@ x86_decode(
              case 0x23: /* mov reg,dr */
                  /*
                   * Mov to/from cr/dr ignore the encoding of Mod, and behave as

@@ -21,7 +21,7 @@ Acked-by: Jan Beulich <jbeulich@suse.com>
  1 file changed, 6 insertions(+)
 
 diff --git a/xen/arch/x86/Makefile b/xen/arch/x86/Makefile
-index 26ff2a9..a51f916 100644
+index bbd11a4..d5c7002 100644
 --- a/xen/arch/x86/Makefile
 +++ b/xen/arch/x86/Makefile
 @@ -172,6 +172,12 @@ EFI_LDFLAGS += --major-image-version=$(XEN_VERSION)

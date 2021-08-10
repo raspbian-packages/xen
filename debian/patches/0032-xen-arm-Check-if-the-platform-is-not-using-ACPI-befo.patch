@@ -24,16 +24,16 @@ Tested-by: Elliott Mitchell <ehem+xen@m5p.com>
  1 file changed, 2 insertions(+), 1 deletion(-)
 
 diff --git a/xen/arch/arm/setup.c b/xen/arch/arm/setup.c
-index 7968cee..318b971 100644
+index 34b1c1a..fb2f45e 100644
 --- a/xen/arch/arm/setup.c
 +++ b/xen/arch/arm/setup.c
-@@ -975,7 +975,8 @@ void __init start_xen(unsigned long boot_phys_offset,
- 
-     system_state = SYS_STATE_active;
+@@ -961,7 +961,8 @@ void __init start_xen(unsigned long boot_phys_offset,
+     if ( construct_dom0(dom0) != 0)
+         panic("Could not set up DOM0 guest OS\n");
  
 -    create_domUs();
 +    if ( acpi_disabled )
 +        create_domUs();
  
-     domain_unpause_by_systemcontroller(dom0);
- 
+     /*
+      * This needs to be called **before** heap_init_late() so modules

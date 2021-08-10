@@ -41,10 +41,10 @@ index 8eff074..27dace0 100644
      return 0;
  }
 diff --git a/xen/arch/arm/setup.c b/xen/arch/arm/setup.c
-index 318b971..de3b542 100644
+index fb2f45e..c94827e 100644
 --- a/xen/arch/arm/setup.c
 +++ b/xen/arch/arm/setup.c
-@@ -184,8 +184,9 @@ static void __init processor_id(void)
+@@ -183,8 +183,9 @@ static void __init processor_id(void)
      processor_setup();
  }
  
@@ -56,7 +56,7 @@ index 318b971..de3b542 100644
  {
      int i, nr = fdt_num_mem_rsv(device_tree_flattened);
  
-@@ -232,6 +233,17 @@ void __init dt_unreserved_regions(paddr_t s, paddr_t e,
+@@ -231,6 +232,17 @@ void __init dt_unreserved_regions(paddr_t s, paddr_t e,
      cb(s, e);
  }
  
@@ -74,7 +74,7 @@ index 318b971..de3b542 100644
  struct bootmodule __init *add_boot_module(bootmodule_kind kind,
                                            paddr_t start, paddr_t size,
                                            bool domU)
-@@ -393,7 +405,7 @@ void __init discard_initial_modules(void)
+@@ -392,7 +404,7 @@ void __init discard_initial_modules(void)
               !mfn_valid(maddr_to_mfn(e)) )
              continue;
  
@@ -83,7 +83,7 @@ index 318b971..de3b542 100644
      }
  
      mi->nr_mods = 0;
-@@ -700,7 +712,7 @@ static void __init setup_mm(void)
+@@ -699,7 +711,7 @@ static void __init setup_mm(void)
                  n = mfn_to_maddr(mfn_add(xenheap_mfn_start, xenheap_pages));
              }
  
@@ -92,7 +92,7 @@ index 318b971..de3b542 100644
  
              s = n;
          }
-@@ -753,7 +765,7 @@ static void __init setup_mm(void)
+@@ -752,7 +764,7 @@ static void __init setup_mm(void)
              if ( e > bank_end )
                  e = bank_end;
  

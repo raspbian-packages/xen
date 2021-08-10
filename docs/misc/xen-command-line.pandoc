@@ -1221,8 +1221,41 @@ supported. See docs/misc/arm/big.LITTLE.txt for more information.
 When the hmp-unsafe option is disabled (default), CPUs that are not
 identical to the boot CPU will be parked and not used by Xen.
 
+### hpet
+    = List of [ <bool> | broadcast=<bool> | legacy-replacement=<bool> ]
+
+    Applicability: x86
+
+Controls Xen's use of the system's High Precision Event Timer.  By default,
+Xen will use an HPET when available and not subject to errata.  Use of the
+HPET can be disabled by specifying `hpet=0`.
+
+ * The `broadcast` boolean is disabled by default, but forces Xen to keep
+   using the broadcast for CPUs in deep C-states even when an RTC interrupt is
+   enabled.  This then also affects raising of the RTC interrupt.
+
+ * The `legacy-replacement` boolean allows for control over whether Legacy
+   Replacement mode is enabled.
+
+   Legacy Replacement mode is intended for hardware which does not have an
+   8254 PIT, and allows the HPET to be configured into a compatible mode.
+   Intel chipsets from Skylake/ApolloLake onwards can turn the PIT off for
+   power saving reasons, and there is no platform-agnostic mechanism for
+   discovering this.
+
+   By default, Xen will not change hardware configuration, unless the PIT
+   appears to be absent, at which point Xen will try to enable Legacy
+   Replacement mode before falling back to pre-IO-APIC interrupt routing
+   options.
+
+   This behaviour can be inhibited by specifying `legacy-replacement=0`.
+   Alternatively, this mode can be enabled unconditionally (if available) by
+   specifying `legacy-replacement=1`.
+
 ### hpetbroadcast (x86)
 > `= <boolean>`
+
+Deprecated alternative of `hpet=broadcast`.
 
 ### hvm_debug (x86)
 > `= <integer>`
@@ -1372,7 +1405,9 @@ The following options are specific to Intel VT-d hardware:
 *   The `qinval` boolean controls the Queued Invalidation sub-feature, and is
     active by default on compatible hardware.  Queued Invalidation is a
     feature in second-generation IOMMUs and is a functional prerequisite for
-    Interrupt Remapping.
+    Interrupt Remapping. Note that Xen disregards this setting for Intel VT-d
+    version 6 and greater as Registered-Based Invalidation isn't supported
+    by them.
 
 *   The `igfx` boolean is active by default, and controls whether the IOMMU in
     front of an Intel Graphics Device is enabled or not.
@@ -2196,14 +2231,27 @@ pages) must also be specified via the tbuf_size parameter.
 
 Controls for the use of Transactional Synchronization eXtensions.
 
-On Intel parts released in Q3 2019 (with updated microcode), and future parts,
-a control has been introduced which allows TSX to be turned off.
+Several microcode updates are relevant:
 
-On systems with the ability to turn TSX off, this boolean offers system wide
+ * March 2019, fixing the TSX memory ordering errata on all TSX-enabled CPUs
+   to date.  Introduced MSR_TSX_FORCE_ABORT on SKL/SKX/KBL/WHL/CFL parts.  The
+   errata workaround uses Performance Counter 3, so the user can select
+   between working TSX and working perfcounters.
+
+ * November 2019, fixing the TSX Async Abort speculative vulnerability.
+   Introduced MSR_TSX_CTRL on all TSX-enabled MDS_NO parts to date,
+   CLX/WHL-R/CFL-R, with the controls becoming architectural moving forward
+   and formally retiring HLE from the architecture.  The user can disable TSX
+   to mitigate TAA, and elect to hide the HLE/RTM CPUID bits.
+
+ * June 2021, removing the workaround for March 2019 on client CPUs and
+   formally de-featured TSX on SKL/KBL/WHL/CFL (Note: SKX still retains the
+   March 2019 fix).  Introduced the ability to hide the HLE/RTM CPUID bits.
+   PCR3 works fine, and TSX is disabled by default, but the user can re-enable
+   TSX at their own risk, accepting that the memory order erratum is unfixed.
+
+On systems with the ability to configure TSX, this boolean offers system wide
 control of whether TSX is enabled or disabled.
-
-On parts vulnerable to CVE-2019-11135 / TSX Asynchronous Abort, the following
-logic applies:
 
  * An explicit `tsx=` choice is honoured, even if it is `true` and would
    result in a vulnerable system.
@@ -2211,9 +2259,20 @@ logic applies:
  * When no explicit `tsx=` choice is given, parts vulnerable to TAA will be
    mitigated by disabling TSX, as this is the lowest overhead option.
 
- * If the use of TSX is important, the more expensive TAA mitigations can be
+   If the use of TSX is important, the more expensive TAA mitigations can be
    opted in to with `smt=0 spec-ctrl=md-clear`, at which point TSX will remain
    active by default.
+
+ * When no explicit `tsx=` option is given, parts susceptible to the memory
+   ordering errata default to `true` to enable working TSX.  Alternatively,
+   selecting `tsx=0` will disable TSX and restore PCR3 to a working state.
+
+   SKX and SKL/KBL/WHL/CFL on pre-June 2021 microcode default to `true`.
+   Alternatively, selecting `tsx=0` will disable TSX and restore PCR3 to a
+   working state.
+
+   SKL/KBL/WHL/CFL on the June 2021 microcode or later default to `false`.
+   Alternatively, selecting `tsx=1` will re-enable TSX at the users own risk.
 
 ### ucode
 > `= List of [ <integer> | scan=<bool>, nmi=<bool> ]`
@@ -2351,20 +2410,7 @@ provide access to a wealth of low level processor information.
 
 *   The `arch` option allows access to the pre-defined architectural events.
 
-*   The `rtm-abort` boolean controls a trade-off between working Restricted
-    Transactional Memory, and working performance counters.
-
-    All processors released to date (Q1 2019) supporting Transactional Memory
-    Extensions suffer an erratum which has been addressed in microcode.
-
-    Processors based on the Skylake microarchitecture with up-to-date
-    microcode internally use performance counter 3 to work around the erratum.
-    A consequence is that the counter gets reprogrammed whenever an `XBEGIN`
-    instruction is executed.
-
-    An alternative mode exists where PCR3 behaves as before, at the cost of
-    `XBEGIN` unconditionally aborting.  Enabling `rtm-abort` mode will
-    activate this alternative mode.
+*   The `rtm-abort` boolean has been superseded.  Use `tsx=0` instead.
 
 *Warning:*
 As the virtualisation is not 100% safe, don't use the vpmu flag on
