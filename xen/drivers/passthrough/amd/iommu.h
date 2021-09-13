@@ -107,20 +107,24 @@ struct amd_iommu {
     struct list_head ats_devices;
 };
 
+struct ivrs_unity_map {
+    bool read:1;
+    bool write:1;
+    paddr_t addr;
+    unsigned long length;
+    struct ivrs_unity_map *next;
+};
+
 struct ivrs_mappings {
     uint16_t dte_requestor_id;
     bool valid:1;
     bool dte_allow_exclusion:1;
-    bool unity_map_enable:1;
-    bool write_permission:1;
-    bool read_permission:1;
 
     /* ivhd device data settings */
     uint8_t device_flags;
 
-    unsigned long addr_range_start;
-    unsigned long addr_range_length;
     struct amd_iommu *iommu;
+    struct ivrs_unity_map *unity_map;
 
     /* per device interrupt remapping table */
     void *intremap_table;
@@ -228,8 +232,10 @@ int __must_check amd_iommu_unmap_page(struct domain *d, dfn_t dfn,
                                       unsigned int *flush_flags);
 int __must_check amd_iommu_alloc_root(struct domain_iommu *hd);
 int amd_iommu_reserve_domain_unity_map(struct domain *domain,
-                                       paddr_t phys_addr, unsigned long size,
-                                       int iw, int ir);
+                                       const struct ivrs_unity_map *map,
+                                       unsigned int flag);
+int amd_iommu_reserve_domain_unity_unmap(struct domain *d,
+                                         const struct ivrs_unity_map *map);
 int __must_check amd_iommu_flush_iotlb_pages(struct domain *d, dfn_t dfn,
                                              unsigned int page_count,
                                              unsigned int flush_flags);
@@ -301,6 +307,8 @@ extern struct hpet_sbdf {
         HPET_IVHD,
     } init;
 } hpet_sbdf;
+
+extern int amd_iommu_min_paging_mode;
 
 extern void *shared_intremap_table;
 extern unsigned long *shared_intremap_inuse;

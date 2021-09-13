@@ -795,7 +795,8 @@ p2m_remove_page(struct p2m_domain *p2m, gfn_t gfn, mfn_t mfn,
                                           &cur_order, NULL);
 
         if ( p2m_is_valid(t) &&
-             (!mfn_valid(mfn) || !mfn_eq(mfn_add(mfn, i), mfn_return)) )
+             (!mfn_valid(mfn) || t == p2m_mmio_direct ||
+              !mfn_eq(mfn_add(mfn, i), mfn_return)) )
             return -EILSEQ;
 
         i += (1UL << cur_order) -
@@ -807,7 +808,7 @@ p2m_remove_page(struct p2m_domain *p2m, gfn_t gfn, mfn_t mfn,
         for ( i = 0; i < (1UL << page_order); i++ )
         {
             p2m->get_entry(p2m, gfn_add(gfn, i), &t, &a, 0, NULL, NULL);
-            if ( !p2m_is_grant(t) && !p2m_is_shared(t) && !p2m_is_foreign(t) )
+            if ( !p2m_is_special(t) && !p2m_is_shared(t) )
                 set_gpfn_from_mfn(mfn_x(mfn) + i, INVALID_M2P_ENTRY);
         }
     }
@@ -893,7 +894,7 @@ guest_physmap_add_entry(struct domain *d, gfn_t gfn, mfn_t mfn,
     if ( p2m_is_foreign(t) )
         return -EINVAL;
 
-    if ( !mfn_valid(mfn) )
+    if ( !mfn_valid(mfn) || t == p2m_mmio_direct )
     {
         ASSERT_UNREACHABLE();
         return -EINVAL;
@@ -935,13 +936,17 @@ guest_physmap_add_entry(struct domain *d, gfn_t gfn, mfn_t mfn,
                                   &ot, &a, 0, NULL, NULL);
             ASSERT(!p2m_is_shared(ot));
         }
-        if ( p2m_is_grant(ot) || p2m_is_foreign(ot) )
+        if ( p2m_is_special(ot) )
         {
-            /* Really shouldn't be unmapping grant/foreign maps this way */
-            domain_crash(d);
+            /* Don't permit unmapping grant/foreign/direct-MMIO this way. */
             p2m_unlock(p2m);
-            
-            return -EINVAL;
+            printk(XENLOG_G_ERR
+                   "%pd: GFN %#lx (%#lx,%u,%u) -> (%#lx,%u,%u) not permitted\n",
+                   d, gfn_x(gfn) + i,
+                   mfn_x(omfn), ot, a,
+                   mfn_x(mfn) + i, t, p2m->default_access);
+            domain_crash(d);
+            return -EPERM;
         }
         else if ( p2m_is_ram(ot) && !p2m_is_paged(ot) )
         {
@@ -1035,8 +1040,7 @@ int p2m_change_type_one(struct domain *d, unsigned long gfn_l,
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
     int rc;
 
-    BUG_ON(p2m_is_grant(ot) || p2m_is_grant(nt));
-    BUG_ON(p2m_is_foreign(ot) || p2m_is_foreign(nt));
+    BUG_ON(p2m_is_special(ot) || p2m_is_special(nt));
 
     gfn_lock(p2m, gfn, 0);
 
@@ -1283,11 +1287,26 @@ static int set_typed_p2m_entry(struct domain *d, unsigned long gfn_l,
         gfn_unlock(p2m, gfn, order);
         return cur_order + 1;
     }
-    if ( p2m_is_grant(ot) || p2m_is_foreign(ot) )
+    if ( p2m_is_special(ot) )
     {
-        gfn_unlock(p2m, gfn, order);
-        domain_crash(d);
-        return -ENOENT;
+        /* Special-case (almost) identical mappings. */
+        if ( !mfn_eq(mfn, omfn) || gfn_p2mt != ot )
+        {
+            gfn_unlock(p2m, gfn, order);
+            printk(XENLOG_G_ERR
+                   "%pd: GFN %#lx (%#lx,%u,%u,%u) -> (%#lx,%u,%u,%u) not permitted\n",
+                   d, gfn_l,
+                   mfn_x(omfn), cur_order, ot, a,
+                   mfn_x(mfn), order, gfn_p2mt, access);
+            domain_crash(d);
+            return -EPERM;
+        }
+
+        if ( access == a )
+        {
+            gfn_unlock(p2m, gfn, order);
+            return 0;
+        }
     }
     else if ( p2m_is_ram(ot) )
     {
@@ -1353,7 +1372,7 @@ int set_identity_p2m_entry(struct domain *d, unsigned long gfn_l,
         if ( !is_iommu_enabled(d) )
             return 0;
         return iommu_legacy_map(d, _dfn(gfn_l), _mfn(gfn_l), PAGE_ORDER_4K,
-                                IOMMUF_readable | IOMMUF_writable);
+                                p2m_access_to_iommu_flags(p2ma));
     }
 
     gfn_lock(p2m, gfn, 0);
@@ -1388,8 +1407,8 @@ int set_identity_p2m_entry(struct domain *d, unsigned long gfn_l,
  *    order+1  for caller to retry with order (guaranteed smaller than
  *             the order value passed in)
  */
-int clear_mmio_p2m_entry(struct domain *d, unsigned long gfn_l, mfn_t mfn,
-                         unsigned int order)
+static int clear_mmio_p2m_entry(struct domain *d, unsigned long gfn_l,
+                                mfn_t mfn, unsigned int order)
 {
     int rc = -EINVAL;
     gfn_t gfn = _gfn(gfn_l);
