@@ -20,6 +20,8 @@ variables:
   # disable shallow cloning of git repository. This is needed for git-debrebase
   GIT_DEPTH: 0
 
+  RELEASE: 'bullseye'
+
   # xen currently does not enable hardening when building the hypervisor so
   # disable blhc.
   SALSA_CI_DISABLE_BLHC: 1
