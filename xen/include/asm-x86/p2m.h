@@ -141,6 +141,11 @@ typedef unsigned int p2m_query_t;
                             | p2m_to_mask(p2m_ram_logdirty) )
 #define P2M_SHARED_TYPES   (p2m_to_mask(p2m_ram_shared))
 
+/* Types established/cleaned up via special accessors. */
+#define P2M_SPECIAL_TYPES (P2M_GRANT_TYPES | \
+                           p2m_to_mask(p2m_map_foreign) | \
+                           p2m_to_mask(p2m_mmio_direct))
+
 /* Valid types not necessarily associated with a (valid) MFN. */
 #define P2M_INVALID_MFN_TYPES (P2M_POD_TYPES                  \
                                | p2m_to_mask(p2m_mmio_direct) \
@@ -169,6 +174,7 @@ typedef unsigned int p2m_query_t;
 #define p2m_is_paged(_t)    (p2m_to_mask(_t) & P2M_PAGED_TYPES)
 #define p2m_is_sharable(_t) (p2m_to_mask(_t) & P2M_SHARABLE_TYPES)
 #define p2m_is_shared(_t)   (p2m_to_mask(_t) & P2M_SHARED_TYPES)
+#define p2m_is_special(_t)  (p2m_to_mask(_t) & P2M_SPECIAL_TYPES)
 #define p2m_is_broken(_t)   (p2m_to_mask(_t) & P2M_BROKEN_TYPES)
 #define p2m_is_foreign(_t)  (p2m_to_mask(_t) & p2m_to_mask(p2m_map_foreign))
 
@@ -552,7 +558,7 @@ do {                                                    \
     dest ## _t   = (source ## t)   ?: &scratch_t;       \
 } while (0)
 
-    if ( (rd->domain_id <= ld->domain_id) ||
+    if ( (rd->domain_id < ld->domain_id) ||
          ((rd == ld) && (gfn_x(rgfn) <= gfn_x(lgfn))) )
     {
         assign_pointers(first, r);
@@ -640,8 +646,6 @@ int set_foreign_p2m_entry(struct domain *d, unsigned long gfn, mfn_t mfn);
 /* Set mmio addresses in the p2m table (for pass-through) */
 int set_mmio_p2m_entry(struct domain *d, gfn_t gfn, mfn_t mfn,
                        unsigned int order);
-int clear_mmio_p2m_entry(struct domain *d, unsigned long gfn, mfn_t mfn,
-                         unsigned int order);
 
 /* Set identity addresses in the p2m table (for pass-through) */
 int set_identity_p2m_entry(struct domain *d, unsigned long gfn,
@@ -900,10 +904,39 @@ struct p2m_domain *p2m_get_altp2m(struct vcpu *v);
 static inline void p2m_altp2m_check(struct vcpu *v, uint16_t idx) {}
 #endif
 
+/* p2m access to IOMMU flags */
+static inline unsigned int p2m_access_to_iommu_flags(p2m_access_t p2ma)
+{
+    switch ( p2ma )
+    {
+    case p2m_access_rw:
+    case p2m_access_rwx:
+        return IOMMUF_readable | IOMMUF_writable;
+
+    case p2m_access_r:
+    case p2m_access_rx:
+    case p2m_access_rx2rw:
+        return IOMMUF_readable;
+
+    case p2m_access_w:
+    case p2m_access_wx:
+        return IOMMUF_writable;
+
+    case p2m_access_n:
+    case p2m_access_x:
+    case p2m_access_n2rwx:
+        return 0;
+    }
+
+    ASSERT_UNREACHABLE();
+    return 0;
+}
+
 /*
  * p2m type to IOMMU flags
  */
-static inline unsigned int p2m_get_iommu_flags(p2m_type_t p2mt, mfn_t mfn)
+static inline unsigned int p2m_get_iommu_flags(p2m_type_t p2mt,
+                                               p2m_access_t p2ma, mfn_t mfn)
 {
     unsigned int flags;
 
@@ -920,9 +953,10 @@ static inline unsigned int p2m_get_iommu_flags(p2m_type_t p2mt, mfn_t mfn)
         flags = IOMMUF_readable;
         break;
     case p2m_mmio_direct:
-        flags = IOMMUF_readable;
-        if ( !rangeset_contains_singleton(mmio_ro_ranges, mfn_x(mfn)) )
-            flags |= IOMMUF_writable;
+        flags = p2m_access_to_iommu_flags(p2ma);
+        if ( (flags & IOMMUF_writable) &&
+             rangeset_contains_singleton(mmio_ro_ranges, mfn_x(mfn)) )
+            flags &= ~IOMMUF_writable;
         break;
     default:
         flags = 0;

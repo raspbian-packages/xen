@@ -28,7 +28,7 @@ than an individual person.
  1 file changed, 3 insertions(+), 3 deletions(-)
 
 diff --git a/xen/Makefile b/xen/Makefile
-index e8a53a5..d875bd1 100644
+index f7a8797..e61fa19 100644
 --- a/xen/Makefile
 +++ b/xen/Makefile
 @@ -394,9 +394,9 @@ include/xen/compile.h: include/xen/compile.h.in

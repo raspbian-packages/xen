@@ -1,4 +1,4 @@
-xen (4.14.2+25-gb6a8c4f72d-2+rpi1) bullseye-staging; urgency=medium
+xen (4.14.3-1+rpi1) bookworm-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,7 +9,26 @@ xen (4.14.2+25-gb6a8c4f72d-2+rpi1) bullseye-staging; urgency=medium
   [changes introduced in 4.11.1+26-g87f51bf366-3+rpi1 by Peter Michael Green]
   * Do not fail on files that are not installed.
 
- -- Raspbian forward porter <root@raspbian.org>  Tue, 10 Aug 2021 17:09:40 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Wed, 22 Sep 2021 14:17:32 +0000
+
+xen (4.14.3-1) unstable; urgency=high
+
+  * Update to new upstream version 4.14.3, which also contains security fixes
+    for the following issues:
+    - IOMMU page mapping issues on x86
+      XSA-378 CVE-2021-28694 CVE-2021-28695 CVE-2021-28696
+    - grant table v2 status pages may remain accessible after de-allocation
+      XSA-379 CVE-2021-28697
+    - long running loops in grant table handling
+      XSA-380 CVE-2021-28698
+    - inadequate grant-v2 status frames array bounds check
+      XSA-382 CVE-2021-28699
+    - xen/arm: No memory limit for dom0less domUs
+      XSA-383 CVE-2021-28700
+    - Another race in XENMAPSPACE_grant_table handling
+      XSA-384 CVE-2021-28701
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Mon, 13 Sep 2021 11:51:20 +0200
 
 xen (4.14.2+25-gb6a8c4f72d-2) unstable; urgency=medium
 
