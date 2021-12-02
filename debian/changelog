@@ -1,3 +1,10 @@
+xen (4.14.3+32-g9de3671772-1~deb11u1) bullseye-security; urgency=medium
+
+  * d/salsa-ci.yml: Set RELEASE variable to bullseye
+  * Rebuild for bullseye-security
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Thu, 02 Dec 2021 21:45:55 +0100
+
 xen (4.14.3+32-g9de3671772-1) unstable; urgency=medium
 
   * Update to new upstream version 4.14.3+32-g9de3671772, which also contains
