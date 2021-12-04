@@ -63,7 +63,7 @@ DEPS_INCLUDE = $(addsuffix .d2, $(basename $(wildcard $(DEPS))))
 DEPS_RM = $(DEPS) $(DEPS_INCLUDE)
 
 %.d2: %.d
-	sed "s! $$PWD/! !" $^ >$@.tmp && mv -f $@.tmp $@
+	sed "s!\(^\| \)$$PWD/! !" $^ >$@.tmp && mv -f $@.tmp $@
 
 include $(XEN_ROOT)/config/$(XEN_OS).mk
 include $(XEN_ROOT)/config/$(XEN_TARGET_ARCH).mk
@@ -135,12 +135,6 @@ else
 CFLAGS += -DBUILD_ID
 export XEN_HAS_BUILD_ID=y
 build_id_linker := --build-id=sha1
-endif
-
-ifndef XEN_HAS_CHECKPOLICY
-    CHECKPOLICY ?= checkpolicy
-    XEN_HAS_CHECKPOLICY := $(shell $(CHECKPOLICY) -h 2>&1 | grep -q xen && echo y || echo n)
-    export XEN_HAS_CHECKPOLICY
 endif
 
 define buildmakevars2shellvars
@@ -244,16 +238,16 @@ QEMU_TRADITIONAL_URL ?= git://xenbits.xen.org/qemu-xen-traditional.git
 SEABIOS_UPSTREAM_URL ?= git://xenbits.xen.org/seabios.git
 MINIOS_UPSTREAM_URL ?= git://xenbits.xen.org/mini-os.git
 endif
-OVMF_UPSTREAM_REVISION ?= 20d2e5a125e34fc8501026613a71549b2a1a3e54
-QEMU_UPSTREAM_REVISION ?= qemu-xen-4.14.3
-MINIOS_UPSTREAM_REVISION ?= xen-RELEASE-4.14.3
+OVMF_UPSTREAM_REVISION ?= 7b4a99be8a39c12d3a7fc4b8db9f0eab4ac688d5
+QEMU_UPSTREAM_REVISION ?= qemu-xen-4.16.0
+MINIOS_UPSTREAM_REVISION ?= xen-RELEASE-4.16.0
 
-SEABIOS_UPSTREAM_REVISION ?= rel-1.13.0
+SEABIOS_UPSTREAM_REVISION ?= rel-1.14.0
 
 ETHERBOOT_NICS ?= rtl8139 8086100e
 
 
-QEMU_TRADITIONAL_REVISION ?= xen-4.14.3
+QEMU_TRADITIONAL_REVISION ?= xen-4.16.0
 
 # Specify which qemu-dm to use. This may be `ioemu' to use the old
 # Mercurial in-tree version, or a local directory, or a git URL.

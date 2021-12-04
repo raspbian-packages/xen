@@ -33,7 +33,7 @@
 /* Cmdline controls for Xen's alternative blocks. */
 static bool __initdata opt_msr_sc_pv = true;
 static bool __initdata opt_msr_sc_hvm = true;
-static bool __initdata opt_rsb_pv = true;
+static int8_t __initdata opt_rsb_pv = -1;
 static bool __initdata opt_rsb_hvm = true;
 static int8_t __initdata opt_md_clear_pv = -1;
 static int8_t __initdata opt_md_clear_hvm = -1;
@@ -52,14 +52,14 @@ bool __read_mostly opt_ibpb = true;
 bool __read_mostly opt_ssbd = false;
 int8_t __read_mostly opt_eager_fpu = -1;
 int8_t __read_mostly opt_l1d_flush = -1;
-bool __read_mostly opt_branch_harden = true;
+static bool __initdata opt_branch_harden = true;
 
 bool __initdata bsp_delay_spec_ctrl;
 uint8_t __read_mostly default_xen_spec_ctrl;
 uint8_t __read_mostly default_spec_ctrl_flags;
 
 paddr_t __read_mostly l1tf_addr_mask, __read_mostly l1tf_safe_maddr;
-static bool __initdata cpu_has_bug_l1tf;
+bool __read_mostly cpu_has_bug_l1tf;
 static unsigned int __initdata l1d_maxphysaddr;
 
 static bool __initdata cpu_has_bug_msbds_only; /* => minimal HT impact. */
@@ -571,6 +571,35 @@ static bool __init retpoline_safe(uint64_t caps)
     }
 }
 
+/*
+ * https://software.intel.com/content/www/us/en/develop/articles/software-security-guidance/technical-documentation/retpoline-branch-target-injection-mitigation.html
+ *
+ * Silvermont and Airmont based cores are 64bit but only have a 32bit wide
+ * RSB, which impacts the safety of using SMEP to avoid RSB-overwriting.
+ */
+static bool __init rsb_is_full_width(void)
+{
+    if ( boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
+         boot_cpu_data.x86 != 6 )
+        return true;
+
+    switch ( boot_cpu_data.x86_model )
+    {
+    case 0x37: /* Baytrail / Valleyview (Silvermont) */
+    case 0x4a: /* Merrifield */
+    case 0x4c: /* Cherrytrail / Brasswell */
+    case 0x4d: /* Avaton / Rangely (Silvermont) */
+    case 0x5a: /* Moorefield */
+    case 0x5d: /* SoFIA 3G Granite/ES2.1 */
+    case 0x65: /* SoFIA LTE AOSP */
+    case 0x6e: /* Cougar Mountain */
+    case 0x75: /* Lightning Mountain */
+        return false;
+    }
+
+    return true;
+}
+
 /* Calculate whether this CPU speculates past #NM */
 static bool __init should_use_eager_fpu(void)
 {
@@ -1009,18 +1038,36 @@ void __init init_speculation_mitigations(void)
         default_xen_spec_ctrl |= SPEC_CTRL_SSBD;
 
     /*
-     * PV guests can poison the RSB to any virtual address from which
-     * they can execute a call instruction.  This is necessarily outside
-     * of the Xen supervisor mappings.
+     * PV guests can create RSB entries for any linear address they control,
+     * which are outside of Xen's mappings.
      *
-     * With SMEP enabled, the processor won't speculate into user mappings.
-     * Therefore, in this case, we don't need to worry about poisoned entries
-     * from 64bit PV guests.
+     * SMEP inhibits speculation to any user mappings, so in principle it is
+     * safe to not overwrite the RSB when SMEP is active.
      *
-     * 32bit PV guest kernels run in ring 1, so use supervisor mappings.
-     * If a processors speculates to 32bit PV guest kernel mappings, it is
-     * speculating in 64bit supervisor mode, and can leak data.
+     * However, some caveats apply:
+     *
+     * 1) CALL instructions push the next sequential linear address into the
+     *    RSB, meaning that there is a boundary case at the user=>supervisor
+     *    split.  This can be compensated for by having an unmapped or NX
+     *    page, or an instruction which halts speculation.
+     *
+     *    For Xen, the next sequential linear address is the start of M2P
+     *    (mapped NX), or a zapped hole (unmapped).
+     *
+     * 2) 32bit PV kernels execute in Ring 1 and use supervisor mappings.
+     *    SMEP offers no protection in this case.
+     *
+     * 3) Some CPUs have RSBs which are not full width, which allow the
+     *    attacker's entries to alias Xen addresses.
+     *
+     * It is safe to turn off RSB stuffing when Xen is using SMEP itself, and
+     * 32bit PV guests are disabled, and when the RSB is full width.
      */
+    BUILD_BUG_ON(RO_MPT_VIRT_START != PML4_ADDR(256));
+    if ( opt_rsb_pv == -1 && boot_cpu_has(X86_FEATURE_XEN_SMEP) &&
+         !opt_pv32 && rsb_is_full_width() )
+        opt_rsb_pv = 0;
+
     if ( opt_rsb_pv )
     {
         setup_force_cpu_cap(X86_FEATURE_SC_RSB_PV);
@@ -1074,8 +1121,9 @@ void __init init_speculation_mitigations(void)
     else if ( opt_l1d_flush == -1 )
         opt_l1d_flush = cpu_has_bug_l1tf && !(caps & ARCH_CAPS_SKIP_L1DFL);
 
-    if ( opt_branch_harden )
-        setup_force_cpu_cap(X86_FEATURE_SC_BRANCH_HARDEN);
+    /* We compile lfence's in by default, and nop them out if requested. */
+    if ( !opt_branch_harden )
+        setup_force_cpu_cap(X86_FEATURE_SC_NO_BRANCH_HARDEN);
 
     /*
      * We do not disable HT by default on affected hardware.

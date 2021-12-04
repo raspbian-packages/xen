@@ -1,9 +1,9 @@
 #ifndef ASM_X86_MICROCODE_PRIVATE_H
 #define ASM_X86_MICROCODE_PRIVATE_H
 
-#include <xen/types.h>
-
 #include <asm/microcode.h>
+
+extern bool opt_ucode_allow_same;
 
 enum microcode_match_result {
     OLD_UCODE, /* signature matched, but revision id is older or equal */

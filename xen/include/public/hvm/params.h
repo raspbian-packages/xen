@@ -34,6 +34,7 @@
 #define HVM_PARAM_MEMORY_EVENT_CR3          21
 #define HVM_PARAM_MEMORY_EVENT_CR4          22
 #define HVM_PARAM_MEMORY_EVENT_INT3         23
+#define HVM_PARAM_NESTEDHVM                 24
 #define HVM_PARAM_MEMORY_EVENT_SINGLE_STEP  25
 #define HVM_PARAM_BUFIOREQ_EVTCHN           26
 #define HVM_PARAM_MEMORY_EVENT_MSR          30
@@ -163,6 +164,18 @@
 #define _HVMPV_hcall_ipi 9
 #define HVMPV_hcall_ipi (1 << _HVMPV_hcall_ipi)
 
+/* Enable ExProcessorMasks */
+#define _HVMPV_ex_processor_masks 10
+#define HVMPV_ex_processor_masks (1 << _HVMPV_ex_processor_masks)
+
+/* Allow more than 64 VPs */
+#define _HVMPV_no_vp_limit 11
+#define HVMPV_no_vp_limit (1 << _HVMPV_no_vp_limit)
+
+/* Enable vCPU hotplug */
+#define _HVMPV_cpu_hotplug 12
+#define HVMPV_cpu_hotplug (1 << _HVMPV_cpu_hotplug)
+
 #define HVMPV_feature_mask \
         (HVMPV_base_freq | \
          HVMPV_no_freq | \
@@ -173,7 +186,10 @@
          HVMPV_crash_ctl | \
          HVMPV_synic | \
          HVMPV_stimer | \
-         HVMPV_hcall_ipi)
+         HVMPV_hcall_ipi | \
+         HVMPV_ex_processor_masks | \
+         HVMPV_no_vp_limit | \
+         HVMPV_cpu_hotplug)
 
 #endif
 
@@ -231,9 +247,6 @@
  * You can find these address definitions in <hvm/ioreq.h>
  */
 #define HVM_PARAM_ACPI_IOPORTS_LOCATION 19
-
-/* Boolean: Enable nestedhvm (hvm only) */
-#define HVM_PARAM_NESTEDHVM    24
 
 /* Params for the mem event rings */
 #define HVM_PARAM_PAGING_RING_PFN   27

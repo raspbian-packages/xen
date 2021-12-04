@@ -168,10 +168,11 @@ static int parse_guest_loglvl(const char *s);
 static char xenlog_val[LOGLVL_VAL_SZ];
 static char xenlog_guest_val[LOGLVL_VAL_SZ];
 
-static char *lvl2opt[] = { "none", "error", "warning", "info", "all" };
-
 static void xenlog_update_val(int lower, int upper, char *val)
 {
+    static const char * const lvl2opt[] =
+        { "none", "error", "warning", "info", "all" };
+
     snprintf(val, LOGLVL_VAL_SZ, "%s/%s", lvl2opt[lower], lvl2opt[upper]);
 }
 
@@ -262,7 +263,7 @@ static int parse_guest_loglvl(const char *s)
     return ret;
 }
 
-static char *loglvl_str(int lvl)
+static const char *loglvl_str(int lvl)
 {
     switch ( lvl )
     {
@@ -1002,10 +1003,10 @@ void __init console_init_preirq(void)
     spin_lock(&console_lock);
     __putstr(xen_banner());
     spin_unlock(&console_lock);
-    printk("Xen version %d.%d%s (%s@%s) (%s) debug=%c " gcov_string " %s\n",
+    printk("Xen version %d.%d%s (%s@%s) (%s) %s %s\n",
            xen_major_version(), xen_minor_version(), xen_extra_version(),
-           xen_compile_by(), xen_compile_domain(),
-           xen_compiler(), debug_build() ? 'y' : 'n', xen_compile_date());
+           xen_compile_by(), xen_compile_domain(), xen_compiler(),
+           xen_build_info(), xen_compile_date());
     printk("Latest ChangeSet: %s\n", xen_changeset());
 
     /* Locate and print the buildid, if applicable. */
@@ -1271,7 +1272,7 @@ void panic(const char *fmt, ...)
 
     debugger_trap_immediate();
 
-    kexec_crash();
+    kexec_crash(CRASHREASON_PANIC);
 
     if ( opt_noreboot )
         machine_halt();

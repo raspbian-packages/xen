@@ -5,12 +5,6 @@
 #include <xen/bitops.h>
 #include <asm/processor.h>
 
-#define read_sreg(name)                                         \
-({  unsigned int __sel;                                         \
-    asm volatile ( "mov %%" STR(name) ",%0" : "=r" (__sel) );   \
-    __sel;                                                      \
-})
-
 static inline void wbinvd(void)
 {
     asm volatile ( "wbinvd" ::: "memory" );
@@ -154,13 +148,6 @@ static always_inline unsigned long cmpxchg_local_(
     return prev;
 }
 
-#define cmpxchgptr(ptr,o,n) ({                                          \
-    const __typeof__(**(ptr)) *__o = (o);                               \
-    __typeof__(**(ptr)) *__n = (n);                                     \
-    ((__typeof__(*(ptr)))__cmpxchg((ptr),(unsigned long)__o,            \
-                                   (unsigned long)__n,sizeof(*(ptr)))); \
-})
-
 /*
  * Undefined symbol to cause link failure if a wrong size is used with
  * arch_fetch_and_add().
@@ -226,7 +213,7 @@ static always_inline unsigned long __xadd(
  *
  * Refer to the vendor system programming manuals for further details.
  */
-#define smp_mb()        mb()
+#define smp_mb()        asm volatile ( "lock addl $0, -4(%%rsp)" ::: "memory" )
 #define smp_rmb()       barrier()
 #define smp_wmb()       barrier()
 

@@ -15,6 +15,7 @@
  *)
 
 let error fmt = Logging.error "process" fmt
+let warn fmt = Logging.warn "process" fmt
 let info fmt = Logging.info "process" fmt
 let debug fmt = Logging.debug "process" fmt
 
@@ -84,11 +85,146 @@ let create_implicit_path t perm path =
 		List.iter (fun s -> Transaction.mkdir ~with_watch:false t perm s) ret
 	)
 
+module LiveUpdate = struct
+type t =
+	{ binary: string
+	; cmdline: string list
+	; deadline: float
+	; force: bool
+	; result: string list
+	; pending: bool }
+
+let state = ref
+	{ binary= Sys.executable_name
+	; cmdline= (Sys.argv |> Array.to_list |> List.tl)
+	; deadline= 0.
+	; force= false
+	; result = []
+	; pending= false }
+
+let debug = Printf.eprintf
+
+let forced_args = ["--live"; "--restart"]
+let args_of_t t =
+	let filtered = List.filter (fun x -> not @@ List.mem x forced_args) t.cmdline in
+	(t.binary, forced_args @ filtered)
+
+let string_of_t t =
+	let executable, rest = args_of_t t in
+	Filename.quote_command executable rest
+
+let launch_exn t =
+	let executable, rest = args_of_t t in
+	let args = Array.of_list (executable :: rest) in
+	info "Launching %s, args: %s" executable (String.concat " " rest);
+	Unix.execv args.(0) args
+
+let validate_exn t =
+	(* --help must be last to check validity of earlier arguments *)
+	let t' = {t with cmdline= t.cmdline @ ["--help"]} in
+	let cmd = string_of_t t' in
+	debug "Executing %s" cmd ;
+	match Unix.fork () with
+	| 0 ->   ( try launch_exn t' with _ -> exit 2 )
+	| pid -> (
+		match Unix.waitpid [] pid with
+			| _, Unix.WEXITED 0 ->
+				debug "Live update validated cmdline %s" cmd;
+			t
+			| _, Unix.WEXITED n ->
+				invalid_arg (Printf.sprintf "Command %s exited with code %d" cmd n)
+			| _, Unix.WSIGNALED n ->
+				invalid_arg (Printf.sprintf "Command %s killed by ocaml signal number %d" cmd n)
+			| _, Unix.WSTOPPED n ->
+				invalid_arg (Printf.sprintf "Command %s stopped by ocaml signal number %d" cmd n)
+	)
+
+let parse_live_update args =
+	try
+	(state :=
+		match args with
+		| ["-f"; file] ->
+			validate_exn {!state with binary= file}
+		| ["-a"] ->
+			debug "Live update aborted" ;
+			{!state with pending= false; result = []}
+		| "-c" :: cmdline ->
+			validate_exn {!state with cmdline = !state.cmdline @ cmdline}
+		| "-s" :: _ ->
+			(match !state.pending, !state.result with
+			| true, _ -> !state (* no change to state, avoid resetting timeout *)
+			| false, _ :: _ -> !state (* we got a pending result to deliver *)
+			| false, [] ->
+			let timeout = ref 60 in
+			let force = ref false in
+			Arg.parse_argv ~current:(ref 0) (Array.of_list args)
+				[ ( "-t"
+				  , Arg.Set_int timeout
+				  , "timeout in seconds to wait for active transactions to finish"
+				  )
+				; ( "-F"
+				  , Arg.Set force
+				  , "force live update to happen even with running transactions after timeout elapsed"
+				  )
+				]
+			(fun x -> raise (Arg.Bad x))
+			"live-update -s" ;
+			debug "Live update process queued" ;
+				{!state with deadline = Unix.gettimeofday () +. float !timeout
+				; force= !force; pending= true})
+		| _ ->
+			invalid_arg ("Unknown arguments: " ^ String.concat "," args)) ;
+		match !state.pending, !state.result with
+		| true, _ -> Some "BUSY"
+		| false, (_ :: _ as result) ->
+			(* xenstore-control has read the result, clear it *)
+			state := { !state with result = [] };
+			Some (String.concat "\n" result)
+		| false, [] -> None
+	with
+	| Arg.Bad s | Arg.Help s | Invalid_argument s ->
+		Some s
+	| Unix.Unix_error (e, fn, args) ->
+		Some (Printf.sprintf "%s(%s): %s" fn args (Unix.error_message e))
+
+	let should_run cons =
+		let t = !state in
+		if t.pending then begin
+			match Connections.prevents_quit cons with
+			| [] -> true
+			| _ when Unix.gettimeofday () < t.deadline -> false
+			| l ->
+				warn "timeout reached: have to wait, migrate or shutdown %d domains:" (List.length l);
+				let msgs = List.rev_map (fun con -> Printf.sprintf "%s: %d tx, in: %b, out: %b, perm: %s"
+					(Connection.get_domstr con)
+					(Connection.number_of_transactions con)
+					(Connection.has_input con)
+					(Connection.has_output con)
+					(Connection.get_perm con |> Perms.Connection.to_string)
+					) l in
+				List.iter (warn "Live-update: %s") msgs;
+				if t.force then begin
+					warn "Live update forced, some domain connections may break!";
+					true
+				end else begin
+					warn "Live update aborted (see above for domains preventing it)";
+					state := { t with pending = false; result = msgs};
+					false
+				end
+		end else false
+
+	let completed () =
+		state := { !state with result = ["OK"] }
+end
+
 (* packets *)
 let do_debug con t _domains cons data =
 	if not (Connection.is_dom0 con) && not !allow_debug
 	then None
 	else try match split None '\000' data with
+	| "live-update" :: params ->
+		let dropped_trailing_nul = params |> List.rev |> List.tl |> List.rev in
+		LiveUpdate.parse_live_update dropped_trailing_nul
 	| "print" :: msg :: _ ->
 		Logging.xb_op ~tid:0 ~ty:Xenbus.Xb.Op.Debug ~con:"=======>" msg;
 		None

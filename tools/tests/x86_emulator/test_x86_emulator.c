@@ -752,6 +752,13 @@ static struct x86_emulate_ops emulops = {
  * 64-bit OSes may not (be able to) properly restore the two selectors in
  * the FPU environment. Zap them so that memcmp() on two saved images will
  * work regardless of whether a context switch occurred in the middle.
+ *
+ * Additionally on AMD-like CPUs FDP/FIP/FOP may get lost across context
+ * switches, when there's no unmasked pending FP exception: With
+ * CPUID.80000008.EBX[2] clear, the fields don't get written/read by
+ * {F,}XSAVE / {F,}XRSTOR (which OSes often compensate for by invoking an
+ * insn forcing the fields to gain a deterministic value), whereas with said
+ * bit set, zeroes will get written (and hence later restored).
  */
 static void zap_fpsel(unsigned int *env, bool is_32bit)
 {
@@ -764,6 +771,21 @@ static void zap_fpsel(unsigned int *env, bool is_32bit)
     {
         env[2] &= ~0xffff;
         env[3] &= ~0xffff;
+    }
+
+    if ( cp.x86_vendor != X86_VENDOR_AMD && cp.x86_vendor != X86_VENDOR_HYGON )
+        return;
+
+    if ( is_32bit )
+    {
+        env[3] = 0;
+        env[4] = 0;
+        env[5] = 0;
+    }
+    else
+    {
+        env[1] &= 0xffff;
+        env[2] = 0;
     }
 }
 
@@ -2377,6 +2399,23 @@ int main(int argc, char **argv)
         goto fail;
     printf("okay\n");
 
+    printf("%-40s", "Testing rdpkru / wrpkru...");
+    instr[0] = 0x0f; instr[1] = 0x01;
+    regs.ecx = 0;
+    for ( i = 0, j = (uint32_t)-__LINE__; i < 3; ++i )
+    {
+        instr[2] = 0xee | (i & 1);
+        regs.eax = i < 2 ? j : 0;
+        regs.edx = i & 1 ? 0 : j;
+        regs.eip = (unsigned long)&instr[0];
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( (rc != X86EMUL_OKAY) ||
+             (!(i & 1) && (regs.eax != (i ? j : 0) || regs.edx)) ||
+             (regs.eip != (unsigned long)&instr[3]) )
+            goto fail;
+    }
+    printf("okay\n");
+
     printf("%-40s", "Testing movdiri %edx,(%ecx)...");
     if ( stack_exec && cpu_has_movdiri )
     {
@@ -2460,6 +2499,7 @@ int main(int argc, char **argv)
         regs.edx = (unsigned long)res;
         rc = x86_emulate(&ctxt, &emulops);
         asm volatile ( "fnstenv %0" : "=m" (res[9]) :: "memory" );
+        zap_fpsel(&res[9], true);
         if ( (rc != X86EMUL_OKAY) ||
              memcmp(res + 2, res + 9, 28) ||
              (regs.eip != (unsigned long)&instr[3]) )
@@ -2487,6 +2527,7 @@ int main(int argc, char **argv)
         res[23] = 0xaa55aa55;
         res[24] = 0xaa55aa55;
         rc = x86_emulate(&ctxt, &emulops);
+        zap_fpsel(&res[0], false);
         if ( (rc != X86EMUL_OKAY) ||
              memcmp(res, res + 25, 94) ||
              (res[23] >> 16) != 0xaa55 ||
@@ -2514,6 +2555,7 @@ int main(int argc, char **argv)
         regs.edx = (unsigned long)res;
         rc = x86_emulate(&ctxt, &emulops);
         asm volatile ( "fnsave %0" : "=m" (res[27]) :: "memory" );
+        zap_fpsel(&res[27], true);
         if ( (rc != X86EMUL_OKAY) ||
              memcmp(res, res + 27, 108) ||
              (regs.eip != (unsigned long)&instr[2]) )
@@ -5003,6 +5045,61 @@ int main(int argc, char **argv)
         printf("okay\n");
     }
 
+    printf("%-40s", "Testing vpdpwssd (%ecx),%{y,z}mmA,%{y,z}mmB...");
+    if ( stack_exec && cpu_has_avx512_vnni && cpu_has_avx_vnni )
+    {
+        /* Do the same operation two ways and compare the results. */
+        decl_insn(vpdpwssd_vex1);
+        decl_insn(vpdpwssd_vex2);
+        decl_insn(vpdpwssd_evex);
+
+        for ( i = 0; i < 24; ++i )
+            res[i] = i | (~i << 16);
+
+        asm volatile ( "vmovdqu32 32(%0), %%zmm1\n\t"
+                       "vextracti64x4 $1, %%zmm1, %%ymm2\n\t"
+                       "vpxor %%xmm0, %%xmm0, %%xmm3\n\t"
+                       "vpxor %%xmm0, %%xmm0, %%xmm4\n\t"
+                       "vpxor %%xmm0, %%xmm0, %%xmm5\n"
+                       put_insn(vpdpwssd_vex1,
+                                /* %{vex%} vpdpwssd (%1), %%ymm1, %%ymm3" */
+                                ".byte 0xc4, 0xe2, 0x75, 0x52, 0x19") "\n"
+                       put_insn(vpdpwssd_vex2,
+                                /* "%{vex%} vpdpwssd 32(%1), %%ymm2, %%ymm4" */
+                                ".byte 0xc4, 0xe2, 0x6d, 0x52, 0x61, 0x20") "\n"
+                       put_insn(vpdpwssd_evex,
+                                /* "vpdpwssd (%1), %%zmm1, %%zmm5" */
+                                ".byte 0x62, 0xf2, 0x75, 0x48, 0x52, 0x29")
+                       :: "r" (res), "c" (NULL) );
+
+        set_insn(vpdpwssd_vex1);
+        regs.ecx = (unsigned long)res;
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(vpdpwssd_vex1) )
+            goto fail;
+
+        set_insn(vpdpwssd_vex2);
+        regs.ecx = (unsigned long)res;
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(vpdpwssd_vex2) )
+            goto fail;
+
+        set_insn(vpdpwssd_evex);
+        regs.ecx = (unsigned long)res;
+        rc = x86_emulate(&ctxt, &emulops);
+        if ( rc != X86EMUL_OKAY || !check_eip(vpdpwssd_evex) )
+            goto fail;
+
+        asm ( "vinserti64x4 $1, %%ymm4, %%zmm3, %%zmm0\n\t"
+              "vpcmpeqd %%zmm0, %%zmm5, %%k0\n\t"
+              "kmovw %%k0, %0" : "=g" (rc) );
+        if ( rc != 0xffff )
+            goto fail;
+        printf("okay\n");
+    }
+    else
+        printf("skipped\n");
+
     printf("%-40s", "Testing invpcid 16(%ecx),%%edx...");
     if ( stack_exec )
     {
@@ -5084,6 +5181,8 @@ int main(int argc, char **argv)
 
     for ( j = 0; j < ARRAY_SIZE(blobs); j++ )
     {
+        unsigned int nr;
+
         if ( blobs[j].check_cpu && !blobs[j].check_cpu() )
             continue;
 
@@ -5099,7 +5198,8 @@ int main(int argc, char **argv)
 
         if ( ctxt.addr_size == sizeof(void *) * CHAR_BIT )
         {
-            i = printf("Testing %s native execution...", blobs[j].name);
+            nr = printf("Testing %s native execution...", blobs[j].name);
+
             if ( blobs[j].set_regs )
                 blobs[j].set_regs(&regs);
             asm volatile (
@@ -5115,11 +5215,13 @@ int main(int argc, char **argv)
             );
             if ( !blobs[j].check_regs(&regs) )
                 goto fail;
-            printf("%*sokay\n", i < 40 ? 40 - i : 0, "");
+
+            printf("%*sokay\n", nr < 40 ? 40 - nr : 0, "");
         }
 
-        printf("Testing %s %u-bit code sequence",
-               blobs[j].name, ctxt.addr_size);
+        nr = printf("Testing %s %u-bit code sequence",
+                    blobs[j].name, ctxt.addr_size);
+
         if ( blobs[j].set_regs )
             blobs[j].set_regs(&regs);
         regs.eip = (unsigned long)res;
@@ -5136,7 +5238,10 @@ int main(int argc, char **argv)
                 regs.eip < (unsigned long)res + blobs[j].size )
         {
             if ( (i++ & 8191) == 0 )
+            {
                 printf(".");
+                ++nr;
+            }
             rc = x86_emulate(&ctxt, &emulops);
             if ( rc != X86EMUL_OKAY )
             {
@@ -5145,13 +5250,17 @@ int main(int argc, char **argv)
                 return 1;
             }
         }
-        for ( ; i < 2 * 8192; i += 8192 )
+        for ( ; i < 2 * 8192; i += 8192 ) {
             printf(".");
+            ++nr;
+        }
+
         if ( (regs.eip != 0x12345678) ||
              (regs.esp != ((unsigned long)res + MMAP_SZ)) ||
              !blobs[j].check_regs(&regs) )
             goto fail;
-        printf("okay\n");
+
+        printf("%*sokay\n", nr < 40 ? 40 - nr : 0, "");
     }
 
     return 0;

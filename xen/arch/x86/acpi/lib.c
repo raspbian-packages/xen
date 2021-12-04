@@ -24,6 +24,7 @@
 #include <xen/acpi.h>
 #include <asm/apic.h>
 #include <asm/fixmap.h>
+#include <asm/mwait.h>
 
 u32 __read_mostly acpi_smi_cmd;
 u8 __read_mostly acpi_enable_value;
@@ -46,6 +47,10 @@ char *__acpi_map_table(paddr_t phys, unsigned long size)
 	if ((phys + size) <= (1 * 1024 * 1024))
 		return __va(phys);
 
+	/* No further arch specific implementation after early boot */
+	if (system_state >= SYS_STATE_boot)
+		return NULL;
+
 	offset = phys & (PAGE_SIZE - 1);
 	mapped_size = PAGE_SIZE - offset;
 	set_fixmap(FIX_ACPI_END, phys);
@@ -64,6 +69,20 @@ char *__acpi_map_table(paddr_t phys, unsigned long size)
 	}
 
 	return ((char *) base + offset);
+}
+
+bool __acpi_unmap_table(const void *ptr, unsigned long size)
+{
+	unsigned long vaddr = (unsigned long)ptr;
+
+	if ((vaddr >= DIRECTMAP_VIRT_START) &&
+	    (vaddr < DIRECTMAP_VIRT_END)) {
+		ASSERT(!((__pa(ptr) + size - 1) >> 20));
+		return true;
+	}
+
+	return ((vaddr >= __fix_to_virt(FIX_ACPI_END)) &&
+		(vaddr < (__fix_to_virt(FIX_ACPI_BEGIN) + PAGE_SIZE)));
 }
 
 unsigned int acpi_get_processor_id(unsigned int cpu)

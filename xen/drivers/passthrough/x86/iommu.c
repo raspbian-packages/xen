@@ -18,10 +18,12 @@
 #include <xen/guest_access.h>
 #include <xen/event.h>
 #include <xen/softirq.h>
+#include <xen/vm_event.h>
 #include <xsm/xsm.h>
 
 #include <asm/hvm/io.h>
 #include <asm/io_apic.h>
+#include <asm/mem_paging.h>
 #include <asm/setup.h>
 
 const struct iommu_init_ops *__initdata iommu_init_ops;
@@ -157,6 +159,9 @@ int arch_iommu_domain_init(struct domain *d)
     struct domain_iommu *hd = dom_iommu(d);
 
     spin_lock_init(&hd->arch.mapping_lock);
+
+    INIT_PAGE_LIST_HEAD(&hd->arch.pgtables.list);
+    spin_lock_init(&hd->arch.pgtables.lock);
     INIT_LIST_HEAD(&hd->arch.identity_maps);
 
     return 0;
@@ -164,6 +169,13 @@ int arch_iommu_domain_init(struct domain *d)
 
 void arch_iommu_domain_destroy(struct domain *d)
 {
+    /*
+     * There should be not page-tables left allocated by the time the
+     * domain is destroyed. Note that arch_iommu_domain_destroy() is
+     * called unconditionally, so pgtables may be uninitialized.
+     */
+    ASSERT(!dom_iommu(d)->platform_ops ||
+           page_list_empty(&dom_iommu(d)->arch.pgtables.list));
 }
 
 struct identity_map {
@@ -359,7 +371,7 @@ void __hwdom_init arch_iommu_hwdom_init(struct domain *d)
         else if ( paging_mode_translate(d) )
             rc = set_identity_p2m_entry(d, pfn, p2m_access_rw, 0);
         else
-            rc = iommu_map(d, _dfn(pfn), _mfn(pfn), PAGE_ORDER_4K,
+            rc = iommu_map(d, _dfn(pfn), _mfn(pfn), 1ul << PAGE_ORDER_4K,
                            IOMMUF_readable | IOMMUF_writable, &flush_flags);
 
         if ( rc )
@@ -373,6 +385,78 @@ void __hwdom_init arch_iommu_hwdom_init(struct domain *d)
     /* Use if to avoid compiler warning */
     if ( iommu_iotlb_flush_all(d, flush_flags) )
         return;
+}
+
+int iommu_free_pgtables(struct domain *d)
+{
+    struct domain_iommu *hd = dom_iommu(d);
+    struct page_info *pg;
+    unsigned int done = 0;
+
+    if ( !is_iommu_enabled(d) )
+        return 0;
+
+    /* After this barrier, no new IOMMU mappings can be inserted. */
+    spin_barrier(&hd->arch.mapping_lock);
+
+    /*
+     * Pages will be moved to the free list below. So we want to
+     * clear the root page-table to avoid any potential use after-free.
+     */
+    hd->platform_ops->clear_root_pgtable(d);
+
+    while ( (pg = page_list_remove_head(&hd->arch.pgtables.list)) )
+    {
+        free_domheap_page(pg);
+
+        if ( !(++done & 0xff) && general_preempt_check() )
+            return -ERESTART;
+    }
+
+    return 0;
+}
+
+struct page_info *iommu_alloc_pgtable(struct domain *d)
+{
+    struct domain_iommu *hd = dom_iommu(d);
+    unsigned int memflags = 0;
+    struct page_info *pg;
+    void *p;
+
+#ifdef CONFIG_NUMA
+    if ( hd->node != NUMA_NO_NODE )
+        memflags = MEMF_node(hd->node);
+#endif
+
+    pg = alloc_domheap_page(NULL, memflags);
+    if ( !pg )
+        return NULL;
+
+    p = __map_domain_page(pg);
+    clear_page(p);
+
+    if ( hd->platform_ops->sync_cache )
+        iommu_vcall(hd->platform_ops, sync_cache, p, PAGE_SIZE);
+
+    unmap_domain_page(p);
+
+    spin_lock(&hd->arch.pgtables.lock);
+    page_list_add(pg, &hd->arch.pgtables.list);
+    spin_unlock(&hd->arch.pgtables.lock);
+
+    return pg;
+}
+
+bool arch_iommu_use_permitted(const struct domain *d)
+{
+    /*
+     * Prevent device assign if mem paging, mem sharing or log-dirty
+     * have been enabled for this domain.
+     */
+    return d == dom_io ||
+           (likely(!mem_sharing_enabled(d)) &&
+            likely(!mem_paging_enabled(d)) &&
+            likely(!p2m_get_hostp2m(d)->global_logdirty));
 }
 
 /*

@@ -32,18 +32,17 @@
 
 #define XC_WANT_COMPAT_MAP_FOREIGN_API
 #include <xenctrl.h>
+#include <xenguest.h>
 #include <xen-tools/libs.h>
 
 #include "mmap_stubs.h"
 
-#define PAGE_SHIFT		12
-#define PAGE_SIZE               (1UL << PAGE_SHIFT)
-#define PAGE_MASK               (~(PAGE_SIZE-1))
-
 #define _H(__h) ((xc_interface *)(__h))
 #define _D(__d) ((uint32_t)Int_val(__d))
 
+#ifndef Val_none
 #define Val_none (Val_int(0))
+#endif
 
 #define string_of_option_array(array, index) \
 	((Field(array, index) == Val_none) ? NULL : String_val(Field(Field(array, index), 0)))
@@ -175,9 +174,9 @@ static unsigned int ocaml_list_to_c_bitmap(value l)
 	return val;
 }
 
-CAMLprim value stub_xc_domain_create(value xch, value config)
+CAMLprim value stub_xc_domain_create(value xch, value wanted_domid, value config)
 {
-	CAMLparam2(xch, config);
+	CAMLparam3(xch, wanted_domid, config);
 	CAMLlocal2(l, arch_domconfig);
 
 	/* Mnemonics for the named fields inside domctl_create_config */
@@ -189,9 +188,10 @@ CAMLprim value stub_xc_domain_create(value xch, value config)
 #define VAL_MAX_EVTCHN_PORT     Field(config, 5)
 #define VAL_MAX_GRANT_FRAMES    Field(config, 6)
 #define VAL_MAX_MAPTRACK_FRAMES Field(config, 7)
-#define VAL_ARCH                Field(config, 8)
+#define VAL_MAX_GRANT_VERSION   Field(config, 8)
+#define VAL_ARCH                Field(config, 9)
 
-	uint32_t domid = 0;
+	uint32_t domid = Int_val(wanted_domid);
 	int result;
 	struct xen_domctl_createdomain cfg = {
 		.ssidref = Int32_val(VAL_SSIDREF),
@@ -199,6 +199,8 @@ CAMLprim value stub_xc_domain_create(value xch, value config)
 		.max_evtchn_port = Int_val(VAL_MAX_EVTCHN_PORT),
 		.max_grant_frames = Int_val(VAL_MAX_GRANT_FRAMES),
 		.max_maptrack_frames = Int_val(VAL_MAX_MAPTRACK_FRAMES),
+		.grant_opts =
+		    XEN_DOMCTL_GRANT_version(Int_val(VAL_MAX_GRANT_VERSION)),
 	};
 
 	domain_handle_of_uuid_string(cfg.handle, String_val(VAL_HANDLE));
@@ -233,6 +235,15 @@ CAMLprim value stub_xc_domain_create(value xch, value config)
 
 #undef VAL_EMUL_FLAGS
 
+#define VAL_MISC_FLAGS          Field(arch_domconfig, 1)
+
+		cfg.arch.misc_flags = ocaml_list_to_c_bitmap
+			/* ! x86_arch_misc_flags X86_ none */
+			/* ! XEN_X86_ XEN_X86_MSR_RELAXED all */
+			(VAL_MISC_FLAGS);
+
+#undef VAL_MISC_FLAGS
+
 #else
 		caml_failwith("Unhandled: x86");
 #endif
@@ -243,6 +254,7 @@ CAMLprim value stub_xc_domain_create(value xch, value config)
 	}
 
 #undef VAL_ARCH
+#undef VAL_MAX_GRANT_VERSION
 #undef VAL_MAX_MAPTRACK_FRAMES
 #undef VAL_MAX_GRANT_FRAMES
 #undef VAL_MAX_EVTCHN_PORT
@@ -809,7 +821,7 @@ CAMLprim value stub_xc_domain_memory_increase_reservation(value xch,
 	CAMLparam3(xch, domid, mem_kb);
 	int retval;
 
-	unsigned long nr_extents = ((unsigned long)(Int64_val(mem_kb))) >> (PAGE_SHIFT - 10);
+	unsigned long nr_extents = ((unsigned long)(Int64_val(mem_kb))) >> (XC_PAGE_SHIFT - 10);
 
 	uint32_t c_domid = _D(domid);
 	caml_enter_blocking_section();
@@ -915,7 +927,7 @@ CAMLprim value stub_pages_to_kib(value pages)
 {
 	CAMLparam1(pages);
 
-	CAMLreturn(caml_copy_int64(Int64_val(pages) << (PAGE_SHIFT - 10)));
+	CAMLreturn(caml_copy_int64(Int64_val(pages) << (XC_PAGE_SHIFT - 10)));
 }
 
 
@@ -987,13 +999,13 @@ CAMLprim value stub_shadow_allocation_get(value xch, value domid)
 {
 	CAMLparam2(xch, domid);
 	CAMLlocal1(mb);
-	unsigned long c_mb;
+	unsigned int c_mb;
 	int ret;
 
 	caml_enter_blocking_section();
 	ret = xc_shadow_control(_H(xch), _D(domid),
 				XEN_DOMCTL_SHADOW_OP_GET_ALLOCATION,
-				NULL, 0, &c_mb, 0, NULL);
+				&c_mb, 0);
 	caml_leave_blocking_section();
 	if (ret != 0)
 		failwith_xc(_H(xch));
@@ -1006,14 +1018,14 @@ CAMLprim value stub_shadow_allocation_set(value xch, value domid,
 					  value mb)
 {
 	CAMLparam3(xch, domid, mb);
-	unsigned long c_mb;
+	unsigned int c_mb;
 	int ret;
 
 	c_mb = Int_val(mb);
 	caml_enter_blocking_section();
 	ret = xc_shadow_control(_H(xch), _D(domid),
 				XEN_DOMCTL_SHADOW_OP_SET_ALLOCATION,
-				NULL, 0, &c_mb, 0, NULL);
+				&c_mb, 0);
 	caml_leave_blocking_section();
 	if (ret != 0)
 		failwith_xc(_H(xch));
@@ -1067,8 +1079,8 @@ CAMLprim value stub_xc_domain_irq_permission(value xch, value domid,
 					     value pirq, value allow)
 {
 	CAMLparam4(xch, domid, pirq, allow);
-	uint8_t c_pirq;
-	uint8_t c_allow;
+	uint32_t c_pirq;
+	bool c_allow;
 	int ret;
 
 	c_pirq = Int_val(pirq);

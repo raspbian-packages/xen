@@ -93,31 +93,33 @@ struct evtchn
 #define ECS_PIRQ         4 /* Channel is bound to a physical IRQ line.       */
 #define ECS_VIRQ         5 /* Channel is bound to a virtual IRQ line.        */
 #define ECS_IPI          6 /* Channel is bound to a virtual IPI line.        */
-    u8  state;             /* ECS_* */
-    u8  xen_consumer:XEN_CONSUMER_BITS; /* Consumer in Xen if nonzero */
-    u8  pending:1;
-    u16 notify_vcpu_id;    /* VCPU for local delivery notification */
-    u32 port;
+    unsigned char state;   /* ECS_* */
+#ifndef NDEBUG
+    unsigned char old_state; /* State when taking lock in write mode. */
+#endif
+    unsigned char xen_consumer:XEN_CONSUMER_BITS; /* Consumer in Xen if != 0 */
+    evtchn_port_t port;
     union {
         struct {
             domid_t remote_domid;
-        } unbound;     /* state == ECS_UNBOUND */
+        } unbound;          /* state == ECS_UNBOUND */
         struct {
             evtchn_port_t  remote_port;
             struct domain *remote_dom;
-        } interdomain; /* state == ECS_INTERDOMAIN */
+        } interdomain;      /* state == ECS_INTERDOMAIN */
         struct {
-            u32            irq;
+            unsigned int   irq;
             evtchn_port_t  next_port;
             evtchn_port_t  prev_port;
-        } pirq;        /* state == ECS_PIRQ */
-        u16 virq;      /* state == ECS_VIRQ */
+        } pirq;             /* state == ECS_PIRQ */
+        unsigned int virq;  /* state == ECS_VIRQ */
     } u;
-    u8 priority;
-#ifndef NDEBUG
-    u8 old_state;      /* State when taking lock in write mode. */
-#endif
-    u32 fifo_lastq;    /* Data for fifo events identifying last queue. */
+
+    bool pending;                  /* FIFO event channels only. */
+    unsigned char priority;        /* FIFO event channels only. */
+    unsigned short notify_vcpu_id; /* VCPU for local delivery notification */
+    uint32_t fifo_lastq;           /* Data for identifying last queue. */
+
 #ifdef CONFIG_XSM
     union {
 #ifdef XSM_NEED_GENERIC_EVTCHN_SSID
@@ -133,7 +135,7 @@ struct evtchn
          * allocations, and on 64-bit platforms with only FLASK enabled,
          * reduces the size of struct evtchn.
          */
-        u32 flask_sid;
+        uint32_t flask_sid;
 #endif
     } ssid;
 #endif
@@ -144,6 +146,21 @@ int  evtchn_destroy(struct domain *d); /* from domain_kill */
 void evtchn_destroy_final(struct domain *d); /* from complete_domain_destroy */
 
 struct waitqueue_vcpu;
+
+enum vio_completion {
+    VIO_no_completion,
+    VIO_mmio_completion,
+    VIO_pio_completion,
+#ifdef CONFIG_X86
+    VIO_realmode_completion,
+#endif
+};
+
+struct vcpu_io {
+    /* I/O request in flight to device model. */
+    enum vio_completion  completion;
+    ioreq_t              req;
+};
 
 struct vcpu
 {
@@ -208,6 +225,14 @@ struct vcpu
     bool             hcall_compat;
 #endif
 
+#ifdef CONFIG_IOREQ_SERVER
+    /*
+     * Indicates that mapcache invalidation request should be sent to
+     * the device emulator.
+     */
+    bool             mapcache_invalidate;
+#endif
+
     /* The CPU, if any, which is holding onto this VCPU's state. */
 #define VCPU_CPU_CLEAN (~0u)
     unsigned int     dirty_cpu;
@@ -230,14 +255,20 @@ struct vcpu
     /* VCPU paused by system controller. */
     int              controller_pause_count;
 
-    /* Grant table map tracking. */
+    /*
+     * Grant table map tracking. The lock maptrack_freelist_lock
+     * protects:
+     *  - entries in the freelist
+     *  - maptrack_head
+     *  - maptrack_tail
+     */
     spinlock_t       maptrack_freelist_lock;
     unsigned int     maptrack_head;
     unsigned int     maptrack_tail;
 
     /* IRQ-safe virq_lock protects against delivering VIRQ to stale evtchn. */
     evtchn_port_t    virq_to_evtchn[NR_VIRQS];
-    spinlock_t       virq_lock;
+    rwlock_t         virq_lock;
 
     /* Tasklet for continue_hypercall_on_cpu(). */
     struct tasklet   continue_hypercall_tasklet;
@@ -255,7 +286,15 @@ struct vcpu
     /* vPCI per-vCPU area, used to store data for long running operations. */
     struct vpci_vcpu vpci;
 
+    struct {
+        struct page_info *pg; /* One contiguous allocation of d->vmtrace_size */
+    } vmtrace;
+
     struct arch_vcpu arch;
+
+#ifdef CONFIG_IOREQ_SERVER
+    struct vcpu_io io;
+#endif
 };
 
 struct sched_unit {
@@ -315,6 +354,8 @@ struct sched_unit {
 #define domain_unlock(d) spin_unlock_recursive(&(d)->domain_lock)
 
 struct evtchn_port_ops;
+
+#define MAX_NR_IOREQ_SERVERS 8
 
 struct domain
 {
@@ -414,8 +455,6 @@ struct domain
     bool             is_privileged;
     /* Can this guest access the Xen console? */
     bool             is_console;
-    /* Non-migratable and non-restoreable? */
-    bool             disable_migrate;
     /* Is this guest being debugged by dom0? */
     bool             debugger_attached;
     /*
@@ -497,7 +536,7 @@ struct domain
     struct domain *parent; /* VM fork parent */
 #endif
     /* Memory paging support */
-#ifdef CONFIG_HAS_MEM_PAGING
+#ifdef CONFIG_MEM_PAGING
     struct vm_event_domain *vm_event_paging;
 #endif
     /* VM event monitor support */
@@ -521,9 +560,28 @@ struct domain
         unsigned int guest_request_sync          : 1;
     } monitor;
 
+    unsigned int vmtrace_size; /* Buffer size in bytes, or 0 to disable. */
+
 #ifdef CONFIG_ARGO
     /* Argo interdomain communication support */
     struct argo_domain *argo;
+#endif
+
+    /*
+     * Continuation information for domain_teardown().  All fields entirely
+     * private.
+     */
+    struct {
+        unsigned int val;
+        struct vcpu *vcpu;
+    } teardown;
+
+#ifdef CONFIG_IOREQ_SERVER
+    /* Lock protects all other values in the sub-struct */
+    struct {
+        spinlock_t              lock;
+        struct ioreq_server     *server[MAX_NR_IOREQ_SERVERS];
+    } ioreq_server;
 #endif
 };
 
@@ -693,7 +751,7 @@ void noreturn asm_domain_crash_synchronous(unsigned long addr);
 void scheduler_init(void);
 int  sched_init_vcpu(struct vcpu *v);
 void sched_destroy_vcpu(struct vcpu *v);
-int  sched_init_domain(struct domain *d, int poolid);
+int  sched_init_domain(struct domain *d, unsigned int poolid);
 void sched_destroy_domain(struct domain *d);
 long sched_adjust(struct domain *, struct xen_domctl_scheduler_op *);
 long sched_adjust_global(struct xen_sysctl_scheduler_op *);
@@ -736,7 +794,7 @@ void sched_context_switched(struct vcpu *prev, struct vcpu *vnext);
 void continue_running(
     struct vcpu *same);
 
-void startup_cpu_idle_loop(void);
+void noreturn startup_cpu_idle_loop(void);
 extern void (*pm_idle) (void);
 extern void (*dead_idle) (void);
 
@@ -995,7 +1053,6 @@ static always_inline bool is_pv_vcpu(const struct vcpu *v)
     return is_pv_domain(v->domain);
 }
 
-#ifdef CONFIG_COMPAT
 static always_inline bool is_pv_32bit_domain(const struct domain *d)
 {
 #ifdef CONFIG_PV32
@@ -1026,7 +1083,7 @@ static always_inline bool is_pv_64bit_vcpu(const struct vcpu *v)
 {
     return is_pv_64bit_domain(v->domain);
 }
-#endif
+
 static always_inline bool is_hvm_domain(const struct domain *d)
 {
     return IS_ENABLED(CONFIG_HVM) &&
@@ -1091,7 +1148,7 @@ static always_inline bool is_cpufreq_controller(const struct domain *d)
 
 int cpupool_move_domain(struct domain *d, struct cpupool *c);
 int cpupool_do_sysctl(struct xen_sysctl_cpupool_op *op);
-int cpupool_get_id(const struct domain *d);
+unsigned int cpupool_get_id(const struct domain *d);
 const cpumask_t *cpupool_valid_cpus(const struct cpupool *pool);
 extern void dump_runq(unsigned char key);
 

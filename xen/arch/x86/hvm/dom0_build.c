@@ -567,7 +567,7 @@ static int __init pvh_load_kernel(struct domain *d, const module_t *image,
     elf_set_verbose(&elf);
 #endif
     elf_parse_binary(&elf);
-    if ( (rc = elf_xen_parse(&elf, &parms)) != 0 )
+    if ( (rc = elf_xen_parse(&elf, &parms, true)) != 0 )
     {
         printk("Unable to parse kernel for ELFNOTES\n");
         return rc;
@@ -623,7 +623,22 @@ static int __init pvh_load_kernel(struct domain *d, const module_t *image,
 
         mod.paddr = last_addr;
         mod.size = initrd->mod_end;
-        last_addr += ROUNDUP(initrd->mod_end, PAGE_SIZE);
+        last_addr += ROUNDUP(initrd->mod_end, elf_64bit(&elf) ? 8 : 4);
+        if ( initrd->string )
+        {
+            char *str = __va(initrd->string);
+            size_t len = strlen(str) + 1;
+
+            rc = hvm_copy_to_guest_phys(last_addr, str, len, v);
+            if ( rc )
+            {
+                printk("Unable to copy module command line\n");
+                return rc;
+            }
+            mod.cmdline_paddr = last_addr;
+            last_addr += len;
+        }
+        last_addr = ROUNDUP(last_addr, PAGE_SIZE);
     }
 
     /* Free temporary buffers. */

@@ -107,7 +107,9 @@
  *   All generic sub-operations
  *
  *  HYPERVISOR_physdev_op
- *   No sub-operations are currenty supported
+ *   Exactly these sub-operations are supported:
+ *   PHYSDEVOP_pci_device_add
+ *   PHYSDEVOP_pci_device_remove
  *
  *  HYPERVISOR_sysctl
  *   All generic sub-operations, with the exception of:
@@ -128,6 +130,8 @@
  *    * VCPUOP_register_vcpu_info
  *    * VCPUOP_register_runstate_memory_area
  *
+ *  HYPERVISOR_argo_op
+ *   All generic sub-operations
  *
  * Other notes on the ARM ABI:
  *
@@ -191,7 +195,7 @@
 #define XEN_GUEST_HANDLE_PARAM(name)    __guest_handle_ ## name
 #define set_xen_guest_handle_raw(hnd, val)                  \
     do {                                                    \
-        typeof(&(hnd)) _sxghr_tmp = &(hnd);                 \
+        __typeof__(&(hnd)) _sxghr_tmp = &(hnd);             \
         _sxghr_tmp->q = 0;                                  \
         _sxghr_tmp->p = val;                                \
     } while ( 0 )
@@ -267,10 +271,10 @@ struct vcpu_guest_core_regs
 
     /* Return address and mode */
     __DECL_REG(pc64,         pc32);             /* ELR_EL2 */
-    uint32_t cpsr;                              /* SPSR_EL2 */
+    uint64_t cpsr;                              /* SPSR_EL2 */
 
     union {
-        uint32_t spsr_el1;       /* AArch64 */
+        uint64_t spsr_el1;       /* AArch64 */
         uint32_t spsr_svc;       /* AArch32 */
     };
 
@@ -414,6 +418,13 @@ typedef uint64_t xen_callback_t;
 #define GUEST_GICV3_GICR0_BASE     xen_mk_ullong(0x03020000) /* vCPU0..127 */
 #define GUEST_GICV3_GICR0_SIZE     xen_mk_ullong(0x01000000)
 
+/*
+ * 256 MB is reserved for VPCI configuration space based on calculation
+ * 256 buses x 32 devices x 8 functions x 4 KB = 256 MB
+ */
+#define GUEST_VPCI_ECAM_BASE    xen_mk_ullong(0x10000000)
+#define GUEST_VPCI_ECAM_SIZE    xen_mk_ullong(0x10000000)
+
 /* ACPI tables physical address */
 #define GUEST_ACPI_BASE xen_mk_ullong(0x20000000)
 #define GUEST_ACPI_SIZE xen_mk_ullong(0x02000000)
@@ -421,6 +432,11 @@ typedef uint64_t xen_callback_t;
 /* PL011 mappings */
 #define GUEST_PL011_BASE    xen_mk_ullong(0x22000000)
 #define GUEST_PL011_SIZE    xen_mk_ullong(0x00001000)
+
+/* Guest PCI-PCIe memory space where config space and BAR will be available.*/
+#define GUEST_VPCI_ADDR_TYPE_MEM            xen_mk_ullong(0x02000000)
+#define GUEST_VPCI_MEM_ADDR                 xen_mk_ullong(0x23000000)
+#define GUEST_VPCI_MEM_SIZE                 xen_mk_ullong(0x10000000)
 
 /*
  * 16MB == 4096 pages reserved for guest to use as a region to map its
@@ -434,8 +450,18 @@ typedef uint64_t xen_callback_t;
 
 #define GUEST_RAM_BANKS   2
 
+/*
+ * The way to find the extended regions (to be exposed to the guest as unused
+ * address space) relies on the fact that the regions reserved for the RAM
+ * below are big enough to also accommodate such regions.
+ */
 #define GUEST_RAM0_BASE   xen_mk_ullong(0x40000000) /* 3GB of low RAM @ 1GB */
 #define GUEST_RAM0_SIZE   xen_mk_ullong(0xc0000000)
+
+/* 4GB @ 4GB Prefetch Memory for VPCI */
+#define GUEST_VPCI_ADDR_TYPE_PREFETCH_MEM   xen_mk_ullong(0x42000000)
+#define GUEST_VPCI_PREFETCH_MEM_ADDR        xen_mk_ullong(0x100000000)
+#define GUEST_VPCI_PREFETCH_MEM_SIZE        xen_mk_ullong(0x100000000)
 
 #define GUEST_RAM1_BASE   xen_mk_ullong(0x0200000000) /* 1016GB of RAM @ 8GB */
 #define GUEST_RAM1_SIZE   xen_mk_ullong(0xfe00000000)

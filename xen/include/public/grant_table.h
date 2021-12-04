@@ -629,9 +629,6 @@ DEFINE_XEN_GUEST_HANDLE(gnttab_cache_flush_t);
 #define _GNTMAP_contains_pte    (4)
 #define GNTMAP_contains_pte     (1<<_GNTMAP_contains_pte)
 
-#define _GNTMAP_can_fail        (5)
-#define GNTMAP_can_fail         (1<<_GNTMAP_can_fail)
-
 /*
  * Bits to be placed in guest kernel available PTE bits (architecture
  * dependent; only supported when XENFEAT_gnttab_map_avail_bits is set).
@@ -656,6 +653,7 @@ DEFINE_XEN_GUEST_HANDLE(gnttab_cache_flush_t);
 #define GNTST_bad_copy_arg    (-10) /* copy arguments cross page boundary.   */
 #define GNTST_address_too_big (-11) /* transfer page address too large.      */
 #define GNTST_eagain          (-12) /* Operation not done; try again.        */
+#define GNTST_no_space        (-13) /* Out of space (handles etc).           */
 /* ` } */
 
 #define GNTTABOP_error_msgs {                   \
@@ -671,7 +669,8 @@ DEFINE_XEN_GUEST_HANDLE(gnttab_cache_flush_t);
     "bad page",                                 \
     "copy arguments cross page boundary",       \
     "page address size too large",              \
-    "operation not done; try again"             \
+    "operation not done; try again",            \
+    "out of space",                             \
 }
 
 #endif /* __XEN_PUBLIC_GRANT_TABLE_H__ */

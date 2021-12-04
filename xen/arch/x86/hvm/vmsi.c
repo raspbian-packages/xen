@@ -682,6 +682,13 @@ static int vpci_msi_update(const struct pci_dev *pdev, uint32_t data,
 
     ASSERT(pcidevs_locked());
 
+    if ( (address & MSI_ADDR_BASE_MASK) != MSI_ADDR_HEADER )
+    {
+        gdprintk(XENLOG_ERR, "%pp: PIRQ %u: unsupported address %lx\n",
+                 &pdev->sbdf, pirq, address);
+        return -EOPNOTSUPP;
+    }
+
     for ( i = 0; i < vectors; i++ )
     {
         uint8_t vector = MASK_EXTR(data, MSI_DATA_VECTOR_MASK);
@@ -697,10 +704,8 @@ static int vpci_msi_update(const struct pci_dev *pdev, uint32_t data,
 
         if ( rc )
         {
-            gdprintk(XENLOG_ERR,
-                     "%04x:%02x:%02x.%u: failed to bind PIRQ %u: %d\n",
-                     pdev->seg, pdev->bus, PCI_SLOT(pdev->devfn),
-                     PCI_FUNC(pdev->devfn), pirq + i, rc);
+            gdprintk(XENLOG_ERR, "%pp: failed to bind PIRQ %u: %d\n",
+                     &pdev->sbdf, pirq + i, rc);
             while ( bind.machine_irq-- > pirq )
                 pt_irq_destroy_bind(pdev->domain, &bind);
             return rc;
@@ -710,32 +715,37 @@ static int vpci_msi_update(const struct pci_dev *pdev, uint32_t data,
     return 0;
 }
 
-int vpci_msi_arch_update(struct vpci_msi *msi, const struct pci_dev *pdev)
+void vpci_msi_arch_update(struct vpci_msi *msi, const struct pci_dev *pdev)
 {
+    unsigned int i;
     int rc;
 
     ASSERT(msi->arch.pirq != INVALID_PIRQ);
 
     pcidevs_lock();
-    rc = vpci_msi_update(pdev, msi->data, msi->address, msi->vectors,
-                         msi->arch.pirq, msi->mask);
-    if ( rc )
+    for ( i = 0; i < msi->vectors && msi->arch.bound; i++ )
     {
-        spin_lock(&pdev->domain->event_lock);
-        unmap_domain_pirq(pdev->domain, msi->arch.pirq);
-        spin_unlock(&pdev->domain->event_lock);
-        pcidevs_unlock();
-        msi->arch.pirq = INVALID_PIRQ;
-        return rc;
-    }
-    pcidevs_unlock();
+        struct xen_domctl_bind_pt_irq unbind = {
+            .machine_irq = msi->arch.pirq + i,
+            .irq_type = PT_IRQ_TYPE_MSI,
+        };
 
-    return 0;
+        rc = pt_irq_destroy_bind(pdev->domain, &unbind);
+        if ( rc )
+        {
+            ASSERT_UNREACHABLE();
+            domain_crash(pdev->domain);
+            return;
+        }
+    }
+
+    msi->arch.bound = !vpci_msi_update(pdev, msi->data, msi->address,
+                                       msi->vectors, msi->arch.pirq, msi->mask);
+    pcidevs_unlock();
 }
 
-static int vpci_msi_enable(const struct pci_dev *pdev, uint32_t data,
-                           uint64_t address, unsigned int nr,
-                           paddr_t table_base, uint32_t mask)
+static int vpci_msi_enable(const struct pci_dev *pdev, unsigned int nr,
+                           paddr_t table_base)
 {
     struct msi_info msi_info = {
         .seg = pdev->seg,
@@ -744,7 +754,6 @@ static int vpci_msi_enable(const struct pci_dev *pdev, uint32_t data,
         .table_base = table_base,
         .entry_nr = nr,
     };
-    unsigned vectors = table_base ? 1 : nr;
     int rc, pirq = INVALID_PIRQ;
 
     /* Get a PIRQ. */
@@ -754,23 +763,9 @@ static int vpci_msi_enable(const struct pci_dev *pdev, uint32_t data,
                                    &msi_info);
     if ( rc )
     {
-        gdprintk(XENLOG_ERR, "%04x:%02x:%02x.%u: failed to map PIRQ: %d\n",
-                 pdev->seg, pdev->bus, PCI_SLOT(pdev->devfn),
-                 PCI_FUNC(pdev->devfn), rc);
+        gdprintk(XENLOG_ERR, "%pp: failed to map PIRQ: %d\n", &pdev->sbdf, rc);
         return rc;
     }
-
-    pcidevs_lock();
-    rc = vpci_msi_update(pdev, data, address, vectors, pirq, mask);
-    if ( rc )
-    {
-        spin_lock(&pdev->domain->event_lock);
-        unmap_domain_pirq(pdev->domain, pirq);
-        spin_unlock(&pdev->domain->event_lock);
-        pcidevs_unlock();
-        return rc;
-    }
-    pcidevs_unlock();
 
     return pirq;
 }
@@ -781,25 +776,28 @@ int vpci_msi_arch_enable(struct vpci_msi *msi, const struct pci_dev *pdev,
     int rc;
 
     ASSERT(msi->arch.pirq == INVALID_PIRQ);
-    rc = vpci_msi_enable(pdev, msi->data, msi->address, vectors, 0, msi->mask);
-    if ( rc >= 0 )
-    {
-        msi->arch.pirq = rc;
-        rc = 0;
-    }
+    rc = vpci_msi_enable(pdev, vectors, 0);
+    if ( rc < 0 )
+        return rc;
+    msi->arch.pirq = rc;
 
-    return rc;
+    pcidevs_lock();
+    msi->arch.bound = !vpci_msi_update(pdev, msi->data, msi->address, vectors,
+                                       msi->arch.pirq, msi->mask);
+    pcidevs_unlock();
+
+    return 0;
 }
 
 static void vpci_msi_disable(const struct pci_dev *pdev, int pirq,
-                             unsigned int nr)
+                             unsigned int nr, bool bound)
 {
     unsigned int i;
 
     ASSERT(pirq != INVALID_PIRQ);
 
     pcidevs_lock();
-    for ( i = 0; i < nr; i++ )
+    for ( i = 0; i < nr && bound; i++ )
     {
         struct xen_domctl_bind_pt_irq bind = {
             .machine_irq = pirq + i,
@@ -819,7 +817,7 @@ static void vpci_msi_disable(const struct pci_dev *pdev, int pirq,
 
 void vpci_msi_arch_disable(struct vpci_msi *msi, const struct pci_dev *pdev)
 {
-    vpci_msi_disable(pdev, msi->arch.pirq, msi->vectors);
+    vpci_msi_disable(pdev, msi->arch.pirq, msi->vectors, msi->arch.bound);
     msi->arch.pirq = INVALID_PIRQ;
 }
 
@@ -854,14 +852,22 @@ int vpci_msix_arch_enable_entry(struct vpci_msix_entry *entry,
     int rc;
 
     ASSERT(entry->arch.pirq == INVALID_PIRQ);
-    rc = vpci_msi_enable(pdev, entry->data, entry->addr,
-                         vmsix_entry_nr(pdev->vpci->msix, entry),
-                         table_base, entry->masked);
-    if ( rc >= 0 )
+    rc = vpci_msi_enable(pdev, vmsix_entry_nr(pdev->vpci->msix, entry),
+                         table_base);
+    if ( rc < 0 )
+        return rc;
+
+    entry->arch.pirq = rc;
+
+    pcidevs_lock();
+    rc = vpci_msi_update(pdev, entry->data, entry->addr, 1, entry->arch.pirq,
+                         entry->masked);
+    if ( rc )
     {
-        entry->arch.pirq = rc;
-        rc = 0;
+        vpci_msi_disable(pdev, entry->arch.pirq, 1, false);
+        entry->arch.pirq = INVALID_PIRQ;
     }
+    pcidevs_unlock();
 
     return rc;
 }
@@ -872,7 +878,7 @@ int vpci_msix_arch_disable_entry(struct vpci_msix_entry *entry,
     if ( entry->arch.pirq == INVALID_PIRQ )
         return -ENOENT;
 
-    vpci_msi_disable(pdev, entry->arch.pirq, 1);
+    vpci_msi_disable(pdev, entry->arch.pirq, 1, true);
     entry->arch.pirq = INVALID_PIRQ;
 
     return 0;

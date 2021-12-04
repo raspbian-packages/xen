@@ -54,10 +54,6 @@ struct domain
 	/* Event channel port */
 	evtchn_port_t port;
 
-	/* The remote end of the event channel, used only to validate
-	   repeated domain introductions. */
-	evtchn_port_t remote_port;
-
 	/* Domain path in store. */
 	char *path;
 
@@ -176,6 +172,30 @@ static int readchn(struct connection *conn, void *data, unsigned int len)
 	return len;
 }
 
+static bool domain_can_write(struct connection *conn)
+{
+	struct xenstore_domain_interface *intf = conn->domain->interface;
+
+	return ((intf->rsp_prod - intf->rsp_cons) != XENSTORE_RING_SIZE);
+}
+
+static bool domain_can_read(struct connection *conn)
+{
+	struct xenstore_domain_interface *intf = conn->domain->interface;
+
+	if (domain_is_unprivileged(conn) && conn->domain->wrl_credit < 0)
+		return false;
+
+	return (intf->req_cons != intf->req_prod);
+}
+
+static const struct interface_funcs domain_funcs = {
+	.write = writechn,
+	.read = readchn,
+	.can_write = domain_can_write,
+	.can_read = domain_can_read,
+};
+
 static void *map_interface(domid_t domid)
 {
 	return xengnttab_map_grant_ref(*xgt_handle, domid,
@@ -224,7 +244,7 @@ static bool get_domain_info(unsigned int domid, xc_dominfo_t *dominfo)
 	       dominfo->domid == domid;
 }
 
-static void domain_cleanup(void)
+void check_domains(void)
 {
 	xc_dominfo_t dominfo;
 	struct domain *domain;
@@ -274,23 +294,10 @@ void handle_event(void)
 		barf_perror("Failed to read from event fd");
 
 	if (port == virq_port)
-		domain_cleanup();
+		check_domains();
 
 	if (xenevtchn_unmask(xce_handle, port) == -1)
 		barf_perror("Failed to write to event fd");
-}
-
-bool domain_can_read(struct connection *conn)
-{
-	struct xenstore_domain_interface *intf = conn->domain->interface;
-
-	if (domain_is_unprivileged(conn) && conn->domain->wrl_credit < 0)
-		return false;
-
-	if (conn->is_ignored)
-		return false;
-
-	return (intf->req_cons != intf->req_prod);
 }
 
 static bool domid_is_unprivileged(unsigned int domid)
@@ -302,16 +309,6 @@ bool domain_is_unprivileged(struct connection *conn)
 {
 	return conn && conn->domain &&
 	       domid_is_unprivileged(conn->domain->domid);
-}
-
-bool domain_can_write(struct connection *conn)
-{
-	struct xenstore_domain_interface *intf = conn->domain->interface;
-
-	if (conn->is_ignored)
-		return false;
-
-	return ((intf->rsp_prod - intf->rsp_cons) != XENSTORE_RING_SIZE);
 }
 
 static char *talloc_domain_path(void *context, unsigned int domid)
@@ -330,7 +327,7 @@ static struct domain *find_domain_struct(unsigned int domid)
 	return NULL;
 }
 
-static struct domain *alloc_domain(void *context, unsigned int domid)
+static struct domain *alloc_domain(const void *context, unsigned int domid)
 {
 	struct domain *domain;
 
@@ -351,7 +348,15 @@ static struct domain *alloc_domain(void *context, unsigned int domid)
 	return domain;
 }
 
-static int new_domain(struct domain *domain, int port)
+static struct domain *find_or_alloc_domain(const void *ctx, unsigned int domid)
+{
+	struct domain *domain;
+
+	domain = find_domain_struct(domid);
+	return domain ? : alloc_domain(ctx, domid);
+}
+
+static int new_domain(struct domain *domain, int port, bool restore)
 {
 	int rc;
 
@@ -365,15 +370,20 @@ static int new_domain(struct domain *domain, int port)
 
 	wrl_domain_new(domain);
 
-	/* Tell kernel we're interested in this event. */
-	rc = xenevtchn_bind_interdomain(xce_handle, domain->domid, port);
-	if (rc == -1)
-		return errno;
-	domain->port = rc;
+	if (restore)
+		domain->port = port;
+	else {
+		/* Tell kernel we're interested in this event. */
+		rc = xenevtchn_bind_interdomain(xce_handle, domain->domid,
+						port);
+		if (rc == -1)
+			return errno;
+		domain->port = rc;
+	}
 
 	domain->introduced = true;
 
-	domain->conn = new_connection(writechn, readchn);
+	domain->conn = new_connection(&domain_funcs);
 	if (!domain->conn)  {
 		errno = ENOMEM;
 		return errno;
@@ -382,7 +392,6 @@ static int new_domain(struct domain *domain, int port)
 	domain->conn->domain = domain;
 	domain->conn->id = domain->domid;
 
-	domain->remote_port = port;
 	domain->nbentry = 0;
 	domain->nbwatch = 0;
 
@@ -418,6 +427,54 @@ static void domain_conn_reset(struct domain *domain)
 	domain->interface->rsp_cons = domain->interface->rsp_prod = 0;
 }
 
+static struct domain *introduce_domain(const void *ctx,
+				       unsigned int domid,
+				       evtchn_port_t port, bool restore)
+{
+	struct domain *domain;
+	int rc;
+	struct xenstore_domain_interface *interface;
+	bool is_master_domain = (domid == xenbus_master_domid());
+
+	domain = find_or_alloc_domain(ctx, domid);
+	if (!domain)
+		return NULL;
+
+	if (!domain->introduced) {
+		interface = is_master_domain ? xenbus_map()
+					     : map_interface(domid);
+		if (!interface && !restore)
+			return NULL;
+		if (new_domain(domain, port, restore)) {
+			rc = errno;
+			if (interface) {
+				if (is_master_domain)
+					unmap_xenbus(interface);
+				else
+					unmap_interface(interface);
+			}
+			errno = rc;
+			return NULL;
+		}
+		domain->interface = interface;
+
+		/* Now domain belongs to its connection. */
+		talloc_steal(domain->conn, domain);
+
+		if (!is_master_domain && !restore)
+			fire_watches(NULL, ctx, "@introduceDomain", NULL,
+				     false, NULL);
+	} else {
+		/* Use XS_INTRODUCE for recreating the xenbus event-channel. */
+		if (domain->port)
+			xenevtchn_unbind(xce_handle, domain->port);
+		rc = xenevtchn_bind_interdomain(xce_handle, domid, port);
+		domain->port = (rc == -1) ? 0 : rc;
+	}
+
+	return domain;
+}
+
 /* domid, gfn, evtchn, path */
 int do_introduce(struct connection *conn, struct buffered_data *in)
 {
@@ -425,14 +482,9 @@ int do_introduce(struct connection *conn, struct buffered_data *in)
 	char *vec[3];
 	unsigned int domid;
 	evtchn_port_t port;
-	int rc;
-	struct xenstore_domain_interface *interface;
 
 	if (get_strings(in, vec, ARRAY_SIZE(vec)) < ARRAY_SIZE(vec))
 		return EINVAL;
-
-	if (!conn->can_write)
-		return EACCES;
 
 	domid = atoi(vec[0]);
 	/* Ignore the gfn, we don't need it. */
@@ -442,39 +494,9 @@ int do_introduce(struct connection *conn, struct buffered_data *in)
 	if (port <= 0)
 		return EINVAL;
 
-	domain = find_domain_struct(domid);
-
-	if (domain == NULL) {
-		/* Hang domain off "in" until we're finished. */
-		domain = alloc_domain(in, domid);
-		if (domain == NULL)
-			return ENOMEM;
-	}
-
-	if (!domain->introduced) {
-		interface = map_interface(domid);
-		if (!interface)
-			return errno;
-		/* Hang domain off "in" until we're finished. */
-		if (new_domain(domain, port)) {
-			rc = errno;
-			unmap_interface(interface);
-			return rc;
-		}
-		domain->interface = interface;
-
-		/* Now domain belongs to its connection. */
-		talloc_steal(domain->conn, domain);
-
-		fire_watches(NULL, in, "@introduceDomain", NULL, false, NULL);
-	} else {
-		/* Use XS_INTRODUCE for recreating the xenbus event-channel. */
-		if (domain->port)
-			xenevtchn_unbind(xce_handle, domain->port);
-		rc = xenevtchn_bind_interdomain(xce_handle, domid, port);
-		domain->port = (rc == -1) ? 0 : rc;
-		domain->remote_port = port;
-	}
+	domain = introduce_domain(in, domid, port, false);
+	if (!domain)
+		return errno;
 
 	domain_conn_reset(domain);
 
@@ -502,9 +524,6 @@ int do_set_target(struct connection *conn, struct buffered_data *in)
         struct domain *domain, *tdomain;
 	if (get_strings(in, vec, ARRAY_SIZE(vec)) < ARRAY_SIZE(vec))
 		return EINVAL;
-
-	if (!conn->can_write)
-		return EACCES;
 
 	domid = atoi(vec[0]);
 	tdomid = atoi(vec[1]);
@@ -642,11 +661,6 @@ const char *get_implicit_path(const struct connection *conn)
 	return conn->domain->path;
 }
 
-/* Restore existing connections. */
-void restore_existing_connections(void)
-{
-}
-
 static int set_dom_perms_default(struct node_perms *perms)
 {
 	perms->num = 1;
@@ -700,37 +714,23 @@ bool check_perms_special(const char *name, struct connection *conn)
 	return perm_for_conn(conn, p) & XS_PERM_READ;
 }
 
-static int dom0_init(void) 
-{ 
+void dom0_init(void)
+{
 	evtchn_port_t port;
 	struct domain *dom0;
 
 	port = xenbus_evtchn();
 	if (port == -1)
-		return -1;
+		barf_perror("Failed to initialize dom0 port");
 
-	dom0 = alloc_domain(NULL, xenbus_master_domid());
+	dom0 = introduce_domain(NULL, xenbus_master_domid(), port, false);
 	if (!dom0)
-		return -1;
-	if (new_domain(dom0, port))
-		return -1;
-
-	dom0->interface = xenbus_map();
-	if (dom0->interface == NULL)
-		return -1;
-
-	talloc_steal(dom0->conn, dom0); 
+		barf_perror("Failed to initialize dom0");
 
 	xenevtchn_notify(xce_handle, dom0->port);
-
-	if (set_dom_perms_default(&dom_release_perms) ||
-	    set_dom_perms_default(&dom_introduce_perms))
-		return -1;
-
-	return 0; 
 }
 
-void domain_init(void)
+void domain_init(int evtfd)
 {
 	int rc;
 
@@ -752,19 +752,35 @@ void domain_init(void)
 	if (*xgt_handle == NULL)
 		barf_perror("Failed to open connection to gnttab");
 
+	/*
+	 * Allow max number of domains for mappings. We allow one grant per
+	 * domain so the theoretical maximum is DOMID_FIRST_RESERVED.
+	 */
+	xengnttab_set_max_grants(*xgt_handle, DOMID_FIRST_RESERVED);
+
 	talloc_set_destructor(xgt_handle, close_xgt_handle);
 
-	xce_handle = xenevtchn_open(NULL, 0);
+	if (evtfd < 0)
+		xce_handle = xenevtchn_open(NULL, XENEVTCHN_NO_CLOEXEC);
+	else
+		xce_handle = xenevtchn_fdopen(NULL, evtfd, 0);
 
 	if (xce_handle == NULL)
 		barf_perror("Failed to open evtchn device");
 
-	if (dom0_init() != 0) 
-		barf_perror("Failed to initialize dom0 state"); 
+	if (set_dom_perms_default(&dom_release_perms) ||
+	    set_dom_perms_default(&dom_introduce_perms))
+		barf_perror("Failed to set special permissions");
 
 	if ((rc = xenevtchn_bind_virq(xce_handle, VIRQ_DOM_EXC)) == -1)
 		barf_perror("Failed to bind to domain exception virq port");
 	virq_port = rc;
+}
+
+void domain_deinit(void)
+{
+	if (virq_port)
+		xenevtchn_unbind(xce_handle, virq_port);
 }
 
 void domain_entry_inc(struct connection *conn, struct node *node)
@@ -1110,10 +1126,10 @@ void wrl_apply_debit_actual(struct domain *domain)
 	if (domain->wrl_credit < 0) {
 		if (!domain->wrl_delay_logged) {
 			domain->wrl_delay_logged = true;
-			WRL_LOG(now, "domain %ld is affected",
+			WRL_LOG(now, "domain %ld is affected\n",
 				(long)domain->domid);
 		} else if (!wrl_log_last_warning) {
-			WRL_LOG(now, "rate limiting restarts");
+			WRL_LOG(now, "rate limiting restarts\n");
 		}
 		wrl_log_last_warning = now.sec;
 	}
@@ -1123,7 +1139,7 @@ void wrl_log_periodic(struct wrl_timestampt now)
 {
 	if (wrl_log_last_warning &&
 	    (now.sec - wrl_log_last_warning) > WRL_LOGEVERY) {
-		WRL_LOG(now, "not in force recently");
+		WRL_LOG(now, "not in force recently\n");
 		wrl_log_last_warning = 0;
 	}
 }
@@ -1152,6 +1168,158 @@ void wrl_apply_debit_trans_commit(struct connection *conn)
 		return;
 
 	wrl_apply_debit_actual(conn->domain);
+}
+
+const char *dump_state_connections(FILE *fp)
+{
+	const char *ret = NULL;
+	unsigned int conn_id = 1;
+	struct xs_state_connection sc;
+	struct xs_state_record_header head;
+	struct connection *c;
+
+	list_for_each_entry(c, &connections, list) {
+		head.type = XS_STATE_TYPE_CONN;
+		head.length = sizeof(sc);
+
+		sc.conn_id = conn_id++;
+		sc.pad = 0;
+		memset(&sc.spec, 0, sizeof(sc.spec));
+		if (c->domain) {
+			sc.conn_type = XS_STATE_CONN_TYPE_RING;
+			sc.spec.ring.domid = c->id;
+			sc.spec.ring.tdomid = c->target ? c->target->id
+						: DOMID_INVALID;
+			sc.spec.ring.evtchn = c->domain->port;
+		} else {
+			sc.conn_type = XS_STATE_CONN_TYPE_SOCKET;
+			sc.spec.socket_fd = c->fd;
+		}
+
+		ret = dump_state_buffered_data(NULL, c, &sc);
+		if (ret)
+			return ret;
+		head.length += sc.data_in_len + sc.data_out_len;
+		head.length = ROUNDUP(head.length, 3);
+		if (fwrite(&head, sizeof(head), 1, fp) != 1)
+			return "Dump connection state error";
+		if (fwrite(&sc, offsetof(struct xs_state_connection, data),
+			   1, fp) != 1)
+			return "Dump connection state error";
+		ret = dump_state_buffered_data(fp, c, NULL);
+		if (ret)
+			return ret;
+		ret = dump_state_align(fp);
+		if (ret)
+			return ret;
+
+		ret = dump_state_watches(fp, c, sc.conn_id);
+		if (ret)
+			return ret;
+	}
+
+	return ret;
+}
+
+static const char *dump_state_special_node(FILE *fp, const char *name,
+					   const struct node_perms *perms)
+{
+	struct xs_state_record_header head;
+	struct xs_state_node sn;
+	unsigned int pathlen;
+	const char *ret;
+
+	pathlen = strlen(name) + 1;
+
+	head.type = XS_STATE_TYPE_NODE;
+	head.length = sizeof(sn);
+
+	sn.conn_id = 0;
+	sn.ta_id = 0;
+	sn.ta_access = 0;
+	sn.perm_n = perms->num;
+	sn.path_len = pathlen;
+	sn.data_len = 0;
+	head.length += perms->num * sizeof(*sn.perms);
+	head.length += pathlen;
+	head.length = ROUNDUP(head.length, 3);
+	if (fwrite(&head, sizeof(head), 1, fp) != 1)
+		return "Dump special node error";
+	if (fwrite(&sn, sizeof(sn), 1, fp) != 1)
+		return "Dump special node error";
+
+	ret = dump_state_node_perms(fp, perms->p, perms->num);
+	if (ret)
+		return ret;
+
+	if (fwrite(name, pathlen, 1, fp) != 1)
+		return "Dump special node path error";
+
+	ret = dump_state_align(fp);
+
+	return ret;
+}
+
+const char *dump_state_special_nodes(FILE *fp)
+{
+	const char *ret;
+
+	ret = dump_state_special_node(fp, "@releaseDomain",
+				      &dom_release_perms);
+	if (ret)
+		return ret;
+
+	ret = dump_state_special_node(fp, "@introduceDomain",
+				      &dom_introduce_perms);
+
+	return ret;
+}
+
+void read_state_connection(const void *ctx, const void *state)
+{
+	const struct xs_state_connection *sc = state;
+	struct connection *conn;
+	struct domain *domain, *tdomain;
+
+	if (sc->conn_type == XS_STATE_CONN_TYPE_SOCKET) {
+#ifdef NO_SOCKETS
+		barf("socket based connection without sockets");
+#else
+		conn = new_connection(&socket_funcs);
+		if (!conn)
+			barf("error restoring connection");
+		conn->fd = sc->spec.socket_fd;
+#endif
+	} else {
+		domain = introduce_domain(ctx, sc->spec.ring.domid,
+					  sc->spec.ring.evtchn, true);
+		if (!domain)
+			barf("domain allocation error");
+
+		conn = domain->conn;
+
+		/*
+		 * We may not have been able to restore the domain (for
+		 * instance because it revoked the Xenstore grant). We need
+		 * to keep it around to send @releaseDomain when it is
+		 * dead. So mark it as ignored.
+		 */
+		if (!domain->port || !domain->interface)
+			ignore_connection(conn);
+
+		if (sc->spec.ring.tdomid != DOMID_INVALID) {
+			tdomain = find_or_alloc_domain(ctx,
+						       sc->spec.ring.tdomid);
+			if (!tdomain)
+				barf("target domain allocation error");
+			talloc_reference(domain->conn, tdomain->conn);
+			domain->conn->target = tdomain->conn;
+		}
+	}
+
+	conn->conn_id = sc->conn_id;
+
+	read_state_buffered_data(ctx, conn, sc);
 }
 
 /*

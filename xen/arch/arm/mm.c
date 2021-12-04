@@ -284,10 +284,7 @@ void dump_hyp_walk(vaddr_t addr)
            "on CPU%d via TTBR 0x%016"PRIx64"\n",
            addr, smp_processor_id(), ttbr);
 
-    if ( smp_processor_id() == 0 )
-        BUG_ON( (lpae_t *)(unsigned long)(ttbr - phys_offset) != pgtable );
-    else
-        BUG_ON( virt_to_maddr(pgtable) != ttbr );
+    BUG_ON( virt_to_maddr(pgtable) != ttbr );
     dump_pt_walk(ttbr, addr, HYP_PT_ROOT_LEVEL, 1);
 }
 
@@ -616,7 +613,7 @@ void __init remove_early_mappings(void)
  */
 static void xen_pt_enforce_wnx(void)
 {
-    WRITE_SYSREG32(READ_SYSREG32(SCTLR_EL2) | SCTLR_Axx_ELx_WXN, SCTLR_EL2);
+    WRITE_SYSREG(READ_SYSREG(SCTLR_EL2) | SCTLR_Axx_ELx_WXN, SCTLR_EL2);
     /*
      * The TLBs may cache SCTLR_EL2.WXN. So ensure it is synchronized
      * before flushing the TLBs.
@@ -1561,17 +1558,17 @@ void put_page(struct page_info *page)
     }
 }
 
-int get_page(struct page_info *page, struct domain *domain)
+bool get_page(struct page_info *page, const struct domain *domain)
 {
-    struct domain *owner = page_get_owner_and_reference(page);
+    const struct domain *owner = page_get_owner_and_reference(page);
 
     if ( likely(owner == domain) )
-        return 1;
+        return true;
 
     if ( owner != NULL )
         put_page(page);
 
-    return 0;
+    return false;
 }
 
 /* Common code requires get_page_type and put_page_type.

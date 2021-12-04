@@ -24,6 +24,7 @@ typedef enum {
 struct membank {
     paddr_t start;
     paddr_t size;
+    bool xen_domain; /* whether the memory bank is bound to a Xen domain. */
 };
 
 struct meminfo {
@@ -67,6 +68,7 @@ struct bootcmdlines {
 
 struct bootinfo {
     struct meminfo mem;
+    /* The reserved regions are only used when booting using Device-Tree */
     struct meminfo reserved_mem;
     struct bootmodules modules;
     struct bootcmdlines cmdlines;
@@ -92,11 +94,11 @@ void acpi_create_efi_mmap_table(struct domain *d,
 
 int acpi_make_efi_nodes(void *fdt, struct membank tbl_add[]);
 
-int construct_dom0(struct domain *d);
 void create_domUs(void);
+void create_dom0(void);
 
 void discard_initial_modules(void);
-void dt_unreserved_regions(paddr_t s, paddr_t e,
+void fw_unreserved_regions(paddr_t s, paddr_t e,
                            void (*cb)(paddr_t, paddr_t), int first);
 
 size_t boot_fdt_info(const void *fdt, paddr_t paddr);

@@ -13,15 +13,13 @@
 #define XSM_NO_WRAPPERS
 #include <xsm/dummy.h>
 
-struct xsm_operations dummy_xsm_ops;
-
 #define set_to_dummy_if_null(ops, function)                            \
     do {                                                               \
         if ( !ops->function )                                          \
             ops->function = xsm_##function;                            \
     } while (0)
 
-void __init xsm_fixup_ops (struct xsm_operations *ops)
+void __init xsm_fixup_ops (struct xsm_ops *ops)
 {
     set_to_dummy_if_null(ops, security_domaininfo);
     set_to_dummy_if_null(ops, domain_create);
@@ -49,8 +47,8 @@ void __init xsm_fixup_ops (struct xsm_operations *ops)
 
     set_to_dummy_if_null(ops, alloc_security_domain);
     set_to_dummy_if_null(ops, free_security_domain);
-    set_to_dummy_if_null(ops, alloc_security_evtchn);
-    set_to_dummy_if_null(ops, free_security_evtchn);
+    set_to_dummy_if_null(ops, alloc_security_evtchns);
+    set_to_dummy_if_null(ops, free_security_evtchns);
     set_to_dummy_if_null(ops, show_security_evtchn);
     set_to_dummy_if_null(ops, init_hardware_domain);
 
@@ -106,7 +104,6 @@ void __init xsm_fixup_ops (struct xsm_operations *ops)
     set_to_dummy_if_null(ops, hypfs_op);
     set_to_dummy_if_null(ops, hvm_param);
     set_to_dummy_if_null(ops, hvm_control);
-    set_to_dummy_if_null(ops, hvm_param_nested);
     set_to_dummy_if_null(ops, hvm_param_altp2mhvm);
     set_to_dummy_if_null(ops, hvm_altp2mhvm_op);
 
@@ -125,7 +122,7 @@ void __init xsm_fixup_ops (struct xsm_operations *ops)
     set_to_dummy_if_null(ops, mem_access);
 #endif
 
-#ifdef CONFIG_HAS_MEM_PAGING
+#ifdef CONFIG_MEM_PAGING
     set_to_dummy_if_null(ops, mem_paging);
 #endif
 
@@ -148,8 +145,8 @@ void __init xsm_fixup_ops (struct xsm_operations *ops)
     set_to_dummy_if_null(ops, ioport_permission);
     set_to_dummy_if_null(ops, ioport_mapping);
     set_to_dummy_if_null(ops, pmu_op);
-    set_to_dummy_if_null(ops, dm_op);
 #endif
+    set_to_dummy_if_null(ops, dm_op);
     set_to_dummy_if_null(ops, xen_version);
     set_to_dummy_if_null(ops, domain_resource_map);
 #ifdef CONFIG_ARGO

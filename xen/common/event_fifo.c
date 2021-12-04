@@ -7,12 +7,12 @@
  * Version 2 or later.  See the file COPYING for more details.
  */
 
+#include "event_channel.h"
+
 #include <xen/init.h>
 #include <xen/lib.h>
 #include <xen/errno.h>
 #include <xen/sched.h>
-#include <xen/event.h>
-#include <xen/event_fifo.h>
 #include <xen/paging.h>
 #include <xen/mm.h>
 #include <xen/domain_page.h>
@@ -20,6 +20,27 @@
 #include <asm/guest_atomics.h>
 
 #include <public/event_channel.h>
+
+struct evtchn_fifo_queue {
+    uint32_t *head; /* points into control block */
+    uint32_t tail;
+    uint8_t priority;
+    spinlock_t lock;
+};
+
+struct evtchn_fifo_vcpu {
+    struct evtchn_fifo_control_block *control_block;
+    struct evtchn_fifo_queue queue[EVTCHN_FIFO_MAX_QUEUES];
+};
+
+#define EVTCHN_FIFO_EVENT_WORDS_PER_PAGE (PAGE_SIZE / sizeof(event_word_t))
+#define EVTCHN_FIFO_MAX_EVENT_ARRAY_PAGES \
+    (EVTCHN_FIFO_NR_CHANNELS / EVTCHN_FIFO_EVENT_WORDS_PER_PAGE)
+
+struct evtchn_fifo_domain {
+    event_word_t *event_array[EVTCHN_FIFO_MAX_EVENT_ARRAY_PAGES];
+    unsigned int num_evtchns;
+};
 
 union evtchn_fifo_lastq {
     uint32_t raw;
@@ -157,7 +178,7 @@ static void evtchn_fifo_set_pending(struct vcpu *v, struct evtchn *evtchn)
      */
     if ( unlikely(!word) )
     {
-        evtchn->pending = 1;
+        evtchn->pending = true;
         return;
     }
 
@@ -216,32 +237,27 @@ static void evtchn_fifo_set_pending(struct vcpu *v, struct evtchn *evtchn)
     }
 
     /*
+     * Control block not mapped.  The guest must not unmask an
+     * event until the control block is initialized, so we can
+     * just drop the event.
+     */
+    if ( unlikely(!v->evtchn_fifo->control_block) )
+    {
+        printk(XENLOG_G_WARNING
+               "%pv has no FIFO event channel control block\n", v);
+        goto unlock;
+    }
+
+    /*
      * Link the event if it unmasked and not already linked.
      */
     if ( !guest_test_bit(d, EVTCHN_FIFO_MASKED, word) &&
-         !guest_test_bit(d, EVTCHN_FIFO_LINKED, word) )
+         /*
+          * This also acts as the read counterpart of the smp_wmb() in
+          * map_control_block().
+          */
+         !guest_test_and_set_bit(d, EVTCHN_FIFO_LINKED, word) )
     {
-        event_word_t *tail_word;
-
-        /*
-         * Control block not mapped.  The guest must not unmask an
-         * event until the control block is initialized, so we can
-         * just drop the event.
-         */
-        if ( unlikely(!v->evtchn_fifo->control_block) )
-        {
-            printk(XENLOG_G_WARNING
-                   "%pv has no FIFO event channel control block\n", v);
-            goto unlock;
-        }
-
-        /*
-         * This also acts as the read counterpart of the smp_wmb() in
-         * map_control_block().
-         */
-        if ( guest_test_and_set_bit(d, EVTCHN_FIFO_LINKED, word) )
-            goto unlock;
-
         /*
          * If this event was a tail, the old queue is now empty and
          * its tail must be invalidated to prevent adding an event to
@@ -276,6 +292,8 @@ static void evtchn_fifo_set_pending(struct vcpu *v, struct evtchn *evtchn)
         linked = false;
         if ( q->tail )
         {
+            event_word_t *tail_word;
+
             tail_word = evtchn_fifo_word_from_port(d, q->tail);
             linked = evtchn_fifo_set_link(d, tail_word, port);
         }
@@ -543,7 +561,7 @@ static void setup_ports(struct domain *d, unsigned int prev_evtchns)
         evtchn = evtchn_from_port(d, port);
 
         if ( guest_test_bit(d, port, &shared_info(d, evtchn_pending)) )
-            evtchn->pending = 1;
+            evtchn->pending = true;
 
         evtchn_fifo_set_priority(d, evtchn, EVTCHN_FIFO_PRIORITY_DEFAULT);
     }

@@ -21,6 +21,8 @@
 
 void handle_event(void);
 
+void check_domains(void);
+
 /* domid, mfn, eventchn, path */
 int do_introduce(struct connection *conn, struct buffered_data *in);
 
@@ -42,17 +44,12 @@ int do_get_domain_path(struct connection *conn, struct buffered_data *in);
 /* Allow guest to reset all watches */
 int do_reset_watches(struct connection *conn, struct buffered_data *in);
 
-void domain_init(void);
+void domain_init(int evtfd);
+void dom0_init(void);
+void domain_deinit(void);
 
 /* Returns the implicit path of a connection (only domains have this) */
 const char *get_implicit_path(const struct connection *conn);
-
-/* Read existing connection information from store. */
-void restore_existing_connections(void);
-
-/* Can connection attached to domain read/write. */
-bool domain_can_read(struct connection *conn);
-bool domain_can_write(struct connection *conn);
 
 bool domain_is_unprivileged(struct connection *conn);
 
@@ -99,5 +96,10 @@ void wrl_check_timeout(struct domain *domain,
 void wrl_log_periodic(struct wrl_timestampt now);
 void wrl_apply_debit_direct(struct connection *conn);
 void wrl_apply_debit_trans_commit(struct connection *conn);
+
+const char *dump_state_connections(FILE *fp);
+const char *dump_state_special_nodes(FILE *fp);
+
+void read_state_connection(const void *ctx, const void *state);
 
 #endif /* _XENSTORED_DOMAIN_H */

@@ -34,13 +34,19 @@ OUTPUT_FORMAT(FORMAT, FORMAT, FORMAT)
 
 OUTPUT_ARCH(i386:x86-64)
 
+#ifndef EFI
 PHDRS
 {
   text PT_LOAD ;
-#if (defined(BUILD_ID) || defined (CONFIG_PVH_GUEST)) && !defined(EFI)
+#if defined(BUILD_ID) || defined(CONFIG_PVH_GUEST)
   note PT_NOTE ;
 #endif
 }
+#define PHDR(x) :x
+#else
+#define PHDR(x)
+#endif
+
 SECTIONS
 {
 #if !defined(EFI)
@@ -83,7 +89,7 @@ SECTIONS
        *(.text.kexec)
        *(.gnu.warning)
        _etext = .;             /* End of text section */
-  } :text = 0x9090
+  } PHDR(text) = 0x9090
 
   . = ALIGN(SECTION_ALIGN);
   __2M_text_end = .;
@@ -128,18 +134,18 @@ SECTIONS
        *(.ex_table.pre)
        __stop___pre_ex_table = .;
 
-#if defined(CONFIG_HAS_VPCI) && defined(CONFIG_LATE_HWDOM)
+#ifdef CONFIG_HAS_VPCI
        . = ALIGN(POINTER_ALIGN);
        __start_vpci_array = .;
        *(SORT(.data.vpci.*))
        __end_vpci_array = .;
 #endif
-  } :text
+  } PHDR(text)
 
 #if defined(CONFIG_PVH_GUEST) && !defined(EFI)
   DECL_SECTION(.note.Xen) {
       *(.note.Xen)
-  } :note :text
+  } PHDR(note) PHDR(text)
 #endif
 
 #if defined(BUILD_ID)
@@ -154,26 +160,14 @@ SECTIONS
        __note_gnu_build_id_start = .;
        *(.note.gnu.build-id)
        __note_gnu_build_id_end = .;
-  } :note :text
+  } PHDR(note) PHDR(text)
 #elif defined(BUILD_ID_EFI)
   DECL_SECTION(.buildid) {
        __note_gnu_build_id_start = .;
        *(.buildid)
        __note_gnu_build_id_end = .;
-  } :text
+  }
 #endif
-#endif
-
-/*
- * ELF builds are linked to a fixed virtual address, and in principle
- * shouldn't have a .reloc section.  However, due to the way EFI support is
- * currently implemented, retaining the .reloc section is necessary.
- */
-#if defined(XEN_BUILD_EFI) && !defined(EFI)
-  . = ALIGN(4);
-  DECL_SECTION(.reloc) {
-    *(.reloc)
-  } :text
 #endif
 
   _erodata = .;
@@ -191,18 +185,18 @@ SECTIONS
 #endif
        _sinittext = .;
        *(.init.text)
+       _einittext = .;
        /*
         * Here are the replacement instructions. The linker sticks them
         * as binary blobs. The .altinstructions has enough data to get
         * the address and the length of them to patch the kernel safely.
         */
        *(.altinstr_replacement)
-       _einittext = .;
 
 #ifdef EFI /* EFI wants to merge all of .init.*  ELF doesn't. */
        . = ALIGN(SMP_CACHE_BYTES);
 #else
-  } :text
+  } PHDR(text)
   DECL_SECTION(.init.data) {
 #endif
 
@@ -253,14 +247,7 @@ SECTIONS
        *(.init_array)
        *(SORT(.init_array.*))
        __ctors_end = .;
-
-#if defined(CONFIG_HAS_VPCI) && !defined(CONFIG_LATE_HWDOM)
-       . = ALIGN(POINTER_ALIGN);
-       __start_vpci_array = .;
-       *(SORT(.data.vpci.*))
-       __end_vpci_array = .;
-#endif
-  } :text
+  } PHDR(text)
 
   . = ALIGN(SECTION_ALIGN);
   __init_end = .;
@@ -281,7 +268,7 @@ SECTIONS
        *(.data.paramhypfs)
        __paramhypfs_end = .;
 #endif
-  } :text
+  } PHDR(text)
 
   DECL_SECTION(.data) {
        *(.data.page_aligned)
@@ -289,7 +276,7 @@ SECTIONS
        *(.data.rel)
        *(.data.rel.*)
        CONSTRUCTORS
-  } :text
+  } PHDR(text)
 
   DECL_SECTION(.bss) {
        __bss_start = .;
@@ -306,25 +293,93 @@ SECTIONS
        *(.bss)
        . = ALIGN(POINTER_ALIGN);
        __bss_end = .;
-  } :text
+  } PHDR(text)
   _end = . ;
 
-  . = ALIGN(SECTION_ALIGN);
-  __2M_rwdata_end = .;
+  __2M_rwdata_end = ALIGN(SECTION_ALIGN);
 
 #ifdef EFI
-  . = ALIGN(4);
-  DECL_SECTION(.reloc) {
+  .reloc ALIGN(4) : {
+    __base_relocs_start = .;
     *(.reloc)
-  } :text
-  /* Trick the linker into setting the image size to exactly 16Mb. */
-  . = ALIGN(__section_alignment__);
-  DECL_SECTION(.pad) {
-    . = ALIGN(MB(16));
-  } :text
-#endif
-
-#ifndef XEN_BUILD_EFI
+    __base_relocs_end = .;
+  }
+  /*
+   * Explicitly list debug section for the PE output so that they don't end
+   * up at VA 0 which is below image base and thus invalid. Also use the
+   * NOLOAD directive, despite currently ignored by ld for PE output, in
+   * order to record that we'd prefer these sections to not be loaded into
+   * memory.
+   *
+   * Note that we're past _end here, so if these sections get loaded they'll
+   * be discarded at runtime anyway.
+   */
+  .debug_abbrev ALIGN(1) (NOLOAD) : {
+     *(.debug_abbrev)
+  }
+  .debug_info ALIGN(1) (NOLOAD) : {
+    *(.debug_info)
+    *(.gnu.linkonce.wi.*)
+  }
+  .debug_types ALIGN(1) (NOLOAD) : {
+    *(.debug_types)
+  }
+  .debug_str ALIGN(1) (NOLOAD) : {
+    *(.debug_str)
+  }
+  .debug_line ALIGN(1) (NOLOAD) : {
+    *(.debug_line)
+    *(.debug_line.*)
+  }
+  .debug_line_str ALIGN(1) (NOLOAD) : {
+    *(.debug_line_str)
+  }
+  .debug_names ALIGN(4) (NOLOAD) : {
+    *(.debug_names)
+  }
+  .debug_frame ALIGN(4) (NOLOAD) : {
+    *(.debug_frame)
+  }
+  .debug_loc ALIGN(1) (NOLOAD) : {
+    *(.debug_loc)
+  }
+  .debug_loclists ALIGN(4) (NOLOAD) : {
+    *(.debug_loclists)
+  }
+  .debug_ranges ALIGN(8) (NOLOAD) : {
+    *(.debug_ranges)
+  }
+  .debug_rnglists ALIGN(4) (NOLOAD) : {
+    *(.debug_rnglists)
+  }
+  .debug_addr ALIGN(8) (NOLOAD) : {
+    *(.debug_addr)
+  }
+  .debug_aranges ALIGN(1) (NOLOAD) : {
+    *(.debug_aranges)
+  }
+  .debug_pubnames ALIGN(1) (NOLOAD) : {
+    *(.debug_pubnames)
+  }
+  .debug_pubtypes ALIGN(1) (NOLOAD) : {
+    *(.debug_pubtypes)
+  }
+  /* Trick the linker into setting the image size to no less than 16Mb. */
+  __image_end__ = .;
+  .pad ALIGN(__section_alignment__) : {
+    . = __image_end__ < __image_base__ + MB(16) ? ALIGN(MB(16)) : .;
+  }
+#elif defined(XEN_BUILD_EFI)
+  /*
+   * Due to the way EFI support is currently implemented, these two symbols
+   * need to be defined.  Their precise values shouldn't matter (the consuming
+   * function doesn't get called), but to be on the safe side both values would
+   * better match.  Of course the need to be reachable by the relocations
+   * referencing them.
+   */
+  PROVIDE(__base_relocs_start = .);
+  PROVIDE(__base_relocs_end = .);
+#else
   efi = .;
 #endif
 
@@ -347,6 +402,7 @@ SECTIONS
 #endif
   }
 
+#ifndef EFI
   /* Stabs debugging sections.  */
   .stab 0 : { *(.stab) }
   .stabstr 0 : { *(.stabstr) }
@@ -355,6 +411,7 @@ SECTIONS
   .stab.index 0 : { *(.stab.index) }
   .stab.indexstr 0 : { *(.stab.indexstr) }
   .comment 0 : { *(.comment) }
+#endif
 }
 
 ASSERT(__2M_rwdata_end <= XEN_VIRT_END - XEN_VIRT_START + __XEN_VIRT_START -

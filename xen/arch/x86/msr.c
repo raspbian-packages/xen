@@ -25,6 +25,7 @@
 #include <xen/sched.h>
 
 #include <asm/debugreg.h>
+#include <asm/hvm/nestedhvm.h>
 #include <asm/hvm/viridian.h>
 #include <asm/msr.h>
 #include <asm/setup.h>
@@ -46,8 +47,13 @@ struct msr_policy __read_mostly hvm_def_msr_policy;
 
 static void __init calculate_raw_policy(void)
 {
+    struct msr_policy *mp = &raw_msr_policy;
+
     /* 0x000000ce  MSR_INTEL_PLATFORM_INFO */
     /* Was already added by probe_cpuid_faulting() */
+
+    if ( cpu_has_arch_caps )
+        rdmsrl(MSR_ARCH_CAPABILITIES, mp->arch_caps.raw);
 }
 
 static void __init calculate_host_policy(void)
@@ -59,6 +65,12 @@ static void __init calculate_host_policy(void)
     /* 0x000000ce  MSR_INTEL_PLATFORM_INFO */
     /* probe_cpuid_faulting() sanity checks presence of MISC_FEATURES_ENABLES */
     mp->platform_info.cpuid_faulting = cpu_has_cpuid_faulting;
+
+    /* Temporary, until we have known_features[] for feature bits in MSRs. */
+    mp->arch_caps.raw &=
+        (ARCH_CAPS_RDCL_NO | ARCH_CAPS_IBRS_ALL | ARCH_CAPS_RSBA |
+         ARCH_CAPS_SKIP_L1DFL | ARCH_CAPS_SSB_NO | ARCH_CAPS_MDS_NO |
+         ARCH_CAPS_IF_PSCHANGE_MC_NO | ARCH_CAPS_TSX_CTRL | ARCH_CAPS_TAA_NO);
 }
 
 static void __init calculate_pv_max_policy(void)
@@ -66,6 +78,8 @@ static void __init calculate_pv_max_policy(void)
     struct msr_policy *mp = &pv_max_msr_policy;
 
     *mp = host_msr_policy;
+
+    mp->arch_caps.raw = 0; /* Not supported yet. */
 }
 
 static void __init calculate_pv_def_policy(void)
@@ -83,6 +97,8 @@ static void __init calculate_hvm_max_policy(void)
 
     /* It's always possible to emulate CPUID faulting for HVM guests */
     mp->platform_info.cpuid_faulting = true;
+
+    mp->arch_caps.raw = 0; /* Not supported yet. */
 }
 
 static void __init calculate_hvm_def_policy(void)
@@ -174,24 +190,19 @@ int guest_rdmsr(struct vcpu *v, uint32_t msr, uint64_t *val)
 
     switch ( msr )
     {
+        /* Write-only */
     case MSR_AMD_PATCHLOADER:
     case MSR_IA32_UCODE_WRITE:
     case MSR_PRED_CMD:
     case MSR_FLUSH_CMD:
-        /* Write-only */
+
+        /* Not offered to guests. */
     case MSR_TEST_CTRL:
     case MSR_CORE_CAPABILITIES:
     case MSR_TSX_FORCE_ABORT:
     case MSR_TSX_CTRL:
     case MSR_MCU_OPT_CTRL:
     case MSR_RTIT_OUTPUT_BASE ... MSR_RTIT_ADDR_B(7):
-    case MSR_RAPL_POWER_UNIT:
-    case MSR_PKG_POWER_LIMIT  ... MSR_PKG_POWER_INFO:
-    case MSR_DRAM_POWER_LIMIT ... MSR_DRAM_POWER_INFO:
-    case MSR_PP0_POWER_LIMIT  ... MSR_PP0_POLICY:
-    case MSR_PP1_POWER_LIMIT  ... MSR_PP1_POLICY:
-    case MSR_PLATFORM_ENERGY_COUNTER:
-    case MSR_PLATFORM_POWER_LIMIT:
     case MSR_U_CET:
     case MSR_S_CET:
     case MSR_PL0_SSP ... MSR_INTERRUPT_SSP_TABLE:
@@ -199,12 +210,29 @@ int guest_rdmsr(struct vcpu *v, uint32_t msr, uint64_t *val)
     case MSR_AMD64_LWP_CBADDR:
     case MSR_PPIN_CTL:
     case MSR_PPIN:
-    case MSR_F15H_CU_POWER ... MSR_F15H_CU_MAX_POWER:
-    case MSR_AMD_RAPL_POWER_UNIT ... MSR_AMD_PKG_ENERGY_STATUS:
     case MSR_AMD_PPIN_CTL:
     case MSR_AMD_PPIN:
-        /* Not offered to guests. */
         goto gp_fault;
+
+    case MSR_IA32_FEATURE_CONTROL:
+        /*
+         * Architecturally, availability of this MSR is enumerated by the
+         * visibility of any sub-feature.  However, Win10 in at some
+         * configurations performs a read before setting up a #GP handler.
+         *
+         * The MSR has existed on all Intel parts since before the 64bit days,
+         * and is implemented by other vendors.
+         */
+        if ( !(cp->x86_vendor & (X86_VENDOR_INTEL | X86_VENDOR_CENTAUR |
+                                 X86_VENDOR_SHANGHAI)) )
+            goto gp_fault;
+
+        *val = IA32_FEATURE_CONTROL_LOCK;
+        if ( vmce_has_lmce(v) )
+            *val |= IA32_FEATURE_CONTROL_LMCE_ON;
+        if ( cp->basic.vmx )
+            *val |= IA32_FEATURE_CONTROL_ENABLE_VMXON_OUTSIDE_SMX;
+        break;
 
     case MSR_IA32_PLATFORM_ID:
         if ( !(cp->x86_vendor & X86_VENDOR_INTEL) ||
@@ -254,6 +282,14 @@ int guest_rdmsr(struct vcpu *v, uint32_t msr, uint64_t *val)
         *val = msrs->misc_features_enables.raw;
         break;
 
+    case MSR_IA32_MCG_CAP     ... MSR_IA32_MCG_CTL:      /* 0x179 -> 0x17b */
+    case MSR_IA32_MCx_CTL2(0) ... MSR_IA32_MCx_CTL2(31): /* 0x280 -> 0x29f */
+    case MSR_IA32_MCx_CTL(0)  ... MSR_IA32_MCx_MISC(31): /* 0x400 -> 0x47f */
+    case MSR_IA32_MCG_EXT_CTL:                           /* 0x4d0 */
+        if ( vmce_rdmsr(msr, val) < 0 )
+            goto gp_fault;
+        break;
+
         /*
          * These MSRs are not enumerated in CPUID.  They have been around
          * since the Pentium 4, and implemented by other vendors.
@@ -272,6 +308,12 @@ int guest_rdmsr(struct vcpu *v, uint32_t msr, uint64_t *val)
         if ( likely(!is_cpufreq_controller(d)) || rdmsr_safe(msr, *val) == 0 )
             break;
         goto gp_fault;
+
+    case MSR_IA32_THERM_STATUS:
+        if ( cp->x86_vendor != X86_VENDOR_INTEL )
+            goto gp_fault;
+        *val = 0;
+        break;
 
     case MSR_X2APIC_FIRST ... MSR_X2APIC_LAST:
         if ( !is_hvm_domain(d) || v != curr )
@@ -310,6 +352,39 @@ int guest_rdmsr(struct vcpu *v, uint32_t msr, uint64_t *val)
             goto gp_fault;
 
         *val = msrs->tsc_aux;
+        break;
+
+    case MSR_K8_SYSCFG:
+    case MSR_K8_TOP_MEM1:
+    case MSR_K8_TOP_MEM2:
+    case MSR_K8_IORR_BASE0:
+    case MSR_K8_IORR_MASK0:
+    case MSR_K8_IORR_BASE1:
+    case MSR_K8_IORR_MASK1:
+    case MSR_K8_TSEG_BASE:
+    case MSR_K8_TSEG_MASK:
+        if ( !(cp->x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON)) )
+            goto gp_fault;
+        if ( !is_hardware_domain(d) )
+            return X86EMUL_UNHANDLEABLE;
+        if ( rdmsr_safe(msr, *val) )
+            goto gp_fault;
+        if ( msr == MSR_K8_SYSCFG )
+            *val &= (SYSCFG_TOM2_FORCE_WB | SYSCFG_MTRR_TOM2_EN |
+                     SYSCFG_MTRR_VAR_DRAM_EN | SYSCFG_MTRR_FIX_DRAM_EN);
+        break;
+
+    case MSR_K8_HWCR:
+        if ( !(cp->x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON)) )
+            goto gp_fault;
+        *val = get_cpu_family(cp->basic.raw_fms, NULL, NULL) >= 0x10
+               ? K8_HWCR_TSC_FREQ_SEL : 0;
+        break;
+
+    case MSR_AMD64_DE_CFG:
+        if ( !(cp->x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON)) )
+            goto gp_fault;
+        *val = AMD64_DE_CFG_LFENCE_SERIALISE;
         break;
 
     case MSR_AMD64_DR0_ADDRESS_MASK:
@@ -366,25 +441,19 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
     {
         uint64_t rsvd;
 
+        /* Read-only */
     case MSR_IA32_PLATFORM_ID:
     case MSR_CORE_CAPABILITIES:
     case MSR_INTEL_CORE_THREAD_COUNT:
     case MSR_INTEL_PLATFORM_INFO:
     case MSR_ARCH_CAPABILITIES:
-    case MSR_IA32_PERF_STATUS:
-        /* Read-only */
+
+        /* Not offered to guests. */
     case MSR_TEST_CTRL:
     case MSR_TSX_FORCE_ABORT:
     case MSR_TSX_CTRL:
     case MSR_MCU_OPT_CTRL:
     case MSR_RTIT_OUTPUT_BASE ... MSR_RTIT_ADDR_B(7):
-    case MSR_RAPL_POWER_UNIT:
-    case MSR_PKG_POWER_LIMIT  ... MSR_PKG_POWER_INFO:
-    case MSR_DRAM_POWER_LIMIT ... MSR_DRAM_POWER_INFO:
-    case MSR_PP0_POWER_LIMIT  ... MSR_PP0_POLICY:
-    case MSR_PP1_POWER_LIMIT  ... MSR_PP1_POLICY:
-    case MSR_PLATFORM_ENERGY_COUNTER:
-    case MSR_PLATFORM_POWER_LIMIT:
     case MSR_U_CET:
     case MSR_S_CET:
     case MSR_PL0_SSP ... MSR_INTERRUPT_SSP_TABLE:
@@ -392,11 +461,8 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
     case MSR_AMD64_LWP_CBADDR:
     case MSR_PPIN_CTL:
     case MSR_PPIN:
-    case MSR_F15H_CU_POWER ... MSR_F15H_CU_MAX_POWER:
-    case MSR_AMD_RAPL_POWER_UNIT ... MSR_AMD_PKG_ENERGY_STATUS:
     case MSR_AMD_PPIN_CTL:
     case MSR_AMD_PPIN:
-        /* Not offered to guests. */
         goto gp_fault;
 
     case MSR_AMD_PATCHLEVEL:
@@ -492,6 +558,14 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
         break;
     }
 
+    case MSR_IA32_MCG_CAP     ... MSR_IA32_MCG_CTL:      /* 0x179 -> 0x17b */
+    case MSR_IA32_MCx_CTL2(0) ... MSR_IA32_MCx_CTL2(31): /* 0x280 -> 0x29f */
+    case MSR_IA32_MCx_CTL(0)  ... MSR_IA32_MCx_MISC(31): /* 0x400 -> 0x47f */
+    case MSR_IA32_MCG_EXT_CTL:                           /* 0x4d0 */
+        if ( vmce_wrmsr(msr, val) < 0 )
+            goto gp_fault;
+        break;
+
         /*
          * This MSR is not enumerated in CPUID.  It has been around since the
          * Pentium 4, and implemented by other vendors.
@@ -552,6 +626,15 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
         msrs->tsc_aux = val;
         if ( v == curr )
             wrmsr_tsc_aux(val);
+        break;
+
+    case MSR_AMD64_DE_CFG:
+        /*
+         * OpenBSD 6.7 will panic if writing to DE_CFG triggers a #GP:
+         * https://www.illumos.org/issues/12998 - drop writes.
+         */
+        if ( !(cp->x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON)) )
+            goto gp_fault;
         break;
 
     case MSR_AMD64_DR0_ADDRESS_MASK:

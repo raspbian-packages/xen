@@ -51,6 +51,8 @@ Each node contains the following properties:
 	Xen 4.4 supported a different set of legacy compatible strings
 	which remain supported such that systems supporting both 4.4
 	and later can use a single DTB.
+	However when booting Xen using UEFI, the legacy compatible
+	strings are not supported.
 
 	- "xen,multiboot-module" equivalent to "multiboot,module"
 	- "xen,linux-zimage"     equivalent to "multiboot,kernel"
@@ -69,6 +71,14 @@ Each node contains the following properties:
 	Command line associated with this module. See below for the
 	priority of this field vs. other mechanisms of specifying the
 	bootargs for the kernel.
+
+- xen,uefi-binary (UEFI boot only)
+
+	String property that specifies the file name to be loaded by the UEFI
+	boot for this module. If this is specified, there is no need to specify
+	the reg property because it will be created by the UEFI stub on boot.
+	This option is needed only when UEFI boot is used, the node needs to be
+	compatible with multiboot,kernel or multiboot,ramdisk.
 
 Examples
 ========
@@ -119,6 +129,14 @@ For those you would hardcode the Xen commandline in the DTB under
 line by writing bootargs (as for native Linux).
 A Xen-aware bootloader would set xen,xen-bootargs for Xen, xen,dom0-bootargs
 for Dom0 and bootargs for native Linux.
+
+
+UEFI boot and DT
+================
+
+When Xen is booted using UEFI, it doesn't read the configuration file if any
+multiboot module is specified. To force Xen to load the configuration file, the
+boolean property xen,uefi-cfg-load must be declared in the /chosen node.
 
 
 Creating Multiple Domains directly from Xen
@@ -182,6 +200,13 @@ The kernel sub-node has the following properties:
 
     Command line parameters for the guest kernel.
 
+- xen,uefi-binary (UEFI boot only)
+
+    String property that specifies the file name to be loaded by the UEFI boot
+    for this module. If this is specified, there is no need to specify the reg
+    property because it will be created by the UEFI stub on boot.
+    This option is needed only when UEFI boot is used.
+
 The ramdisk sub-node has the following properties:
 
 - compatible
@@ -192,6 +217,13 @@ The ramdisk sub-node has the following properties:
 
     Specifies the physical address of the ramdisk in RAM and its
     length.
+
+- xen,uefi-binary (UEFI boot only)
+
+    String property that specifies the file name to be loaded by the UEFI boot
+    for this module. If this is specified, there is no need to specify the reg
+    property because it will be created by the UEFI stub on boot.
+    This option is needed only when UEFI boot is used.
 
 
 Example
@@ -257,6 +289,13 @@ The dtb sub-node should have the following properties:
     Specifies the physical address of the device tree binary fragment
     RAM and its length.
 
+- xen,uefi-binary (UEFI boot only)
+
+    String property that specifies the file name to be loaded by the UEFI boot
+    for this module. If this is specified, there is no need to specify the reg
+    property because it will be created by the UEFI stub on boot.
+    This option is needed only when UEFI boot is used.
+
 As an example:
 
         module@0xc000000 {
@@ -268,3 +307,45 @@ The DTB fragment is loaded at 0xc000000 in the example above. It should
 follow the convention explained in docs/misc/arm/passthrough.txt. The
 DTB fragment will be added to the guest device tree, so that the guest
 kernel will be able to discover the device.
+
+
+Static Allocation
+=============
+
+Static Allocation refers to system or sub-system(domains) for which memory
+areas are pre-defined by configuration using physical address ranges.
+
+Memory can be statically allocated to a domain using the property "xen,static-
+mem" defined in the domain configuration. The number of cells for the address
+and the size must be defined using respectively the properties
+"#xen,static-mem-address-cells" and "#xen,static-mem-size-cells".
+
+The property 'memory' is still needed and should match the amount of memory
+given to the guest. Currently, it either comes from static memory or lets Xen
+allocate from heap. *Mixing* is not supported.
+
+The static memory will be mapped in the guest at the usual guest memory
+addresses (GUEST_RAM0_BASE, GUEST_RAM1_BASE) defined by
+xen/include/public/arch-arm.h.
+
+Below is an example on how to specify the static memory region in the
+device-tree:
+
+    / {
+        chosen {
+            domU1 {
+                compatible = "xen,domain";
+                #address-cells = <0x2>;
+                #size-cells = <0x2>;
+                cpus = <2>;
+                memory = <0x0 0x80000>;
+                #xen,static-mem-address-cells = <0x1>;
+                #xen,static-mem-size-cells = <0x1>;
+                xen,static-mem = <0x30000000 0x20000000>;
+                ...
+            };
+        };
+    };
+
+This will reserve a 512MB region starting at the host physical address
+0x30000000 to be exclusively used by DomU1.

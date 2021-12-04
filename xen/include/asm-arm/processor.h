@@ -7,9 +7,21 @@
 #include <public/arch-arm.h>
 
 /* CTR Cache Type Register */
-#define CTR_L1Ip_MASK       0x3
-#define CTR_L1Ip_SHIFT      14
-#define CTR_L1Ip_AIVIVT     0x1
+#define CTR_L1IP_MASK       0x3
+#define CTR_L1IP_SHIFT      14
+#define CTR_DMINLINE_SHIFT  16
+#define CTR_IMINLINE_SHIFT  0
+#define CTR_IMINLINE_MASK   0xf
+#define CTR_ERG_SHIFT       20
+#define CTR_CWG_SHIFT       24
+#define CTR_CWG_MASK        15
+#define CTR_IDC_SHIFT       28
+#define CTR_DIC_SHIFT       29
+
+#define ICACHE_POLICY_VPIPT  0
+#define ICACHE_POLICY_AIVIVT 1
+#define ICACHE_POLICY_VIPT   2
+#define ICACHE_POLICY_PIPT   3
 
 /* MIDR Main ID Register */
 #define MIDR_REVISION_MASK      0xf
@@ -75,11 +87,11 @@
 
 /* MPIDR Multiprocessor Affinity Register */
 #define _MPIDR_UP           (30)
-#define MPIDR_UP            (_AC(1,U) << _MPIDR_UP)
+#define MPIDR_UP            (_AC(1,UL) << _MPIDR_UP)
 #define _MPIDR_SMP          (31)
-#define MPIDR_SMP           (_AC(1,U) << _MPIDR_SMP)
+#define MPIDR_SMP           (_AC(1,UL) << _MPIDR_SMP)
 #define MPIDR_AFF0_SHIFT    (0)
-#define MPIDR_AFF0_MASK     (_AC(0xff,U) << MPIDR_AFF0_SHIFT)
+#define MPIDR_AFF0_MASK     (_AC(0xff,UL) << MPIDR_AFF0_SHIFT)
 #ifdef CONFIG_ARM_64
 #define MPIDR_HWID_MASK     _AC(0xff00ffffff,UL)
 #else
@@ -484,9 +496,12 @@ extern register_t __cpu_logical_map[];
 #define CNTKCTL_EL1_EL0PTEN  (1u<<9) /* Expose phys timer registers to EL0 */
 
 /* Timer control registers */
-#define CNTx_CTL_ENABLE   (1u<<0)  /* Enable timer */
-#define CNTx_CTL_MASK     (1u<<1)  /* Mask IRQ */
-#define CNTx_CTL_PENDING  (1u<<2)  /* IRQ pending */
+#define CNTx_CTL_ENABLE   (1ul<<0)  /* Enable timer */
+#define CNTx_CTL_MASK     (1ul<<1)  /* Mask IRQ */
+#define CNTx_CTL_PENDING  (1ul<<2)  /* IRQ pending */
+
+/* Timer frequency mask */
+#define CNTFRQ_MASK       GENMASK(31, 0)
 
 /* Exception Vector offsets */
 /* ... ARM32 */

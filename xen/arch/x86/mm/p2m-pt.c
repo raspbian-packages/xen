@@ -27,6 +27,7 @@
 #include <xen/vm_event.h>
 #include <xen/event.h>
 #include <xen/trace.h>
+#include <public/hvm/dm_op.h>
 #include <public/vm_event.h>
 #include <asm/altp2m.h>
 #include <asm/domain.h>
@@ -108,6 +109,70 @@ static unsigned long p2m_type_to_flags(const struct p2m_domain *p2m,
     }
 }
 
+/*
+ * Atomically write a P2M entry and update the paging-assistance state
+ * appropriately.
+ * Arguments: the domain in question, the GFN whose mapping is being updated,
+ * a pointer to the entry to be written, the MFN in which the entry resides,
+ * the new contents of the entry, and the level in the p2m tree at which
+ * we are writing.
+ */
+static int write_p2m_entry(struct p2m_domain *p2m, unsigned long gfn,
+                           l1_pgentry_t *p, l1_pgentry_t new,
+                           unsigned int level)
+{
+    struct domain *d = p2m->domain;
+    const struct vcpu *v = current;
+
+    if ( v->domain != d )
+        v = d->vcpu ? d->vcpu[0] : NULL;
+    if ( likely(v && paging_mode_enabled(d) && paging_get_hostmode(v)) ||
+         p2m_is_nestedp2m(p2m) )
+    {
+        unsigned int oflags;
+        mfn_t omfn;
+        int rc;
+
+        paging_lock(d);
+
+        if ( p2m->write_p2m_entry_pre && gfn != gfn_x(INVALID_GFN) )
+            p2m->write_p2m_entry_pre(d, gfn, *p, new, level);
+
+        oflags = l1e_get_flags(*p);
+        omfn = l1e_get_mfn(*p);
+
+        rc = p2m_entry_modify(p2m, p2m_flags_to_type(l1e_get_flags(new)),
+                              p2m_flags_to_type(oflags), l1e_get_mfn(new),
+                              omfn, level);
+        if ( rc )
+        {
+            paging_unlock(d);
+            return rc;
+        }
+
+        safe_write_pte(p, new);
+
+        if ( p2m->write_p2m_entry_post )
+            p2m->write_p2m_entry_post(p2m, oflags);
+
+        paging_unlock(d);
+
+        if ( nestedhvm_enabled(d) && !p2m_is_nestedp2m(p2m) &&
+             (oflags & _PAGE_PRESENT) &&
+             !p2m_get_hostp2m(d)->defer_nested_flush &&
+             /*
+              * We are replacing a valid entry so we need to flush nested p2ms,
+              * unless the only change is an increase in access rights.
+              */
+             (!mfn_eq(omfn, l1e_get_mfn(new)) ||
+              !perms_strictly_increased(oflags, l1e_get_flags(new))) )
+            p2m_flush_nestedp2m(d);
+    }
+    else
+        safe_write_pte(p, new);
+
+    return 0;
+}
 
 // Find the next level's P2M entry, checking for out-of-range gfn's...
 // Returns NULL on error.
@@ -184,7 +249,7 @@ p2m_next_level(struct p2m_domain *p2m, void **table,
 
         new_entry = l1e_from_mfn(mfn, P2M_BASE_FLAGS | _PAGE_RW);
 
-        rc = p2m->write_p2m_entry(p2m, gfn, p2m_entry, new_entry, level + 1);
+        rc = write_p2m_entry(p2m, gfn, p2m_entry, new_entry, level + 1);
         if ( rc )
             goto error;
     }
@@ -226,7 +291,8 @@ p2m_next_level(struct p2m_domain *p2m, void **table,
         {
             new_entry = l1e_from_pfn(pfn | (i << ((level - 1) * PAGETABLE_ORDER)),
                                      flags);
-            rc = p2m->write_p2m_entry(p2m, gfn, l1_entry + i, new_entry, level);
+            rc = write_p2m_entry(p2m, gfn_x(INVALID_GFN), l1_entry + i,
+                                 new_entry, level);
             if ( rc )
             {
                 unmap_domain_page(l1_entry);
@@ -237,8 +303,7 @@ p2m_next_level(struct p2m_domain *p2m, void **table,
         unmap_domain_page(l1_entry);
 
         new_entry = l1e_from_mfn(mfn, P2M_BASE_FLAGS | _PAGE_RW);
-        rc = p2m->write_p2m_entry(p2m, gfn, p2m_entry, new_entry,
-                                  level + 1);
+        rc = write_p2m_entry(p2m, gfn, p2m_entry, new_entry, level + 1);
         if ( rc )
             goto error;
     }
@@ -310,7 +375,7 @@ static int p2m_pt_set_recalc_range(struct p2m_domain *p2m,
             if ( (l1e_get_flags(e) & _PAGE_PRESENT) && !needs_recalc(l1, e) )
             {
                 set_recalc(l1, e);
-                err = p2m->write_p2m_entry(p2m, first_gfn, pent, e, level);
+                err = write_p2m_entry(p2m, first_gfn, pent, e, level);
                 if ( err )
                 {
                     ASSERT_UNREACHABLE();
@@ -387,8 +452,8 @@ static int do_recalc(struct p2m_domain *p2m, unsigned long gfn)
                      !needs_recalc(l1, ent) )
                 {
                     set_recalc(l1, ent);
-                    err = p2m->write_p2m_entry(p2m, gfn - remainder, &ptab[i],
-                                               ent, level);
+                    err = write_p2m_entry(p2m, gfn - remainder, &ptab[i], ent,
+                                          level);
                     if ( err )
                     {
                         ASSERT_UNREACHABLE();
@@ -401,7 +466,7 @@ static int do_recalc(struct p2m_domain *p2m, unsigned long gfn)
             if ( !err )
             {
                 clear_recalc(l1, e);
-                err = p2m->write_p2m_entry(p2m, gfn, pent, e, level + 1);
+                err = write_p2m_entry(p2m, gfn, pent, e, level + 1);
                 ASSERT(!err);
 
                 recalc_done = true;
@@ -449,7 +514,7 @@ static int do_recalc(struct p2m_domain *p2m, unsigned long gfn)
         }
         else
             clear_recalc(l1, e);
-        err = p2m->write_p2m_entry(p2m, gfn, pent, e, level + 1);
+        err = write_p2m_entry(p2m, gfn, pent, e, level + 1);
         ASSERT(!err);
 
         recalc_done = true;
@@ -544,9 +609,9 @@ p2m_pt_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
     if ( tb_init_done )
     {
         struct {
-            u64 gfn, mfn;
-            int p2mt;
-            int d:16,order:16;
+            uint64_t gfn, mfn;
+            uint32_t p2mt;
+            uint16_t d, order;
         } t;
 
         t.gfn = gfn;
@@ -604,8 +669,8 @@ p2m_pt_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
             : l3e_empty();
         entry_content.l1 = l3e_content.l3;
 
-        rc = p2m->write_p2m_entry(p2m, gfn, p2m_entry, entry_content, 3);
-        /* NB: paging_write_p2m_entry() handles tlb flushes properly */
+        rc = write_p2m_entry(p2m, gfn, p2m_entry, entry_content, 3);
+        /* NB: write_p2m_entry() handles tlb flushes properly */
         if ( rc )
             goto out;
     }
@@ -642,8 +707,8 @@ p2m_pt_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
             entry_content = l1e_empty();
 
         /* level 1 entry */
-        rc = p2m->write_p2m_entry(p2m, gfn, p2m_entry, entry_content, 1);
-        /* NB: paging_write_p2m_entry() handles tlb flushes properly */
+        rc = write_p2m_entry(p2m, gfn, p2m_entry, entry_content, 1);
+        /* NB: write_p2m_entry() handles tlb flushes properly */
         if ( rc )
             goto out;
     }
@@ -678,8 +743,8 @@ p2m_pt_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
             : l2e_empty();
         entry_content.l1 = l2e_content.l2;
 
-        rc = p2m->write_p2m_entry(p2m, gfn, p2m_entry, entry_content, 2);
-        /* NB: paging_write_p2m_entry() handles tlb flushes properly */
+        rc = write_p2m_entry(p2m, gfn, p2m_entry, entry_content, 2);
+        /* NB: write_p2m_entry() handles tlb flushes properly */
         if ( rc )
             goto out;
     }
@@ -692,9 +757,9 @@ p2m_pt_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
     if ( need_iommu_pt_sync(p2m->domain) &&
          (iommu_old_flags != iommu_pte_flags || old_mfn != mfn_x(mfn)) )
         rc = iommu_pte_flags
-             ? iommu_legacy_map(d, _dfn(gfn), mfn, page_order,
+             ? iommu_legacy_map(d, _dfn(gfn), mfn, 1ul << page_order,
                                 iommu_pte_flags)
-             : iommu_legacy_unmap(d, _dfn(gfn), page_order);
+             : iommu_legacy_unmap(d, _dfn(gfn), 1ul << page_order);
 
     /*
      * Free old intermediate tables if necessary.  This has to be the
@@ -792,9 +857,9 @@ pod_retry_l3:
         }
         if ( flags & _PAGE_PSE )
         {
-            mfn = _mfn(l3e_get_pfn(*l3e) +
-                       l2_table_offset(addr) * L1_PAGETABLE_ENTRIES +
-                       l1_table_offset(addr));
+            mfn = mfn_add(l3e_get_mfn(*l3e),
+                          l2_table_offset(addr) * L1_PAGETABLE_ENTRIES +
+                          l1_table_offset(addr));
             *t = p2m_recalc_type(recalc || _needs_recalc(flags),
                                  p2m_flags_to_type(flags), p2m, gfn);
             unmap_domain_page(l3e);
@@ -833,7 +898,7 @@ pod_retry_l2:
     }
     if ( flags & _PAGE_PSE )
     {
-        mfn = _mfn(l2e_get_pfn(*l2e) + l1_table_offset(addr));
+        mfn = mfn_add(l2e_get_mfn(*l2e), l1_table_offset(addr));
         *t = p2m_recalc_type(recalc || _needs_recalc(flags),
                              p2m_flags_to_type(flags), p2m, gfn);
         unmap_domain_page(l2e);
@@ -902,7 +967,7 @@ static void p2m_pt_change_entry_type_global(struct p2m_domain *p2m,
             int rc;
 
             set_recalc(l1, e);
-            rc = p2m->write_p2m_entry(p2m, gfn, &tab[i], e, 4);
+            rc = write_p2m_entry(p2m, gfn, &tab[i], e, 4);
             if ( rc )
             {
                 ASSERT_UNREACHABLE();
@@ -959,8 +1024,8 @@ static int p2m_pt_change_entry_type_range(struct p2m_domain *p2m,
     return err;
 }
 
-#if P2M_AUDIT && defined(CONFIG_HVM)
-long p2m_pt_audit_p2m(struct p2m_domain *p2m)
+#if P2M_AUDIT
+static long p2m_pt_audit_p2m(struct p2m_domain *p2m)
 {
     unsigned long entry_count = 0, pmbad = 0;
     unsigned long mfn, gfn, m2pfn;
@@ -1108,8 +1173,6 @@ long p2m_pt_audit_p2m(struct p2m_domain *p2m)
 
     return pmbad;
 }
-#else
-# define p2m_pt_audit_p2m NULL
 #endif /* P2M_AUDIT */
 
 /* Set up the p2m function pointers for pagetable format */
@@ -1120,11 +1183,15 @@ void p2m_pt_init(struct p2m_domain *p2m)
     p2m->recalc = do_recalc;
     p2m->change_entry_type_global = p2m_pt_change_entry_type_global;
     p2m->change_entry_type_range = p2m_pt_change_entry_type_range;
-    p2m->write_p2m_entry = paging_write_p2m_entry;
+
+    /* Still too early to use paging_mode_hap(). */
+    if ( hap_enabled(p2m->domain) )
+        hap_p2m_init(p2m);
+    else if ( IS_ENABLED(CONFIG_SHADOW_PAGING) )
+        shadow_p2m_init(p2m);
+
 #if P2M_AUDIT
     p2m->audit_p2m = p2m_pt_audit_p2m;
-#else
-    p2m->audit_p2m = NULL;
 #endif
 }
 

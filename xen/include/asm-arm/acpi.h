@@ -14,8 +14,7 @@
  *  GNU General Public License for more details.
  *
  *  You should have received a copy of the GNU General Public License
- *  along with this program; if not, write to the Free Software
- *  Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ *  along with this program; If not, see <http://www.gnu.org/licenses/>.
  *
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  */
@@ -53,6 +52,14 @@ void acpi_smp_init_cpus(void);
  * are created.
  */
 paddr_t acpi_get_table_offset(struct membank tbl_add[], EFI_MEM_RES index);
+
+/* Macros for consistency checks of the GICC subtable of MADT */
+#define ACPI_MADT_GICC_LENGTH	\
+    (acpi_gbl_FADT.header.revision < 6 ? 76 : 80)
+
+#define BAD_MADT_GICC_ENTRY(entry, end)						\
+    (!(entry) || (unsigned long)(entry) + sizeof(*(entry)) > (end) ||	\
+     (entry)->header.length != ACPI_MADT_GICC_LENGTH)
 
 #ifdef CONFIG_ACPI
 extern bool acpi_disabled;

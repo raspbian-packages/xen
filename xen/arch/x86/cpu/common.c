@@ -240,28 +240,41 @@ int get_model_name(struct cpuinfo_x86 *c)
 
 void display_cacheinfo(struct cpuinfo_x86 *c)
 {
-	unsigned int dummy, ecx, edx, l2size;
+	unsigned int dummy, ecx, edx, size;
 
 	if (c->extended_cpuid_level >= 0x80000005) {
 		cpuid(0x80000005, &dummy, &dummy, &ecx, &edx);
-		if (opt_cpu_info)
-			printk("CPU: L1 I cache %dK (%d bytes/line),"
-			              " D cache %dK (%d bytes/line)\n",
-			       edx>>24, edx&0xFF, ecx>>24, ecx&0xFF);
-		c->x86_cache_size=(ecx>>24)+(edx>>24);	
+		if ((edx | ecx) >> 24) {
+			if (opt_cpu_info)
+				printk("CPU: L1 I cache %uK (%u bytes/line),"
+				              " D cache %uK (%u bytes/line)\n",
+				       edx >> 24, edx & 0xFF, ecx >> 24, ecx & 0xFF);
+			c->x86_cache_size = (ecx >> 24) + (edx >> 24);
+		}
 	}
 
 	if (c->extended_cpuid_level < 0x80000006)	/* Some chips just has a large L1. */
 		return;
 
-	ecx = cpuid_ecx(0x80000006);
-	l2size = ecx >> 16;
-	
-	c->x86_cache_size = l2size;
+	cpuid(0x80000006, &dummy, &dummy, &ecx, &edx);
 
-	if (opt_cpu_info)
-		printk("CPU: L2 Cache: %dK (%d bytes/line)\n",
-		       l2size, ecx & 0xFF);
+	size = ecx >> 16;
+	if (size) {
+		c->x86_cache_size = size;
+
+		if (opt_cpu_info)
+			printk("CPU: L2 Cache: %uK (%u bytes/line)\n",
+			       size, ecx & 0xFF);
+	}
+
+	size = edx >> 18;
+	if (size) {
+		c->x86_cache_size = size * 512;
+
+		if (opt_cpu_info)
+			printk("CPU: L3 Cache: %uM (%u bytes/line)\n",
+			       (size + (size & 1)) >> 1, edx & 0xFF);
+	}
 }
 
 static inline u32 _phys_pkg_id(u32 cpuid_apic, int index_msb)
@@ -419,6 +432,9 @@ static void generic_identify(struct cpuinfo_x86 *c)
 	if (c->extended_cpuid_level >= 0x80000008)
 		c->x86_capability[cpufeat_word(X86_FEATURE_CLZERO)]
 			= cpuid_ebx(0x80000008);
+	if (c->extended_cpuid_level >= 0x80000021)
+		c->x86_capability[cpufeat_word(X86_FEATURE_LFENCE_DISPATCH)]
+			= cpuid_eax(0x80000021);
 
 	/* Intel-defined flags: level 0x00000007 */
 	if ( c->cpuid_level >= 0x00000007 ) {
@@ -841,6 +857,29 @@ void load_system_tables(void)
 	BUG_ON(system_state != SYS_STATE_early_boot && (stack_bottom & 0xf));
 }
 
+static void skinit_enable_intr(void)
+{
+	uint64_t val;
+
+	/*
+	 * If the platform is performing a Secure Launch via SKINIT
+	 * INIT_REDIRECTION flag will be active.
+	 */
+	if ( !cpu_has_skinit || rdmsr_safe(MSR_K8_VM_CR, val) ||
+	     !(val & VM_CR_INIT_REDIRECTION) )
+		return;
+
+	ap_boot_method = AP_BOOT_SKINIT;
+
+	/*
+	 * We don't yet handle #SX.  Disable INIT_REDIRECTION first, before
+	 * enabling GIF, so a pending INIT resets us, rather than causing a
+	 * panic due to an unknown exception.
+	 */
+	wrmsrl(MSR_K8_VM_CR, val & ~VM_CR_INIT_REDIRECTION);
+	asm volatile ( "stgi" ::: "memory" );
+}
+
 /*
  * cpu_init() initializes state that is per-CPU. Some data is already
  * initialized (naturally) in the bootstrap process, such as the GDT
@@ -871,6 +910,15 @@ void cpu_init(void)
 	write_debugreg(3, 0);
 	write_debugreg(6, X86_DR6_DEFAULT);
 	write_debugreg(7, X86_DR7_DEFAULT);
+
+	/*
+	 * If the platform is performing a Secure Launch via SKINIT, GIF is
+	 * clear to prevent external interrupts interfering with Secure
+	 * Startup.  Re-enable all interrupts now that we are suitably set up.
+	 *
+	 * Refer to AMD APM Vol2 15.27 "Secure Startup with SKINIT".
+	 */
+	skinit_enable_intr();
 
 	/* Enable NMIs.  Our loader (e.g. Tboot) may have left them disabled. */
 	enable_nmis();

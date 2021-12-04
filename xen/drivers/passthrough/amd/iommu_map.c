@@ -81,19 +81,34 @@ static unsigned int set_iommu_pde_present(union amd_iommu_pte *pte,
     return flush_flags;
 }
 
-static unsigned int set_iommu_pte_present(unsigned long pt_mfn,
-                                          unsigned long dfn,
-                                          unsigned long next_mfn,
-                                          int pde_level,
-                                          bool iw, bool ir)
+static unsigned int set_iommu_ptes_present(unsigned long pt_mfn,
+                                           unsigned long dfn,
+                                           unsigned long next_mfn,
+                                           unsigned int nr_ptes,
+                                           unsigned int pde_level,
+                                           bool iw, bool ir)
 {
     union amd_iommu_pte *table, *pde;
-    unsigned int flush_flags;
+    unsigned int page_sz, flush_flags = 0;
 
     table = map_domain_page(_mfn(pt_mfn));
     pde = &table[pfn_to_pde_idx(dfn, pde_level)];
+    page_sz = 1U << (PTE_PER_TABLE_SHIFT * (pde_level - 1));
 
-    flush_flags = set_iommu_pde_present(pde, next_mfn, 0, iw, ir);
+    if ( (void *)(pde + nr_ptes) > (void *)table + PAGE_SIZE )
+    {
+        ASSERT_UNREACHABLE();
+        return 0;
+    }
+
+    while ( nr_ptes-- )
+    {
+        flush_flags |= set_iommu_pde_present(pde, next_mfn, 0, iw, ir);
+
+        ++pde;
+        next_mfn += page_sz;
+    }
+
     unmap_domain_page(table);
 
     return flush_flags;
@@ -158,33 +173,12 @@ void __init iommu_dte_add_device_entry(struct amd_iommu_dte *dte,
     };
 }
 
-void iommu_dte_set_guest_cr3(struct amd_iommu_dte *dte, uint16_t dom_id,
-                             uint64_t gcr3_mfn, bool gv, uint8_t glx)
-{
-#define GCR3_MASK(hi, lo) (((1ul << ((hi) + 1)) - 1) & ~((1ul << (lo)) - 1))
-#define GCR3_SHIFT(lo) ((lo) - PAGE_SHIFT)
-
-    /* I bit must be set when gcr3 is enabled */
-    dte->i = true;
-
-    dte->gcr3_trp_14_12 = (gcr3_mfn & GCR3_MASK(14, 12)) >> GCR3_SHIFT(12);
-    dte->gcr3_trp_30_15 = (gcr3_mfn & GCR3_MASK(30, 15)) >> GCR3_SHIFT(15);
-    dte->gcr3_trp_51_31 = (gcr3_mfn & GCR3_MASK(51, 31)) >> GCR3_SHIFT(31);
-
-    dte->domain_id = dom_id;
-    dte->glx = glx;
-    dte->gv = gv;
-
-#undef GCR3_SHIFT
-#undef GCR3_MASK
-}
-
 /* Walk io page tables and build level page tables if necessary
  * {Re, un}mapping super page frames causes re-allocation of io
  * page tables.
  */
 static int iommu_pde_from_dfn(struct domain *d, unsigned long dfn,
-                              unsigned long pt_mfn[], bool map)
+                              unsigned long *pt_mfn, bool map)
 {
     union amd_iommu_pte *pde, *next_table_vaddr;
     unsigned long  next_table_mfn;
@@ -192,8 +186,8 @@ static int iommu_pde_from_dfn(struct domain *d, unsigned long dfn,
     struct page_info *table;
     const struct domain_iommu *hd = dom_iommu(d);
 
-    table = hd->arch.root_table;
-    level = hd->arch.paging_mode;
+    table = hd->arch.amd.root_table;
+    level = hd->arch.amd.paging_mode;
 
     BUG_ON( table == NULL || level < 1 || level > 6 );
 
@@ -209,7 +203,6 @@ static int iommu_pde_from_dfn(struct domain *d, unsigned long dfn,
     while ( level > 1 )
     {
         unsigned int next_level = level - 1;
-        pt_mfn[level] = next_table_mfn;
 
         next_table_vaddr = map_domain_page(_mfn(next_table_mfn));
         pde = &next_table_vaddr[pfn_to_pde_idx(dfn, level)];
@@ -220,34 +213,27 @@ static int iommu_pde_from_dfn(struct domain *d, unsigned long dfn,
         /* Split super page frame into smaller pieces.*/
         if ( pde->pr && !pde->next_level && next_table_mfn )
         {
-            int i;
             unsigned long mfn, pfn;
-            unsigned int page_sz;
 
-            page_sz = 1 << (PTE_PER_TABLE_SHIFT * (next_level - 1));
             pfn =  dfn & ~((1 << (PTE_PER_TABLE_SHIFT * next_level)) - 1);
             mfn = next_table_mfn;
 
             /* allocate lower level page table */
-            table = alloc_amd_iommu_pgtable();
+            table = iommu_alloc_pgtable(d);
             if ( table == NULL )
             {
-                AMD_IOMMU_DEBUG("Cannot allocate I/O page table\n");
+                AMD_IOMMU_ERROR("cannot allocate I/O page table\n");
                 unmap_domain_page(next_table_vaddr);
                 return 1;
             }
 
             next_table_mfn = mfn_x(page_to_mfn(table));
+
+            set_iommu_ptes_present(next_table_mfn, pfn, mfn, PTE_PER_TABLE_SIZE,
+                                   next_level, pde->iw, pde->ir);
+            smp_wmb();
             set_iommu_pde_present(pde, next_table_mfn, next_level, true,
                                   true);
-
-            for ( i = 0; i < PTE_PER_TABLE_SIZE; i++ )
-            {
-                set_iommu_pte_present(next_table_mfn, pfn, mfn, next_level,
-                                      true, true);
-                mfn += page_sz;
-                pfn += page_sz;
-             }
 
             amd_iommu_flush_all_pages(d);
         }
@@ -263,10 +249,10 @@ static int iommu_pde_from_dfn(struct domain *d, unsigned long dfn,
 
             if ( next_table_mfn == 0 )
             {
-                table = alloc_amd_iommu_pgtable();
+                table = iommu_alloc_pgtable(d);
                 if ( table == NULL )
                 {
-                    AMD_IOMMU_DEBUG("Cannot allocate I/O page table\n");
+                    AMD_IOMMU_ERROR("cannot allocate I/O page table\n");
                     unmap_domain_page(next_table_vaddr);
                     return 1;
                 }
@@ -286,7 +272,7 @@ static int iommu_pde_from_dfn(struct domain *d, unsigned long dfn,
     }
 
     /* mfn of level 1 page table */
-    pt_mfn[level] = next_table_mfn;
+    *pt_mfn = next_table_mfn;
     return 0;
 }
 
@@ -295,35 +281,45 @@ int amd_iommu_map_page(struct domain *d, dfn_t dfn, mfn_t mfn,
 {
     struct domain_iommu *hd = dom_iommu(d);
     int rc;
-    unsigned long pt_mfn[7];
-
-    memset(pt_mfn, 0, sizeof(pt_mfn));
+    unsigned long pt_mfn = 0;
 
     spin_lock(&hd->arch.mapping_lock);
 
-    rc = amd_iommu_alloc_root(hd);
+    /*
+     * IOMMU mapping request can be safely ignored when the domain is dying.
+     *
+     * hd->arch.mapping_lock guarantees that d->is_dying will be observed
+     * before any page tables are freed (see iommu_free_pgtables()).
+     */
+    if ( d->is_dying )
+    {
+        spin_unlock(&hd->arch.mapping_lock);
+        return 0;
+    }
+
+    rc = amd_iommu_alloc_root(d);
     if ( rc )
     {
         spin_unlock(&hd->arch.mapping_lock);
-        AMD_IOMMU_DEBUG("Root table alloc failed, dfn = %"PRI_dfn"\n",
+        AMD_IOMMU_ERROR("root table alloc failed, dfn = %"PRI_dfn"\n",
                         dfn_x(dfn));
         domain_crash(d);
         return rc;
     }
 
-    if ( iommu_pde_from_dfn(d, dfn_x(dfn), pt_mfn, true) || (pt_mfn[1] == 0) )
+    if ( iommu_pde_from_dfn(d, dfn_x(dfn), &pt_mfn, true) || !pt_mfn )
     {
         spin_unlock(&hd->arch.mapping_lock);
-        AMD_IOMMU_DEBUG("Invalid IO pagetable entry dfn = %"PRI_dfn"\n",
+        AMD_IOMMU_ERROR("invalid IO pagetable entry dfn = %"PRI_dfn"\n",
                         dfn_x(dfn));
         domain_crash(d);
         return -EFAULT;
     }
 
     /* Install 4k mapping */
-    *flush_flags |= set_iommu_pte_present(pt_mfn[1], dfn_x(dfn), mfn_x(mfn),
-                                          1, (flags & IOMMUF_writable),
-                                          (flags & IOMMUF_readable));
+    *flush_flags |= set_iommu_ptes_present(pt_mfn, dfn_x(dfn), mfn_x(mfn),
+                                           1, 1, (flags & IOMMUF_writable),
+                                           (flags & IOMMUF_readable));
 
     spin_unlock(&hd->arch.mapping_lock);
 
@@ -333,32 +329,30 @@ int amd_iommu_map_page(struct domain *d, dfn_t dfn, mfn_t mfn,
 int amd_iommu_unmap_page(struct domain *d, dfn_t dfn,
                          unsigned int *flush_flags)
 {
-    unsigned long pt_mfn[7];
+    unsigned long pt_mfn = 0;
     struct domain_iommu *hd = dom_iommu(d);
-
-    memset(pt_mfn, 0, sizeof(pt_mfn));
 
     spin_lock(&hd->arch.mapping_lock);
 
-    if ( !hd->arch.root_table )
+    if ( !hd->arch.amd.root_table )
     {
         spin_unlock(&hd->arch.mapping_lock);
         return 0;
     }
 
-    if ( iommu_pde_from_dfn(d, dfn_x(dfn), pt_mfn, false) )
+    if ( iommu_pde_from_dfn(d, dfn_x(dfn), &pt_mfn, false) )
     {
         spin_unlock(&hd->arch.mapping_lock);
-        AMD_IOMMU_DEBUG("Invalid IO pagetable entry dfn = %"PRI_dfn"\n",
+        AMD_IOMMU_ERROR("invalid IO pagetable entry dfn = %"PRI_dfn"\n",
                         dfn_x(dfn));
         domain_crash(d);
         return -EFAULT;
     }
 
-    if ( pt_mfn[1] )
+    if ( pt_mfn )
     {
         /* Mark PTE as 'page not present'. */
-        *flush_flags |= clear_iommu_pte_present(pt_mfn[1], dfn_x(dfn));
+        *flush_flags |= clear_iommu_pte_present(pt_mfn, dfn_x(dfn));
     }
 
     spin_unlock(&hd->arch.mapping_lock);
@@ -366,7 +360,7 @@ int amd_iommu_unmap_page(struct domain *d, dfn_t dfn,
     return 0;
 }
 
-static unsigned long flush_count(unsigned long dfn, unsigned int page_count,
+static unsigned long flush_count(unsigned long dfn, unsigned long page_count,
                                  unsigned int order)
 {
     unsigned long start = dfn >> order;
@@ -377,7 +371,7 @@ static unsigned long flush_count(unsigned long dfn, unsigned int page_count,
 }
 
 int amd_iommu_flush_iotlb_pages(struct domain *d, dfn_t dfn,
-                                unsigned int page_count,
+                                unsigned long page_count,
                                 unsigned int flush_flags)
 {
     unsigned long dfn_l = dfn_x(dfn);
@@ -468,6 +462,81 @@ int amd_iommu_reserve_domain_unity_unmap(struct domain *d,
     return rc;
 }
 
+int amd_iommu_get_reserved_device_memory(iommu_grdm_t *func, void *ctxt)
+{
+    unsigned int seg = 0 /* XXX */, bdf;
+    const struct ivrs_mappings *ivrs_mappings = get_ivrs_mappings(seg);
+    /* At least for global entries, avoid reporting them multiple times. */
+    enum { pending, processing, done } global = pending;
+
+    for ( bdf = 0; bdf < ivrs_bdf_entries; ++bdf )
+    {
+        pci_sbdf_t sbdf = PCI_SBDF2(seg, bdf);
+        const struct ivrs_unity_map *um = ivrs_mappings[bdf].unity_map;
+        unsigned int req = ivrs_mappings[bdf].dte_requestor_id;
+        const struct amd_iommu *iommu = ivrs_mappings[bdf].iommu;
+        int rc;
+
+        if ( !iommu )
+        {
+            /* May need to trigger the workaround in find_iommu_for_device(). */
+            const struct pci_dev *pdev;
+
+            pcidevs_lock();
+            pdev = pci_get_pdev(seg, sbdf.bus, sbdf.devfn);
+            pcidevs_unlock();
+
+            if ( pdev )
+                iommu = find_iommu_for_device(seg, bdf);
+            if ( !iommu )
+                continue;
+        }
+
+        if ( func(0, 0, sbdf.sbdf, ctxt) )
+        {
+            /*
+             * When the caller processes a XENMEM_RDM_ALL request, don't report
+             * multiple times the same range(s) for perhaps many devices with
+             * the same alias ID.
+             */
+            if ( bdf != req && ivrs_mappings[req].iommu &&
+                 func(0, 0, PCI_SBDF2(seg, req).sbdf, ctxt) )
+                continue;
+
+            if ( global == pending )
+                global = processing;
+        }
+
+        if ( iommu->exclusion_enable &&
+             (iommu->exclusion_allow_all ?
+              global == processing :
+              ivrs_mappings[bdf].dte_allow_exclusion) )
+        {
+            rc = func(PFN_DOWN(iommu->exclusion_base),
+                      PFN_UP(iommu->exclusion_limit | 1) -
+                      PFN_DOWN(iommu->exclusion_base), sbdf.sbdf, ctxt);
+            if ( unlikely(rc < 0) )
+                return rc;
+        }
+
+        for ( ; um; um = um->next )
+        {
+            if ( um->global && global != processing )
+                continue;
+
+            rc = func(PFN_DOWN(um->addr), PFN_DOWN(um->length),
+                      sbdf.sbdf, ctxt);
+            if ( unlikely(rc < 0) )
+                return rc;
+        }
+
+        if ( global == processing )
+            global = done;
+    }
+
+    return 0;
+}
+
 int __init amd_iommu_quarantine_init(struct domain *d)
 {
     struct domain_iommu *hd = dom_iommu(d);
@@ -476,7 +545,7 @@ int __init amd_iommu_quarantine_init(struct domain *d)
     unsigned int level = amd_iommu_get_paging_mode(end_gfn);
     union amd_iommu_pte *table;
 
-    if ( hd->arch.root_table )
+    if ( hd->arch.amd.root_table )
     {
         ASSERT_UNREACHABLE();
         return 0;
@@ -484,11 +553,11 @@ int __init amd_iommu_quarantine_init(struct domain *d)
 
     spin_lock(&hd->arch.mapping_lock);
 
-    hd->arch.root_table = alloc_amd_iommu_pgtable();
-    if ( !hd->arch.root_table )
+    hd->arch.amd.root_table = iommu_alloc_pgtable(d);
+    if ( !hd->arch.amd.root_table )
         goto out;
 
-    table = __map_domain_page(hd->arch.root_table);
+    table = __map_domain_page(hd->arch.amd.root_table);
     while ( level )
     {
         struct page_info *pg;
@@ -499,7 +568,7 @@ int __init amd_iommu_quarantine_init(struct domain *d)
          * page table pages, and the resulting allocations are always
          * zeroed.
          */
-        pg = alloc_amd_iommu_pgtable();
+        pg = iommu_alloc_pgtable(d);
         if ( !pg )
             break;
 

@@ -110,6 +110,7 @@ struct amd_iommu {
 struct ivrs_unity_map {
     bool read:1;
     bool write:1;
+    bool global:1;
     paddr_t addr;
     unsigned long length;
     struct ivrs_unity_map *next;
@@ -119,6 +120,7 @@ struct ivrs_mappings {
     uint16_t dte_requestor_id;
     bool valid:1;
     bool dte_allow_exclusion:1;
+    bool block_ats:1;
 
     /* ivhd device data settings */
     uint8_t device_flags;
@@ -201,6 +203,18 @@ struct acpi_ivrs_hardware;
 
 #define DMA_32BIT_MASK  0x00000000ffffffffULL
 
+#define AMD_IOMMU_ERROR(fmt, args...) \
+    printk(XENLOG_ERR "AMD-Vi: Error: " fmt, ## args)
+
+#define AMD_IOMMU_WARN(fmt, args...) \
+    printk(XENLOG_WARNING "AMD-Vi: Warning: " fmt, ## args)
+
+#define AMD_IOMMU_VERBOSE(fmt, args...) \
+    do { \
+        if ( iommu_verbose ) \
+            printk(XENLOG_INFO "AMD-Vi: " fmt, ## args); \
+    } while ( false )
+
 #define AMD_IOMMU_DEBUG(fmt, args...) \
     do  \
     {   \
@@ -230,14 +244,15 @@ int __must_check amd_iommu_map_page(struct domain *d, dfn_t dfn,
                                     unsigned int *flush_flags);
 int __must_check amd_iommu_unmap_page(struct domain *d, dfn_t dfn,
                                       unsigned int *flush_flags);
-int __must_check amd_iommu_alloc_root(struct domain_iommu *hd);
+int __must_check amd_iommu_alloc_root(struct domain *d);
 int amd_iommu_reserve_domain_unity_map(struct domain *domain,
                                        const struct ivrs_unity_map *map,
                                        unsigned int flag);
 int amd_iommu_reserve_domain_unity_unmap(struct domain *d,
                                          const struct ivrs_unity_map *map);
+int amd_iommu_get_reserved_device_memory(iommu_grdm_t *func, void *ctxt);
 int __must_check amd_iommu_flush_iotlb_pages(struct domain *d, dfn_t dfn,
-                                             unsigned int page_count,
+                                             unsigned long page_count,
                                              unsigned int flush_flags);
 int __must_check amd_iommu_flush_iotlb_all(struct domain *d);
 
@@ -252,8 +267,6 @@ void amd_iommu_set_root_page_table(struct amd_iommu_dte *dte,
 				   uint8_t paging_mode, bool valid);
 void iommu_dte_add_device_entry(struct amd_iommu_dte *dte,
                                 const struct ivrs_mappings *ivrs_dev);
-void iommu_dte_set_guest_cr3(struct amd_iommu_dte *dte, uint16_t dom_id,
-                             uint64_t gcr3_mfn, bool gv, uint8_t glx);
 
 /* send cmd to iommu */
 void amd_iommu_flush_all_pages(struct domain *d);
@@ -283,8 +296,6 @@ unsigned int amd_iommu_read_ioapic_from_ire(
     unsigned int apic, unsigned int reg);
 int amd_iommu_msi_msg_update_ire(
     struct msi_desc *msi_desc, struct msi_msg *msg);
-void amd_iommu_read_msi_from_ire(
-    struct msi_desc *msi_desc, struct msi_msg *msg);
 int amd_setup_hpet_msi(struct msi_desc *msi_desc);
 void amd_iommu_dump_intremap_tables(unsigned char key);
 
@@ -308,6 +319,8 @@ extern struct hpet_sbdf {
     } init;
 } hpet_sbdf;
 
+extern unsigned int amd_iommu_acpi_info;
+extern unsigned int amd_iommu_max_paging_mode;
 extern int amd_iommu_min_paging_mode;
 
 extern void *shared_intremap_table;
@@ -319,12 +332,16 @@ int __must_check amd_iommu_suspend(void);
 void amd_iommu_crash_shutdown(void);
 
 /* guest iommu support */
+#ifdef CONFIG_HVM
 void amd_iommu_send_guest_cmd(struct amd_iommu *iommu, u32 cmd[]);
 void guest_iommu_add_ppr_log(struct domain *d, u32 entry[]);
 void guest_iommu_add_event_log(struct domain *d, u32 entry[]);
 int guest_iommu_init(struct domain* d);
 void guest_iommu_destroy(struct domain *d);
 int guest_iommu_set_base(struct domain *d, uint64_t base);
+#else
+static inline void guest_iommu_add_ppr_log(struct domain *d, uint32_t entry[]) {}
+#endif
 
 static inline u32 get_field_from_reg_u32(u32 reg_value, u32 mask, u32 shift)
 {
@@ -357,27 +374,11 @@ static inline int amd_iommu_get_paging_mode(unsigned long max_frames)
     while ( max_frames > PTE_PER_TABLE_SIZE )
     {
         max_frames = PTE_PER_TABLE_ALIGN(max_frames) >> PTE_PER_TABLE_SHIFT;
-        if ( ++level > 6 )
+        if ( ++level > amd_iommu_max_paging_mode )
             return -ENOMEM;
     }
 
     return level;
-}
-
-static inline struct page_info *alloc_amd_iommu_pgtable(void)
-{
-    struct page_info *pg = alloc_domheap_page(NULL, 0);
-
-    if ( pg )
-        clear_domain_page(page_to_mfn(pg));
-
-    return pg;
-}
-
-static inline void free_amd_iommu_pgtable(struct page_info *pg)
-{
-    if ( pg )
-        free_domheap_page(pg);
 }
 
 static inline void *__alloc_amd_iommu_tables(unsigned int order)

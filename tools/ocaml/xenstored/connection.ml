@@ -280,6 +280,9 @@ let get_transaction con tid =
 
 let do_input con = Xenbus.Xb.input con.xb
 let has_input con = Xenbus.Xb.has_in_packet con.xb
+let has_partial_input con = match con.xb.Xenbus.Xb.partial_in with
+	| HaveHdr _ -> true
+	| NoHdr (n, _) -> n < Xenbus.Partial.header_size ()
 let pop_in con = Xenbus.Xb.get_in_packet con.xb
 let has_more_input con = Xenbus.Xb.has_more_input con.xb
 
@@ -289,28 +292,66 @@ let has_new_output con = Xenbus.Xb.has_new_output con.xb
 let peek_output con = Xenbus.Xb.peek_output con.xb
 let do_output con = Xenbus.Xb.output con.xb
 
+let is_bad con = match con.dom with None -> false | Some dom -> Domain.is_bad_domain dom
+
+(* oxenstored currently only dumps limited information about its state.
+   A live update is only possible if any of the state that is not dumped would be empty.
+   Compared to https://xenbits.xen.org/docs/unstable/designs/xenstore-migration.html:
+     * GLOBAL_DATA: not strictly needed, systemd is giving the socket FDs to us
+     * CONNECTION_DATA: PARTIAL
+       * for domains: PARTIAL, see Connection.dump -> Domain.dump, only if data and tdomid is empty
+       * for sockets (Dom0 toolstack): NO
+     * WATCH_DATA: OK, see Connection.dump
+     * TRANSACTION_DATA: NO
+     * NODE_DATA: OK (except for transactions), see Store.dump_fct and DB.to_channel
+
+   Also xenstored will never talk to a Domain once it is marked as bad,
+   so treat it as idle for live-update.
+
+   Restrictions below can be relaxed once xenstored learns to dump more
+   of its live state in a safe way *)
+let has_extra_connection_data con =
+	let has_in = has_input con || has_partial_input con in
+	let has_out = has_output con in
+	let has_socket = con.dom = None in
+	let has_nondefault_perms = make_perm con.dom <> con.perm in
+	has_in || has_out
+	(* TODO: what about SIGTERM, should use systemd to store FDS
+	|| has_socket (* dom0 sockets not * dumped yet *) *)
+	|| has_nondefault_perms (* set_target not dumped yet *)
+
+let has_transaction_data con =
+	let n = number_of_transactions con in
+	dbg "%s: number of transactions = %d" (get_domstr con) n;
+	n > 0
+
+let prevents_live_update con = not (is_bad con)
+	&& (has_extra_connection_data con || has_transaction_data con)
+
 let has_more_work con =
 	has_more_input con || not (has_old_output con) && has_new_output con
 
 let incr_ops con = con.stat_nb_ops <- con.stat_nb_ops + 1
 
-let mark_symbols con =
-	Hashtbl.iter (fun _ t -> Store.mark_symbols (Transaction.get_store t)) con.transactions
-
 let stats con =
 	Hashtbl.length con.watches, con.stat_nb_ops
 
 let dump con chan =
-	match con.dom with
+	let id = match con.dom with
 	| Some dom ->
 		let domid = Domain.get_id dom in
 		(* dump domain *)
 		Domain.dump dom chan;
-		(* dump watches *)
-		List.iter (fun (path, token) ->
-			Printf.fprintf chan "watch,%d,%s,%s\n" domid (Utils.hexify path) (Utils.hexify token)
-			) (list_watches con);
-	| None -> ()
+		domid
+	| None ->
+		let fd = con |> get_fd |> Utils.FD.to_int in
+		Printf.fprintf chan "socket,%d\n" fd;
+		-fd
+	in
+	(* dump watches *)
+	List.iter (fun (path, token) ->
+		Printf.fprintf chan "watch,%d,%s,%s\n" id (Utils.hexify path) (Utils.hexify token)
+		) (list_watches con)
 
 let debug con =
 	let domid = get_domstr con in

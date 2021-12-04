@@ -64,7 +64,7 @@ int shadow_enable(struct domain *d, u32 mode);
 /* Enable VRAM dirty bit tracking. */
 int shadow_track_dirty_vram(struct domain *d,
                             unsigned long first_pfn,
-                            unsigned long nr,
+                            unsigned int nr_frames,
                             XEN_GUEST_HANDLE(void) dirty_bitmap);
 
 /* Handler for shadow control ops: operations from user-space to enable
@@ -74,7 +74,8 @@ int shadow_domctl(struct domain *d,
                   struct xen_domctl_shadow_op *sc,
                   XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl);
 
-/* Call when destroying a domain */
+/* Call when destroying a vcpu/domain */
+void shadow_vcpu_teardown(struct vcpu *v);
 void shadow_teardown(struct domain *d, bool *preempted);
 
 /* Call once all of the references to the domain have gone away */
@@ -98,6 +99,7 @@ int shadow_set_allocation(struct domain *d, unsigned int pages,
 
 #else /* !CONFIG_SHADOW_PAGING */
 
+#define shadow_vcpu_teardown(v) ASSERT(is_pv_vcpu(v))
 #define shadow_teardown(d, p) ASSERT(is_pv_domain(d))
 #define shadow_final_teardown(d) ASSERT(is_pv_domain(d))
 #define shadow_enable(d, mode) \

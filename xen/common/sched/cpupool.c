@@ -11,38 +11,40 @@
  * (C) 2009, Juergen Gross, Fujitsu Technology Solutions
  */
 
-#include <xen/lib.h>
-#include <xen/init.h>
+#include <xen/cpu.h>
 #include <xen/cpumask.h>
+#include <xen/guest_access.h>
+#include <xen/hypfs.h>
+#include <xen/init.h>
+#include <xen/keyhandler.h>
+#include <xen/lib.h>
+#include <xen/list.h>
 #include <xen/param.h>
 #include <xen/percpu.h>
 #include <xen/sched.h>
 #include <xen/warning.h>
-#include <xen/keyhandler.h>
-#include <xen/cpu.h>
 
 #include "private.h"
-
-#define for_each_cpupool(ptr)    \
-    for ((ptr) = &cpupool_list; *(ptr) != NULL; (ptr) = &((*(ptr))->next))
 
 struct cpupool *cpupool0;                /* Initial cpupool with Dom0 */
 cpumask_t cpupool_free_cpus;             /* cpus not in any cpupool */
 
-static struct cpupool *cpupool_list;     /* linked list, sorted by poolid */
+static LIST_HEAD(cpupool_list);          /* linked list, sorted by poolid */
 
 static int cpupool_moving_cpu = -1;
 static struct cpupool *cpupool_cpu_moving = NULL;
 static cpumask_t cpupool_locked_cpus;
 
+/* This lock nests inside sysctl or hypfs lock. */
 static DEFINE_SPINLOCK(cpupool_lock);
 
 static enum sched_gran __read_mostly opt_sched_granularity = SCHED_GRAN_cpu;
 static unsigned int __read_mostly sched_granularity = 1;
 
+#define SCHED_GRAN_NAME_LEN  8
 struct sched_gran_name {
     enum sched_gran mode;
-    char name[8];
+    char name[SCHED_GRAN_NAME_LEN];
 };
 
 static const struct sched_gran_name sg_name[] = {
@@ -51,7 +53,7 @@ static const struct sched_gran_name sg_name[] = {
     {SCHED_GRAN_socket, "socket"},
 };
 
-static void sched_gran_print(enum sched_gran mode, unsigned int gran)
+static const char *sched_gran_get_name(enum sched_gran mode)
 {
     const char *name = "";
     unsigned int i;
@@ -65,12 +67,17 @@ static void sched_gran_print(enum sched_gran mode, unsigned int gran)
         }
     }
 
+    return name;
+}
+
+static void sched_gran_print(enum sched_gran mode, unsigned int gran)
+{
     printk("Scheduling granularity: %s, %u CPU%s per sched-resource\n",
-           name, gran, gran == 1 ? "" : "s");
+           sched_gran_get_name(mode), gran, gran == 1 ? "" : "s");
 }
 
 #ifdef CONFIG_HAS_SCHED_GRANULARITY
-static int __init sched_select_granularity(const char *str)
+static int sched_gran_get(const char *str, enum sched_gran *mode)
 {
     unsigned int i;
 
@@ -78,35 +85,42 @@ static int __init sched_select_granularity(const char *str)
     {
         if ( strcmp(sg_name[i].name, str) == 0 )
         {
-            opt_sched_granularity = sg_name[i].mode;
+            *mode = sg_name[i].mode;
             return 0;
         }
     }
 
     return -EINVAL;
 }
+
+static int __init sched_select_granularity(const char *str)
+{
+    return sched_gran_get(str, &opt_sched_granularity);
+}
 custom_param("sched-gran", sched_select_granularity);
+#elif defined(CONFIG_HYPFS)
+static int sched_gran_get(const char *str, enum sched_gran *mode)
+{
+    return -EINVAL;
+}
 #endif
 
-static unsigned int __init cpupool_check_granularity(void)
+static unsigned int cpupool_check_granularity(enum sched_gran mode)
 {
     unsigned int cpu;
     unsigned int siblings, gran = 0;
 
-    if ( opt_sched_granularity == SCHED_GRAN_cpu )
+    if ( mode == SCHED_GRAN_cpu )
         return 1;
 
     for_each_online_cpu ( cpu )
     {
-        siblings = cpumask_weight(sched_get_opt_cpumask(opt_sched_granularity,
-                                                        cpu));
+        siblings = cpumask_weight(sched_get_opt_cpumask(mode, cpu));
         if ( gran == 0 )
             gran = siblings;
         else if ( gran != siblings )
             return 0;
     }
-
-    sched_disable_smt_switching = true;
 
     return gran;
 }
@@ -119,7 +133,7 @@ static void __init cpupool_gran_init(void)
 
     while ( gran == 0 )
     {
-        gran = cpupool_check_granularity();
+        gran = cpupool_check_granularity(opt_sched_granularity);
 
         if ( gran == 0 )
         {
@@ -145,13 +159,16 @@ static void __init cpupool_gran_init(void)
     if ( fallback )
         warning_add(fallback);
 
+    if ( opt_sched_granularity != SCHED_GRAN_cpu )
+        sched_disable_smt_switching = true;
+
     sched_granularity = gran;
     sched_gran_print(opt_sched_granularity, sched_granularity);
 }
 
 unsigned int cpupool_get_granularity(const struct cpupool *c)
 {
-    return c ? sched_granularity : 1;
+    return c ? c->sched_gran : 1;
 }
 
 static void free_cpupool_struct(struct cpupool *c)
@@ -187,25 +204,25 @@ static struct cpupool *alloc_cpupool_struct(void)
  * the searched id is returned
  * returns NULL if not found.
  */
-static struct cpupool *__cpupool_find_by_id(int id, bool exact)
+static struct cpupool *__cpupool_find_by_id(unsigned int id, bool exact)
 {
-    struct cpupool **q;
+    struct cpupool *q;
 
     ASSERT(spin_is_locked(&cpupool_lock));
 
-    for_each_cpupool(q)
-        if ( (*q)->cpupool_id >= id )
-            break;
+    list_for_each_entry(q, &cpupool_list, list)
+        if ( q->cpupool_id == id || (!exact && q->cpupool_id > id) )
+            return q;
 
-    return (!exact || (*q == NULL) || ((*q)->cpupool_id == id)) ? *q : NULL;
+    return NULL;
 }
 
-static struct cpupool *cpupool_find_by_id(int poolid)
+static struct cpupool *cpupool_find_by_id(unsigned int poolid)
 {
     return __cpupool_find_by_id(poolid, true);
 }
 
-static struct cpupool *__cpupool_get_by_id(int poolid, bool exact)
+static struct cpupool *__cpupool_get_by_id(unsigned int poolid, bool exact)
 {
     struct cpupool *c;
     spin_lock(&cpupool_lock);
@@ -216,12 +233,12 @@ static struct cpupool *__cpupool_get_by_id(int poolid, bool exact)
     return c;
 }
 
-struct cpupool *cpupool_get_by_id(int poolid)
+struct cpupool *cpupool_get_by_id(unsigned int poolid)
 {
     return __cpupool_get_by_id(poolid, true);
 }
 
-static struct cpupool *cpupool_get_next_by_id(int poolid)
+static struct cpupool *cpupool_get_next_by_id(unsigned int poolid)
 {
     return __cpupool_get_by_id(poolid, false);
 }
@@ -242,68 +259,88 @@ void cpupool_put(struct cpupool *pool)
  * - poolid already used
  * - unknown scheduler
  */
-static struct cpupool *cpupool_create(
-    int poolid, unsigned int sched_id, int *perr)
+static struct cpupool *cpupool_create(unsigned int poolid,
+                                      unsigned int sched_id)
 {
     struct cpupool *c;
-    struct cpupool **q;
-    int last = 0;
+    struct cpupool *q;
+    int ret;
 
-    *perr = -ENOMEM;
     if ( (c = alloc_cpupool_struct()) == NULL )
-        return NULL;
+        return ERR_PTR(-ENOMEM);
 
     /* One reference for caller, one reference for cpupool_destroy(). */
     atomic_set(&c->refcnt, 2);
 
-    debugtrace_printk("cpupool_create(pool=%d,sched=%u)\n", poolid, sched_id);
+    debugtrace_printk("cpupool_create(pool=%u,sched=%u)\n", poolid, sched_id);
 
     spin_lock(&cpupool_lock);
 
-    for_each_cpupool(q)
+    if ( poolid != CPUPOOLID_NONE )
     {
-        last = (*q)->cpupool_id;
-        if ( (poolid != CPUPOOLID_NONE) && (last >= poolid) )
-            break;
-    }
-    if ( *q != NULL )
-    {
-        if ( (*q)->cpupool_id == poolid )
+        q = __cpupool_find_by_id(poolid, false);
+        if ( !q )
+            list_add_tail(&c->list, &cpupool_list);
+        else
         {
-            *perr = -EEXIST;
-            goto err;
+            list_add_tail(&c->list, &q->list);
+            if ( q->cpupool_id == poolid )
+            {
+                ret = -EEXIST;
+                goto err;
+            }
         }
-        c->next = *q;
-    }
 
-    c->cpupool_id = (poolid == CPUPOOLID_NONE) ? (last + 1) : poolid;
-    if ( poolid == 0 )
-    {
-        c->sched = scheduler_get_default();
+        c->cpupool_id = poolid;
     }
     else
     {
-        c->sched = scheduler_alloc(sched_id, perr);
-        if ( c->sched == NULL )
-            goto err;
+        /* Cpupool 0 is created with specified id at boot and never removed. */
+        ASSERT(!list_empty(&cpupool_list));
+
+        q = list_last_entry(&cpupool_list, struct cpupool, list);
+        /* In case of wrap search for first free id. */
+        if ( q->cpupool_id == CPUPOOLID_NONE - 1 )
+        {
+            list_for_each_entry(q, &cpupool_list, list)
+                if ( q->cpupool_id + 1 != list_next_entry(q, list)->cpupool_id )
+                    break;
+        }
+
+        list_add(&c->list, &q->list);
+
+        c->cpupool_id = q->cpupool_id + 1;
     }
+
+    if ( poolid == 0 )
+        c->sched = scheduler_get_default();
+    else
+        c->sched = scheduler_alloc(sched_id);
+    if ( IS_ERR(c->sched) )
+    {
+        ret = PTR_ERR(c->sched);
+        goto err;
+    }
+
     c->sched->cpupool = c;
     c->gran = opt_sched_granularity;
-
-    *q = c;
+    c->sched_gran = sched_granularity;
 
     spin_unlock(&cpupool_lock);
 
-    debugtrace_printk("Created cpupool %d with scheduler %s (%s)\n",
+    debugtrace_printk("Created cpupool %u with scheduler %s (%s)\n",
                       c->cpupool_id, c->sched->name, c->sched->opt_name);
 
-    *perr = 0;
     return c;
 
  err:
+    list_del(&c->list);
+
     spin_unlock(&cpupool_lock);
+
     free_cpupool_struct(c);
-    return NULL;
+
+    return ERR_PTR(ret);
 }
 /*
  * destroys the given cpupool
@@ -311,32 +348,24 @@ static struct cpupool *cpupool_create(
  * possible failures:
  * - pool still in use
  * - cpus still assigned to pool
- * - pool not in list
  */
 static int cpupool_destroy(struct cpupool *c)
 {
-    struct cpupool **q;
-
     spin_lock(&cpupool_lock);
-    for_each_cpupool(q)
-        if ( *q == c )
-            break;
-    if ( *q != c )
-    {
-        spin_unlock(&cpupool_lock);
-        return -ENOENT;
-    }
+
     if ( (c->n_dom != 0) || cpumask_weight(c->cpu_valid) )
     {
         spin_unlock(&cpupool_lock);
         return -EBUSY;
     }
-    *q = c->next;
+
+    list_del(&c->list);
+
     spin_unlock(&cpupool_lock);
 
     cpupool_put(c);
 
-    debugtrace_printk("cpupool_destroy(pool=%d)\n", c->cpupool_id);
+    debugtrace_printk("cpupool_destroy(pool=%u)\n", c->cpupool_id);
     return 0;
 }
 
@@ -520,7 +549,7 @@ static long cpupool_unassign_cpu_helper(void *info)
     struct cpupool *c = info;
     long ret;
 
-    debugtrace_printk("cpupool_unassign_cpu(pool=%d,cpu=%d)\n",
+    debugtrace_printk("cpupool_unassign_cpu(pool=%u,cpu=%d)\n",
                       cpupool_cpu_moving->cpupool_id, cpupool_moving_cpu);
     spin_lock(&cpupool_lock);
 
@@ -550,7 +579,7 @@ static int cpupool_unassign_cpu(struct cpupool *c, unsigned int cpu)
     int ret;
     unsigned int master_cpu;
 
-    debugtrace_printk("cpupool_unassign_cpu(pool=%d,cpu=%d)\n",
+    debugtrace_printk("cpupool_unassign_cpu(pool=%u,cpu=%d)\n",
                       c->cpupool_id, cpu);
 
     if ( !cpu_online(cpu) )
@@ -560,7 +589,7 @@ static int cpupool_unassign_cpu(struct cpupool *c, unsigned int cpu)
     ret = cpupool_unassign_cpu_start(c, master_cpu);
     if ( ret )
     {
-        debugtrace_printk("cpupool_unassign_cpu(pool=%d,cpu=%d) ret %d\n",
+        debugtrace_printk("cpupool_unassign_cpu(pool=%u,cpu=%d) ret %d\n",
                           c->cpupool_id, cpu, ret);
         return ret;
     }
@@ -581,7 +610,7 @@ static int cpupool_unassign_cpu(struct cpupool *c, unsigned int cpu)
  * - pool does not exist
  * - no cpu assigned to pool
  */
-int cpupool_add_domain(struct domain *d, int poolid)
+int cpupool_add_domain(struct domain *d, unsigned int poolid)
 {
     struct cpupool *c;
     int rc;
@@ -603,7 +632,7 @@ int cpupool_add_domain(struct domain *d, int poolid)
         rc = 0;
     }
     spin_unlock(&cpupool_lock);
-    debugtrace_printk("cpupool_add_domain(dom=%d,pool=%d) n_dom %d rc %d\n",
+    debugtrace_printk("cpupool_add_domain(dom=%d,pool=%u) n_dom %d rc %d\n",
                       d->domain_id, poolid, n_dom, rc);
     return rc;
 }
@@ -613,7 +642,7 @@ int cpupool_add_domain(struct domain *d, int poolid)
  */
 void cpupool_rm_domain(struct domain *d)
 {
-    int cpupool_id;
+    unsigned int cpupool_id;
     int n_dom;
 
     if ( d->cpupool == NULL )
@@ -624,7 +653,7 @@ void cpupool_rm_domain(struct domain *d)
     n_dom = d->cpupool->n_dom;
     d->cpupool = NULL;
     spin_unlock(&cpupool_lock);
-    debugtrace_printk("cpupool_rm_domain(dom=%d,pool=%d) n_dom %d\n",
+    debugtrace_printk("cpupool_rm_domain(dom=%d,pool=%u) n_dom %d\n",
                       d->domain_id, cpupool_id, n_dom);
     return;
 }
@@ -731,17 +760,17 @@ static int cpupool_cpu_remove_prologue(unsigned int cpu)
  */
 static void cpupool_cpu_remove_forced(unsigned int cpu)
 {
-    struct cpupool **c;
+    struct cpupool *c;
     int ret;
     unsigned int master_cpu = sched_get_resource_cpu(cpu);
 
-    for_each_cpupool ( c )
+    list_for_each_entry(c, &cpupool_list, list)
     {
-        if ( cpumask_test_cpu(master_cpu, (*c)->cpu_valid) )
+        if ( cpumask_test_cpu(master_cpu, c->cpu_valid) )
         {
-            ret = cpupool_unassign_cpu_start(*c, master_cpu);
+            ret = cpupool_unassign_cpu_start(c, master_cpu);
             BUG_ON(ret);
-            ret = cpupool_unassign_cpu_finish(*c);
+            ret = cpupool_unassign_cpu_finish(c);
             BUG_ON(ret);
         }
     }
@@ -758,7 +787,7 @@ static void cpupool_cpu_remove_forced(unsigned int cpu)
  */
 int cpupool_do_sysctl(struct xen_sysctl_cpupool_op *op)
 {
-    int ret;
+    int ret = 0;
     struct cpupool *c;
 
     switch ( op->op )
@@ -766,12 +795,14 @@ int cpupool_do_sysctl(struct xen_sysctl_cpupool_op *op)
 
     case XEN_SYSCTL_CPUPOOL_OP_CREATE:
     {
-        int poolid;
+        unsigned int poolid;
 
         poolid = (op->cpupool_id == XEN_SYSCTL_CPUPOOL_PAR_ANY) ?
             CPUPOOLID_NONE: op->cpupool_id;
-        c = cpupool_create(poolid, op->sched_id, &ret);
-        if ( c != NULL )
+        c = cpupool_create(poolid, op->sched_id);
+        if ( IS_ERR(c) )
+            ret = PTR_ERR(c);
+        else
         {
             op->cpupool_id = c->cpupool_id;
             cpupool_put(c);
@@ -810,7 +841,7 @@ int cpupool_do_sysctl(struct xen_sysctl_cpupool_op *op)
         const cpumask_t *cpus;
 
         cpu = op->cpu;
-        debugtrace_printk("cpupool_assign_cpu(pool=%d,cpu=%d)\n",
+        debugtrace_printk("cpupool_assign_cpu(pool=%u,cpu=%u)\n",
                           op->cpupool_id, cpu);
 
         spin_lock(&cpupool_lock);
@@ -843,7 +874,7 @@ int cpupool_do_sysctl(struct xen_sysctl_cpupool_op *op)
 
     addcpu_out:
         spin_unlock(&cpupool_lock);
-        debugtrace_printk("cpupool_assign_cpu(pool=%d,cpu=%d) ret %d\n",
+        debugtrace_printk("cpupool_assign_cpu(pool=%u,cpu=%u) ret %d\n",
                           op->cpupool_id, cpu, ret);
 
     }
@@ -884,7 +915,7 @@ int cpupool_do_sysctl(struct xen_sysctl_cpupool_op *op)
             rcu_unlock_domain(d);
             break;
         }
-        debugtrace_printk("cpupool move_domain(dom=%d)->pool=%d\n",
+        debugtrace_printk("cpupool move_domain(dom=%d)->pool=%u\n",
                           d->domain_id, op->cpupool_id);
         ret = -ENOENT;
         spin_lock(&cpupool_lock);
@@ -894,7 +925,7 @@ int cpupool_do_sysctl(struct xen_sysctl_cpupool_op *op)
             ret = cpupool_move_domain_locked(d, c);
 
         spin_unlock(&cpupool_lock);
-        debugtrace_printk("cpupool move_domain(dom=%d)->pool=%d ret %d\n",
+        debugtrace_printk("cpupool move_domain(dom=%d)->pool=%u ret %d\n",
                           d->domain_id, op->cpupool_id, ret);
         rcu_unlock_domain(d);
     }
@@ -915,7 +946,7 @@ int cpupool_do_sysctl(struct xen_sysctl_cpupool_op *op)
     return ret;
 }
 
-int cpupool_get_id(const struct domain *d)
+unsigned int cpupool_get_id(const struct domain *d)
 {
     return d->cpupool ? d->cpupool->cpupool_id : CPUPOOLID_NONE;
 }
@@ -928,7 +959,7 @@ const cpumask_t *cpupool_valid_cpus(const struct cpupool *pool)
 void dump_runq(unsigned char key)
 {
     s_time_t         now = NOW();
-    struct cpupool **c;
+    struct cpupool *c;
 
     spin_lock(&cpupool_lock);
 
@@ -943,12 +974,12 @@ void dump_runq(unsigned char key)
         schedule_dump(NULL);
     }
 
-    for_each_cpupool(c)
+    list_for_each_entry(c, &cpupool_list, list)
     {
-        printk("Cpupool %d:\n", (*c)->cpupool_id);
-        printk("Cpus: %*pbl\n", CPUMASK_PR((*c)->cpu_valid));
-        sched_gran_print((*c)->gran, cpupool_get_granularity(*c));
-        schedule_dump(*c);
+        printk("Cpupool %u:\n", c->cpupool_id);
+        printk("Cpus: %*pbl\n", CPUMASK_PR(c->cpu_valid));
+        sched_gran_print(c->gran, cpupool_get_granularity(c));
+        schedule_dump(c);
     }
 
     spin_unlock(&cpupool_lock);
@@ -991,15 +1022,212 @@ static struct notifier_block cpu_nfb = {
     .notifier_call = cpu_callback
 };
 
+#ifdef CONFIG_HYPFS
+
+static HYPFS_DIR_INIT(cpupool_pooldir, "%u");
+
+static int cpupool_dir_read(const struct hypfs_entry *entry,
+                            XEN_GUEST_HANDLE_PARAM(void) uaddr)
+{
+    int ret = 0;
+    struct cpupool *c;
+    struct hypfs_dyndir_id *data;
+
+    data = hypfs_get_dyndata();
+
+    list_for_each_entry(c, &cpupool_list, list)
+    {
+        data->id = c->cpupool_id;
+        data->data = c;
+
+        ret = hypfs_read_dyndir_id_entry(&cpupool_pooldir, c->cpupool_id,
+                                         list_is_last(&c->list, &cpupool_list),
+                                         &uaddr);
+        if ( ret )
+            break;
+    }
+
+    return ret;
+}
+
+static unsigned int cpupool_dir_getsize(const struct hypfs_entry *entry)
+{
+    const struct cpupool *c;
+    unsigned int size = 0;
+
+    list_for_each_entry(c, &cpupool_list, list)
+        size += hypfs_dynid_entry_size(entry, c->cpupool_id);
+
+    return size;
+}
+
+static const struct hypfs_entry *cpupool_dir_enter(
+    const struct hypfs_entry *entry)
+{
+    struct hypfs_dyndir_id *data;
+
+    data = hypfs_alloc_dyndata(struct hypfs_dyndir_id);
+    if ( !data )
+        return ERR_PTR(-ENOMEM);
+    data->id = CPUPOOLID_NONE;
+
+    spin_lock(&cpupool_lock);
+
+    return entry;
+}
+
+static void cpupool_dir_exit(const struct hypfs_entry *entry)
+{
+    spin_unlock(&cpupool_lock);
+
+    hypfs_free_dyndata();
+}
+
+static struct hypfs_entry *cpupool_dir_findentry(
+    const struct hypfs_entry_dir *dir, const char *name, unsigned int name_len)
+{
+    unsigned long id;
+    const char *end;
+    struct cpupool *cpupool;
+
+    id = simple_strtoul(name, &end, 10);
+    if ( end != name + name_len || id > UINT_MAX )
+        return ERR_PTR(-ENOENT);
+
+    cpupool = __cpupool_find_by_id(id, true);
+
+    if ( !cpupool )
+        return ERR_PTR(-ENOENT);
+
+    return hypfs_gen_dyndir_id_entry(&cpupool_pooldir, id, cpupool);
+}
+
+static int cpupool_gran_read(const struct hypfs_entry *entry,
+                             XEN_GUEST_HANDLE_PARAM(void) uaddr)
+{
+    const struct hypfs_dyndir_id *data;
+    const struct cpupool *cpupool;
+    const char *gran;
+
+    data = hypfs_get_dyndata();
+    cpupool = data->data;
+    ASSERT(cpupool);
+
+    gran = sched_gran_get_name(cpupool->gran);
+
+    if ( !*gran )
+        return -ENOENT;
+
+    return copy_to_guest(uaddr, gran, strlen(gran) + 1) ? -EFAULT : 0;
+}
+
+static unsigned int hypfs_gran_getsize(const struct hypfs_entry *entry)
+{
+    const struct hypfs_dyndir_id *data;
+    const struct cpupool *cpupool;
+    const char *gran;
+
+    data = hypfs_get_dyndata();
+    cpupool = data->data;
+    ASSERT(cpupool);
+
+    gran = sched_gran_get_name(cpupool->gran);
+
+    return strlen(gran) + 1;
+}
+
+static int cpupool_gran_write(struct hypfs_entry_leaf *leaf,
+                              XEN_GUEST_HANDLE_PARAM(const_void) uaddr,
+                              unsigned int ulen)
+{
+    const struct hypfs_dyndir_id *data;
+    struct cpupool *cpupool;
+    enum sched_gran gran;
+    unsigned int sched_gran = 0;
+    char name[SCHED_GRAN_NAME_LEN];
+    int ret = 0;
+
+    if ( ulen > SCHED_GRAN_NAME_LEN )
+        return -ENOSPC;
+
+    if ( copy_from_guest(name, uaddr, ulen) )
+        return -EFAULT;
+
+    if ( memchr(name, 0, ulen) == (name + ulen - 1) )
+        sched_gran = sched_gran_get(name, &gran) ?
+                     0 : cpupool_check_granularity(gran);
+    if ( sched_gran == 0 )
+        return -EINVAL;
+
+    data = hypfs_get_dyndata();
+    cpupool = data->data;
+    ASSERT(cpupool);
+
+    /* Guarded by the cpupool_lock taken in cpupool_dir_enter(). */
+    if ( !cpumask_empty(cpupool->cpu_valid) )
+        ret = -EBUSY;
+    else
+    {
+        cpupool->gran = gran;
+        cpupool->sched_gran = sched_gran;
+    }
+
+    return ret;
+}
+
+static const struct hypfs_funcs cpupool_gran_funcs = {
+    .enter = hypfs_node_enter,
+    .exit = hypfs_node_exit,
+    .read = cpupool_gran_read,
+    .write = cpupool_gran_write,
+    .getsize = hypfs_gran_getsize,
+    .findentry = hypfs_leaf_findentry,
+};
+
+static HYPFS_VARSIZE_INIT(cpupool_gran, XEN_HYPFS_TYPE_STRING, "sched-gran",
+                          SCHED_GRAN_NAME_LEN, &cpupool_gran_funcs);
+static char granstr[SCHED_GRAN_NAME_LEN] = {
+    [0 ... SCHED_GRAN_NAME_LEN - 2] = '?',
+    [SCHED_GRAN_NAME_LEN - 1] = 0
+};
+
+static const struct hypfs_funcs cpupool_dir_funcs = {
+    .enter = cpupool_dir_enter,
+    .exit = cpupool_dir_exit,
+    .read = cpupool_dir_read,
+    .write = hypfs_write_deny,
+    .getsize = cpupool_dir_getsize,
+    .findentry = cpupool_dir_findentry,
+};
+
+static HYPFS_DIR_INIT_FUNC(cpupool_dir, "cpupool", &cpupool_dir_funcs);
+
+static void cpupool_hypfs_init(void)
+{
+    hypfs_add_dir(&hypfs_root, &cpupool_dir, true);
+    hypfs_add_dyndir(&cpupool_dir, &cpupool_pooldir);
+    hypfs_string_set_reference(&cpupool_gran, granstr);
+    hypfs_add_leaf(&cpupool_pooldir, &cpupool_gran, true);
+}
+
+#else /* CONFIG_HYPFS */
+
+static void cpupool_hypfs_init(void)
+{
+}
+
+#endif /* CONFIG_HYPFS */
+
 static int __init cpupool_init(void)
 {
     unsigned int cpu;
-    int err;
 
     cpupool_gran_init();
 
-    cpupool0 = cpupool_create(0, 0, &err);
-    BUG_ON(cpupool0 == NULL);
+    cpupool_hypfs_init();
+
+    cpupool0 = cpupool_create(0, 0);
+    BUG_ON(IS_ERR(cpupool0));
     cpupool_put(cpupool0);
     register_cpu_notifier(&cpu_nfb);
 

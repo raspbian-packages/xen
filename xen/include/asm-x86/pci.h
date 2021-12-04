@@ -6,8 +6,6 @@
 #define CF8_ADDR_HI(cf8) (  ((cf8) & 0x0f000000) >> 16)
 #define CF8_ENABLED(cf8) (!!((cf8) & 0x80000000))
 
-#define MMCFG_BDF(addr)  ( ((addr) & 0x0ffff000) >> 12)
-
 #define IS_SNB_GFX(id) (id == 0x01068086 || id == 0x01168086 \
                         || id == 0x01268086 || id == 0x01028086 \
                         || id == 0x01128086 || id == 0x01228086 \
@@ -31,5 +29,13 @@ bool_t pci_ro_mmcfg_decode(unsigned long mfn, unsigned int *seg,
 /* MMCFG external variable defines */
 extern int pci_mmcfg_config_num;
 extern struct acpi_mcfg_allocation *pci_mmcfg_config;
+
+/* Unlike ARM, PCI passthrough is always enabled for x86. */
+static always_inline bool is_pci_passthrough_enabled(void)
+{
+    return true;
+}
+
+static inline void arch_pci_init_pdev(struct pci_dev *pdev) {}
 
 #endif /* __X86_PCI_H__ */

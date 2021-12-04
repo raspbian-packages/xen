@@ -24,20 +24,32 @@
 
 #ifdef CONFIG_PV
 /* %rbx: struct vcpu */
-ENTRY(switch_to_kernel)
+switch_to_kernel:
         leaq  VCPU_trap_bounce(%rbx),%rdx
-        /* TB_eip = (32-bit syscall && syscall32_addr) ?
-         *          syscall32_addr : syscall_addr */
-        xor   %eax,%eax
+
+        /* TB_eip = 32-bit syscall ? syscall32_addr : syscall_addr */
+        mov   VCPU_syscall32_addr(%rbx), %rcx
+        mov   VCPU_syscall_addr(%rbx), %rax
         cmpw  $FLAT_USER_CS32,UREGS_cs(%rsp)
-        cmoveq VCPU_syscall32_addr(%rbx),%rax
-        testq %rax,%rax
-        cmovzq VCPU_syscall_addr(%rbx),%rax
-        movq  %rax,TRAPBOUNCE_eip(%rdx)
+        cmove %rcx, %rax
+
         /* TB_flags = VGCF_syscall_disables_events ? TBF_INTERRUPT : 0 */
         btl   $_VGCF_syscall_disables_events,VCPU_guest_context_flags(%rbx)
         setc  %cl
         leal  (,%rcx,TBF_INTERRUPT),%ecx
+
+        test  %rax, %rax
+UNLIKELY_START(z, syscall_no_callback) /* TB_eip == 0 => #UD */
+        mov   VCPU_trap_ctxt(%rbx), %rdi
+        movl  $X86_EXC_UD, UREGS_entry_vector(%rsp)
+        subq  $2, UREGS_rip(%rsp)
+        mov   X86_EXC_UD * TRAPINFO_sizeof + TRAPINFO_eip(%rdi), %rax
+        testb $4, X86_EXC_UD * TRAPINFO_sizeof + TRAPINFO_flags(%rdi)
+        setnz %cl
+        lea   TBF_EXCEPTION(, %rcx, TBF_INTERRUPT), %ecx
+UNLIKELY_END(syscall_no_callback)
+
+        movq  %rax,TRAPBOUNCE_eip(%rdx)
         movb  %cl,TRAPBOUNCE_flags(%rdx)
         call  create_bounce_frame
         andl  $~X86_EFLAGS_DF,UREGS_eflags(%rsp)
@@ -271,6 +283,45 @@ ENTRY(lstar_enter)
         call  pv_hypercall
         jmp   test_all_events
 
+/* See lstar_enter for entry register state. */
+ENTRY(cstar_enter)
+#ifdef CONFIG_XEN_SHSTK
+        ALTERNATIVE "", "setssbsy", X86_FEATURE_XEN_SHSTK
+#endif
+        /* sti could live here when we don't switch page tables below. */
+        CR4_PV32_RESTORE
+        movq  8(%rsp), %rax /* Restore %rax. */
+        movq  $FLAT_USER_SS32, 8(%rsp) /* Assume a 64bit domain.  Compat handled lower. */
+        pushq %r11
+        pushq $FLAT_USER_CS32
+        pushq %rcx
+        pushq $0
+        movl  $TRAP_syscall, 4(%rsp)
+        SAVE_ALL
+
+        SPEC_CTRL_ENTRY_FROM_PV /* Req: %rsp=regs/cpuinfo, Clob: acd */
+        /* WARNING! `ret`, `call *`, `jmp *` not safe before this point. */
+
+        GET_STACK_END(bx)
+        mov   STACK_CPUINFO_FIELD(xen_cr3)(%rbx), %rcx
+        test  %rcx, %rcx
+        jz    .Lcstar_cr3_okay
+        movb  $0, STACK_CPUINFO_FIELD(use_pv_cr3)(%rbx)
+        mov   %rcx, %cr3
+        /* %r12 is still zero at this point. */
+        mov   %r12, STACK_CPUINFO_FIELD(xen_cr3)(%rbx)
+.Lcstar_cr3_okay:
+        sti
+
+        movq  STACK_CPUINFO_FIELD(current_vcpu)(%rbx), %rbx
+
+#ifdef CONFIG_PV32
+        movq  VCPU_domain(%rbx), %rcx
+        cmpb  $0, DOMAIN_is_32bit_pv(%rcx)
+        jne   compat_syscall
+#endif
+        jmp   switch_to_kernel
+
 ENTRY(sysenter_entry)
 #ifdef CONFIG_XEN_SHSTK
         ALTERNATIVE "", "setssbsy", X86_FEATURE_XEN_SHSTK
@@ -280,7 +331,7 @@ ENTRY(sysenter_entry)
         pushq $0
         pushfq
 GLOBAL(sysenter_eflags_saved)
-        ASM_CLAC
+        ALTERNATIVE "", clac, X86_FEATURE_XEN_SMAP
         pushq $3 /* ring 3 null cs */
         pushq $0 /* null rip */
         pushq $0
@@ -328,12 +379,14 @@ UNLIKELY_END(sysenter_gpf)
         movq  VCPU_domain(%rbx),%rdi
         movq  %rax,TRAPBOUNCE_eip(%rdx)
         movb  %cl,TRAPBOUNCE_flags(%rdx)
+#ifdef CONFIG_PV32
         cmpb  $0, DOMAIN_is_32bit_pv(%rdi)
         jne   compat_sysenter
+#endif
         jmp   .Lbounce_exception
 
 ENTRY(int80_direct_trap)
-        ASM_CLAC
+        ALTERNATIVE "", clac, X86_FEATURE_XEN_SMAP
         pushq $0
         movl  $0x80, 4(%rsp)
         SAVE_ALL
@@ -370,6 +423,7 @@ UNLIKELY_END(msi_check)
         mov    0x80 * TRAPINFO_sizeof + TRAPINFO_eip(%rsi), %rdi
         movzwl 0x80 * TRAPINFO_sizeof + TRAPINFO_cs (%rsi), %ecx
 
+#ifdef CONFIG_PV32
         mov   %ecx, %edx
         and   $~3, %edx
 
@@ -378,6 +432,10 @@ UNLIKELY_END(msi_check)
 
         test  %rdx, %rdx
         jz    int80_slow_path
+#else
+        test  %rdi, %rdi
+        jz    int80_slow_path
+#endif
 
         /* Construct trap_bounce from trap_ctxt[0x80]. */
         lea   VCPU_trap_bounce(%rbx), %rdx
@@ -390,8 +448,10 @@ UNLIKELY_END(msi_check)
         lea   (, %rcx, TBF_INTERRUPT), %ecx
         mov   %cl, TRAPBOUNCE_flags(%rdx)
 
+#ifdef CONFIG_PV32
         cmpb  $0, DOMAIN_is_32bit_pv(%rax)
         jne   compat_int80_direct_trap
+#endif
 
         call  create_bounce_frame
         jmp   test_all_events
@@ -446,13 +506,15 @@ UNLIKELY_START(g, create_bounce_frame_bad_sp)
         jmp   asm_domain_crash_synchronous  /* Does not return */
 __UNLIKELY_END(create_bounce_frame_bad_sp)
 
+        guest_access_mask_ptr %rsi, %rax, %rcx
+
 #define STORE_GUEST_STACK(reg, n) \
 0:      movq  %reg,(n)*8(%rsi); \
         _ASM_EXTABLE(0b, domain_crash_page_fault_ ## n ## x8)
 
         subq  $7*8,%rsi
         movq  UREGS_ss+8(%rsp),%rax
-        ASM_STAC
+        ALTERNATIVE "", stac, X86_FEATURE_XEN_SMAP
         movq  VCPU_domain(%rbx),%rdi
         STORE_GUEST_STACK(rax,6)        # SS
         movq  UREGS_rsp+8(%rsp),%rax
@@ -490,7 +552,7 @@ __UNLIKELY_END(create_bounce_frame_bad_sp)
         STORE_GUEST_STACK(rax,1)        # R11
         movq  UREGS_rcx+8(%rsp),%rax
         STORE_GUEST_STACK(rax,0)        # RCX
-        ASM_CLAC
+        ALTERNATIVE "", clac, X86_FEATURE_XEN_SMAP
 
 #undef STORE_GUEST_STACK
 
@@ -532,21 +594,25 @@ domain_crash_page_fault_2x8:
 domain_crash_page_fault_1x8:
         addq  $8,%rsi
 domain_crash_page_fault_0x8:
-        ASM_CLAC
+        ALTERNATIVE "", clac, X86_FEATURE_XEN_SMAP
         movq  %rsi,%rdi
         call  show_page_walk
 ENTRY(dom_crash_sync_extable)
-        ASM_CLAC
+        ALTERNATIVE "", clac, X86_FEATURE_XEN_SMAP
         # Get out of the guest-save area of the stack.
         GET_STACK_END(ax)
         leaq  STACK_CPUINFO_FIELD(guest_cpu_user_regs)(%rax),%rsp
         # create_bounce_frame() temporarily clobbers CS.RPL. Fix up.
+#ifdef CONFIG_PV32
         movq  STACK_CPUINFO_FIELD(current_vcpu)(%rax), %rax
         movq  VCPU_domain(%rax),%rax
         cmpb  $0, DOMAIN_is_32bit_pv(%rax)
         sete  %al
         leal  (%rax,%rax,2),%eax
         orb   %al,UREGS_cs(%rsp)
+#else
+        orb   $3, UREGS_cs(%rsp)
+#endif
         xorl  %edi,%edi
         jmp   asm_domain_crash_synchronous /* Does not return */
         .popsection
@@ -557,16 +623,23 @@ ENTRY(dom_crash_sync_extable)
         .text
 
 /* No special register assumptions. */
-ENTRY(ret_from_intr)
 #ifdef CONFIG_PV
+ENTRY(continue_pv_domain)
+        call  check_wakeup_from_wait
+ret_from_intr:
         GET_CURRENT(bx)
         testb $3, UREGS_cs(%rsp)
         jz    restore_all_xen
+#ifdef CONFIG_PV32
         movq  VCPU_domain(%rbx), %rax
         cmpb  $0, DOMAIN_is_32bit_pv(%rax)
         je    test_all_events
         jmp   compat_test_all_events
 #else
+        jmp   test_all_events
+#endif
+#else
+ret_from_intr:
         ASSERT_CONTEXT_IS_XEN
         jmp   restore_all_xen
 #endif
@@ -594,7 +667,8 @@ UNLIKELY_END(exit_cr3)
         iretq
 
 ENTRY(common_interrupt)
-        SAVE_ALL CLAC
+        ALTERNATIVE "", clac, X86_FEATURE_XEN_SMAP
+        SAVE_ALL
 
         GET_STACK_END(14)
 
@@ -626,7 +700,8 @@ ENTRY(page_fault)
         movl  $TRAP_page_fault,4(%rsp)
 /* No special register assumptions. */
 GLOBAL(handle_exception)
-        SAVE_ALL CLAC
+        ALTERNATIVE "", clac, X86_FEATURE_XEN_SMAP
+        SAVE_ALL
 
         GET_STACK_END(14)
 
@@ -652,7 +727,7 @@ handle_exception_saved:
         testb $X86_EFLAGS_IF>>8,UREGS_eflags+1(%rsp)
         jz    exception_with_ints_disabled
 
-#ifdef CONFIG_PV
+#if defined(CONFIG_PV32)
         ALTERNATIVE_2 "jmp .Lcr4_pv32_done", \
             __stringify(mov VCPU_domain(%rbx), %rax), X86_FEATURE_XEN_SMEP, \
             __stringify(mov VCPU_domain(%rbx), %rax), X86_FEATURE_XEN_SMAP
@@ -692,7 +767,7 @@ handle_exception_saved:
         test  $~(PFEC_write_access|PFEC_insn_fetch),%eax
         jz    compat_test_all_events
 .Lcr4_pv32_done:
-#else
+#elif !defined(CONFIG_PV)
         ASSERT_CONTEXT_IS_XEN
 #endif /* CONFIG_PV */
         sti
@@ -711,9 +786,11 @@ handle_exception_saved:
 #ifdef CONFIG_PV
         testb $3,UREGS_cs(%rsp)
         jz    restore_all_xen
+#ifdef CONFIG_PV32
         movq  VCPU_domain(%rbx),%rax
         cmpb  $0, DOMAIN_is_32bit_pv(%rax)
         jne   compat_test_all_events
+#endif
         jmp   test_all_events
 #else
         ASSERT_CONTEXT_IS_XEN
@@ -831,7 +908,8 @@ ENTRY(entry_CP)
 ENTRY(double_fault)
         movl  $TRAP_double_fault,4(%rsp)
         /* Set AC to reduce chance of further SMAP faults */
-        SAVE_ALL STAC
+        ALTERNATIVE "", stac, X86_FEATURE_XEN_SMAP
+        SAVE_ALL
 
         GET_STACK_END(14)
 
@@ -864,7 +942,8 @@ ENTRY(nmi)
         pushq $0
         movl  $TRAP_nmi,4(%rsp)
 handle_ist_exception:
-        SAVE_ALL CLAC
+        ALTERNATIVE "", clac, X86_FEATURE_XEN_SMAP
+        SAVE_ALL
 
         GET_STACK_END(14)
 
@@ -947,10 +1026,15 @@ handle_ist_exception:
         je    1f
         movl  $EVENT_CHECK_VECTOR,%edi
         call  send_IPI_self
-1:      movq  VCPU_domain(%rbx),%rax
+1:
+#ifdef CONFIG_PV32
+        movq  VCPU_domain(%rbx),%rax
         cmpb  $0,DOMAIN_is_32bit_pv(%rax)
         je    restore_all_guest
         jmp   compat_restore_all_guest
+#else
+        jmp   restore_all_guest
+#endif
 #else
         ASSERT_CONTEXT_IS_XEN
         jmp   restore_all_xen
@@ -982,8 +1066,10 @@ autogen_stubs: /* Automatically generated stubs. */
         .rept X86_NR_VECTORS
 
         /* Common interrupts, heading towards do_IRQ(). */
-#ifdef CONFIG_PV
+#if defined(CONFIG_PV32)
         .if vec >= FIRST_IRQ_VECTOR && vec != HYPERCALL_VECTOR && vec != LEGACY_SYSCALL_VECTOR
+#elif defined(CONFIG_PV)
+        .if vec >= FIRST_IRQ_VECTOR && vec != LEGACY_SYSCALL_VECTOR
 #else
         .if vec >= FIRST_IRQ_VECTOR
 #endif

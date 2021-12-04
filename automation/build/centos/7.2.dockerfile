@@ -26,6 +26,7 @@ RUN rpm --rebuilddb && \
         python-devel \
         libuuid-devel \
         pkgconfig \
+        # gettext for Xen < 4.13
         gettext \
         flex \
         bison \
@@ -34,6 +35,7 @@ RUN rpm --rebuilddb && \
         yajl-devel \
         pixman-devel \
         glibc-devel \
+        # glibc-devel.i686 for Xen < 4.15
         glibc-devel.i686 \
         make \
         binutils \

@@ -48,9 +48,13 @@ type x86_arch_emulation_flags =
 	| X86_EMU_USE_PIRQ
 	| X86_EMU_VPCI
 
+type x86_arch_misc_flags =
+	| X86_MSR_RELAXED
+
 type xen_x86_arch_domainconfig =
 {
 	emulation_flags: x86_arch_emulation_flags list;
+	misc_flags: x86_arch_misc_flags list;
 }
 
 type arch_domainconfig =
@@ -64,6 +68,8 @@ type domain_create_flag =
 	| CDF_OOS_OFF
 	| CDF_XS_DOMAIN
 	| CDF_IOMMU
+	| CDF_NESTED_VIRT
+	| CDF_VPMU
 
 type domain_create_iommu_opts =
 	| IOMMU_NO_SHAREPT
@@ -78,6 +84,7 @@ type domctl_create_config =
 	max_evtchn_port: int;
 	max_grant_frames: int;
 	max_maptrack_frames: int;
+	max_grant_version: int;
 	arch: arch_domainconfig;
 }
 
@@ -115,6 +122,10 @@ type physinfo_cap_flag =
 	| CAP_HAP
 	| CAP_Shadow
 	| CAP_IOMMU_HAP_PT_SHARE
+	| CAP_Vmtrace
+	| CAP_Vpmu
+	| CAP_Gnttab_v1
+	| CAP_Gnttab_v2
 
 type physinfo =
 {
@@ -178,8 +189,11 @@ let with_intf f =
 		handle := Some h;
 		f h
 
-external domain_create: handle -> domctl_create_config -> domid
+external domain_create_stub: handle -> domid -> domctl_create_config -> domid
        = "stub_xc_domain_create"
+
+let domain_create handle ?(domid=0) config =
+	domain_create_stub handle domid config
 
 external domain_sethandle: handle -> domid -> string -> unit
        = "stub_xc_domain_sethandle"

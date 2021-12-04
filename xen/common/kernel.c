@@ -326,6 +326,8 @@ unsigned int tainted;
  *  'E' - An error (e.g. a machine check exceptions) has been injected.
  *  'H' - HVM forced emulation prefix is permitted.
  *  'M' - Machine had a machine check experience.
+ *  'U' - Platform is unsecure (usually due to an errata on the platform).
+ *  'S' - Out of spec CPU (One core has a feature incompatible with others).
  *
  *      The string is overwritten by the next call to print_taint().
  */
@@ -333,11 +335,13 @@ char *print_tainted(char *str)
 {
     if ( tainted )
     {
-        snprintf(str, TAINT_STRING_MAX_LEN, "Tainted: %c%c%c%c",
+        snprintf(str, TAINT_STRING_MAX_LEN, "Tainted: %c%c%c%c%c%c",
+                 tainted & TAINT_MACHINE_UNSECURE ? 'U' : ' ',
                  tainted & TAINT_MACHINE_CHECK ? 'M' : ' ',
                  tainted & TAINT_SYNC_CONSOLE ? 'C' : ' ',
                  tainted & TAINT_ERROR_INJECT ? 'E' : ' ',
-                 tainted & TAINT_HVM_FEP ? 'H' : ' ');
+                 tainted & TAINT_HVM_FEP ? 'H' : ' ',
+                 tainted & TAINT_CPU_OUT_OF_SPEC ? 'S' : ' ');
     }
     else
     {
@@ -558,6 +562,10 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
                              (1U << XENFEAT_hvm_callback_vector) |
                              (has_pirq(d) ? (1U << XENFEAT_hvm_pirqs) : 0);
 #endif
+            if ( !paging_mode_translate(d) || is_domain_direct_mapped(d) )
+                fi.submap |= (1U << XENFEAT_direct_mapped);
+            else
+                fi.submap |= (1U << XENFEAT_not_direct_mapped);
             break;
         default:
             return -EINVAL;

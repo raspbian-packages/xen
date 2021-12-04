@@ -563,6 +563,8 @@ int parse_nic_config(libxl_device_nic *nic, XLU_Config **config, char *token)
         fprintf(stderr, "the accel parameter for vifs is currently not supported\n");
     } else if (MATCH_OPTION("devid", token, oparg)) {
         nic->devid = parse_ulong(oparg);
+    } else if (MATCH_OPTION("mtu", token, oparg)) {
+        nic->mtu = parse_ulong(oparg);
     } else {
         fprintf(stderr, "unrecognized argument `%s'\n", token);
         return 1;
@@ -1429,6 +1431,15 @@ void parse_config_data(const char *config_source,
     else
         exit(1);
 
+    e = xlu_cfg_get_bounded_long (config, "max_grant_version", 0,
+                                  INT_MAX, &l, 1);
+    if (e == ESRCH) /* not specified */
+        b_info->max_grant_version = max_grant_version;
+    else if (!e)
+        b_info->max_grant_version = l;
+    else
+        exit(1);
+
     libxl_defbool_set(&b_info->claim_mode, claim_mode);
 
     if (xlu_cfg_get_string (config, "on_poweroff", &buf, 0))
@@ -1471,24 +1482,24 @@ void parse_config_data(const char *config_source,
         d_config->num_pcidevs = 0;
         d_config->pcidevs = NULL;
         for(i = 0; (buf = xlu_cfg_get_listitem (pcis, i)) != NULL; i++) {
-            libxl_device_pci *pcidev;
+            libxl_device_pci *pci;
 
-            pcidev = ARRAY_EXTEND_INIT_NODEVID(d_config->pcidevs,
-                                               d_config->num_pcidevs,
-                                               libxl_device_pci_init);
-            pcidev->msitranslate = pci_msitranslate;
-            pcidev->power_mgmt = pci_power_mgmt;
-            pcidev->permissive = pci_permissive;
-            pcidev->seize = pci_seize;
+            pci = ARRAY_EXTEND_INIT_NODEVID(d_config->pcidevs,
+                                            d_config->num_pcidevs,
+                                            libxl_device_pci_init);
+            pci->msitranslate = pci_msitranslate;
+            pci->power_mgmt = pci_power_mgmt;
+            pci->permissive = pci_permissive;
+            pci->seize = pci_seize;
             /*
              * Like other pci option, the per-device policy always follows
              * the global policy by default.
              */
-            pcidev->rdm_policy = b_info->u.hvm.rdm.policy;
-            e = xlu_pci_parse_bdf(config, pcidev, buf);
+            pci->rdm_policy = b_info->u.hvm.rdm.policy;
+            e = xlu_pci_parse_spec_string(config, pci, buf);
             if (e) {
                 fprintf(stderr,
-                        "unable to parse PCI BDF `%s' for passthrough\n",
+                        "unable to parse PCI_SPEC_STRING `%s' for passthrough\n",
                         buf);
                 exit(-e);
             }
@@ -1859,6 +1870,10 @@ void parse_config_data(const char *config_source,
                     buf);
             exit (1);
         }
+    }
+
+    if (!xlu_cfg_get_long(config, "vmtrace_buf_kb", &l, 1) && l) {
+        b_info->vmtrace_buf_kb = l;
     }
 
     if (!xlu_cfg_get_list(config, "ioports", &ioports, &num_ioports, 0)) {
@@ -2527,6 +2542,8 @@ skip_usbdev:
 
     xlu_cfg_replace_string (config, "stubdomain_kernel",
                             &b_info->stubdomain_kernel, 0);
+    xlu_cfg_replace_string (config, "stubdomain_cmdline",
+                            &b_info->stubdomain_cmdline, 0);
     xlu_cfg_replace_string (config, "stubdomain_ramdisk",
                             &b_info->stubdomain_ramdisk, 0);
     if (!xlu_cfg_get_long (config, "stubdomain_memory", &l, 0))
@@ -2734,6 +2751,15 @@ skip_usbdev:
 
     xlu_cfg_get_defbool(config, "xend_suspend_evtchn_compat",
                         &c_info->xend_suspend_evtchn_compat, 0);
+
+    if (!xlu_cfg_get_defbool(config, "msr_relaxed",
+                             &b_info->arch_x86.msr_relaxed, 0))
+            fprintf(stderr,
+                    "WARNING: msr_relaxed will be removed in future versions.\n"
+                    "If it fixes an issue you are having please report to "
+                    "xen-devel@lists.xenproject.org.\n");
+
+    xlu_cfg_get_defbool(config, "vpmu", &b_info->vpmu, 0);
 
     xlu_cfg_destroy(config);
 }

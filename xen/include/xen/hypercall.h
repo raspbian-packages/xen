@@ -45,6 +45,10 @@ extern long
 do_platform_op(
     XEN_GUEST_HANDLE_PARAM(xen_platform_op_t) u_xenpf_op);
 
+extern long
+pci_physdev_op(
+    int cmd, XEN_GUEST_HANDLE_PARAM(void) arg);
+
 /*
  * To allow safe resume of do_memory_op() after preemption, we need to know
  * at what point in the page list to resume. For this purpose I steal the
@@ -127,7 +131,7 @@ do_kexec_op(
 
 extern long
 do_xsm_op(
-    XEN_GUEST_HANDLE_PARAM(xsm_op_t) u_xsm_op);
+    XEN_GUEST_HANDLE_PARAM(void) u_xsm_op);
 
 #ifdef CONFIG_ARGO
 extern long do_argo_op(
@@ -198,7 +202,7 @@ compat_set_timer_op(
     s32 hi);
 
 extern int compat_xsm_op(
-    XEN_GUEST_HANDLE_PARAM(xsm_op_t) op);
+    XEN_GUEST_HANDLE_PARAM(void) op);
 
 extern int compat_kexec_op(unsigned long op, XEN_GUEST_HANDLE_PARAM(void) uarg);
 
@@ -215,8 +219,6 @@ extern long compat_argo_op(
     unsigned long arg3,
     unsigned long arg4);
 #endif
-
-#include <compat/hvm/dm_op.h>
 
 extern int
 compat_dm_op(

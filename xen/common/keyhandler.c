@@ -3,7 +3,9 @@
  */
 
 #include <asm/regs.h>
+#include <xen/delay.h>
 #include <xen/keyhandler.h>
+#include <xen/param.h>
 #include <xen/shutdown.h>
 #include <xen/event.h>
 #include <xen/console.h>
@@ -181,7 +183,10 @@ static void dump_registers(unsigned char key, struct cpu_user_regs *regs)
     cpumask_copy(&dump_execstate_mask, &cpu_online_map);
 
     /* Get local execution state out immediately, in case we get stuck. */
-    dump_execstate(regs);
+    if ( regs )
+        dump_execstate(regs);
+    else
+        run_in_exception_handler(dump_execstate);
 
     /* Alt. handling: remaining CPUs are dumped asynchronously one-by-one. */
     if ( alt_key_handling )
@@ -481,13 +486,21 @@ static void run_all_keyhandlers(unsigned char key, struct cpu_user_regs *regs)
     tasklet_schedule(&run_all_keyhandlers_tasklet);
 }
 
-static void do_debug_key(unsigned char key, struct cpu_user_regs *regs)
+static void do_debugger_trap_fatal(struct cpu_user_regs *regs)
 {
-    printk("'%c' pressed -> trapping into debugger\n", key);
     (void)debugger_trap_fatal(0xf001, regs);
 
     /* Prevent tail call optimisation, which confuses xendbg. */
     barrier();
+}
+
+static void do_debug_key(unsigned char key, struct cpu_user_regs *regs)
+{
+    printk("'%c' pressed -> trapping into debugger\n", key);
+    if ( regs )
+        do_debugger_trap_fatal(regs);
+    else
+        run_in_exception_handler(do_debugger_trap_fatal);
 }
 
 static void do_toggle_alt_key(unsigned char key, struct cpu_user_regs *regs)
@@ -504,6 +517,59 @@ void __init initialize_keytable(void)
         alt_key_handling = 1;
         printk(XENLOG_INFO "Defaulting to alternative key handling; "
                "send 'A' to switch to normal mode.\n");
+    }
+}
+
+#define CRASHACTION_SIZE  32
+static char crash_debug_panic[CRASHACTION_SIZE];
+string_runtime_param("crash-debug-panic", crash_debug_panic);
+static char crash_debug_hwdom[CRASHACTION_SIZE];
+string_runtime_param("crash-debug-hwdom", crash_debug_hwdom);
+static char crash_debug_watchdog[CRASHACTION_SIZE];
+string_runtime_param("crash-debug-watchdog", crash_debug_watchdog);
+#ifdef CONFIG_KEXEC
+static char crash_debug_kexeccmd[CRASHACTION_SIZE];
+string_runtime_param("crash-debug-kexeccmd", crash_debug_kexeccmd);
+#else
+#define crash_debug_kexeccmd NULL
+#endif
+static char crash_debug_debugkey[CRASHACTION_SIZE];
+string_runtime_param("crash-debug-debugkey", crash_debug_debugkey);
+
+void keyhandler_crash_action(enum crash_reason reason)
+{
+    static const char *const crash_action[] = {
+        [CRASHREASON_PANIC] = crash_debug_panic,
+        [CRASHREASON_HWDOM] = crash_debug_hwdom,
+        [CRASHREASON_WATCHDOG] = crash_debug_watchdog,
+        [CRASHREASON_KEXECCMD] = crash_debug_kexeccmd,
+        [CRASHREASON_DEBUGKEY] = crash_debug_debugkey,
+    };
+    static bool ignore;
+    const char *action;
+
+    /* Some handlers are not functional too early. */
+    if ( system_state < SYS_STATE_smp_boot )
+        return;
+
+    if ( (unsigned int)reason >= ARRAY_SIZE(crash_action) )
+        return;
+    action = crash_action[reason];
+    if ( !action )
+        return;
+
+    /* Avoid recursion. */
+    if ( ignore )
+        return;
+    ignore = true;
+
+    while ( *action )
+    {
+        if ( *action == '+' )
+            mdelay(10);
+        else
+            handle_keypress(*action, NULL);
+        action++;
     }
 }
 

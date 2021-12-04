@@ -19,8 +19,6 @@
 
 #define BITS_PER_XEN_ULONG BITS_PER_LONG
 
-#define CONFIG_X86_PM_TIMER 1
-#define CONFIG_HPET_TIMER 1
 #define CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS 1
 #define CONFIG_DISCONTIGMEM 1
 #define CONFIG_NUMA_EMU 1
@@ -142,7 +140,7 @@ extern unsigned char boot_edid_info[128];
  *  0xffff82c000000000 - 0xffff82cfffffffff [64GB,  2^36 bytes, PML4:261]
  *    vmap()/ioremap()/fixmap area.
  *  0xffff82d000000000 - 0xffff82d03fffffff [1GB,   2^30 bytes, PML4:261]
- *    Compatibility machine-to-phys translation table.
+ *    Compatibility machine-to-phys translation table (CONFIG_PV32).
  *  0xffff82d040000000 - 0xffff82d07fffffff [1GB,   2^30 bytes, PML4:261]
  *    Xen text, static data, bss.
 #ifndef CONFIG_BIGMEM
@@ -172,7 +170,11 @@ extern unsigned char boot_edid_info[128];
  *    Guest-defined use.
  *  0x00000000f5800000 - 0x00000000ffffffff [168MB,             PML4:0]
  *    Read-only machine-to-phys translation table (GUEST ACCESSIBLE).
- *  0x0000000100000000 - 0x00007fffffffffff [128TB-4GB,         PML4:0-255]
+ *  0x0000000100000000 - 0x000001ffffffffff [2TB-4GB,           PML4:0-3]
+ *    Unused / Reserved for future use.
+ *  0x0000020000000000 - 0x0000027fffffffff [512GB, 2^39 bytes, PML4:4]
+ *    Mirror of per-domain mappings (for argument translation area; also HVM).
+ *  0x0000028000000000 - 0x00007fffffffffff [125.5TB,           PML4:5-255]
  *    Unused / Reserved for future use.
  */
 
@@ -209,6 +211,8 @@ extern unsigned char boot_edid_info[128];
 #define PERDOMAIN_SLOTS         3
 #define PERDOMAIN_VIRT_SLOT(s)  (PERDOMAIN_VIRT_START + (s) * \
                                  (PERDOMAIN_SLOT_MBYTES << 20))
+/* Slot 4: mirror of per-domain mappings (for compat xlat area accesses). */
+#define PERDOMAIN_ALT_VIRT_START PML4_ADDR(4)
 /* Slot 261: machine-to-phys conversion table (256GB). */
 #define RDWR_MPT_VIRT_START     (PML4_ADDR(261))
 #define RDWR_MPT_VIRT_END       (RDWR_MPT_VIRT_START + MPT_VIRT_SIZE)
@@ -246,9 +250,18 @@ extern unsigned char boot_edid_info[128];
 
 #ifndef __ASSEMBLY__
 
+#ifdef CONFIG_PV32
+
 /* This is not a fixed value, just a lower limit. */
 #define __HYPERVISOR_COMPAT_VIRT_START 0xF5800000
 #define HYPERVISOR_COMPAT_VIRT_START(d) ((d)->arch.hv_compat_vstart)
+
+#else /* !CONFIG_PV32 */
+
+#define HYPERVISOR_COMPAT_VIRT_START(d) ((void)(d), 0)
+
+#endif /* CONFIG_PV32 */
+
 #define MACH2PHYS_COMPAT_VIRT_START    HYPERVISOR_COMPAT_VIRT_START
 #define MACH2PHYS_COMPAT_VIRT_END      0xFFE00000
 #define MACH2PHYS_COMPAT_NR_ENTRIES(d) \

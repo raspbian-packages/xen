@@ -85,7 +85,7 @@ struct efi_rs_state efi_rs_enter(void)
     static const u32 mxcsr = MXCSR_DEFAULT;
     struct efi_rs_state state = { .cr3 = 0 };
 
-    if ( !efi_l4_pgtable )
+    if ( mfn_eq(efi_l4_mfn, INVALID_MFN) )
         return state;
 
     state.cr3 = read_cr3();
@@ -111,7 +111,7 @@ struct efi_rs_state efi_rs_enter(void)
         lgdt(&gdt_desc);
     }
 
-    switch_cr3_cr4(virt_to_maddr(efi_l4_pgtable), read_cr4());
+    switch_cr3_cr4(mfn_to_maddr(efi_l4_mfn), read_cr4());
 
     return state;
 }
@@ -140,9 +140,9 @@ void efi_rs_leave(struct efi_rs_state *state)
 
 bool efi_rs_using_pgtables(void)
 {
-    return efi_l4_pgtable &&
+    return !mfn_eq(efi_l4_mfn, INVALID_MFN) &&
            (smp_processor_id() == efi_rs_on_cpu) &&
-           (read_cr3() == virt_to_maddr(efi_l4_pgtable));
+           (read_cr3() == mfn_to_maddr(efi_l4_mfn));
 }
 
 unsigned long efi_get_time(void)
@@ -607,6 +607,9 @@ int efi_runtime_call(struct xenpf_efi_runtime_call *op)
     break;
 
     case XEN_EFI_query_variable_info:
+    {
+        uint64_t max_store_size, remain_store_size, max_size;
+
         if ( op->misc & ~XEN_EFI_VARINFO_BOOT_SNAPSHOT )
             return -EINVAL;
 
@@ -638,16 +641,36 @@ int efi_runtime_call(struct xenpf_efi_runtime_call *op)
 
         if ( !efi_enabled(EFI_RS) || (efi_rs->Hdr.Revision >> 16) < 2 )
             return -EOPNOTSUPP;
+
+        /*
+         * Bounce the variables onto the stack to make them 8 byte aligned when
+         * called from the compat handler, as their placement in
+         * compat_pf_efi_runtime_call will make them 4 byte aligned instead and
+         * and compilers may validly complain.
+         *
+         * Note that while the function parameters are OUT only, copy the
+         * values here anyway just in case. This is done regardless of whether
+         * called from the compat handler or not, as it's not worth the extra
+         * logic to differentiate.
+         */
+        max_store_size = op->u.query_variable_info.max_store_size;
+        remain_store_size = op->u.query_variable_info.remain_store_size;
+        max_size = op->u.query_variable_info.max_size;
+
         state = efi_rs_enter();
         if ( !state.cr3 )
             return -EOPNOTSUPP;
         status = efi_rs->QueryVariableInfo(
-            op->u.query_variable_info.attr,
-            &op->u.query_variable_info.max_store_size,
-            &op->u.query_variable_info.remain_store_size,
-            &op->u.query_variable_info.max_size);
+            op->u.query_variable_info.attr, &max_store_size, &remain_store_size,
+            &max_size);
         efi_rs_leave(&state);
+
+        op->u.query_variable_info.max_store_size = max_store_size;
+        op->u.query_variable_info.remain_store_size = remain_store_size;
+        op->u.query_variable_info.max_size = max_size;
+
         break;
+    }
 
     case XEN_EFI_query_capsule_capabilities:
     case XEN_EFI_update_capsule:

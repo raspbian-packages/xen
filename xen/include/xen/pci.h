@@ -15,7 +15,6 @@
 #include <xen/pfn.h>
 #include <asm/device.h>
 #include <asm/numa.h>
-#include <asm/pci.h>
 
 /*
  * The PCI interface treats multi-function devices as independent
@@ -41,6 +40,8 @@
 #define PCI_SBDF3(s,b,df) \
     ((pci_sbdf_t){ .sbdf = (((s) & 0xffff) << 16) | PCI_BDF2(b, df) })
 
+#define ECAM_REG_OFFSET(addr)  ((addr) & 0x00000fff)
+
 typedef union {
     uint32_t sbdf;
     struct {
@@ -61,6 +62,8 @@ typedef union {
         uint16_t                seg;
     };
 } pci_sbdf_t;
+
+#include <asm/pci.h>
 
 struct pci_dev_info {
     /*
@@ -148,16 +151,12 @@ struct pci_dev {
 void pcidevs_lock(void);
 void pcidevs_unlock(void);
 bool_t __must_check pcidevs_locked(void);
-bool_t __must_check pcidevs_trylock(void);
 
 bool_t pci_known_segment(u16 seg);
 bool_t pci_device_detect(u16 seg, u8 bus, u8 dev, u8 func);
 int scan_pci_devices(void);
 enum pdev_type pdev_type(u16 seg, u8 bus, u8 devfn);
 int find_upstream_bridge(u16 seg, u8 *bus, u8 *devfn, u8 *secbus);
-struct pci_dev *pci_lock_pdev(int seg, int bus, int devfn);
-struct pci_dev *pci_lock_domain_pdev(
-    struct domain *, int seg, int bus, int devfn);
 
 void setup_hwdom_pci_devices(struct domain *,
                             int (*)(u8 devfn, struct pci_dev *));
@@ -211,5 +210,14 @@ struct pirq;
 int msixtbl_pt_register(struct domain *, struct pirq *, uint64_t gtable);
 void msixtbl_pt_unregister(struct domain *, struct pirq *);
 void msixtbl_pt_cleanup(struct domain *d);
+
+#ifdef CONFIG_HVM
+int arch_pci_clean_pirqs(struct domain *d);
+#else
+static inline int arch_pci_clean_pirqs(struct domain *d)
+{
+    return 0;
+}
+#endif /* CONFIG_HVM */
 
 #endif /* __XEN_PCI_H__ */

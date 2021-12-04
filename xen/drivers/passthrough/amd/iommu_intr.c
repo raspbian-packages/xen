@@ -310,9 +310,7 @@ static int update_intremap_entry_from_ioapic(
         entry.ptr32->flds.remap_en = false;
         spin_unlock(lock);
 
-        spin_lock(&iommu->lock);
         amd_iommu_flush_intremap(iommu, req_id);
-        spin_unlock(&iommu->lock);
 
         spin_lock(lock);
     }
@@ -379,8 +377,8 @@ void amd_iommu_ioapic_update_ire(
     iommu = find_iommu_for_device(seg, bdf);
     if ( !iommu )
     {
-        AMD_IOMMU_DEBUG("Fail to find iommu for ioapic device id ="
-                        " %04x:%04x\n", seg, bdf);
+        AMD_IOMMU_WARN("failed to find IOMMU for IO-APIC @ %04x:%04x\n",
+                       seg, bdf);
         __io_apic_write(apic, reg, value);
         return;
     }
@@ -527,11 +525,9 @@ static int update_intremap_entry_from_msi_msg(
 
         if ( iommu->enabled )
         {
-            spin_lock_irqsave(&iommu->lock, flags);
             amd_iommu_flush_intremap(iommu, req_id);
             if ( alias_id != req_id )
                 amd_iommu_flush_intremap(iommu, alias_id);
-            spin_unlock_irqrestore(&iommu->lock, flags);
         }
 
         return 0;
@@ -567,11 +563,9 @@ static int update_intremap_entry_from_msi_msg(
         entry.ptr32->flds.remap_en = false;
         spin_unlock(lock);
 
-        spin_lock(&iommu->lock);
         amd_iommu_flush_intremap(iommu, req_id);
         if ( alias_id != req_id )
             amd_iommu_flush_intremap(iommu, alias_id);
-        spin_unlock(&iommu->lock);
 
         spin_lock(lock);
     }
@@ -610,8 +604,7 @@ static struct amd_iommu *_find_iommu_for_device(int seg, int bdf)
     if ( iommu )
         return iommu;
 
-    AMD_IOMMU_DEBUG("No IOMMU for MSI dev = %04x:%02x:%02x.%u\n",
-                    seg, PCI_BUS(bdf), PCI_SLOT(bdf), PCI_FUNC(bdf));
+    AMD_IOMMU_DEBUG("No IOMMU for MSI dev = %pp\n", &PCI_SBDF2(seg, bdf));
     return ERR_PTR(-EINVAL);
 }
 
@@ -658,47 +651,6 @@ int amd_iommu_msi_msg_update_ire(
     }
 
     return rc;
-}
-
-void amd_iommu_read_msi_from_ire(
-    struct msi_desc *msi_desc, struct msi_msg *msg)
-{
-    unsigned int offset = msg->data & (INTREMAP_MAX_ENTRIES - 1);
-    const struct pci_dev *pdev = msi_desc->dev;
-    u16 bdf = pdev ? PCI_BDF2(pdev->bus, pdev->devfn) : hpet_sbdf.bdf;
-    u16 seg = pdev ? pdev->seg : hpet_sbdf.seg;
-    const struct amd_iommu *iommu = _find_iommu_for_device(seg, bdf);
-    union irte_ptr entry;
-
-    if ( IS_ERR_OR_NULL(iommu) )
-        return;
-
-    entry = get_intremap_entry(iommu, get_dma_requestor_id(seg, bdf), offset);
-
-    if ( msi_desc->msi_attrib.type == PCI_CAP_ID_MSI )
-    {
-        int nr = msi_desc->msi_attrib.entry_nr;
-
-        ASSERT(!(offset & (msi_desc[-nr].msi.nvec - 1)));
-        offset |= nr;
-    }
-
-    msg->data &= ~(INTREMAP_MAX_ENTRIES - 1);
-    /* The IntType fields match for both formats. */
-    msg->data |= MASK_INSR(entry.ptr32->flds.int_type,
-                           MSI_DATA_DELIVERY_MODE_MASK);
-    if ( iommu->ctrl.ga_en )
-    {
-        msg->data |= MASK_INSR(entry.ptr128->full.vector,
-                               MSI_DATA_VECTOR_MASK);
-        msg->dest32 = get_full_dest(entry.ptr128);
-    }
-    else
-    {
-        msg->data |= MASK_INSR(entry.ptr32->flds.vector,
-                               MSI_DATA_VECTOR_MASK);
-        msg->dest32 = entry.ptr32->flds.dest;
-    }
 }
 
 int amd_iommu_free_intremap_table(
@@ -795,8 +747,8 @@ bool __init iov_supports_xt(void)
         if ( !find_iommu_for_device(ioapic_sbdf[idx].seg,
                                     ioapic_sbdf[idx].bdf) )
         {
-            AMD_IOMMU_DEBUG("No IOMMU for IO-APIC %#x (ID %x)\n",
-                            apic, IO_APIC_ID(apic));
+            AMD_IOMMU_WARN("no IOMMU for IO-APIC %#x (ID %x)\n",
+                           apic, IO_APIC_ID(apic));
             return false;
         }
     }
@@ -813,14 +765,12 @@ int __init amd_setup_hpet_msi(struct msi_desc *msi_desc)
 
     if ( hpet_sbdf.init == HPET_NONE )
     {
-        AMD_IOMMU_DEBUG("Failed to setup HPET MSI remapping."
-                        " Missing IVRS HPET info.\n");
+        AMD_IOMMU_ERROR("failed to setup HPET MSI remapping: missing IVRS HPET info\n");
         return -ENODEV;
     }
     if ( msi_desc->hpet_id != hpet_sbdf.id )
     {
-        AMD_IOMMU_DEBUG("Failed to setup HPET MSI remapping."
-                        " Wrong HPET.\n");
+        AMD_IOMMU_ERROR("failed to setup HPET MSI remapping: wrong HPET\n");
         return -ENODEV;
     }
 
@@ -863,10 +813,8 @@ static void dump_intremap_table(const struct amd_iommu *iommu,
 
         if ( ivrs_mapping )
         {
-            printk("  %04x:%02x:%02x:%u:\n", iommu->seg,
-                   PCI_BUS(ivrs_mapping->dte_requestor_id),
-                   PCI_SLOT(ivrs_mapping->dte_requestor_id),
-                   PCI_FUNC(ivrs_mapping->dte_requestor_id));
+            printk("  %pp:\n",
+                   &PCI_SBDF2(iommu->seg, ivrs_mapping->dte_requestor_id));
             ivrs_mapping = NULL;
         }
 

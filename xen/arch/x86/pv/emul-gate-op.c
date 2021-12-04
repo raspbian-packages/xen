@@ -40,7 +40,7 @@ static int read_gate_descriptor(unsigned int gate_sel,
          ((gate_sel >> 3) + !is_pv_32bit_vcpu(v) >=
           (gate_sel & 4 ? v->arch.pv.ldt_ents
                         : v->arch.pv.gdt_ents)) ||
-         __get_user(desc, pdesc) )
+         get_unsafe(desc, pdesc) )
         return 0;
 
     *sel = (desc.a >> 16) & 0x0000fffc;
@@ -59,7 +59,7 @@ static int read_gate_descriptor(unsigned int gate_sel,
     {
         if ( (*ar & 0x1f00) != 0x0c00 ||
              /* Limit check done above already. */
-             __get_user(desc, pdesc + 1) ||
+             get_unsafe(desc, pdesc + 1) ||
              (desc.b & 0x1f00) )
             return 0;
 
@@ -149,12 +149,12 @@ static int read_mem(enum x86_segment seg, unsigned long offset, void *p_data,
 
     addr = (uint32_t)addr;
 
-    if ( (rc = __copy_from_user(p_data, (void *)addr, bytes)) )
+    if ( (rc = __copy_from_guest_pv(p_data, (void __user *)addr, bytes)) )
     {
         /*
          * TODO: This should report PFEC_insn_fetch when goc->insn_fetch &&
          * cpu_has_nx, but we'd then need a "fetch" variant of
-         * __copy_from_user() respecting NX, SMEP, and protection keys.
+         * __copy_from_guest_pv() respecting NX, SMEP, and protection keys.
          */
         x86_emul_pagefault(0, addr + bytes - rc, ctxt);
         return X86EMUL_EXCEPTION;
@@ -294,7 +294,7 @@ void pv_emulate_gate_op(struct cpu_user_regs *regs)
         { \
             --stkp; \
             esp -= 4; \
-            rc = __put_user(item, stkp); \
+            rc = __put_guest(item, stkp); \
             if ( rc ) \
             { \
                 pv_inject_page_fault(PFEC_write_access, \
@@ -362,7 +362,7 @@ void pv_emulate_gate_op(struct cpu_user_regs *regs)
                     unsigned int parm;
 
                     --ustkp;
-                    rc = __get_user(parm, ustkp);
+                    rc = __get_guest(parm, ustkp);
                     if ( rc )
                     {
                         pv_inject_page_fault(0, (unsigned long)(ustkp + 1) - rc);

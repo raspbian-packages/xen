@@ -187,7 +187,7 @@ static DEFINE_SPINLOCK(ipmmu_devices_lock);
 #define IMCAAR               0x0004
 
 #define IMTTBCR                        0x0008
-#define IMTTBCR_EAE                    (1 << 31)
+#define IMTTBCR_EAE                    (1U << 31)
 #define IMTTBCR_PMB                    (1 << 30)
 #define IMTTBCR_SH1_NON_SHAREABLE      (0 << 28)
 #define IMTTBCR_SH1_OUTER_SHAREABLE    (2 << 28)
@@ -251,7 +251,7 @@ static DEFINE_SPINLOCK(ipmmu_devices_lock);
 #define IMUCTR(n)              ((n) < 32 ? IMUCTR0(n) : IMUCTR32(n))
 #define IMUCTR0(n)             (0x0300 + ((n) * 16))
 #define IMUCTR32(n)            (0x0600 + (((n) - 32) * 16))
-#define IMUCTR_FIXADDEN        (1 << 31)
+#define IMUCTR_FIXADDEN        (1U << 31)
 #define IMUCTR_FIXADD_MASK     (0xff << 16)
 #define IMUCTR_FIXADD_SHIFT    16
 #define IMUCTR_TTSEL_MMU(n)    ((n) << 4)
@@ -945,7 +945,7 @@ static int __must_check ipmmu_iotlb_flush_all(struct domain *d)
 }
 
 static int __must_check ipmmu_iotlb_flush(struct domain *d, dfn_t dfn,
-                                          unsigned int page_count,
+                                          unsigned long page_count,
                                           unsigned int flush_flags)
 {
     ASSERT(flush_flags);
@@ -1168,7 +1168,7 @@ static int ipmmu_reassign_device(struct domain *s, struct domain *t,
     int ret = 0;
 
     /* Don't allow remapping on other domain than hwdom */
-    if ( t && t != hardware_domain )
+    if ( t && !is_hardware_domain(t) )
         return -EPERM;
 
     if ( t == s )
@@ -1316,6 +1316,7 @@ static const struct dt_device_match ipmmu_dt_match[] __initconst =
     DT_MATCH_COMPATIBLE("renesas,ipmmu-r8a7795"),
     DT_MATCH_COMPATIBLE("renesas,ipmmu-r8a77965"),
     DT_MATCH_COMPATIBLE("renesas,ipmmu-r8a7796"),
+    DT_MATCH_COMPATIBLE("renesas,ipmmu-r8a77961"),
     { /* sentinel */ },
 };
 

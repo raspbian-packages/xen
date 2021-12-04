@@ -219,6 +219,7 @@ static void vioapic_write_redirent(
     struct domain *d = vioapic_domain(vioapic);
     struct hvm_irq *hvm_irq = hvm_domain_irq(d);
     union vioapic_redir_entry *pent, ent;
+    bool prev_level;
     int unmasked = 0;
     unsigned int gsi;
 
@@ -234,6 +235,7 @@ static void vioapic_write_redirent(
 
     pent = &vioapic->redirtbl[idx];
     ent  = *pent;
+    prev_level = ent.fields.trig_mode == VIOAPIC_LEVEL_TRIG;
 
     if ( top_word )
     {
@@ -262,11 +264,28 @@ static void vioapic_write_redirent(
               !ent.fields.remote_irr &&
               hvm_irq->gsi_assert_count[gsi] )
     {
+        /* A top word write should never trigger an interrupt injection. */
+        ASSERT(!top_word);
         pent->fields.remote_irr = 1;
         vioapic_deliver(vioapic, idx);
     }
 
     spin_unlock(&d->arch.hvm.irq_lock);
+
+    if ( ent.fields.trig_mode == VIOAPIC_EDGE_TRIG &&
+         ent.fields.remote_irr && is_iommu_enabled(d) )
+    {
+            /*
+             * Since IRR has been cleared and further interrupts can be
+             * injected also attempt to deassert any virtual line of passed
+             * through devices using this pin. Switching a pin from level to
+             * edge trigger mode can be used as a way to EOI an interrupt at
+             * the IO-APIC level.
+             */
+            ASSERT(prev_level);
+            ASSERT(!top_word);
+            hvm_dpci_eoi(d, gsi);
+    }
 
     if ( is_hardware_domain(d) && unmasked )
     {
@@ -391,11 +410,6 @@ static void ioapic_inj_irq(
     vlapic_set_irq(target, vector, trig_mode);
 }
 
-static inline int pit_channel0_enabled(void)
-{
-    return pt_active(&current->domain->arch.vpit.pt0);
-}
-
 static void vioapic_deliver(struct hvm_vioapic *vioapic, unsigned int pin)
 {
     uint16_t dest = vioapic->redirtbl[pin].fields.dest_id;
@@ -420,12 +434,14 @@ static void vioapic_deliver(struct hvm_vioapic *vioapic, unsigned int pin)
     case dest_LowestPrio:
     {
 #ifdef IRQ0_SPECIAL_ROUTING
-        /* Force round-robin to pick VCPU 0 */
-        if ( (irq == hvm_isa_irq_to_gsi(0)) && pit_channel0_enabled() )
-        {
-            v = d->vcpu ? d->vcpu[0] : NULL;
-            target = v ? vcpu_vlapic(v) : NULL;
-        }
+        struct vlapic *lapic0 = vcpu_vlapic(d->vcpu[0]);
+
+        /* Force to pick vCPU 0 if part of the destination list */
+        if ( (irq == hvm_isa_irq_to_gsi(0)) && pt_active(&d->arch.vpit.pt0) &&
+             vlapic_match_dest(lapic0, NULL, 0, dest, dest_mode) &&
+             /* Mimic the vlapic_enabled check found in vlapic_lowest_prio. */
+             vlapic_enabled(lapic0) )
+            target = lapic0;
         else
 #endif
             target = vlapic_lowest_prio(d, NULL, 0, dest, dest_mode);
@@ -443,26 +459,11 @@ static void vioapic_deliver(struct hvm_vioapic *vioapic, unsigned int pin)
     }
 
     case dest_Fixed:
-    {
-#ifdef IRQ0_SPECIAL_ROUTING
-        /* Do not deliver timer interrupts to VCPU != 0 */
-        if ( (irq == hvm_isa_irq_to_gsi(0)) && pit_channel0_enabled() )
-        {
-            if ( (v = d->vcpu ? d->vcpu[0] : NULL) != NULL )
-                ioapic_inj_irq(vioapic, vcpu_vlapic(v), vector,
-                               trig_mode, delivery_mode);
-        }
-        else
-#endif
-        {
-            for_each_vcpu ( d, v )
-                if ( vlapic_match_dest(vcpu_vlapic(v), NULL,
-                                       0, dest, dest_mode) )
-                    ioapic_inj_irq(vioapic, vcpu_vlapic(v), vector,
-                                   trig_mode, delivery_mode);
-        }
+        for_each_vcpu ( d, v )
+            if ( vlapic_match_dest(vcpu_vlapic(v), NULL, 0, dest, dest_mode) )
+                ioapic_inj_irq(vioapic, vcpu_vlapic(v), vector, trig_mode,
+                               delivery_mode);
         break;
-    }
 
     case dest_NMI:
     {
@@ -643,9 +644,9 @@ void vioapic_reset(struct domain *d)
         unsigned int nr_pins = vioapic->nr_pins, base_gsi = vioapic->base_gsi;
         unsigned int pin;
 
-        memset(vioapic, 0, hvm_vioapic_size(nr_pins));
+        memset(vioapic, 0, offsetof(typeof(*vioapic), redirtbl));
         for ( pin = 0; pin < nr_pins; pin++ )
-            vioapic->redirtbl[pin].fields.mask = 1;
+            vioapic->redirtbl[pin] = (union vioapic_redir_entry){ .fields.mask = 1 };
 
         if ( !is_hardware_domain(d) )
         {
@@ -706,7 +707,8 @@ int vioapic_init(struct domain *d)
         }
 
         if ( (domain_vioapic(d, i) =
-              xmalloc_bytes(hvm_vioapic_size(nr_pins))) == NULL )
+              xmalloc_flex_struct(struct hvm_vioapic, redirtbl,
+                                  nr_pins)) == NULL )
         {
             vioapic_free(d, nr_vioapics);
             return -ENOMEM;

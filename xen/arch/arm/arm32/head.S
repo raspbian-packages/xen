@@ -18,7 +18,6 @@
  */
 
 #include <asm/page.h>
-#include <asm/asm_defns.h>
 #include <asm/early_printk.h>
 
 #define ZIMAGE_MAGIC_NUMBER 0x016f2818
@@ -156,10 +155,10 @@ past_zImage:
         sub   r10, r9, r0            /* r10 := phys-offset */
 
         /* Using the DTB in the .dtb section? */
-#ifdef CONFIG_DTB_FILE
+.ifnes CONFIG_DTB_FILE,""
         ldr   r8, =_sdtb
         add   r8, r10                /* r8 := paddr(DTB) */
-#endif
+.endif
 
         /* Initialize the UART if earlyprintk has been enabled. */
 #ifdef CONFIG_EARLY_PRINTK

@@ -23,18 +23,26 @@
 #include <xen/hypercall.h>
 #include <xen/nospec.h>
 #include <xen/trace.h>
+#include <asm/apic.h>
+#include <asm/multicall.h>
 #include <irq_vectors.h>
 
+#ifdef CONFIG_PV32
 #define HYPERCALL(x)                                                \
     [ __HYPERVISOR_ ## x ] = { (hypercall_fn_t *) do_ ## x,         \
                                (hypercall_fn_t *) do_ ## x }
 #define COMPAT_CALL(x)                                              \
     [ __HYPERVISOR_ ## x ] = { (hypercall_fn_t *) do_ ## x,         \
                                (hypercall_fn_t *) compat_ ## x }
+#else
+#define HYPERCALL(x)                                                \
+    [ __HYPERVISOR_ ## x ] = { (hypercall_fn_t *) do_ ## x }
+#define COMPAT_CALL(x) HYPERCALL(x)
+#endif
 
 #define do_arch_1             paging_domctl_continuation
 
-const hypercall_table_t pv_hypercall_table[] = {
+const pv_hypercall_table_t pv_hypercall_table[] = {
     COMPAT_CALL(set_trap_table),
     HYPERCALL(mmu_update),
     COMPAT_CALL(set_gdt),
@@ -42,7 +50,9 @@ const hypercall_table_t pv_hypercall_table[] = {
     COMPAT_CALL(set_callbacks),
     HYPERCALL(fpu_taskswitch),
     HYPERCALL(sched_op_compat),
+#ifndef CONFIG_PV_SHIM_EXCLUSIVE
     COMPAT_CALL(platform_op),
+#endif
     HYPERCALL(set_debugreg),
     HYPERCALL(get_debugreg),
     COMPAT_CALL(update_descriptor),
@@ -72,8 +82,10 @@ const hypercall_table_t pv_hypercall_table[] = {
 #endif
     HYPERCALL(event_channel_op),
     COMPAT_CALL(physdev_op),
+#ifndef CONFIG_PV_SHIM_EXCLUSIVE
     HYPERCALL(sysctl),
     HYPERCALL(domctl),
+#endif
 #ifdef CONFIG_KEXEC
     COMPAT_CALL(kexec_op),
 #endif
@@ -89,21 +101,23 @@ const hypercall_table_t pv_hypercall_table[] = {
     HYPERCALL(hypfs_op),
 #endif
     HYPERCALL(mca),
+#ifndef CONFIG_PV_SHIM_EXCLUSIVE
     HYPERCALL(arch_1),
+#endif
 };
 
 #undef do_arch_1
 #undef COMPAT_CALL
 #undef HYPERCALL
 
-void pv_hypercall(struct cpu_user_regs *regs)
+/* Forced inline to cause 'compat' to be evaluated at compile time. */
+static void always_inline
+_pv_hypercall(struct cpu_user_regs *regs, bool compat)
 {
     struct vcpu *curr = current;
-    unsigned long eax;
+    unsigned long eax = compat ? regs->eax : regs->rax;
 
     ASSERT(guest_kernel_mode(curr, regs));
-
-    eax = is_pv_32bit_vcpu(curr) ? regs->eax : regs->rax;
 
     BUILD_BUG_ON(ARRAY_SIZE(pv_hypercall_table) >
                  ARRAY_SIZE(hypercall_args_table));
@@ -124,7 +138,7 @@ void pv_hypercall(struct cpu_user_regs *regs)
 
     curr->hcall_preempted = false;
 
-    if ( !is_pv_32bit_vcpu(curr) )
+    if ( !compat )
     {
         unsigned long rdi = regs->rdi;
         unsigned long rsi = regs->rsi;
@@ -137,11 +151,11 @@ void pv_hypercall(struct cpu_user_regs *regs)
         /* Deliberately corrupt parameter regs not used by this hypercall. */
         switch ( hypercall_args_table[eax].native )
         {
-        case 0: rdi = 0xdeadbeefdeadf00dUL;
-        case 1: rsi = 0xdeadbeefdeadf00dUL;
-        case 2: rdx = 0xdeadbeefdeadf00dUL;
-        case 3: r10 = 0xdeadbeefdeadf00dUL;
-        case 4: r8 = 0xdeadbeefdeadf00dUL;
+        case 0: rdi = 0xdeadbeefdeadf00dUL; fallthrough;
+        case 1: rsi = 0xdeadbeefdeadf00dUL; fallthrough;
+        case 2: rdx = 0xdeadbeefdeadf00dUL; fallthrough;
+        case 3: r10 = 0xdeadbeefdeadf00dUL; fallthrough;
+        case 4: r8 = 0xdeadbeefdeadf00dUL; fallthrough;
         case 5: r9 = 0xdeadbeefdeadf00dUL;
         }
 #endif
@@ -160,16 +174,17 @@ void pv_hypercall(struct cpu_user_regs *regs)
             /* Deliberately corrupt parameter regs used by this hypercall. */
             switch ( hypercall_args_table[eax].native )
             {
-            case 6: regs->r9  = 0xdeadbeefdeadf00dUL;
-            case 5: regs->r8  = 0xdeadbeefdeadf00dUL;
-            case 4: regs->r10 = 0xdeadbeefdeadf00dUL;
-            case 3: regs->rdx = 0xdeadbeefdeadf00dUL;
-            case 2: regs->rsi = 0xdeadbeefdeadf00dUL;
+            case 6: regs->r9  = 0xdeadbeefdeadf00dUL; fallthrough;
+            case 5: regs->r8  = 0xdeadbeefdeadf00dUL; fallthrough;
+            case 4: regs->r10 = 0xdeadbeefdeadf00dUL; fallthrough;
+            case 3: regs->rdx = 0xdeadbeefdeadf00dUL; fallthrough;
+            case 2: regs->rsi = 0xdeadbeefdeadf00dUL; fallthrough;
             case 1: regs->rdi = 0xdeadbeefdeadf00dUL;
             }
         }
 #endif
     }
+#ifdef CONFIG_PV32
     else
     {
         unsigned int ebx = regs->ebx;
@@ -183,11 +198,11 @@ void pv_hypercall(struct cpu_user_regs *regs)
         /* Deliberately corrupt parameter regs not used by this hypercall. */
         switch ( hypercall_args_table[eax].compat )
         {
-        case 0: ebx = 0xdeadf00d;
-        case 1: ecx = 0xdeadf00d;
-        case 2: edx = 0xdeadf00d;
-        case 3: esi = 0xdeadf00d;
-        case 4: edi = 0xdeadf00d;
+        case 0: ebx = 0xdeadf00d; fallthrough;
+        case 1: ecx = 0xdeadf00d; fallthrough;
+        case 2: edx = 0xdeadf00d; fallthrough;
+        case 3: esi = 0xdeadf00d; fallthrough;
+        case 4: edi = 0xdeadf00d; fallthrough;
         case 5: ebp = 0xdeadf00d;
         }
 #endif
@@ -209,16 +224,17 @@ void pv_hypercall(struct cpu_user_regs *regs)
             /* Deliberately corrupt parameter regs used by this hypercall. */
             switch ( hypercall_args_table[eax].compat )
             {
-            case 6: regs->ebp = 0xdeadf00d;
-            case 5: regs->edi = 0xdeadf00d;
-            case 4: regs->esi = 0xdeadf00d;
-            case 3: regs->edx = 0xdeadf00d;
-            case 2: regs->ecx = 0xdeadf00d;
+            case 6: regs->ebp = 0xdeadf00d; fallthrough;
+            case 5: regs->edi = 0xdeadf00d; fallthrough;
+            case 4: regs->esi = 0xdeadf00d; fallthrough;
+            case 3: regs->edx = 0xdeadf00d; fallthrough;
+            case 2: regs->ecx = 0xdeadf00d; fallthrough;
             case 1: regs->ebx = 0xdeadf00d;
             }
         }
 #endif
     }
+#endif /* CONFIG_PV32 */
 
     /*
      * PV guests use SYSCALL or INT $0x82 to make a hypercall, both of which
@@ -231,26 +247,13 @@ void pv_hypercall(struct cpu_user_regs *regs)
     perfc_incr(hypercalls);
 }
 
-enum mc_disposition arch_do_multicall_call(struct mc_state *state)
+enum mc_disposition pv_do_multicall_call(struct mc_state *state)
 {
     struct vcpu *curr = current;
     unsigned long op;
 
-    if ( !is_pv_32bit_vcpu(curr) )
-    {
-        struct multicall_entry *call = &state->call;
-
-        op = call->op;
-        if ( (op < ARRAY_SIZE(pv_hypercall_table)) &&
-             pv_hypercall_table[op].native )
-            call->result = pv_hypercall_table[op].native(
-                call->args[0], call->args[1], call->args[2],
-                call->args[3], call->args[4], call->args[5]);
-        else
-            call->result = -ENOSYS;
-    }
-#ifdef CONFIG_COMPAT
-    else
+#ifdef CONFIG_PV32
+    if ( is_pv_32bit_vcpu(curr) )
     {
         struct compat_multicall_entry *call = &state->compat_call;
 
@@ -263,7 +266,20 @@ enum mc_disposition arch_do_multicall_call(struct mc_state *state)
         else
             call->result = -ENOSYS;
     }
+    else
 #endif
+    {
+        struct multicall_entry *call = &state->call;
+
+        op = call->op;
+        if ( (op < ARRAY_SIZE(pv_hypercall_table)) &&
+             pv_hypercall_table[op].native )
+            call->result = pv_hypercall_table[op].native(
+                call->args[0], call->args[1], call->args[2],
+                call->args[3], call->args[4], call->args[5]);
+        else
+            call->result = -ENOSYS;
+    }
 
     return unlikely(op == __HYPERVISOR_iret)
            ? mc_exit
@@ -333,7 +349,20 @@ void pv_ring1_init_hypercall_page(void *p)
         *(u8  *)(p+ 7) = 0xc3;    /* ret */
     }
 }
+
+void do_entry_int82(struct cpu_user_regs *regs)
+{
+    if ( unlikely(untrusted_msi) )
+        check_for_unexpected_msi((uint8_t)regs->entry_vector);
+
+    _pv_hypercall(regs, true /* compat */);
+}
 #endif
+
+void pv_hypercall(struct cpu_user_regs *regs)
+{
+    _pv_hypercall(regs, false /* native */);
+}
 
 /*
  * Local variables:

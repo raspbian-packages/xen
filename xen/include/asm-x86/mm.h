@@ -6,6 +6,7 @@
 #include <xen/spinlock.h>
 #include <xen/rwlock.h>
 #include <asm/io.h>
+#include <asm/page.h>
 #include <asm/uaccess.h>
 #include <asm/x86_emulate.h>
 
@@ -42,8 +43,12 @@
 #define _PGT_validated    PG_shift(6)
 #define PGT_validated     PG_mask(1, 6)
  /* PAE only: is this an L2 page directory containing Xen-private mappings? */
+#ifdef CONFIG_PV32
 #define _PGT_pae_xen_l2   PG_shift(7)
 #define PGT_pae_xen_l2    PG_mask(1, 7)
+#else
+#define PGT_pae_xen_l2    0
+#endif
 /* Has this page been *partially* validated for use as its current type? */
 #define _PGT_partial      PG_shift(8)
 #define PGT_partial       PG_mask(1, 8)
@@ -77,7 +82,7 @@
 #define PGC_state_offlined PG_mask(2, 9)
 #define PGC_state_free    PG_mask(3, 9)
 #define page_state_is(pg, st) (((pg)->count_info&PGC_state) == PGC_state_##st)
-/* Page is not reference counted */
+/* Page is not reference counted (see below for caveats) */
 #define _PGC_extra        PG_shift(10)
 #define PGC_extra         PG_mask(1, 10)
 
@@ -369,6 +374,24 @@ void zap_ro_mpt(mfn_t mfn);
 
 bool is_iomem_page(mfn_t mfn);
 
+/*
+ * Pages with no owner which may get passed to functions wanting to
+ * refcount them can be marked PGC_extra to bypass this refcounting (which
+ * would fail due to the lack of an owner).
+ *
+ * (For pages with owner PGC_extra has different meaning.)
+ */
+static inline void page_suppress_refcounting(struct page_info *pg)
+{
+   ASSERT(!page_get_owner(pg));
+   pg->count_info |= PGC_extra;
+}
+
+static inline bool page_refcounting_suppressed(const struct page_info *pg)
+{
+    return !page_get_owner(pg) && (pg->count_info & PGC_extra);
+}
+
 struct platform_bad_page {
     unsigned long mfn;
     unsigned int order;
@@ -450,8 +473,6 @@ static inline int get_page_and_type(struct page_info *page,
     ASSERT(((_p)->count_info & PGC_count_mask) != 0);          \
     ASSERT(page_get_owner(_p) == (_d))
 
-int check_descriptor(const struct domain *d, seg_desc_t *desc);
-
 extern paddr_t mem_hotplug;
 
 /******************************************************************************
@@ -494,34 +515,17 @@ extern paddr_t mem_hotplug;
 #define SHARED_M2P_ENTRY         (~0UL - 1UL)
 #define SHARED_M2P(_e)           ((_e) == SHARED_M2P_ENTRY)
 
-#define compat_machine_to_phys_mapping ((unsigned int *)RDWR_COMPAT_MPT_VIRT_START)
-#define _set_gpfn_from_mfn(mfn, pfn) ({                        \
-    struct domain *d = page_get_owner(mfn_to_page(_mfn(mfn))); \
-    unsigned long entry = (d && (d == dom_cow)) ?              \
-        SHARED_M2P_ENTRY : (pfn);                              \
-    ((void)((mfn) >= (RDWR_COMPAT_MPT_VIRT_END - RDWR_COMPAT_MPT_VIRT_START) / 4 || \
-            (compat_machine_to_phys_mapping[(mfn)] = (unsigned int)(entry))), \
-     machine_to_phys_mapping[(mfn)] = (entry));                \
-    })
-
 /*
  * Disable some users of set_gpfn_from_mfn() (e.g., free_heap_pages()) until
  * the machine_to_phys_mapping is actually set up.
  */
 extern bool machine_to_phys_mapping_valid;
-#define set_gpfn_from_mfn(mfn, pfn) do {        \
-    if ( machine_to_phys_mapping_valid )        \
-        _set_gpfn_from_mfn(mfn, pfn);           \
-} while (0)
+
+void set_gpfn_from_mfn(unsigned long mfn, unsigned long pfn);
 
 extern struct rangeset *mmio_ro_ranges;
 
 #define get_gpfn_from_mfn(mfn)      (machine_to_phys_mapping[(mfn)])
-
-#define mfn_to_gmfn(_d, mfn)                            \
-    ( (paging_mode_translate(_d))                       \
-      ? get_gpfn_from_mfn(mfn)                          \
-      : (mfn) )
 
 #define compat_pfn_to_cr3(pfn) (((unsigned)(pfn) << 12) | ((unsigned)(pfn) >> 20))
 #define compat_cr3_to_pfn(cr3) (((unsigned)(cr3) >> 12) | ((unsigned)(cr3) << 20))
@@ -582,10 +586,9 @@ int vcpu_destroy_pagetables(struct vcpu *);
 void *do_page_walk(struct vcpu *v, unsigned long addr);
 
 /* Allocator functions for Xen pagetables. */
-void *alloc_xen_pagetable(void);
-void free_xen_pagetable(void *v);
-mfn_t alloc_xen_pagetable_new(void);
-void free_xen_pagetable_new(mfn_t mfn);
+mfn_t alloc_xen_pagetable(void);
+void free_xen_pagetable(mfn_t mfn);
+void *alloc_mapped_pagetable(mfn_t *pmfn);
 
 l1_pgentry_t *virt_to_xen_l1e(unsigned long v);
 
@@ -648,9 +651,5 @@ static inline bool arch_mfn_in_directmap(unsigned long mfn)
 
     return mfn <= (virt_to_mfn(eva - 1) + 1);
 }
-
-int arch_acquire_resource(struct domain *d, unsigned int type,
-                          unsigned int id, unsigned long frame,
-                          unsigned int nr_frames, xen_pfn_t mfn_list[]);
 
 #endif /* __ASM_X86_MM_H__ */

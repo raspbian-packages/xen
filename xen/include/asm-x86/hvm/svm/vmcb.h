@@ -55,7 +55,7 @@ enum GenericIntercept1bits
     GENERAL1_INTERCEPT_MSR_PROT      = 1 << 28,
     GENERAL1_INTERCEPT_TASK_SWITCH   = 1 << 29,
     GENERAL1_INTERCEPT_FERR_FREEZE   = 1 << 30,
-    GENERAL1_INTERCEPT_SHUTDOWN_EVT  = 1 << 31
+    GENERAL1_INTERCEPT_SHUTDOWN_EVT  = 1u << 31
 };
 
 /* general 2 intercepts */
@@ -74,7 +74,8 @@ enum GenericIntercept2bits
     GENERAL2_INTERCEPT_MONITOR = 1 << 10,
     GENERAL2_INTERCEPT_MWAIT   = 1 << 11,
     GENERAL2_INTERCEPT_MWAIT_CONDITIONAL = 1 << 12,
-    GENERAL2_INTERCEPT_XSETBV  = 1 << 13
+    GENERAL2_INTERCEPT_XSETBV  = 1 << 13,
+    GENERAL2_INTERCEPT_RDPRU   = 1 << 14,
 };
 
 
@@ -112,7 +113,7 @@ enum CRInterceptBits
     CR_INTERCEPT_CR12_WRITE = 1 << 28,
     CR_INTERCEPT_CR13_WRITE = 1 << 29,
     CR_INTERCEPT_CR14_WRITE = 1 << 30,
-    CR_INTERCEPT_CR15_WRITE = 1 << 31,
+    CR_INTERCEPT_CR15_WRITE = 1u << 31,
 };
 
 
@@ -150,7 +151,7 @@ enum DRInterceptBits
     DR_INTERCEPT_DR12_WRITE = 1 << 28,
     DR_INTERCEPT_DR13_WRITE = 1 << 29,
     DR_INTERCEPT_DR14_WRITE = 1 << 30,
-    DR_INTERCEPT_DR15_WRITE = 1 << 31,
+    DR_INTERCEPT_DR15_WRITE = 1u << 31,
 };
 
 enum VMEXIT_EXITCODE
@@ -248,6 +249,8 @@ enum VMEXIT_EXITCODE
     VMEXIT_EXCEPTION_AC  =  81, /* 0x51, alignment-check */
     VMEXIT_EXCEPTION_MC  =  82, /* 0x52, machine-check */
     VMEXIT_EXCEPTION_XF  =  83, /* 0x53, simd floating-point */
+/*  VMEXIT_EXCEPTION_20  =  84,    0x54, #VE (Intel specific) */
+    VMEXIT_EXCEPTION_CP  =  85, /* 0x55, controlflow protection */
 
     /* exceptions 20-31 (exitcodes 84-95) are reserved */
 
@@ -298,6 +301,7 @@ enum VMEXIT_EXITCODE
     VMEXIT_MWAIT            = 139, /* 0x8b */
     VMEXIT_MWAIT_CONDITIONAL= 140, /* 0x8c */
     VMEXIT_XSETBV           = 141, /* 0x8d */
+    VMEXIT_RDPRU            = 142, /* 0x8e */
     VMEXIT_NPF              = 1024, /* 0x400, nested paging fault */
     VMEXIT_INVALID          =  -1
 };
@@ -397,6 +401,8 @@ typedef union
         bool seg:1;        /* 8:  cs, ds, es, ss, cpl */
         bool cr2:1;        /* 9:  cr2 */
         bool lbr:1;        /* 10: debugctlmsr, last{branch,int}{to,from}ip */
+        bool :1;
+        bool cet:1;        /* 12: msr_s_set, ssp, msr_isst */
     };
     uint32_t raw;
 } vmcbcleanbits_t;
@@ -451,7 +457,7 @@ struct vmcb_struct {
             bool _sev_enable    :1;
             bool _sev_es_enable :1;
             bool _gmet          :1;
-            bool                :1;
+            bool _np_sss        :1;
             bool _vte           :1;
         };
         uint64_t _np_ctrl;
@@ -497,7 +503,9 @@ struct vmcb_struct {
     u64 rip;
     u64 res14[11];
     u64 rsp;
-    u64 res15[3];
+    u64 _msr_s_cet;             /* offset 0x400 + 0x1E0 - cleanbit 12 */
+    u64 _ssp;                   /* offset 0x400 + 0x1E8   | */
+    u64 _msr_isst;              /* offset 0x400 + 0x1F0   v */
     u64 rax;
     u64 star;
     u64 lstar;
@@ -637,6 +645,9 @@ VMCB_ACCESSORS(lastbranchfromip, lbr)
 VMCB_ACCESSORS(lastbranchtoip, lbr)
 VMCB_ACCESSORS(lastintfromip, lbr)
 VMCB_ACCESSORS(lastinttoip, lbr)
+VMCB_ACCESSORS(msr_s_cet, cet)
+VMCB_ACCESSORS(ssp, cet)
+VMCB_ACCESSORS(msr_isst, cet)
 
 #undef VMCB_ACCESSORS
 

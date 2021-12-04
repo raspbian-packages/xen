@@ -148,16 +148,23 @@ DEFINE_XEN_GUEST_HANDLE(xen_memory_exchange_t);
  */
 #define XENMEM_maximum_ram_page     2
 
+struct xen_memory_domain {
+    /* [IN] Domain information is being queried for. */
+    domid_t domid;
+};
+
 /*
  * Returns the current or maximum memory reservation, in pages, of the
  * specified domain (may be DOMID_SELF). Returns -ve errcode on failure.
- * arg == addr of domid_t.
+ * arg == addr of struct xen_memory_domain.
  */
 #define XENMEM_current_reservation  3
 #define XENMEM_maximum_reservation  4
 
 /*
- * Returns the maximum GPFN in use by the guest, or -ve errcode on failure.
+ * Returns the maximum GFN in use by the specified domain (may be DOMID_SELF).
+ * Returns -ve errcode on failure.
+ * arg == addr of struct xen_memory_domain.
  */
 #define XENMEM_maximum_gpfn         14
 
@@ -604,7 +611,7 @@ struct xen_reserved_device_memory_map {
     XEN_GUEST_HANDLE(xen_reserved_device_memory_t) buffer;
     /* IN */
     union {
-        struct physdev_pci_device pci;
+        physdev_pci_device_t pci;
     } dev;
 };
 typedef struct xen_reserved_device_memory_map xen_reserved_device_memory_map_t;
@@ -625,6 +632,7 @@ struct xen_mem_acquire_resource {
 
 #define XENMEM_resource_ioreq_server 0
 #define XENMEM_resource_grant_table 1
+#define XENMEM_resource_vmtrace_buf 2
 
     /*
      * IN - a type-specific resource identifier, which must be zero
@@ -639,16 +647,26 @@ struct xen_mem_acquire_resource {
 #define XENMEM_resource_grant_table_id_status 1
 
     /*
-     * IN/OUT - As an IN parameter number of frames of the resource
-     *          to be mapped. However, if the specified value is 0 and
-     *          frame_list is NULL then this field will be set to the
-     *          maximum value supported by the implementation on return.
+     * IN/OUT
+     *
+     * As an IN parameter number of frames of the resource to be mapped.
+     * This value may be updated over the course of the operation.
+     *
+     * When frame_list is NULL and nr_frames is 0, this is interpreted as a
+     * request for the size of the resource, which shall be returned in the
+     * nr_frames field.
+     *
+     * The size of a resource will never be zero, but a nonzero result doesn't
+     * guarantee that a subsequent mapping request will be successful.  There
+     * are further type/id specific constraints which may change between the
+     * two calls.
      */
     uint32_t nr_frames;
     uint32_t pad;
     /*
      * IN - the index of the initial frame to be mapped. This parameter
-     *      is ignored if nr_frames is 0.
+     *      is ignored if nr_frames is 0.  This value may be updated
+     *      over the course of the operation.
      */
     uint64_t frame;
 
@@ -664,7 +682,8 @@ struct xen_mem_acquire_resource {
      *          If -EIO is returned then the frame_list has only been
      *          partially mapped and it is up to the caller to unmap all
      *          the GFNs.
-     *          This parameter may be NULL if nr_frames is 0.
+     *          This parameter may be NULL if nr_frames is 0.  This
+     *          value may be updated over the course of the operation.
      */
     XEN_GUEST_HANDLE(xen_pfn_t) frame_list;
 };

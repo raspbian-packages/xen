@@ -157,7 +157,6 @@ extern char __smccc_workaround_1_smc_start[], __smccc_workaround_1_smc_end[];
 static int enable_smccc_arch_workaround_1(void *data)
 {
     struct arm_smccc_res res;
-    static bool warned = false;
     const struct arm_cpu_capabilities *entry = data;
 
     /*
@@ -182,13 +181,8 @@ static int enable_smccc_arch_workaround_1(void *data)
                                      "call ARM_SMCCC_ARCH_WORKAROUND_1");
 
 warn:
-    if ( !warned )
-    {
-        ASSERT(system_state < SYS_STATE_active);
-        warning_add("No support for ARM_SMCCC_ARCH_WORKAROUND_1.\n"
-                    "Please update your firmware.\n");
-        warned = false;
-    }
+    printk_once("**** No support for ARM_SMCCC_ARCH_WORKAROUND_1. ****\n"
+                "**** Please update your firmware.                ****\n");
 
     return 0;
 }
@@ -430,6 +424,20 @@ static const struct arm_cpu_capabilities arm_errata[] = {
                    (1 << MIDR_VARIANT_SHIFT) | 2),
     },
 #endif
+#ifdef CONFIG_ARM64_ERRATUM_1286807
+    {
+        /* Cortex-A76 r0p0 - r3p0 */
+        .desc = "ARM erratum 1286807",
+        .capability = ARM64_WORKAROUND_REPEAT_TLBI,
+        MIDR_RANGE(MIDR_CORTEX_A76, 0, 3 << MIDR_VARIANT_SHIFT),
+    },
+    {
+        /* Neoverse-N1 r0p0 - r3p0 */
+        .desc = "ARM erratum 1286807",
+        .capability = ARM64_WORKAROUND_REPEAT_TLBI,
+        MIDR_RANGE(MIDR_NEOVERSE_N1, 0, 3 << MIDR_VARIANT_SHIFT),
+    },
+#endif
 #ifdef CONFIG_ARM64_HARDEN_BRANCH_PREDICTOR
     {
         .capability = ARM_HARDEN_BRANCH_PREDICTOR,
@@ -523,6 +531,18 @@ void check_local_cpu_errata(void)
 void __init enable_errata_workarounds(void)
 {
     enable_cpu_capabilities(arm_errata);
+
+#ifdef CONFIG_ARM64_ERRATUM_832075
+    if ( cpus_have_cap(ARM64_WORKAROUND_DEVICE_LOAD_ACQUIRE) )
+    {
+        printk_once("**** This CPU is affected by the errata 832075.                      ****\n"
+                    "**** Guests without CPU erratum workarounds can deadlock the system! ****\n"
+                    "**** Only trusted guests should be used.                             ****\n");
+
+        /* Taint the machine has being insecure */
+        add_taint(TAINT_MACHINE_UNSECURE);
+    }
+#endif
 }
 
 static int cpu_errata_callback(struct notifier_block *nfb,

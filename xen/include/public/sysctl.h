@@ -35,7 +35,7 @@
 #include "domctl.h"
 #include "physdev.h"
 
-#define XEN_SYSCTL_INTERFACE_VERSION 0x00000013
+#define XEN_SYSCTL_INTERFACE_VERSION 0x00000014
 
 /*
  * Read console content from Xen buffer ring.
@@ -100,9 +100,16 @@ struct xen_sysctl_tbuf_op {
 #define _XEN_SYSCTL_PHYSCAP_iommu_hap_pt_share 5
 #define XEN_SYSCTL_PHYSCAP_iommu_hap_pt_share  \
     (1u << _XEN_SYSCTL_PHYSCAP_iommu_hap_pt_share)
+#define XEN_SYSCTL_PHYSCAP_vmtrace       (1u << 6)
+/* The platform supports vPMU. */
+#define XEN_SYSCTL_PHYSCAP_vpmu          (1u << 7)
+
+/* Xen supports the Grant v1 and/or v2 ABIs. */
+#define XEN_SYSCTL_PHYSCAP_gnttab_v1     (1u << 8)
+#define XEN_SYSCTL_PHYSCAP_gnttab_v2     (1u << 9)
 
 /* Max XEN_SYSCTL_PHYSCAP_* constant.  Used for ABI checking. */
-#define XEN_SYSCTL_PHYSCAP_MAX XEN_SYSCTL_PHYSCAP_iommu_hap_pt_share
+#define XEN_SYSCTL_PHYSCAP_MAX XEN_SYSCTL_PHYSCAP_gnttab_v2
 
 struct xen_sysctl_physinfo {
     uint32_t threads_per_core;
