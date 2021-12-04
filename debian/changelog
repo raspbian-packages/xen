@@ -1,3 +1,9 @@
+xen (4.16.0-1~exp1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.16.0.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Sat, 04 Dec 2021 15:34:33 +0100
+
 xen (4.14.3+32-g9de3671772-1) unstable; urgency=medium
 
   * Update to new upstream version 4.14.3+32-g9de3671772, which also contains
