@@ -193,7 +193,7 @@ Depends: ${shlibs:Depends}, ${misc:Depends},
 	 libxenevtchn1 (= ${binary:Version}),
 	 libxenforeignmemory1 (= ${binary:Version}),
 	 libxengnttab1 (= ${binary:Version}),
-	 libxenstore3.0 (= ${binary:Version}),
+	 libxenstore4 (= ${binary:Version}),
 	 libxentoolcore1 (= ${binary:Version}),
 	 libxentoollog1 (= ${binary:Version}),
 	 libxenhypfs1 (= ${binary:Version}),
@@ -262,7 +262,7 @@ Description: Xen runtime libraries - libxengnttab
  Shared library for Xen utilities.
 Multi-Arch: same
 
-Package: libxenstore3.0
+Package: libxenstore4
 Section: libs
 Architecture: amd64 arm64 armhf i386
 Depends: ${shlibs:Depends}, ${misc:Depends}
