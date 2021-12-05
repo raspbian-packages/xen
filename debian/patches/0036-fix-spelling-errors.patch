@@ -147,7 +147,7 @@ index d532575..dff02b1 100644
  		return -ENOSPC;
  	}
 diff --git a/xen/arch/x86/x86_emulate/x86_emulate.c b/xen/arch/x86/x86_emulate/x86_emulate.c
-index f186ae6..bf17208 100644
+index de46ec1..605e535 100644
 --- a/xen/arch/x86/x86_emulate/x86_emulate.c
 +++ b/xen/arch/x86/x86_emulate/x86_emulate.c
 @@ -3244,7 +3244,7 @@ x86_decode(

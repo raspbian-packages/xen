@@ -38,4 +38,8 @@ misc/toolstestsx86_emulator-pass--no-pie--fno.patch
 0038-x86-EFI-don-t-insert-timestamp-when-SOURCE_DATE_EPOC.patch
 0039-docs-use-predictable-ordering-in-generated-documenta.patch
 0040-docs-set-date-to-SOURCE_DATE_EPOCH-if-available.patch
+0041-x86-ACPI-fix-mapping-of-FACS.patch
+0042-x86-DMI-fix-table-mapping-when-one-lives-above-1Mb.patch
+0043-x86-ACPI-fix-S3-wakeup-vector-mapping.patch
+0044-x86-ACPI-don-t-invalidate-S5-data-when-S3-wakeup-vec.patch
 armv6.diff

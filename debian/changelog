@@ -1,4 +1,4 @@
-xen (4.14.3-1+rpi1) bookworm-staging; urgency=medium
+xen (4.14.3+32-g9de3671772-1+rpi1) bookworm-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,7 +9,34 @@ xen (4.14.3-1+rpi1) bookworm-staging; urgency=medium
   [changes introduced in 4.11.1+26-g87f51bf366-3+rpi1 by Peter Michael Green]
   * Do not fail on files that are not installed.
 
- -- Raspbian forward porter <root@raspbian.org>  Wed, 22 Sep 2021 14:17:32 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Sun, 05 Dec 2021 22:05:07 +0000
+
+xen (4.14.3+32-g9de3671772-1) unstable; urgency=medium
+
+  * Update to new upstream version 4.14.3+32-g9de3671772, which also contains
+    security fixes for the following issues:
+    - guests may exceed their designated memory limit
+      XSA-385 CVE-2021-28706
+    - PCI devices with RMRRs not deassigned correctly
+      XSA-386 CVE-2021-28702
+    - PoD operations on misaligned GFNs
+      XSA-388 CVE-2021-28704 CVE-2021-28707 CVE-2021-28708
+    - issues with partially successful P2M updates on x86
+      XSA-389 CVE-2021-28705 CVE-2021-28709
+  * Note that the following XSA are not listed, because...
+    - XSA-387 only applies to Xen 4.13 and older
+    - XSA-390 only applies to Xen 4.15
+  * Pick the following upstream commits to fix a regression which prevents
+    amd64 type hardware to fully power off. The issue was introduced in
+    version 4.14.0+88-g1d1d1f5391-1 after including upstream commits to
+    improve Raspberry Pi 4 support. (Closes: #994899):
+    - 8b6d55c126 ("x86/ACPI: fix mapping of FACS")
+    - f390941a92 ("x86/DMI: fix table mapping when one lives above 1Mb")
+    - 0f089bbf43 ("x86/ACPI: fix S3 wakeup vector mapping")
+    - 16ca5b3f87 ("x86/ACPI: don't invalidate S5 data when S3 wakeup vector
+                   cannot be determined")
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Sat, 27 Nov 2021 15:09:47 +0100
 
 xen (4.14.3-1) unstable; urgency=high
 

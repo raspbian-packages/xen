@@ -1486,7 +1486,8 @@ static int domain_context_mapping(struct domain *domain, u8 devfn,
 {
     struct acpi_drhd_unit *drhd;
     int ret = 0;
-    u8 seg = pdev->seg, bus = pdev->bus, secbus;
+    uint16_t seg = pdev->seg;
+    uint8_t bus = pdev->bus, secbus;
 
     drhd = acpi_find_matched_drhd_unit(pdev);
     if ( !drhd )
@@ -1673,14 +1674,36 @@ int domain_context_unmap_one(
     return rc;
 }
 
+static bool any_pdev_behind_iommu(const struct domain *d,
+                                  const struct pci_dev *exclude,
+                                  const struct vtd_iommu *iommu)
+{
+    const struct pci_dev *pdev;
+
+    for_each_pdev ( d, pdev )
+    {
+        const struct acpi_drhd_unit *drhd;
+
+        if ( pdev == exclude )
+            continue;
+
+        drhd = acpi_find_matched_drhd_unit(pdev);
+        if ( drhd && drhd->iommu == iommu )
+            return true;
+    }
+
+    return false;
+}
+
 static int domain_context_unmap(struct domain *domain, u8 devfn,
                                 struct pci_dev *pdev)
 {
     struct acpi_drhd_unit *drhd;
     struct vtd_iommu *iommu;
     int ret = 0;
-    u8 seg = pdev->seg, bus = pdev->bus, tmp_bus, tmp_devfn, secbus;
-    int found = 0;
+    uint16_t seg = pdev->seg;
+    uint8_t bus = pdev->bus, tmp_bus, tmp_devfn, secbus;
+    bool found;
 
     drhd = acpi_find_matched_drhd_unit(pdev);
     if ( !drhd )
@@ -1765,23 +1788,18 @@ static int domain_context_unmap(struct domain *domain, u8 devfn,
         goto out;
 
     /*
-     * if no other devices under the same iommu owned by this domain,
-     * clear iommu in iommu_bitmap and clear domain_id in domid_bitmp
+     * If no other devices under the same iommu owned by this domain,
+     * clear iommu in iommu_bitmap and clear domain_id in domid_bitmap.
      */
-    for_each_pdev ( domain, pdev )
-    {
-        if ( pdev->seg == seg && pdev->bus == bus && pdev->devfn == devfn )
-            continue;
+    found = any_pdev_behind_iommu(domain, pdev, iommu);
+    /*
+     * Hidden devices are associated with DomXEN but usable by the hardware
+     * domain. Hence they need considering here as well.
+     */
+    if ( !found && is_hardware_domain(domain) )
+        found = any_pdev_behind_iommu(dom_xen, pdev, iommu);
 
-        drhd = acpi_find_matched_drhd_unit(pdev);
-        if ( drhd && drhd->iommu == iommu )
-        {
-            found = 1;
-            break;
-        }
-    }
-
-    if ( found == 0 )
+    if ( !found )
     {
         clear_bit(iommu->index, &dom_iommu(domain)->arch.iommu_bitmap);
         cleanup_domid_map(domain, iommu);
@@ -2408,7 +2426,7 @@ static int reassign_device_ownership(
                 ret = iommu_identity_mapping(source, p2m_access_x,
                                              rmrr->base_address,
                                              rmrr->end_address, 0);
-                if ( ret != -ENOENT )
+                if ( ret && ret != -ENOENT )
                     return ret;
             }
     }
