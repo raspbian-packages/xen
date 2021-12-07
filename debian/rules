@@ -5,6 +5,11 @@
 
 SHELL    := bash -e
 
+# SOURCE_BASE_DIR is used by our delta queue to find the top directory.  It
+# seems this information is currenty not directly provided by the Debian build
+# system.
+export SOURCE_BASE_DIR=$(shell pwd)
+
 # This influences dpkg-buildflags to specify better linker
 # options.  See https://wiki.debian.org/Hardening
 # Apparently some of these might incur silent breakage
