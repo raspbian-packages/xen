@@ -128,7 +128,6 @@ static const char *const str_7c0[32] =
     [10] = "vpclmulqdq",       [11] = "avx512-vnni",
     [12] = "avx512-bitalg",
     [14] = "avx512-vpopcntdq",
-    [16] = "tsxldtrk",
 
     [22] = "rdpid",
     /* 24 */                   [25] = "cldemote",
@@ -171,7 +170,7 @@ static const char *const str_7d0[32] =
     [10] = "md-clear",            [11] = "rtm-always-abort",
     /* 12 */                [13] = "tsx-force-abort",
     [14] = "serialize",
-
+    [16] = "tsxldtrk",
     [18] = "pconfig",
     [20] = "cet-ibt",
 
@@ -194,6 +193,15 @@ static const char *const str_e21a[32] =
     [ 6] = "nscb",
 };
 
+static const char *const str_7b1[32] =
+{
+};
+
+static const char *const str_7d2[32] =
+{
+    [ 0] = "intel-psfd",
+};
+
 static const struct {
     const char *name;
     const char *abbr;
@@ -212,6 +220,8 @@ static const struct {
     { "0x00000007:0.edx", "7d0", str_7d0 },
     { "0x00000007:1.eax", "7a1", str_7a1 },
     { "0x80000021.eax",  "e21a", str_e21a },
+    { "0x00000007:1.ebx", "7b1", str_7b1 },
+    { "0x00000007:2.edx", "7d2", str_7d2 },
 };
 
 #define COL_ALIGN "18"
