@@ -1,6 +1,17 @@
-xen (4.16.0+51-g0941d6cb-1) UNRELEASED; urgency=medium
+xen (4.16.0+51-g0941d6cb-1) unstable; urgency=medium
 
-  * Update to new upstream version 4.16.0+51-g0941d6cb.
+  * Update to new upstream version 4.16.0+51-g0941d6cb, which also contains
+    security fixes for the following issues:
+    - arm: guest_physmap_remove_page not removing the p2m mappings
+      XSA-393 CVE-2022-23033
+    - A PV guest could DoS Xen while unmapping a grant
+      XSA-394 CVE-2022-23034
+    - Insufficient cleanup of passed-through device IRQs
+      XSA-395 CVE-2022-23035
+  * Note that the following XSA are not listed, because...
+    - XSA-391 and XSA-392 have patches for the Linux kernel.
+  * Upload to unstable now, which obsoletes the Xen 4.14 FTBFS issue.
+    (Closes: #1002658)
 
  -- Hans van Kranenburg <hans@knorrie.org>  Sat, 19 Feb 2022 20:29:32 +0100
 
