@@ -1,6 +1,24 @@
-xen (4.14.4+74-gd7b22226b5-1) UNRELEASED; urgency=medium
+xen (4.14.4+74-gd7b22226b5-1) bullseye-security; urgency=medium
 
-  * Update to new upstream version 4.14.4+74-gd7b22226b5.
+  * Update to new upstream version 4.14.4+74-gd7b22226b5, which also contains
+    security fixes for the following issues:
+    - arm: guest_physmap_remove_page not removing the p2m mappings
+      XSA-393 CVE-2022-23033
+    - A PV guest could DoS Xen while unmapping a grant
+      XSA-394 CVE-2022-23034
+    - Insufficient cleanup of passed-through device IRQs
+      XSA-395 CVE-2022-23035
+    - Racy interactions between dirty vram tracking and paging log dirty
+      hypercalls
+      XSA-397 CVE-2022-26356
+    - Multiple speculative security issues
+      XSA-398 (no CVE yet)
+    - race in VT-d domain ID cleanup
+      XSA-399 CVE-2022-26357
+    - IOMMU: RMRR (VT-d) and unity map (AMD-Vi) handling issues
+      XSA-400 CVE-2022-26358 CVE-2022-26359 CVE-2022-26360 CVE-2022-26361
+  * Note that the following XSA are not listed, because...
+    - XSA-391, XSA-392 and XSA-396 have patches for the Linux kernel.
 
  -- Hans van Kranenburg <hans@knorrie.org>  Fri, 08 Apr 2022 11:40:51 +0200
 
