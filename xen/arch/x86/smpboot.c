@@ -321,6 +321,8 @@ static void set_cpu_sibling_map(unsigned int cpu)
 
 void start_secondary(void *unused)
 {
+    struct cpu_info *info = get_cpu_info();
+
     /*
      * Dont put anything before smp_callin(), SMP booting is so fragile that we
      * want to limit the things done here to the most necessary things.
@@ -376,10 +378,12 @@ void start_secondary(void *unused)
      * settings.  Note: These MSRs may only become available after loading
      * microcode.
      */
-    if ( boot_cpu_has(X86_FEATURE_IBRSB) )
+    if ( boot_cpu_has(X86_FEATURE_IBRSB) || boot_cpu_has(X86_FEATURE_IBRS) )
+    {
         wrmsrl(MSR_SPEC_CTRL, default_xen_spec_ctrl);
-    if ( boot_cpu_has(X86_FEATURE_SRBDS_CTRL) )
-        wrmsrl(MSR_MCU_OPT_CTRL, default_xen_mcu_opt_ctrl);
+        info->last_spec_ctrl = default_xen_spec_ctrl;
+    }
+    update_mcu_opt_ctrl();
 
     tsx_init(); /* Needs microcode.  May change HLE/RTM feature bits. */
 
@@ -984,6 +988,23 @@ static void cpu_smpboot_free(unsigned int cpu, bool remove)
     }
 }
 
+void *cpu_alloc_stack(unsigned int cpu)
+{
+    nodeid_t node = cpu_to_node(cpu);
+    unsigned int memflags = 0;
+    void *stack;
+
+    if ( node != NUMA_NO_NODE )
+        memflags = MEMF_node(node);
+
+    stack = alloc_xenheap_pages(STACK_ORDER, memflags);
+
+    if ( stack )
+        memguard_guard_stack(stack);
+
+    return stack;
+}
+
 static int cpu_smpboot_alloc(unsigned int cpu)
 {
     struct cpu_info *info;
@@ -996,14 +1017,9 @@ static int cpu_smpboot_alloc(unsigned int cpu)
     if ( node != NUMA_NO_NODE )
         memflags = MEMF_node(node);
 
-    if ( stack_base[cpu] == NULL )
-    {
-        stack_base[cpu] = alloc_xenheap_pages(STACK_ORDER, memflags);
-        if ( !stack_base[cpu] )
+    if ( stack_base[cpu] == NULL &&
+         (stack_base[cpu] = cpu_alloc_stack(cpu)) == NULL )
             goto out;
-
-        memguard_guard_stack(stack_base[cpu]);
-    }
 
     info = get_cpu_info_from_stack((unsigned long)stack_base[cpu]);
     info->processor_id = cpu;

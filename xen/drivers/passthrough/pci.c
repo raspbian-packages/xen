@@ -339,6 +339,7 @@ static struct pci_dev *alloc_pdev(struct pci_seg *pseg, u8 bus, u8 devfn)
     *((u8*) &pdev->bus) = bus;
     *((u8*) &pdev->devfn) = devfn;
     pdev->domain = NULL;
+    pdev->arch.pseudo_domid = DOMID_INVALID;
     INIT_LIST_HEAD(&pdev->msi_list);
 
     pos = pci_find_cap_offset(pseg->nr, bus, PCI_SLOT(devfn), PCI_FUNC(devfn),
@@ -928,9 +929,16 @@ static int deassign_device(struct domain *d, uint16_t seg, uint8_t bus,
         return -ENODEV;
 
     /* De-assignment from dom_io should de-quarantine the device */
-    target = ((pdev->quarantine || iommu_quarantine) &&
-              pdev->domain != dom_io) ?
-        dom_io : hardware_domain;
+    if ( (pdev->quarantine || iommu_quarantine) && pdev->domain != dom_io )
+    {
+        ret = iommu_quarantine_dev_init(pci_to_dev(pdev));
+        if ( ret )
+           return ret;
+
+        target = dom_io;
+    }
+    else
+        target = hardware_domain;
 
     while ( pdev->phantom_stride )
     {
@@ -1349,9 +1357,13 @@ static int _dump_pci_devices(struct pci_seg *pseg, void *arg)
 
     list_for_each_entry ( pdev, &pseg->alldevs_list, alldevs_list )
     {
-        printk("%04x:%02x:%02x.%u - %pd - node %-3d - MSIs < ",
-               pseg->nr, pdev->bus,
-               PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn), pdev->domain,
+        printk("%04x:%02x:%02x.%u - ", pseg->nr, pdev->bus,
+               PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
+        if ( pdev->domain == dom_io )
+            printk("DomIO:%x", pdev->arch.pseudo_domid);
+        else
+            printk("%pd", pdev->domain);
+        printk(" - node %-3d - MSIs < ",
                (pdev->node != NUMA_NO_NODE) ? pdev->node : -1);
         list_for_each_entry ( msi, &pdev->msi_list, list )
                printk("%d ", msi->irq);
@@ -1521,6 +1533,13 @@ static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn, u32 flag)
         if ( rc )
             goto done;
         msixtbl_init(d);
+    }
+
+    if ( pdev->domain != dom_io )
+    {
+        rc = iommu_quarantine_dev_init(pci_to_dev(pdev));
+        if ( rc )
+            goto done;
     }
 
     pdev->fault.count = 0;

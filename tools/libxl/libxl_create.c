@@ -427,6 +427,8 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
         break;
     case LIBXL_DOMAIN_TYPE_PVH:
         libxl_defbool_setdefault(&b_info->u.pvh.pvshim, false);
+        if (b_info->video_memkb == LIBXL_MEMKB_DEFAULT)
+            b_info->video_memkb = 0;
         if (libxl_defbool_val(b_info->u.pvh.pvshim)) {
             if (!b_info->u.pvh.pvshim_path)
                 b_info->u.pvh.pvshim_path =
@@ -1130,17 +1132,17 @@ int libxl__domain_config_setdefault(libxl__gc *gc,
     pod_enabled = (d_config->c_info.type != LIBXL_DOMAIN_TYPE_PV) &&
         (d_config->b_info.target_memkb < d_config->b_info.max_memkb);
 
-    /* We cannot have PoD and PCI device assignment at the same time
-     * for HVM guest. It was reported that IOMMU cannot work with PoD
-     * enabled because it needs to populated entire page table for
-     * guest. To stay on the safe side, we disable PCI device
-     * assignment when PoD is enabled.
+    /* We don't support having PoD and an IOMMU at the same time for HVM
+     * guests. An active IOMMU cannot work with PoD because it needs a fully
+     * populated page-table. Prevent PoD usage if the domain has an IOMMU
+     * assigned, even if not active.
      */
     if (d_config->c_info.type != LIBXL_DOMAIN_TYPE_PV &&
-        d_config->num_pcidevs && pod_enabled) {
+        d_config->c_info.passthrough != LIBXL_PASSTHROUGH_DISABLED &&
+        pod_enabled) {
         ret = ERROR_INVAL;
         LOGD(ERROR, domid,
-             "PCI device assignment for HVM guest failed due to PoD enabled");
+             "IOMMU required for device passthrough but not supported together with PoD");
         goto error_out;
     }
 
@@ -1218,8 +1220,6 @@ static void initiate_domain_create(libxl__egc *egc,
     /* convenience aliases */
     libxl_domain_config *const d_config = dcs->guest_config;
     libxl__domain_build_state *dbs = &dcs->build_state;
-
-    libxl__xswait_init(&dcs->console_xswait);
 
     domid = dcs->domid;
     libxl__domain_build_state_init(dbs);
@@ -2035,6 +2035,7 @@ static int do_domain_create(libxl_ctx *ctx, libxl_domain_config *d_config,
     cdcs->dcs.callback = domain_create_cb;
     cdcs->dcs.domid = INVALID_DOMID;
     cdcs->dcs.soft_reset = false;
+    libxl__xswait_init(&cdcs->dcs.console_xswait);
 
     if (cdcs->dcs.restore_params.checkpointed_stream ==
         LIBXL_CHECKPOINTED_STREAM_COLO) {
@@ -2135,6 +2136,7 @@ static int do_domain_soft_reset(libxl_ctx *ctx,
     cdcs->dcs.domid = domid;
     cdcs->dcs.soft_reset = true;
     cdcs->dcs.callback = domain_create_cb;
+    libxl__xswait_init(&cdcs->dcs.console_xswait);
     libxl__ao_progress_gethow(&srs->cdcs.dcs.aop_console_how,
                               aop_console_how);
     cdcs->domid_out = &domid_out;

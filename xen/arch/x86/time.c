@@ -285,6 +285,23 @@ static char *freq_string(u64 freq)
     return s;
 }
 
+static uint64_t adjust_elapsed(uint64_t elapsed, uint32_t actual,
+                               uint32_t target)
+{
+    if ( likely(actual > target) )
+    {
+        /*
+         * A (perhaps significant) delay before the last timer read (e.g. due
+         * to a SMI or NMI) can lead to (perhaps severe) inaccuracy if not
+         * accounting for the time elapsed beyond the originally calculated
+         * duration of the calibration interval.
+         */
+        elapsed = muldiv64(elapsed, target, actual);
+    }
+
+    return elapsed * CALIBRATE_FRAC;
+}
+
 /************************************************************
  * PLATFORM TIMER 1: PROGRAMMABLE INTERVAL TIMER (LEGACY PIT)
  */
@@ -376,7 +393,7 @@ static u64 read_hpet_count(void)
 static int64_t __init init_hpet(struct platform_timesource *pts)
 {
     uint64_t hpet_rate, start;
-    uint32_t count, target;
+    uint32_t count, target, elapsed;
 
     if ( hpet_address && strcmp(opt_clocksource, pts->id) &&
          cpuidle_using_deep_cstate() )
@@ -414,14 +431,11 @@ static int64_t __init init_hpet(struct platform_timesource *pts)
 
     count = hpet_read32(HPET_COUNTER);
     start = rdtsc_ordered();
-    target = count + CALIBRATE_VALUE(hpet_rate);
-    if ( target < count )
-        while ( hpet_read32(HPET_COUNTER) >= count )
-            continue;
-    while ( hpet_read32(HPET_COUNTER) < target )
+    target = CALIBRATE_VALUE(hpet_rate);
+    while ( (elapsed = hpet_read32(HPET_COUNTER) - count) < target )
         continue;
 
-    return (rdtsc_ordered() - start) * CALIBRATE_FRAC;
+    return adjust_elapsed(rdtsc_ordered() - start, elapsed, target);
 }
 
 static void resume_hpet(struct platform_timesource *pts)
@@ -456,8 +470,8 @@ static u64 read_pmtimer_count(void)
 
 static s64 __init init_pmtimer(struct platform_timesource *pts)
 {
-    u64 start;
-    u32 count, target, mask;
+    uint64_t start;
+    uint32_t count, target, mask, elapsed;
 
     if ( !pmtmr_ioport || (pmtmr_width != 24 && pmtmr_width != 32) )
         return 0;
@@ -465,16 +479,13 @@ static s64 __init init_pmtimer(struct platform_timesource *pts)
     pts->counter_bits = pmtmr_width;
     mask = 0xffffffff >> (32 - pmtmr_width);
 
-    count = inl(pmtmr_ioport) & mask;
+    count = inl(pmtmr_ioport);
     start = rdtsc_ordered();
-    target = count + CALIBRATE_VALUE(ACPI_PM_FREQUENCY);
-    if ( target < count )
-        while ( (inl(pmtmr_ioport) & mask) >= count )
-            continue;
-    while ( (inl(pmtmr_ioport) & mask) < target )
+    target = CALIBRATE_VALUE(ACPI_PM_FREQUENCY);
+    while ( (elapsed = (inl(pmtmr_ioport) - count) & mask) < target )
         continue;
 
-    return (rdtsc_ordered() - start) * CALIBRATE_FRAC;
+    return adjust_elapsed(rdtsc_ordered() - start, elapsed, target);
 }
 
 static struct platform_timesource __initdata plt_pmtimer =

@@ -1370,6 +1370,7 @@ static const uint32_t msrs_to_send[] = {
 
 static int hvm_save_cpu_msrs(struct vcpu *v, hvm_domain_context_t *h)
 {
+    const struct domain *d = v->domain;
     struct hvm_save_descriptor *desc = _p(&h->data[h->cur]);
     struct hvm_msr *ctxt;
     unsigned int i;
@@ -1385,7 +1386,8 @@ static int hvm_save_cpu_msrs(struct vcpu *v, hvm_domain_context_t *h)
     for ( i = 0; i < ARRAY_SIZE(msrs_to_send); ++i )
     {
         uint64_t val;
-        int rc = guest_rdmsr(v, msrs_to_send[i], &val);
+        unsigned int msr = msrs_to_send[i];
+        int rc = guest_rdmsr(v, msr, &val);
 
         /*
          * It is the programmers responsibility to ensure that
@@ -1405,7 +1407,26 @@ static int hvm_save_cpu_msrs(struct vcpu *v, hvm_domain_context_t *h)
         if ( !val )
             continue; /* Skip empty MSRs. */
 
-        ctxt->msr[ctxt->count].index = msrs_to_send[i];
+        /*
+         * Guests are given full access to certain MSRs for performance
+         * reasons.  A consequence is that Xen is unable to enforce that all
+         * bits disallowed by the CPUID policy yield #GP, and an enterprising
+         * guest may be able to set and use a bit it ought to leave alone.
+         *
+         * When migrating from a more capable host to a less capable one, such
+         * bits may be rejected by the destination, and the migration failed.
+         *
+         * Discard such bits here on the source side.  Such bits have reserved
+         * behaviour, and the guest has only itself to blame.
+         */
+        switch ( msr )
+        {
+        case MSR_SPEC_CTRL:
+            val &= msr_spec_ctrl_valid_bits(d->arch.cpuid);
+            break;
+        }
+
+        ctxt->msr[ctxt->count].index = msr;
         ctxt->msr[ctxt->count++].val = val;
     }
 
@@ -2530,6 +2551,9 @@ bool_t hvm_virtual_to_linear_addr(
      */
     ASSERT(seg < x86_seg_none);
 
+    /* However, check that insn fetches only ever specify CS. */
+    ASSERT(access_type != hvm_access_insn_fetch || seg == x86_seg_cs);
+
     if ( !(curr->arch.hvm.guest_cr[0] & X86_CR0_PE) )
     {
         /*
@@ -2594,10 +2618,17 @@ bool_t hvm_virtual_to_linear_addr(
                 if ( (reg->type & 0xa) == 0x8 )
                     goto out; /* execute-only code segment */
                 break;
+
             case hvm_access_write:
                 if ( (reg->type & 0xa) != 0x2 )
                     goto out; /* not a writable data segment */
                 break;
+
+            case hvm_access_insn_fetch:
+                if ( !(reg->type & 0x8) )
+                    goto out; /* not a code segment */
+                break;
+
             default:
                 break;
             }
@@ -3712,6 +3743,28 @@ int hvm_msr_write_intercept(unsigned int msr, uint64_t msr_content,
 
 gp_fault:
     return X86EMUL_EXCEPTION;
+}
+
+uint64_t hvm_get_reg(struct vcpu *v, unsigned int reg)
+{
+    ASSERT(v == current || !vcpu_runnable(v));
+
+    switch ( reg )
+    {
+    default:
+        return alternative_call(hvm_funcs.get_reg, v, reg);
+    }
+}
+
+void hvm_set_reg(struct vcpu *v, unsigned int reg, uint64_t val)
+{
+    ASSERT(v == current || !vcpu_runnable(v));
+
+    switch ( reg )
+    {
+    default:
+        return alternative_vcall(hvm_funcs.set_reg, v, reg, val);
+    }
 }
 
 static bool is_sysdesc_access(const struct x86_emulate_state *state,

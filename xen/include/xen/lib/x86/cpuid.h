@@ -15,6 +15,9 @@
 #define FEATURESET_e8b    8 /* 0x80000008.ebx      */
 #define FEATURESET_7d0    9 /* 0x00000007:0.edx    */
 #define FEATURESET_7a1   10 /* 0x00000007:1.eax    */
+#define FEATURESET_e21a  11 /* 0x80000021.eax      */
+#define FEATURESET_7b1   12 /* 0x00000007:1.ebx    */
+#define FEATURESET_7d2   13 /* 0x80000007:2.edx    */
 
 struct cpuid_leaf
 {
@@ -80,11 +83,11 @@ const char *x86_cpuid_vendor_to_str(unsigned int vendor);
 
 #define CPUID_GUEST_NR_BASIC      (0xdu + 1)
 #define CPUID_GUEST_NR_CACHE      (5u + 1)
-#define CPUID_GUEST_NR_FEAT       (1u + 1)
+#define CPUID_GUEST_NR_FEAT       (2u + 1)
 #define CPUID_GUEST_NR_TOPO       (1u + 1)
 #define CPUID_GUEST_NR_XSTATE     (62u + 1)
 #define CPUID_GUEST_NR_EXTD_INTEL (0x8u + 1)
-#define CPUID_GUEST_NR_EXTD_AMD   (0x1cu + 1)
+#define CPUID_GUEST_NR_EXTD_AMD   (0x21u + 1)
 #define CPUID_GUEST_NR_EXTD       MAX(CPUID_GUEST_NR_EXTD_INTEL, \
                                       CPUID_GUEST_NR_EXTD_AMD)
 
@@ -187,6 +190,18 @@ struct cpuid_policy
                 uint32_t _7a1;
                 struct { DECL_BITFIELD(7a1); };
             };
+            union {
+                uint32_t _7b1;
+                struct { DECL_BITFIELD(7b1); };
+            };
+            uint32_t /* c */:32, /* d */:32;
+
+            /* Subleaf 2. */
+            uint32_t /* a */:32, /* b */:32, /* c */:32;
+            union {
+                uint32_t _7d2;
+                struct { DECL_BITFIELD(7d2); };
+            };
         };
     } feat;
 
@@ -264,6 +279,38 @@ struct cpuid_policy
             };
             uint32_t nc:8, :4, apic_id_size:4, :16;
             uint32_t /* d */:32;
+
+            uint64_t :64, :64; /* Leaf 0x80000009. */
+            uint64_t :64, :64; /* Leaf 0x8000000a - SVM rev and features. */
+            uint64_t :64, :64; /* Leaf 0x8000000b. */
+            uint64_t :64, :64; /* Leaf 0x8000000c. */
+            uint64_t :64, :64; /* Leaf 0x8000000d. */
+            uint64_t :64, :64; /* Leaf 0x8000000e. */
+            uint64_t :64, :64; /* Leaf 0x8000000f. */
+            uint64_t :64, :64; /* Leaf 0x80000010. */
+            uint64_t :64, :64; /* Leaf 0x80000011. */
+            uint64_t :64, :64; /* Leaf 0x80000012. */
+            uint64_t :64, :64; /* Leaf 0x80000013. */
+            uint64_t :64, :64; /* Leaf 0x80000014. */
+            uint64_t :64, :64; /* Leaf 0x80000015. */
+            uint64_t :64, :64; /* Leaf 0x80000016. */
+            uint64_t :64, :64; /* Leaf 0x80000017. */
+            uint64_t :64, :64; /* Leaf 0x80000018. */
+            uint64_t :64, :64; /* Leaf 0x80000019 - TLB 1GB Identifiers. */
+            uint64_t :64, :64; /* Leaf 0x8000001a - Performance related info. */
+            uint64_t :64, :64; /* Leaf 0x8000001b - IBS feature information. */
+            uint64_t :64, :64; /* Leaf 0x8000001c. */
+            uint64_t :64, :64; /* Leaf 0x8000001d - Cache properties. */
+            uint64_t :64, :64; /* Leaf 0x8000001e - Extd APIC/Core/Node IDs. */
+            uint64_t :64, :64; /* Leaf 0x8000001f - AMD Secure Encryption. */
+            uint64_t :64, :64; /* Leaf 0x80000020 - Platform QoS. */
+
+            /* Leaf 0x80000021 - Extended Feature 2 */
+            union {
+                uint32_t e21a;
+                struct { DECL_BITFIELD(e21a); };
+            };
+            uint32_t /* b */:32, /* c */:32, /* d */:32;
         };
     } extd;
 
@@ -293,6 +340,9 @@ static inline void cpuid_policy_to_featureset(
     fs[FEATURESET_e8b] = p->extd.e8b;
     fs[FEATURESET_7d0] = p->feat._7d0;
     fs[FEATURESET_7a1] = p->feat._7a1;
+    fs[FEATURESET_e21a] = p->extd.e21a;
+    fs[FEATURESET_7b1] = p->feat._7b1;
+    fs[FEATURESET_7d2] = p->feat._7d2;
 }
 
 /* Fill in a CPUID policy from a featureset bitmap. */
@@ -310,6 +360,9 @@ static inline void cpuid_featureset_to_policy(
     p->extd.e8b   = fs[FEATURESET_e8b];
     p->feat._7d0  = fs[FEATURESET_7d0];
     p->feat._7a1  = fs[FEATURESET_7a1];
+    p->extd.e21a  = fs[FEATURESET_e21a];
+    p->feat._7b1  = fs[FEATURESET_7b1];
+    p->feat._7d2  = fs[FEATURESET_7d2];
 }
 
 static inline uint64_t cpuid_policy_xcr0_max(const struct cpuid_policy *p)

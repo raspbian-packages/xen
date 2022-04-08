@@ -275,16 +275,20 @@ def crunch_numbers(state):
         # The features:
         #   * Single Thread Indirect Branch Predictors
         #   * Speculative Store Bypass Disable
+        #   * Predictive Store Forward Disable
         #
-        # enumerate new bits in MSR_SPEC_CTRL, which is enumerated by Indirect
-        # Branch Restricted Speculation/Indirect Branch Prediction Barrier.
+        # enumerate new bits in MSR_SPEC_CTRL, and technically enumerate
+        # MSR_SPEC_CTRL itself.  AMD further enumerates hints to guide OS
+        # behaviour.
         #
-        # In practice, these features also enumerate the presense of
-        # MSR_SPEC_CTRL.  However, no real hardware will exist with SSBD but
-        # not IBRSB, and we pass this MSR directly to guests.  Treating them
+        # However, no real hardware will exist with e.g. SSBD but not
+        # IBRSB/IBRS, and we pass this MSR directly to guests.  Treating them
         # as dependent features simplifies Xen's logic, and prevents the guest
         # from seeing implausible configurations.
-        IBRSB: [STIBP, SSBD],
+        IBRSB: [STIBP, SSBD, INTEL_PSFD],
+        IBRS: [AMD_STIBP, AMD_SSBD, PSFD,
+               IBRS_ALWAYS, IBRS_FAST, IBRS_SAME_MODE],
+        AMD_STIBP: [STIBP_ALWAYS],
 
         # In principle the TSXLDTRK insns could also be considered independent.
         RTM: [TSXLDTRK],
@@ -420,6 +424,8 @@ def write_results(state):
 """}
 
 """)
+
+    state.bitfields += ["uint32_t :32 /* placeholder */"] * 4
 
     for idx, text in enumerate(state.bitfields):
         state.output.write(

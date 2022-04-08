@@ -101,6 +101,12 @@ static bool __initdata opt_xen_shstk = true;
 #define opt_xen_shstk false
 #endif
 
+#ifdef CONFIG_XEN_IBT
+static bool __initdata opt_xen_ibt = true;
+#else
+#define opt_xen_ibt false
+#endif
+
 static int __init parse_cet(const char *s)
 {
     const char *ss;
@@ -119,6 +125,14 @@ static int __init parse_cet(const char *s)
             no_config_param("XEN_SHSTK", "cet", s, ss);
 #endif
         }
+        else if ( (val = parse_boolean("ibt", s, ss)) >= 0 )
+        {
+#ifdef CONFIG_XEN_IBT
+            opt_xen_ibt = val;
+#else
+            no_config_param("XEN_IBT", "cet", s, ss);
+#endif
+        }
         else
             rc = -EINVAL;
 
@@ -135,7 +149,7 @@ unsigned long __read_mostly xen_phys_start;
 
 unsigned long __read_mostly xen_virt_end;
 
-char __section(".bss.stack_aligned") __aligned(STACK_SIZE)
+char __section(".init.bss.stack_aligned") __aligned(STACK_SIZE)
     cpu0_stack[STACK_SIZE];
 
 struct cpuinfo_x86 __read_mostly boot_cpu_data = { 0, 0, 0, 0, -1 };
@@ -654,6 +668,21 @@ static void noinline init_done(void)
     startup_cpu_idle_loop();
 }
 
+#if defined(CONFIG_XEN_SHSTK) || defined(CONFIG_XEN_IBT)
+/*
+ * Used by AP and S3 asm code to calcualte the appropriate MSR_S_CET setting.
+ * Do not use on the BSP before reinit_bsp_stack(), or it may turn SHSTK on
+ * too early.
+ */
+unsigned int xen_msr_s_cet_value(void)
+{
+    return ((cpu_has_xen_shstk ? CET_SHSTK_EN | CET_WRSS_EN : 0) |
+            (cpu_has_xen_ibt   ? CET_ENDBR_EN : 0));
+}
+#else
+unsigned int xen_msr_s_cet_value(void); /* To avoid ifdefary */
+#endif
+
 /* Reinitalise all state referring to the old virtual address of the stack. */
 static void __init noreturn reinit_bsp_stack(void)
 {
@@ -667,7 +696,6 @@ static void __init noreturn reinit_bsp_stack(void)
     percpu_traps_init();
 
     stack_base[0] = stack;
-    memguard_guard_stack(stack);
 
     rc = setup_cpu_root_pgt(0);
     if ( rc )
@@ -677,7 +705,7 @@ static void __init noreturn reinit_bsp_stack(void)
     {
         wrmsrl(MSR_PL0_SSP,
                (unsigned long)stack + (PRIMARY_SHSTK_SLOT + 1) * PAGE_SIZE - 8);
-        wrmsrl(MSR_S_CET, CET_SHSTK_EN | CET_WRSS_EN);
+        wrmsrl(MSR_S_CET, xen_msr_s_cet_value());
         asm volatile ("setssbsy" ::: "memory");
     }
 
@@ -821,6 +849,8 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 {
     char *memmap_type = NULL;
     char *cmdline, *kextra, *loader;
+    void *bsp_stack;
+    struct cpu_info *info = get_cpu_info(), *bsp_info;
     unsigned int initrdidx, num_parked = 0;
     multiboot_info_t *mbi;
     module_t *mod;
@@ -850,6 +880,9 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     setup_virtual_regions(__start___ex_table, __stop___ex_table);
 
     /* Full exception support from here on in. */
+
+    rdmsrl(MSR_EFER, this_cpu(efer));
+    asm volatile ( "mov %%cr4,%0" : "=r" (info->cr4) );
 
     /* Enable NMIs.  Our loader (e.g. Tboot) may have left them disabled. */
     enable_nmis();
@@ -896,9 +929,6 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     hypervisor_name = hypervisor_probe();
 
     parse_video_info();
-
-    rdmsrl(MSR_EFER, this_cpu(efer));
-    asm volatile ( "mov %%cr4,%0" : "=r" (get_cpu_info()->cr4) );
 
     /* We initialise the serial devices very early so we can get debugging. */
     ns16550.io_base = 0x3f8;
@@ -1088,11 +1118,33 @@ void __init noreturn __start_xen(unsigned long mbi_p)
         printk("Enabling Supervisor Shadow Stacks\n");
 
         setup_force_cpu_cap(X86_FEATURE_XEN_SHSTK);
+    }
+
+    if ( opt_xen_ibt && boot_cpu_has(X86_FEATURE_CET_IBT) )
+    {
+        printk("Enabling Indirect Branch Tracking\n");
+
+        setup_force_cpu_cap(X86_FEATURE_XEN_IBT);
+
+        if ( efi_enabled(EFI_RS) )
+            printk("  - IBT disabled in UEFI Runtime Services\n");
+
+        /*
+         * Enable IBT now.  Only require the endbr64 on callees, which is
+         * entirely build-time arrangements.
+         */
+        wrmsrl(MSR_S_CET, CET_ENDBR_EN);
+    }
+
+    if ( cpu_has_xen_shstk || cpu_has_xen_ibt )
+    {
+        set_in_cr4(X86_CR4_CET);
+
 #ifdef CONFIG_PV32
         if ( opt_pv32 )
         {
             opt_pv32 = 0;
-            printk("  - Disabling PV32 due to Shadow Stacks\n");
+            printk("  - Disabling PV32 due to CET\n");
         }
 #endif
     }
@@ -1669,6 +1721,10 @@ void __init noreturn __start_xen(unsigned long mbi_p)
      */
     vm_init();
 
+    bsp_stack = cpu_alloc_stack(0);
+    if ( !bsp_stack )
+        panic("No memory for BSP stack\n");
+
     console_init_ring();
     vesa_init();
 
@@ -1833,10 +1889,6 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     alternative_branches();
 
-    /* Defer CR4.CET until alternatives have finished playing with CR0.WP */
-    if ( cpu_has_xen_shstk )
-        set_in_cr4(X86_CR4_CET);
-
     /*
      * NB: when running as a PV shim VCPUOP_up/down is wired to the shim
      * physical cpu_add/remove functions, so launch the guest with only
@@ -1928,14 +1980,18 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     if ( bsp_delay_spec_ctrl )
     {
-        get_cpu_info()->spec_ctrl_flags &= ~SCF_use_shadow;
+        info->spec_ctrl_flags &= ~SCF_use_shadow;
         barrier();
         wrmsrl(MSR_SPEC_CTRL, default_xen_spec_ctrl);
+        info->last_spec_ctrl = default_xen_spec_ctrl;
     }
 
-    /* Jump to the 1:1 virtual mappings of cpu0_stack. */
+    /* Copy the cpu info block, and move onto the BSP stack. */
+    bsp_info = get_cpu_info_from_stack((unsigned long)bsp_stack);
+    *bsp_info = *info;
+
     asm volatile ("mov %[stk], %%rsp; jmp %c[fn]" ::
-                  [stk] "g" (__va(__pa(get_stack_bottom()))),
+                  [stk] "g" (&bsp_info->guest_cpu_user_regs),
                   [fn] "i" (reinit_bsp_stack) : "memory");
     unreachable();
 }
