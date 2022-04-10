@@ -12,7 +12,7 @@ Subject: version
  6 files changed, 31 insertions(+), 31 deletions(-)
 
 diff --git a/xen/Makefile b/xen/Makefile
-index e20d61b..b211dbe 100644
+index 7c98e4a..2cf10a4 100644
 --- a/xen/Makefile
 +++ b/xen/Makefile
 @@ -382,7 +382,7 @@ delete-unfresh-files:

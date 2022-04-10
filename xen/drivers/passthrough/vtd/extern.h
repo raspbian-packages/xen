@@ -85,9 +85,11 @@ void free_pgtable_maddr(u64 maddr);
 void *map_vtd_domain_page(u64 maddr);
 void unmap_vtd_domain_page(void *va);
 int domain_context_mapping_one(struct domain *domain, struct vtd_iommu *iommu,
-                               u8 bus, u8 devfn, const struct pci_dev *);
+                               uint8_t bus, uint8_t devfn,
+                               const struct pci_dev *pdev, domid_t domid,
+                               paddr_t pgd_maddr, unsigned int mode);
 int domain_context_unmap_one(struct domain *domain, struct vtd_iommu *iommu,
-                             u8 bus, u8 devfn);
+                             uint8_t bus, uint8_t devfn, domid_t domid);
 int intel_iommu_get_reserved_device_memory(iommu_grdm_t *func, void *ctxt);
 
 unsigned int io_apic_read_remap_rte(unsigned int apic, unsigned int reg);
@@ -105,8 +107,9 @@ int is_igd_vt_enabled_quirk(void);
 void platform_quirks_init(void);
 void vtd_ops_preamble_quirk(struct vtd_iommu *iommu);
 void vtd_ops_postamble_quirk(struct vtd_iommu *iommu);
-int __must_check me_wifi_quirk(struct domain *domain,
-                               u8 bus, u8 devfn, int map);
+int __must_check me_wifi_quirk(struct domain *domain, uint8_t bus,
+                               uint8_t devfn, domid_t domid, paddr_t pgd_maddr,
+                               unsigned int mode);
 void pci_vtd_quirk(const struct pci_dev *);
 void quirk_iommu_caps(struct vtd_iommu *iommu);
 

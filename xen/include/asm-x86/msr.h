@@ -267,6 +267,8 @@ static inline void wrmsr_tsc_aux(uint32_t val)
     }
 }
 
+uint64_t msr_spec_ctrl_valid_bits(const struct cpuid_policy *cp);
+
 extern struct msr_policy     raw_msr_policy,
                             host_msr_policy,
                           pv_max_msr_policy,
@@ -277,7 +279,24 @@ extern struct msr_policy     raw_msr_policy,
 /* Container object for per-vCPU MSRs */
 struct vcpu_msrs
 {
-    /* 0x00000048 - MSR_SPEC_CTRL */
+    /*
+     * 0x00000048 - MSR_SPEC_CTRL
+     *
+     * For PV guests, this holds the guest kernel value.  It is accessed on
+     * every entry/exit path.
+     *
+     * For VT-x guests, the guest value is held in the MSR guest load/save
+     * list.
+     *
+     * For SVM, the guest value lives in the VMCB, and hardware saves/restores
+     * the host value automatically.  However, guests run with the OR of the
+     * host and guest value, which allows Xen to set protections behind the
+     * guest's back.
+     *
+     * We must clear/restore Xen's value before/after VMRUN to avoid unduly
+     * influencing the guest.  In order to support "behind the guest's back"
+     * protections, we load this value (commonly 0) before VMRUN.
+     */
     struct {
         uint32_t raw;
     } spec_ctrl;

@@ -1,4 +1,4 @@
-xen (4.14.3+32-g9de3671772-1~deb11u1+rpi1) bullseye-staging; urgency=medium
+xen (4.14.4+74-gd7b22226b5-1+rpi1) bullseye-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,7 +9,31 @@ xen (4.14.3+32-g9de3671772-1~deb11u1+rpi1) bullseye-staging; urgency=medium
   [changes introduced in 4.11.1+26-g87f51bf366-3+rpi1 by Peter Michael Green]
   * Do not fail on files that are not installed.
 
- -- Raspbian forward porter <root@raspbian.org>  Sun, 05 Dec 2021 19:06:23 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Sun, 10 Apr 2022 21:56:57 +0000
+
+xen (4.14.4+74-gd7b22226b5-1) bullseye-security; urgency=medium
+
+  * Update to new upstream version 4.14.4+74-gd7b22226b5, which also contains
+    security fixes for the following issues:
+    - arm: guest_physmap_remove_page not removing the p2m mappings
+      XSA-393 CVE-2022-23033
+    - A PV guest could DoS Xen while unmapping a grant
+      XSA-394 CVE-2022-23034
+    - Insufficient cleanup of passed-through device IRQs
+      XSA-395 CVE-2022-23035
+    - Racy interactions between dirty vram tracking and paging log dirty
+      hypercalls
+      XSA-397 CVE-2022-26356
+    - Multiple speculative security issues
+      XSA-398 (no CVE yet)
+    - race in VT-d domain ID cleanup
+      XSA-399 CVE-2022-26357
+    - IOMMU: RMRR (VT-d) and unity map (AMD-Vi) handling issues
+      XSA-400 CVE-2022-26358 CVE-2022-26359 CVE-2022-26360 CVE-2022-26361
+  * Note that the following XSA are not listed, because...
+    - XSA-391, XSA-392 and XSA-396 have patches for the Linux kernel.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Fri, 08 Apr 2022 11:40:51 +0200
 
 xen (4.14.3+32-g9de3671772-1~deb11u1) bullseye-security; urgency=medium
 

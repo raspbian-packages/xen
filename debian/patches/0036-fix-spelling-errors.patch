@@ -134,10 +134,10 @@ index 0c3f378..fb1b296 100644
  {
      struct vpmu_struct *vpmu = vcpu_vpmu(v);
 diff --git a/xen/arch/x86/mpparse.c b/xen/arch/x86/mpparse.c
-index d532575..dff02b1 100644
+index 3e0ec3c..91fa580 100644
 --- a/xen/arch/x86/mpparse.c
 +++ b/xen/arch/x86/mpparse.c
-@@ -170,7 +170,7 @@ static int MP_processor_info_x(struct mpc_config_processor *m,
+@@ -175,7 +175,7 @@ static int MP_processor_info_x(struct mpc_config_processor *m,
  	if (num_processors >= 8 && hotplug
  	    && genapic.name == apic_default.name) {
  		printk_once(XENLOG_WARNING
@@ -147,7 +147,7 @@ index d532575..dff02b1 100644
  		return -ENOSPC;
  	}
 diff --git a/xen/arch/x86/x86_emulate/x86_emulate.c b/xen/arch/x86/x86_emulate/x86_emulate.c
-index de46ec1..605e535 100644
+index c0f91dd..ed511de 100644
 --- a/xen/arch/x86/x86_emulate/x86_emulate.c
 +++ b/xen/arch/x86/x86_emulate/x86_emulate.c
 @@ -3244,7 +3244,7 @@ x86_decode(
@@ -184,7 +184,7 @@ index 4ba6d3a..5c95131 100644
  	spinlock_t			lock;
  	/* List of context (i.e iommu_domain) associated to this domain */
 diff --git a/xen/tools/gen-cpuid.py b/xen/tools/gen-cpuid.py
-index ffd9529..14f56df 100755
+index e77672d..1cbd81a 100755
 --- a/xen/tools/gen-cpuid.py
 +++ b/xen/tools/gen-cpuid.py
 @@ -192,7 +192,7 @@ def crunch_numbers(state):

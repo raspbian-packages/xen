@@ -41,7 +41,7 @@ index 3ad4105..7994228 100644
  		offsetof(struct acpi_table_facs, firmware_waking_vector);
  	acpi_sinfo.vector_width = 32;
 diff --git a/xen/arch/x86/acpi/power.c b/xen/arch/x86/acpi/power.c
-index 604cb7e..3486a9c 100644
+index 774e0fc..dfd8611 100644
 --- a/xen/arch/x86/acpi/power.c
 +++ b/xen/arch/x86/acpi/power.c
 @@ -174,17 +174,20 @@ static void acpi_sleep_prepare(u32 state)
@@ -68,7 +68,7 @@ index 604cb7e..3486a9c 100644
  }
  
  static void acpi_sleep_post(u32 state) {}
-@@ -333,6 +336,12 @@ static long enter_state_helper(void *data)
+@@ -336,6 +339,12 @@ static long enter_state_helper(void *data)
   */
  int acpi_enter_sleep(struct xenpf_enter_acpi_sleep *sleep)
  {

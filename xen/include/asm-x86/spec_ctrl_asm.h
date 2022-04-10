@@ -42,9 +42,13 @@
  *     path, or late in the exit path after restoring the guest value.  This
  *     will corrupt the guest value.
  *
- * Factor 1 is dealt with by relying on NMIs/MCEs being blocked immediately
- * after VMEXIT.  The VMEXIT-specific code reads MSR_SPEC_CTRL and updates
- * current before loading Xen's MSR_SPEC_CTRL setting.
+ * Factor 1 is dealt with:
+ *   - On VMX by using MSR load/save lists to have vmentry/exit atomically
+ *     load/save the guest value.  Xen's value is loaded in regular code, and
+ *     there is no need to use the shadow logic (below).
+ *   - On SVM by altering MSR_SPEC_CTRL inside the CLGI/STGI region.  This
+ *     makes the changes atomic with respect to NMIs/etc, so no need for
+ *     shadowing logic.
  *
  * Factor 2 is harder.  We maintain a shadow_spec_ctrl value, and a use_shadow
  * boolean in the per cpu spec_ctrl_flags.  The synchronous use is:
@@ -66,16 +70,22 @@
  * steps 2 and 6 will restore the shadow value rather than leaving Xen's value
  * loaded and corrupting the value used in guest context.
  *
+ * Additionally, in some cases it is safe to skip writes to MSR_SPEC_CTRL when
+ * we don't require any of the side effects of an identical write.  Maintain a
+ * per-cpu last_spec_ctrl value for this purpose.
+ *
  * The following ASM fragments implement this algorithm.  See their local
  * comments for further details.
- *  - SPEC_CTRL_ENTRY_FROM_HVM
  *  - SPEC_CTRL_ENTRY_FROM_PV
  *  - SPEC_CTRL_ENTRY_FROM_INTR
  *  - SPEC_CTRL_ENTRY_FROM_INTR_IST
  *  - SPEC_CTRL_EXIT_TO_XEN_IST
  *  - SPEC_CTRL_EXIT_TO_XEN
  *  - SPEC_CTRL_EXIT_TO_PV
- *  - SPEC_CTRL_EXIT_TO_HVM
+ *
+ * Additionally, the following grep-fodder exists to find the HVM logic.
+ *  - SPEC_CTRL_ENTRY_FROM_{SVM,VMX}
+ *  - SPEC_CTRL_EXIT_TO_{SVM,VMX}
  */
 
 .macro DO_OVERWRITE_RSB tmp=rax
@@ -124,31 +134,6 @@
     incsspd %ecx                    /* Restore old SSP */
 .L\@_shstk_done:
 #endif
-.endm
-
-.macro DO_SPEC_CTRL_ENTRY_FROM_HVM
-/*
- * Requires %rbx=current, %rsp=regs/cpuinfo
- * Clobbers %rax, %rcx, %rdx
- *
- * The common case is that a guest has direct access to MSR_SPEC_CTRL, at
- * which point we need to save the guest value before setting IBRS for Xen.
- * Unilaterally saving the guest value is shorter and faster than checking.
- */
-    mov $MSR_SPEC_CTRL, %ecx
-    rdmsr
-
-    /* Stash the value from hardware. */
-    mov VCPU_arch_msrs(%rbx), %rdx
-    mov %eax, VCPUMSR_spec_ctrl_raw(%rdx)
-    xor %edx, %edx
-
-    /* Clear SPEC_CTRL shadowing *before* loading Xen's value. */
-    andb $~SCF_use_shadow, CPUINFO_spec_ctrl_flags(%rsp)
-
-    /* Load Xen's intended value. */
-    movzbl CPUINFO_xen_spec_ctrl(%rsp), %eax
-    wrmsr
 .endm
 
 .macro DO_SPEC_CTRL_ENTRY maybexen:req
@@ -225,12 +210,6 @@
     wrmsr
 .endm
 
-/* Use after a VMEXIT from an HVM guest. */
-#define SPEC_CTRL_ENTRY_FROM_HVM                                        \
-    ALTERNATIVE "", DO_OVERWRITE_RSB, X86_FEATURE_SC_RSB_HVM;           \
-    ALTERNATIVE "", DO_SPEC_CTRL_ENTRY_FROM_HVM,                        \
-        X86_FEATURE_SC_MSR_HVM
-
 /* Use after an entry from PV context (syscall/sysenter/int80/int82/etc). */
 #define SPEC_CTRL_ENTRY_FROM_PV                                         \
     ALTERNATIVE "", DO_OVERWRITE_RSB, X86_FEATURE_SC_RSB_PV;            \
@@ -254,13 +233,6 @@
         DO_SPEC_CTRL_EXIT_TO_GUEST, X86_FEATURE_SC_MSR_PV;              \
     ALTERNATIVE "", __stringify(verw CPUINFO_verw_sel(%rsp)),           \
         X86_FEATURE_SC_VERW_PV
-
-/* Use when exiting to HVM guest context. */
-#define SPEC_CTRL_EXIT_TO_HVM                                           \
-    ALTERNATIVE "",                                                     \
-        DO_SPEC_CTRL_EXIT_TO_GUEST, X86_FEATURE_SC_MSR_HVM;             \
-    ALTERNATIVE "", __stringify(verw CPUINFO_verw_sel(%rsp)),           \
-        X86_FEATURE_SC_VERW_HVM
 
 /*
  * Use in IST interrupt/exception context.  May interrupt Xen or PV context.
