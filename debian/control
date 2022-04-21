@@ -73,7 +73,7 @@ Description: Xen administrative tools - common files
 
 Package: xen-hypervisor-common
 Section: kernel
-Architecture: all
+Architecture: amd64 armhf arm64
 Depends: ${misc:Depends}
 Replaces: xen-hypervisor-4.8-amd64, xen-hypervisor-4.8-arm64, xen-hypervisor-4.8-armhf
 Description: Xen Hypervisor - common files
