@@ -3,10 +3,10 @@ include $(XEN_ROOT)/tools/Rules.mk
 
 # Xen configuration dir and configs to go there.
 XEN_READMES = README
-XEN_READMES += README.incompatibilities
 
 XEN_CONFIGS += xlexample.hvm
 XEN_CONFIGS += xlexample.pvlinux
+XEN_CONFIGS += xlexample.pvhlinux
 XEN_CONFIGS += xl.conf
 XEN_CONFIGS += cpupool
 

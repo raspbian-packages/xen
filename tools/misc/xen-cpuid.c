@@ -75,7 +75,7 @@ static const char *const str_e1d[32] =
 
 static const char *const str_e1c[32] =
 {
-    [ 0] = "lahf_lm",    [ 1] = "cmp",
+    [ 0] = "lahf-lm",    [ 1] = "cmp",
     [ 2] = "svm",        [ 3] = "extapic",
     [ 4] = "cr8d",       [ 5] = "lzcnt",
     [ 6] = "sse4a",      [ 7] = "msse",
@@ -86,10 +86,10 @@ static const char *const str_e1c[32] =
     [16] = "fma4",       [17] = "tce",
     /* [18] */           [19] = "nodeid",
     /* [20] */           [21] = "tbm",
-    [22] = "topoext",    [23] = "perfctr_core",
-    [24] = "perfctr_nb", /* [25] */
+    [22] = "topoext",    [23] = "perfctr-core",
+    [24] = "perfctr-nb", /* [25] */
     [26] = "dbx",        [27] = "perftsc",
-    [28] = "pcx_l2i",    [29] = "monitorx",
+    [28] = "pcx-l2i",    [29] = "monitorx",
 };
 
 static const char *const str_7b0[32] =
@@ -97,7 +97,7 @@ static const char *const str_7b0[32] =
     [ 0] = "fsgsbase", [ 1] = "tsc-adj",
     [ 2] = "sgx",      [ 3] = "bmi1",
     [ 4] = "hle",      [ 5] = "avx2",
-    [ 6] = "fdp_exn",  [ 7] = "smep",
+    [ 6] = "fdp-exn",  [ 7] = "smep",
     [ 8] = "bmi2",     [ 9] = "erms",
     [10] = "invpcid",  [11] = "rtm",
     [12] = "pqm",      [13] = "depfpp",
@@ -106,7 +106,7 @@ static const char *const str_7b0[32] =
     [18] = "rdseed",   [19] = "adx",
     [20] = "smap",     [21] = "avx512-ifma",
     [22] = "pcommit",  [23] = "clflushopt",
-    [24] = "clwb",     [25] = "pt",
+    [24] = "clwb",     [25] = "proc-trace",
     [26] = "avx512pf", [27] = "avx512er",
     [28] = "avx512cd", [29] = "sha",
     [30] = "avx512bw", [31] = "avx512vl",
@@ -120,21 +120,20 @@ static const char *const str_Da1[32] =
 
 static const char *const str_7c0[32] =
 {
-    [ 0] = "prefetchwt1",      [ 1] = "avx512_vbmi",
+    [ 0] = "prefetchwt1",      [ 1] = "avx512-vbmi",
     [ 2] = "umip",             [ 3] = "pku",
     [ 4] = "ospke",            [ 5] = "waitpkg",
-    [ 6] = "avx512_vbmi2",     [ 7] = "cet-ss",
+    [ 6] = "avx512-vbmi2",     [ 7] = "cet-ss",
     [ 8] = "gfni",             [ 9] = "vaes",
-    [10] = "vpclmulqdq",       [11] = "avx512_vnni",
-    [12] = "avx512_bitalg",
-    [14] = "avx512_vpopcntdq",
-    [16] = "tsxldtrk",
+    [10] = "vpclmulqdq",       [11] = "avx512-vnni",
+    [12] = "avx512-bitalg",
+    [14] = "avx512-vpopcntdq",
 
     [22] = "rdpid",
     /* 24 */                   [25] = "cldemote",
     /* 26 */                   [27] = "movdiri",
-    [28] = "movdir64b",
-    [30] = "sgx_lc",
+    [28] = "movdir64b",        [29] = "enqcmd",
+    [30] = "sgx-lc",
 };
 
 static const char *const str_e7d[32] =
@@ -155,6 +154,7 @@ static const char *const str_e8b[32] =
     [16] = "ibrs-always",      [17] = "stibp-always",
     [18] = "ibrs-fast",        [19] = "ibrs-same-mode",
 
+    [20] = "no-lmsl",
     /* [22] */                 [23] = "ppin",
     [24] = "amd-ssbd",         [25] = "virt-ssbd",
     [26] = "ssb-no",
@@ -163,25 +163,43 @@ static const char *const str_e8b[32] =
 
 static const char *const str_7d0[32] =
 {
-    [ 2] = "avx512_4vnniw", [ 3] = "avx512_4fmaps",
+    [ 2] = "avx512-4vnniw", [ 3] = "avx512-4fmaps",
     [ 4] = "fsrm",
 
-    /*  8 */                [ 9] = "srbds-ctrl",
-    [10] = "md-clear",      [11] = "rtm-always-abort",
+    [ 8] = "avx512-vp2intersect", [ 9] = "srbds-ctrl",
+    [10] = "md-clear",            [11] = "rtm-always-abort",
     /* 12 */                [13] = "tsx-force-abort",
     [14] = "serialize",
-
+    [16] = "tsxldtrk",
     [18] = "pconfig",
     [20] = "cet-ibt",
 
     [26] = "ibrsb",         [27] = "stibp",
-    [28] = "l1d_flush",     [29] = "arch_caps",
-    [30] = "core_caps",     [31] = "ssbd",
+    [28] = "l1d-flush",     [29] = "arch-caps",
+    [30] = "core-caps",     [31] = "ssbd",
 };
 
 static const char *const str_7a1[32] =
 {
-    /* 4 */                 [ 5] = "avx512_bf16",
+    [ 4] = "avx-vnni",      [ 5] = "avx512-bf16",
+
+    [10] = "fzrm",          [11] = "fsrs",
+    [12] = "fsrcs",
+};
+
+static const char *const str_e21a[32] =
+{
+    [ 2] = "lfence+",
+    [ 6] = "nscb",
+};
+
+static const char *const str_7b1[32] =
+{
+};
+
+static const char *const str_7d2[32] =
+{
+    [ 0] = "intel-psfd",
 };
 
 static const struct {
@@ -201,6 +219,9 @@ static const struct {
     { "0x80000008.ebx",   "e8b", str_e8b },
     { "0x00000007:0.edx", "7d0", str_7d0 },
     { "0x00000007:1.eax", "7a1", str_7a1 },
+    { "0x80000021.eax",  "e21a", str_e21a },
+    { "0x00000007:1.ebx", "7b1", str_7b1 },
+    { "0x00000007:2.edx", "7d2", str_7d2 },
 };
 
 #define COL_ALIGN "18"
@@ -464,11 +485,14 @@ int main(int argc, char **argv)
         uint32_t i, max_leaves, max_msrs;
 
         xc_interface *xch = xc_interface_open(0, 0, 0);
+        xc_cpu_policy_t *policy = xc_cpu_policy_init();
 
         if ( !xch )
             err(1, "xc_interface_open");
+        if ( !policy )
+            err(1, "xc_cpu_policy_init");
 
-        if ( xc_get_cpu_policy_size(xch, &max_leaves, &max_msrs) )
+        if ( xc_cpu_policy_get_size(xch, &max_leaves, &max_msrs) )
             err(1, "xc_get_cpu_policy_size(...)");
         if ( domid == -1 )
             printf("Xen reports there are maximum %u leaves and %u MSRs\n",
@@ -487,10 +511,11 @@ int main(int argc, char **argv)
             uint32_t nr_leaves = max_leaves;
             uint32_t nr_msrs = max_msrs;
 
-            if ( xc_get_domain_cpu_policy(xch, domid, &nr_leaves, leaves,
-                                          &nr_msrs, msrs) )
-                err(1, "xc_get_domain_cpu_policy(, %d, %d,, %d,)",
-                    domid, nr_leaves, nr_msrs);
+            if ( xc_cpu_policy_get_domain(xch, domid, policy) )
+                err(1, "xc_cpu_policy_get_domain(, %d, )", domid);
+            if ( xc_cpu_policy_serialise(xch, policy, leaves, &nr_leaves,
+                                         msrs, &nr_msrs) )
+                err(1, "xc_cpu_policy_serialise");
 
             snprintf(name, sizeof(name), "Domain %d", domid);
             print_policy(name, leaves, nr_leaves, msrs, nr_msrs);
@@ -503,8 +528,7 @@ int main(int argc, char **argv)
                 uint32_t nr_leaves = max_leaves;
                 uint32_t nr_msrs = max_msrs;
 
-                if ( xc_get_system_cpu_policy(xch, i, &nr_leaves, leaves,
-                                              &nr_msrs, msrs) )
+                if ( xc_cpu_policy_get_system(xch, i, policy) )
                 {
                     if ( errno == EOPNOTSUPP )
                     {
@@ -513,14 +537,18 @@ int main(int argc, char **argv)
                         continue;
                     }
 
-                    err(1, "xc_get_system_cpu_policy(, %s,,)", sys_policies[i]);
+                    err(1, "xc_cpu_policy_get_system(, %s, )", sys_policies[i]);
                 }
+                if ( xc_cpu_policy_serialise(xch, policy, leaves, &nr_leaves,
+                                             msrs, &nr_msrs) )
+                    err(1, "xc_cpu_policy_serialise");
 
                 print_policy(sys_policies[i], leaves, nr_leaves,
                              msrs, nr_msrs);
             }
         }
 
+        xc_cpu_policy_destroy(policy);
         free(leaves);
         free(msrs);
         xc_interface_close(xch);

@@ -19,10 +19,11 @@
  *
  */
 
+#include <xen/ioreq.h>
+
 #include <asm/types.h>
 #include <asm/mtrr.h>
 #include <asm/p2m.h>
-#include <asm/hvm/ioreq.h>
 #include <asm/hvm/vmx/vmx.h>
 #include <asm/hvm/vmx/vvmx.h>
 #include <asm/hvm/nestedhvm.h>
@@ -1234,7 +1235,7 @@ static void virtual_vmentry(struct cpu_user_regs *regs)
         paging_update_paging_modes(v);
 
     if ( nvmx_ept_enabled(v) && hvm_pae_enabled(v) &&
-         !(v->arch.hvm.guest_efer & EFER_LMA) )
+         !hvm_long_mode_active(v) )
         vvmcs_to_shadow_bulk(v, ARRAY_SIZE(gpdpte_fields), gpdpte_fields);
 
     regs->rip = get_vvmcs(v, GUEST_RIP);
@@ -1437,7 +1438,7 @@ static void virtual_vmexit(struct cpu_user_regs *regs)
     sync_exception_state(v);
 
     if ( nvmx_ept_enabled(v) && hvm_pae_enabled(v) &&
-         !(v->arch.hvm.guest_efer & EFER_LMA) )
+         !hvm_long_mode_active(v) )
         shadow_to_vvmcs_bulk(v, ARRAY_SIZE(gpdpte_fields), gpdpte_fields);
 
     /* This will clear current pCPU bit in p2m->dirty_cpumask */
@@ -1516,7 +1517,7 @@ void nvmx_switch_guest(void)
      * don't want to continue as this setup is not implemented nor supported
      * as of right now.
      */
-    if ( hvm_io_pending(v) )
+    if ( vcpu_ioreq_pending(v) )
         return;
     /*
      * a softirq may interrupt us between a virtual vmentry is
@@ -2323,7 +2324,7 @@ int nvmx_msr_read_intercept(unsigned int msr, u64 *msr_content)
         data = X86_CR4_VMXE;
         break;
     case MSR_IA32_VMX_CR4_FIXED1:
-        data = hvm_cr4_guest_valid_bits(d, false);
+        data = hvm_cr4_guest_valid_bits(d);
         break;
     case MSR_IA32_VMX_MISC:
         /* Do not support CR3-target feature now */

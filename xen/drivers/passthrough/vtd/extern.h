@@ -28,7 +28,6 @@
 struct pci_ats_dev;
 extern bool_t rwbf_quirk;
 extern const struct iommu_init_ops intel_iommu_init_ops;
-extern const struct iommu_ops intel_iommu_ops;
 
 void print_iommu_regs(struct acpi_drhd_unit *drhd);
 void print_vtd_entries(struct vtd_iommu *iommu, int bus, int devfn, u64 gmfn);
@@ -83,7 +82,7 @@ void flush_all_cache(void);
 uint64_t alloc_pgtable_maddr(unsigned long npages, nodeid_t node);
 void free_pgtable_maddr(u64 maddr);
 void *map_vtd_domain_page(u64 maddr);
-void unmap_vtd_domain_page(void *va);
+void unmap_vtd_domain_page(const void *va);
 int domain_context_mapping_one(struct domain *domain, struct vtd_iommu *iommu,
                                u8 bus, u8 devfn, const struct pci_dev *);
 int domain_context_unmap_one(struct domain *domain, struct vtd_iommu *iommu,
@@ -96,12 +95,12 @@ void io_apic_write_remap_rte(unsigned int apic,
 
 struct msi_desc;
 struct msi_msg;
-void msi_msg_read_remap_rte(struct msi_desc *, struct msi_msg *);
 int msi_msg_write_remap_rte(struct msi_desc *, struct msi_msg *);
 
 int intel_setup_hpet_msi(struct msi_desc *);
 
 int is_igd_vt_enabled_quirk(void);
+bool is_azalia_tlb_enabled(const struct acpi_drhd_unit *);
 void platform_quirks_init(void);
 void vtd_ops_preamble_quirk(struct vtd_iommu *iommu);
 void vtd_ops_postamble_quirk(struct vtd_iommu *iommu);

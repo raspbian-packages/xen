@@ -62,11 +62,17 @@ build-xen:
 build-tools: build-tools-public-headers
 	$(MAKE) -C tools build
 
+.PHONY: build-tools-oxenstored
+build-tools-oxenstored: build-tools-public-headers
+	$(MAKE) -s -C tools/ocaml clean
+	$(MAKE) -s -C tools/libs
+	$(MAKE) -C tools/ocaml build-tools-oxenstored
+
 .PHONY: build-stubdom
 build-stubdom: mini-os-dir build-tools-public-headers
 	$(MAKE) -C stubdom build
 ifeq (x86_64,$(XEN_TARGET_ARCH))
-	XEN_TARGET_ARCH=x86_32 $(MAKE) -C stubdom pv-grub
+	XEN_TARGET_ARCH=x86_32 $(MAKE) -C stubdom pv-grub-if-enabled
 endif
 
 .PHONY: build-docs
@@ -137,7 +143,7 @@ install-tools: install-tools-public-headers
 install-stubdom: mini-os-dir install-tools
 	$(MAKE) -C stubdom install
 ifeq (x86_64,$(XEN_TARGET_ARCH))
-	XEN_TARGET_ARCH=x86_32 $(MAKE) -C stubdom install-grub
+	XEN_TARGET_ARCH=x86_32 $(MAKE) -C stubdom install-grub-if-enabled
 endif
 
 .PHONY: tools/firmware/seabios-dir-force-update

@@ -20,6 +20,7 @@ open Parse_arg
 open Stdext
 
 let error fmt = Logging.error "xenstored" fmt
+let warn fmt = Logging.warn "xenstored" fmt
 let debug fmt = Logging.debug "xenstored" fmt
 let info fmt = Logging.info "xenstored" fmt
 
@@ -140,9 +141,12 @@ exception Bad_format of string
 
 let dump_format_header = "$xenstored-dump-format"
 
-let from_channel_f chan domain_f watch_f store_f =
+let from_channel_f chan global_f socket_f domain_f watch_f store_f =
 	let unhexify s = Utils.unhexify s in
-	let getpath s = Store.Path.of_string (Utils.unhexify s) in
+	let getpath s =
+		let u = Utils.unhexify s in
+		debug "Path: %s" u;
+		Store.Path.of_string u in
 	let header = input_line chan in
 	if header <> dump_format_header then
 		raise (Bad_format "header");
@@ -154,6 +158,12 @@ let from_channel_f chan domain_f watch_f store_f =
 			let l = String.split ',' line in
 			try
 				match l with
+				| "global" :: rw :: _ ->
+					(* there might be more parameters here,
+					   e.g. a RO socket from a previous version: ignore it *)
+					global_f ~rw
+				| "socket" :: fd :: [] ->
+					socket_f ~fd:(int_of_string fd)
 				| "dom" :: domid :: mfn :: port :: []->
 					domain_f (int_of_string domid)
 					         (Nativeint.of_string mfn)
@@ -174,12 +184,28 @@ let from_channel_f chan domain_f watch_f store_f =
 		with End_of_file ->
 			quit := true
 	done;
-	()
+	info "Completed loading xenstore dump"
 
 let from_channel store cons doms chan =
 	(* don't let the permission get on our way, full perm ! *)
 	let op = Store.get_ops store Perms.Connection.full_rights in
-
+	let rwro = ref (None) in
+	let global_f ~rw =
+		let get_listen_sock sockfd =
+			let fd = sockfd |> int_of_string |> Utils.FD.of_int in
+			Unix.listen fd 1;
+			Some fd
+		in
+		rwro := get_listen_sock rw
+	in
+	let socket_f ~fd =
+		let ufd = Utils.FD.of_int fd in
+		let is_valid = try (Unix.fstat ufd).Unix.st_kind = Unix.S_SOCK with _ -> false in
+		if is_valid then
+			Connections.add_anonymous cons ufd
+		else
+			warn "Ignoring invalid socket FD %d" fd
+	in
 	let domain_f domid mfn port =
 		let ndom =
 			if domid > 0 then
@@ -189,28 +215,38 @@ let from_channel store cons doms chan =
 			in
 		Connections.add_domain cons ndom;
 		in
-	let watch_f domid path token =
-		let con = Connections.find_domain cons domid in
-		ignore (Connections.add_watch cons con path token)
+	let get_con id =
+		if id < 0 then Connections.find cons (Utils.FD.of_int (-id))
+		else Connections.find_domain cons id
+	in
+	let watch_f id path token =
+		ignore (Connections.add_watch cons (get_con id) path token)
 		in
 	let store_f path perms value =
 		op.Store.write path value;
 		op.Store.setperms path perms
 		in
-	from_channel_f chan domain_f watch_f store_f
+	from_channel_f chan global_f socket_f domain_f watch_f store_f;
+	!rwro
 
 let from_file store cons doms file =
+	info "Loading xenstore dump from %s" file;
 	let channel = open_in file in
 	finally (fun () -> from_channel store doms cons channel)
 	        (fun () -> close_in channel)
 
-let to_channel store cons chan =
+let to_channel store cons rw chan =
 	let hexify s = Utils.hexify s in
 
 	fprintf chan "%s\n" dump_format_header;
+	let fdopt = function None -> -1 | Some fd ->
+		(* systemd and utils.ml sets it close on exec *)
+		Unix.clear_close_on_exec fd;
+		Utils.FD.to_int fd in
+	fprintf chan "global,%d\n" (fdopt rw);
 
-	(* dump connections related to domains; domid, mfn, eventchn port, watches *)
-	Connections.iter_domains cons (fun con -> Connection.dump con chan);
+	(* dump connections related to domains: domid, mfn, eventchn port/ sockets, and watches *)
+	Connections.iter cons (fun con -> Connection.dump con chan);
 
 	(* dump the store *)
 	Store.dump_fct store (fun path node ->
@@ -223,9 +259,9 @@ let to_channel store cons chan =
 	()
 
 
-let to_file store cons file =
+let to_file store cons fds file =
 	let channel = open_out_gen [ Open_wronly; Open_creat; Open_trunc; ] 0o600 file in
-	finally (fun () -> to_channel store cons channel)
+	finally (fun () -> to_channel store cons fds channel)
 	        (fun () -> close_out channel)
 end
 
@@ -244,15 +280,14 @@ let _ =
 		()
 	);
 
-	let rw_sock, ro_sock =
-		if cf.disable_socket then
-			None, None
+	let rw_sock =
+		if cf.disable_socket || cf.live_reload then
+			None
 		else
-			Some (Unix.handle_unix_error Utils.create_unix_socket Define.xs_daemon_socket),
-			Some (Unix.handle_unix_error Utils.create_unix_socket Define.xs_daemon_socket_ro)
+			Some (Unix.handle_unix_error Utils.create_unix_socket Define.xs_daemon_socket)
 		in
 
-	if cf.daemonize then
+	if cf.daemonize && not cf.live_reload then
 		Unixext.daemonize ()
 	else
 		printf "Xen Storage Daemon, version %d.%d\n%!"
@@ -292,11 +327,15 @@ let _ =
 	List.iter (fun path ->
 		Store.write store Perms.Connection.full_rights path "") Store.Path.specials;
 
-	let filename = Paths.xen_run_stored ^ "/db" in
-	if cf.restart && Sys.file_exists filename then (
-		DB.from_file store domains cons filename;
-		Event.bind_dom_exc_virq eventchn
+	let rw_sock =
+	if cf.restart && Sys.file_exists Disk.xs_daemon_database then (
+		let rwro = DB.from_file store domains cons Disk.xs_daemon_database in
+		info "Live reload: database loaded";
+		Event.bind_dom_exc_virq eventchn;
+		Process.LiveUpdate.completed ();
+		rwro
 	) else (
+		info "No live reload: regular startup";
 		if !Disk.enable then (
 			info "reading store from disk";
 			Disk.read store
@@ -310,31 +349,31 @@ let _ =
 			Connections.add_domain cons (Domains.create0 domains);
 			Event.bind_dom_exc_virq eventchn
 		);
-	);
-
-	Select.use_poll (not cf.use_select);
+		rw_sock
+	) in
 
 	Sys.set_signal Sys.sighup (Sys.Signal_handle sighup_handler);
-	Sys.set_signal Sys.sigterm (Sys.Signal_handle (fun _ -> quit := true));
+	Sys.set_signal Sys.sigterm (Sys.Signal_handle (fun _ ->
+		info "Received SIGTERM";
+		quit := true));
 	Sys.set_signal Sys.sigusr1 (Sys.Signal_handle (fun _ -> sigusr1_handler store));
 	Sys.set_signal Sys.sigpipe Sys.Signal_ignore;
 
 	if cf.activate_access_log then begin
-		let post_rotate () = DB.to_file store cons (Paths.xen_run_stored ^ "/db") in
+		let post_rotate () = DB.to_file store cons (None) Disk.xs_daemon_database in
 		Logging.init_access_log post_rotate
 	end;
 
 	let spec_fds =
 		(match rw_sock with None -> [] | Some x -> [ x ]) @
-		(match ro_sock with None -> [] | Some x -> [ x ]) @
 		(if cf.domain_init then [ Event.fd eventchn ] else [])
 		in
 
 	let process_special_fds rset =
-		let accept_connection can_write fd =
+		let accept_connection fd =
 			let (cfd, _addr) = Unix.accept fd in
 			debug "new connection through socket";
-			Connections.add_anonymous cons cfd can_write
+			Connections.add_anonymous cons cfd
 		and handle_eventchn _fd =
 			let port = Event.pending eventchn in
 			debug "pending port %d" (Xeneventchn.to_int port);
@@ -357,14 +396,14 @@ let _ =
 			if List.mem fd set then
 				fct fd in
 
-		maybe (fun fd -> do_if_set fd rset (accept_connection true)) rw_sock;
-		maybe (fun fd -> do_if_set fd rset (accept_connection false)) ro_sock;
+		maybe (fun fd -> do_if_set fd rset accept_connection) rw_sock;
 		do_if_set (Event.fd eventchn) rset (handle_eventchn)
 	in
 
 	let ring_scan_checker dom =
 		(* no need to scan domains already marked as for processing *)
 		if not (Domain.get_io_credit dom > 0) then
+			debug "Looking up domid %d" (Domain.get_id dom);
 			let con = Connections.find_domain cons (Domain.get_id dom) in
 			if not (Connection.has_more_work con) then (
 				Process.do_output store cons domains con;
@@ -385,18 +424,6 @@ let _ =
 
 	let periodic_ops now =
 		debug "periodic_ops starting";
-		(* we garbage collect the string->int dictionary after a sizeable amount of operations,
-		 * there's no need to be really fast even if we got loose
-		 * objects since names are often reuse.
-		 *)
-		if Symbol.created () > 1000 || Symbol.used () > 20000
-		then begin
-			Symbol.mark_all_as_unused ();
-			Store.mark_symbols store;
-			Connections.iter cons Connection.mark_symbols;
-			History.mark_symbols ();
-			Symbol.garbage ()
-		end;
 
 		(* scan all the xs rings as a safenet for ill-behaved clients *)
 		if !ring_scan_interval >= 0 && now > (!last_scan_time +. float !ring_scan_interval) then
@@ -414,11 +441,11 @@ let _ =
 			let (lanon, lanon_ops, lanon_watchs,
 			     ldom, ldom_ops, ldom_watchs) = Connections.stats cons in
 			let store_nodes, store_abort, store_coalesce = Store.stats store in
-			let symtbl_len = Symbol.stats () in
+			let symtbl_len, symtbl_entries = Symbol.stats () in
 
 			info "store stat: nodes(%d) t-abort(%d) t-coalesce(%d)"
 			     store_nodes store_abort store_coalesce;
-			info "sytbl stat: %d" symtbl_len;
+			info "sytbl stat: length(%d) entries(%d)" symtbl_len symtbl_entries;
 			info "  con stat: anonymous(%d, %d o, %d w) domains(%d, %d o, %d w)"
 			     lanon lanon_ops lanon_watchs ldom ldom_ops ldom_watchs;
 			info "  mem stat: minor(%.0f) promoted(%.0f) major(%.0f) heap(%d w, %d c) live(%d w, %d b) free(%d w, %d b)"
@@ -429,6 +456,12 @@ let _ =
 		);
 		let elapsed = Unix.gettimeofday () -. now in
 		debug "periodic_ops took %F seconds." elapsed;
+		if !quit then (
+			match Connections.prevents_quit cons with
+			| [] -> ()
+			| domains -> List.iter (fun con -> warn "%s prevents live update"
+								(Connection.get_domstr con)) domains
+		);
 		delay_next_frequent_ops_by elapsed
 	in
 
@@ -460,7 +493,7 @@ let _ =
 		let inset, outset = Connections.select ~only_if:is_peaceful cons in
 		let rset, wset, _ =
 		try
-			Select.select (spec_fds @ inset) outset [] timeout
+			Poll.poll_select (spec_fds @ inset) outset [] timeout
 		with Unix.Unix_error(Unix.EINTR, _, _) ->
 			[], [], [] in
 		let sfds, cfds =
@@ -480,15 +513,29 @@ let _ =
 		in
 
 	Systemd.sd_notify_ready ();
-	while not !quit
+	let live_update = ref false in
+	while not (!quit && Connections.prevents_quit cons = [])
 	do
 		try
-			main_loop ()
+			main_loop ();
+			live_update := Process.LiveUpdate.should_run cons;
+			if !live_update || !quit then begin
+				(* don't initiate live update if saving state fails *)
+				DB.to_file store cons (rw_sock) Disk.xs_daemon_database;
+				quit := true;
+			end
 		with exc ->
-			error "caught exception %s" (Printexc.to_string exc);
+			let bt = Printexc.get_backtrace () in
+			error "caught exception %s: %s" (Printexc.to_string exc) bt;
 			if cf.reraise_top_level then
 				raise exc
 	done;
 	info "stopping xenstored";
-	DB.to_file store cons (Paths.xen_run_stored ^ "/db");
-	()
+	(* unlink pidfile so that launch-xenstore works again *)
+	Unixext.unlink_safe pidfile;
+	(match cf.pidfile with Some pidfile -> Unixext.unlink_safe pidfile | None -> ());
+
+	if !live_update then begin
+		Logging.live_update ();
+		Process.LiveUpdate.launch_exn !Process.LiveUpdate.state
+	end

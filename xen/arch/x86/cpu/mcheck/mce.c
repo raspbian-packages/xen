@@ -1291,6 +1291,8 @@ static void x86_mc_mceinject(void *data)
 #error BITS_PER_LONG definition absent
 #endif
 
+# ifdef CONFIG_COMPAT
+
 # include <compat/arch-x86/xen-mca.h>
 
 # define xen_mcinfo_msr              mcinfo_msr
@@ -1307,15 +1309,17 @@ CHECK_mcinfo_common;
 
 CHECK_FIELD_(struct, mc_fetch, flags);
 CHECK_FIELD_(struct, mc_fetch, fetch_id);
-# define CHECK_compat_mc_fetch       struct mc_fetch
+# define CHECK_mc_fetch              struct mc_fetch
 
 CHECK_FIELD_(struct, mc_physcpuinfo, ncpus);
-# define CHECK_compat_mc_physcpuinfo struct mc_physcpuinfo
+# define CHECK_mc_physcpuinfo        struct mc_physcpuinfo
 
-#define CHECK_compat_mc_inject_v2   struct mc_inject_v2
+# define xen_ctl_bitmap              xenctl_bitmap
+
 CHECK_mc;
-# undef CHECK_compat_mc_fetch
-# undef CHECK_compat_mc_physcpuinfo
+# undef CHECK_mc_fetch
+# undef CHECK_mc_physcpuinfo
+# undef xen_ctl_bitmap
 
 # define xen_mc_info                 mc_info
 CHECK_mc_info;
@@ -1341,6 +1345,11 @@ CHECK_mcinfo_recovery;
 # undef xen_page_offline_action
 # undef xen_mcinfo_recovery
 
+# else
+#  define compat_handle_is_null(h) true
+#  define copy_to_compat(h, p, n)  true /* really (-EFAULT), but gcc chokes */
+# endif /* CONFIG_COMPAT */
+
 /* Machine Check Architecture Hypercall */
 long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
 {
@@ -1349,11 +1358,15 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
     struct vcpu *v = current;
     union {
         struct xen_mc_fetch *nat;
+#ifdef CONFIG_COMPAT
         struct compat_mc_fetch *cmp;
+#endif
     } mc_fetch;
     union {
         struct xen_mc_physcpuinfo *nat;
+#ifdef CONFIG_COMPAT
         struct compat_mc_physcpuinfo *cmp;
+#endif
     } mc_physcpuinfo;
     uint32_t flags, cmdflags;
     int nlcpu;
@@ -1495,7 +1508,6 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
 
         if ( mc_msrinject->mcinj_flags & MC_MSRINJ_F_GPADDR )
         {
-            domid_t domid;
             struct domain *d;
             struct mcinfo_msr *msr;
             unsigned int i;
@@ -1503,17 +1515,17 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
             unsigned long gfn, mfn;
             p2m_type_t t;
 
-            domid = (mc_msrinject->mcinj_domid == DOMID_SELF) ?
-                    current->domain->domain_id : mc_msrinject->mcinj_domid;
-            if ( domid >= DOMID_FIRST_RESERVED )
-                return x86_mcerr("do_mca inject: incompatible flag "
-                                 "MC_MSRINJ_F_GPADDR with domain %d",
-                                 -EINVAL, domid);
-
-            d = get_domain_by_id(domid);
+            d = rcu_lock_domain_by_any_id(mc_msrinject->mcinj_domid);
             if ( d == NULL )
+            {
+                if ( mc_msrinject->mcinj_domid >= DOMID_FIRST_RESERVED )
+                    return x86_mcerr("do_mca inject: incompatible flag "
+                                     "MC_MSRINJ_F_GPADDR with domain %d",
+                                     -EINVAL, domid);
+
                 return x86_mcerr("do_mca inject: bad domain id %d",
                                  -EINVAL, domid);
+            }
 
             for ( i = 0, msr = &mc_msrinject->mcinj_msr[0];
                   i < mc_msrinject->mcinj_count;
@@ -1526,7 +1538,7 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
                 if ( mfn == mfn_x(INVALID_MFN) )
                 {
                     put_gfn(d, gfn);
-                    put_domain(d);
+                    rcu_unlock_domain(d);
                     return x86_mcerr("do_mca inject: bad gfn %#lx of domain %d",
                                      -EINVAL, gfn, domid);
                 }
@@ -1536,7 +1548,7 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
                 put_gfn(d, gfn);
             }
 
-            put_domain(d);
+            rcu_unlock_domain(d);
         }
 
         if ( !x86_mc_msrinject_verify(mc_msrinject) )

@@ -85,8 +85,7 @@ static void update_msi(const struct pci_dev *pdev, struct vpci_msi *msi)
     if ( !msi->enabled )
         return;
 
-    if ( vpci_msi_arch_update(msi, pdev) )
-        msi->enabled = false;
+    vpci_msi_arch_update(msi, pdev);
 }
 
 /* Handlers for the address field (32bit or low part of a 64bit address). */
@@ -289,8 +288,7 @@ void vpci_dump_msi(void)
             msi = pdev->vpci->msi;
             if ( msi && msi->enabled )
             {
-                printk("%04x:%02x:%02x.%u MSI\n", pdev->seg, pdev->bus,
-                       PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
+                printk("%pp MSI\n", &pdev->sbdf);
 
                 printk("  enabled: %d 64-bit: %d",
                        msi->enabled, msi->address64);
@@ -307,8 +305,7 @@ void vpci_dump_msi(void)
             {
                 int rc;
 
-                printk("%04x:%02x:%02x.%u MSI-X\n", pdev->seg, pdev->bus,
-                       PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
+                printk("%pp MSI-X\n", &pdev->sbdf);
 
                 printk("  entries: %u maskall: %d enabled: %d\n",
                        msix->max_entries, msix->masked, msix->enabled);

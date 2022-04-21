@@ -17,8 +17,10 @@
 
 #include <xen/domain_page.h>
 #include <xen/sched.h>
+#include <public/hvm/dm_op.h>
 #include <asm/altp2m.h>
 #include <asm/current.h>
+#include <asm/iocap.h>
 #include <asm/paging.h>
 #include <asm/types.h>
 #include <asm/domain.h>
@@ -484,6 +486,133 @@ static int ept_invalidate_emt_range(struct p2m_domain *p2m,
     return rc;
 }
 
+int epte_get_entry_emt(struct domain *d, gfn_t gfn, mfn_t mfn,
+                       unsigned int order, bool *ipat, p2m_type_t type)
+{
+    int gmtrr_mtype, hmtrr_mtype;
+    struct vcpu *v = current;
+    unsigned long i;
+
+    *ipat = false;
+
+    if ( v->domain != d )
+        v = d->vcpu ? d->vcpu[0] : NULL;
+
+    /* Mask, not add, for order so it works with INVALID_MFN on unmapping */
+    if ( rangeset_overlaps_range(mmio_ro_ranges, mfn_x(mfn),
+                                 mfn_x(mfn) | ((1UL << order) - 1)) )
+    {
+        if ( !order || rangeset_contains_range(mmio_ro_ranges, mfn_x(mfn),
+                                               mfn_x(mfn) | ((1UL << order) - 1)) )
+        {
+            *ipat = true;
+            return MTRR_TYPE_UNCACHABLE;
+        }
+        /* Force invalid memory type so resolve_misconfig() will split it */
+        return -1;
+    }
+
+    if ( !mfn_valid(mfn) )
+    {
+        *ipat = true;
+        return MTRR_TYPE_UNCACHABLE;
+    }
+
+    if ( type != p2m_mmio_direct && !is_iommu_enabled(d) &&
+         !cache_flush_permitted(d) )
+    {
+        *ipat = true;
+        return MTRR_TYPE_WRBACK;
+    }
+
+    for ( i = 0; i < (1ul << order); i++ )
+    {
+        if ( is_special_page(mfn_to_page(mfn_add(mfn, i))) )
+        {
+            if ( order )
+                return -1;
+            *ipat = true;
+            return MTRR_TYPE_WRBACK;
+        }
+    }
+
+    switch ( type )
+    {
+    case p2m_mmio_direct:
+        return MTRR_TYPE_UNCACHABLE;
+
+    case p2m_grant_map_ro:
+    case p2m_grant_map_rw:
+    case p2m_map_foreign:
+        /*
+         * Force WB type for grants and foreign pages. Those are usually mapped
+         * over unpopulated physical ranges in the p2m, and those would usually
+         * be UC in the MTRR state, which is unlikely to be the correct cache
+         * attribute. It's also cumbersome (or even impossible) for the guest
+         * to be setting the MTRR type for all those mappings as WB, as MTRR
+         * ranges are finite.
+         *
+         * Note that on AMD we cannot force a cache attribute because of the
+         * lack of ignore PAT equivalent, so the behavior here slightly
+         * diverges. See p2m_type_to_flags for the AMD attributes.
+         */
+        *ipat = true;
+        return MTRR_TYPE_WRBACK;
+
+    default:
+        break;
+    }
+
+    gmtrr_mtype = hvm_get_mem_pinned_cacheattr(d, gfn, order);
+    if ( gmtrr_mtype >= 0 )
+    {
+        *ipat = true;
+        return gmtrr_mtype != PAT_TYPE_UC_MINUS ? gmtrr_mtype
+                                                : MTRR_TYPE_UNCACHABLE;
+    }
+    if ( gmtrr_mtype == -EADDRNOTAVAIL )
+        return -1;
+
+    gmtrr_mtype = v ? mtrr_get_type(&v->arch.hvm.mtrr,
+                                    gfn_x(gfn) << PAGE_SHIFT, order)
+                    : MTRR_TYPE_WRBACK;
+    hmtrr_mtype = mtrr_get_type(&mtrr_state, mfn_x(mfn) << PAGE_SHIFT,
+                                order);
+    if ( gmtrr_mtype < 0 || hmtrr_mtype < 0 )
+        return -1;
+
+    /* If both types match we're fine. */
+    if ( likely(gmtrr_mtype == hmtrr_mtype) )
+        return hmtrr_mtype;
+
+    /* If either type is UC, we have to go with that one. */
+    if ( gmtrr_mtype == MTRR_TYPE_UNCACHABLE ||
+         hmtrr_mtype == MTRR_TYPE_UNCACHABLE )
+        return MTRR_TYPE_UNCACHABLE;
+
+    /* If either type is WB, we have to go with the other one. */
+    if ( gmtrr_mtype == MTRR_TYPE_WRBACK )
+        return hmtrr_mtype;
+    if ( hmtrr_mtype == MTRR_TYPE_WRBACK )
+        return gmtrr_mtype;
+
+    /*
+     * At this point we have disagreeing WC, WT, or WP types. The only
+     * combination that can be cleanly resolved is WT:WP. The ones involving
+     * WC need to be converted to UC, both due to the memory ordering
+     * differences and because WC disallows reads to be cached (WT and WP
+     * permit this), while WT and WP require writes to go straight to memory
+     * (WC can buffer them).
+     */
+    if ( (gmtrr_mtype == MTRR_TYPE_WRTHROUGH &&
+          hmtrr_mtype == MTRR_TYPE_WRPROT) ||
+         (gmtrr_mtype == MTRR_TYPE_WRPROT &&
+          hmtrr_mtype == MTRR_TYPE_WRTHROUGH) )
+        return MTRR_TYPE_WRPROT;
+
+    return MTRR_TYPE_UNCACHABLE;
+}
+
 /*
  * Resolve deliberately mis-configured (EMT field set to an invalid value)
  * entries in the page table hierarchy for the given GFN:
@@ -518,7 +647,7 @@ static int resolve_misconfig(struct p2m_domain *p2m, unsigned long gfn)
 
         if ( level == 0 || is_epte_superpage(&e) )
         {
-            uint8_t ipat = 0;
+            bool ipat;
 
             if ( e.emt != MTRR_NUM_TYPES )
                 break;
@@ -534,9 +663,9 @@ static int resolve_misconfig(struct p2m_domain *p2m, unsigned long gfn)
                         e.emt = 0;
                     if ( !is_epte_valid(&e) || !is_epte_present(&e) )
                         continue;
-                    e.emt = epte_get_entry_emt(p2m->domain, gfn + i,
+                    e.emt = epte_get_entry_emt(p2m->domain, _gfn(gfn + i),
                                                _mfn(e.mfn), 0, &ipat,
-                                               e.sa_p2mt == p2m_mmio_direct);
+                                               e.sa_p2mt);
                     e.ipat = ipat;
 
                     nt = p2m_recalc_type(e.recalc, e.sa_p2mt, p2m, gfn + i);
@@ -552,9 +681,10 @@ static int resolve_misconfig(struct p2m_domain *p2m, unsigned long gfn)
             }
             else
             {
-                int emt = epte_get_entry_emt(p2m->domain, gfn, _mfn(e.mfn),
+                int emt = epte_get_entry_emt(p2m->domain, _gfn(gfn),
+                                             _mfn(e.mfn),
                                              level * EPT_TABLE_ORDER, &ipat,
-                                             e.sa_p2mt == p2m_mmio_direct);
+                                             e.sa_p2mt);
                 bool_t recalc = e.recalc;
 
                 if ( recalc && p2m_is_changeable(e.sa_p2mt) )
@@ -676,8 +806,6 @@ ept_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
     unsigned long fn_mask = !mfn_eq(mfn, INVALID_MFN) ? (gfn | mfn_x(mfn)) : gfn;
     int ret, rc = 0;
     bool_t entry_written = 0;
-    bool_t direct_mmio = (p2mt == p2m_mmio_direct);
-    uint8_t ipat = 0;
     bool_t need_modify_vtd_table = 1;
     bool_t vtd_pte_present = 0;
     unsigned int iommu_flags = p2m_get_iommu_flags(p2mt, p2ma, mfn);
@@ -789,8 +917,10 @@ ept_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
 
     if ( mfn_valid(mfn) || p2m_allows_invalid_mfn(p2mt) )
     {
-        int emt = epte_get_entry_emt(p2m->domain, gfn, mfn,
-                                     i * EPT_TABLE_ORDER, &ipat, direct_mmio);
+        bool ipat;
+        int emt = epte_get_entry_emt(p2m->domain, _gfn(gfn), mfn,
+                                     i * EPT_TABLE_ORDER, &ipat,
+                                     p2mt);
 
         if ( emt >= 0 )
             new_entry.emt = emt;
@@ -842,15 +972,15 @@ out:
     if ( rc == 0 && p2m_is_hostp2m(p2m) &&
          need_modify_vtd_table )
     {
-        if ( iommu_use_hap_pt(d) )
-            rc = iommu_iotlb_flush(d, _dfn(gfn), (1u << order),
+        if ( iommu_use_hap_pt(d) && !this_cpu(iommu_dont_flush_iotlb) )
+            rc = iommu_iotlb_flush(d, _dfn(gfn), 1ul << order,
                                    (iommu_flags ? IOMMU_FLUSHF_added : 0) |
                                    (vtd_pte_present ? IOMMU_FLUSHF_modified
                                                     : 0));
         else if ( need_iommu_pt_sync(d) )
             rc = iommu_flags ?
-                iommu_legacy_map(d, _dfn(gfn), mfn, order, iommu_flags) :
-                iommu_legacy_unmap(d, _dfn(gfn), order);
+                iommu_legacy_map(d, _dfn(gfn), mfn, 1ul << order, iommu_flags) :
+                iommu_legacy_unmap(d, _dfn(gfn), 1ul << order);
     }
 
     unmap_domain_page(table);
@@ -1123,7 +1253,7 @@ static void ept_sync_domain_prepare(struct p2m_domain *p2m)
     {
         if ( p2m_is_nestedp2m(p2m) )
             ept = &p2m_get_hostp2m(d)->ept;
-        else
+        else if ( !p2m->defer_nested_flush )
             p2m_flush_nestedp2m(d);
     }
 
@@ -1260,7 +1390,9 @@ int ept_p2m_init(struct p2m_domain *p2m)
     p2m->change_entry_type_global = ept_change_entry_type_global;
     p2m->change_entry_type_range = ept_change_entry_type_range;
     p2m->memory_type_changed = ept_memory_type_changed;
+#if P2M_AUDIT
     p2m->audit_p2m = NULL;
+#endif
     p2m->tlb_flush = ept_tlb_flush;
 
     /* Set the memory type used when accessing EPT paging structures. */

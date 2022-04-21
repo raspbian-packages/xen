@@ -242,7 +242,9 @@ def crunch_numbers(state):
         # CX16 is only encodable in Long Mode.  LAHF_LM indicates that the
         # SAHF/LAHF instructions are reintroduced in Long Mode.  1GB
         # superpages, PCID and PKU are only available in 4 level paging.
-        LM: [CX16, PCID, LAHF_LM, PAGE1GB, PKU],
+        # NO_LMSL indicates the absense of Long Mode Segment Limits, which
+        # have been dropped in hardware.
+        LM: [CX16, PCID, LAHF_LM, PAGE1GB, PKU, NO_LMSL],
 
         # AMD K6-2+ and K6-III processors shipped with 3DNow+, beyond the
         # standard 3DNow in the earlier K6 processors.
@@ -252,7 +254,7 @@ def crunch_numbers(state):
         # feature flags.  If want to use AVX512, AVX2 must be supported and
         # enabled.  Certain later extensions, acting on 256-bit vectors of
         # integers, better depend on AVX2 than AVX.
-        AVX2: [AVX512F, VAES, VPCLMULQDQ],
+        AVX2: [AVX512F, VAES, VPCLMULQDQ, AVX_VNNI],
 
         # AVX512F is taken to mean hardware support for 512bit registers
         # (which in practice depends on the EVEX prefix to encode) as well
@@ -260,7 +262,7 @@ def crunch_numbers(state):
         # AVX512 features are built on top of AVX512F
         AVX512F: [AVX512DQ, AVX512_IFMA, AVX512PF, AVX512ER, AVX512CD,
                   AVX512BW, AVX512VL, AVX512_4VNNIW, AVX512_4FMAPS,
-                  AVX512_VNNI, AVX512_VPOPCNTDQ],
+                  AVX512_VNNI, AVX512_VPOPCNTDQ, AVX512_VP2INTERSECT],
 
         # AVX512 extensions acting on vectors of bytes/words are made
         # dependents of AVX512BW (as to requiring wider than 16-bit mask
@@ -275,16 +277,20 @@ def crunch_numbers(state):
         # The features:
         #   * Single Thread Indirect Branch Predictors
         #   * Speculative Store Bypass Disable
+        #   * Predictive Store Forward Disable
         #
-        # enumerate new bits in MSR_SPEC_CTRL, which is enumerated by Indirect
-        # Branch Restricted Speculation/Indirect Branch Prediction Barrier.
+        # enumerate new bits in MSR_SPEC_CTRL, and technically enumerate
+        # MSR_SPEC_CTRL itself.  AMD further enumerates hints to guide OS
+        # behaviour.
         #
-        # In practice, these features also enumerate the presense of
-        # MSR_SPEC_CTRL.  However, no real hardware will exist with SSBD but
-        # not IBRSB, and we pass this MSR directly to guests.  Treating them
+        # However, no real hardware will exist with e.g. SSBD but not
+        # IBRSB/IBRS, and we pass this MSR directly to guests.  Treating them
         # as dependent features simplifies Xen's logic, and prevents the guest
         # from seeing implausible configurations.
-        IBRSB: [STIBP, SSBD],
+        IBRSB: [STIBP, SSBD, INTEL_PSFD],
+        IBRS: [AMD_STIBP, AMD_SSBD, PSFD,
+               IBRS_ALWAYS, IBRS_FAST, IBRS_SAME_MODE],
+        AMD_STIBP: [STIBP_ALWAYS],
 
         # In principle the TSXLDTRK insns could also be considered independent.
         RTM: [TSXLDTRK],
@@ -420,6 +426,8 @@ def write_results(state):
 """}
 
 """)
+
+    state.bitfields += ["uint32_t :32 /* placeholder */"] * 4
 
     for idx, text in enumerate(state.bitfields):
         state.output.write(

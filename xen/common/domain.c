@@ -82,6 +82,10 @@ struct vcpu *idle_vcpu[NR_CPUS] __read_mostly;
 
 vcpu_info_t dummy_vcpu_info;
 
+bool __read_mostly vmtrace_available;
+
+bool __read_mostly vpmu_is_available;
+
 static void __domain_finalise_shutdown(struct domain *d)
 {
     struct vcpu *v;
@@ -130,6 +134,87 @@ static void vcpu_info_reset(struct vcpu *v)
     v->vcpu_info_mfn = INVALID_MFN;
 }
 
+static void vmtrace_free_buffer(struct vcpu *v)
+{
+    const struct domain *d = v->domain;
+    struct page_info *pg = v->vmtrace.pg;
+    unsigned int i;
+
+    if ( !pg )
+        return;
+
+    v->vmtrace.pg = NULL;
+
+    for ( i = 0; i < (d->vmtrace_size >> PAGE_SHIFT); i++ )
+    {
+        put_page_alloc_ref(&pg[i]);
+        put_page_and_type(&pg[i]);
+    }
+}
+
+static int vmtrace_alloc_buffer(struct vcpu *v)
+{
+    struct domain *d = v->domain;
+    struct page_info *pg;
+    unsigned int i;
+
+    if ( !d->vmtrace_size )
+        return 0;
+
+    pg = alloc_domheap_pages(d, get_order_from_bytes(d->vmtrace_size),
+                             MEMF_no_refcount);
+    if ( !pg )
+        return -ENOMEM;
+
+    for ( i = 0; i < (d->vmtrace_size >> PAGE_SHIFT); i++ )
+        if ( unlikely(!get_page_and_type(&pg[i], d, PGT_writable_page)) )
+            /*
+             * The domain can't possibly know about this page yet, so failure
+             * here is a clear indication of something fishy going on.
+             */
+            goto refcnt_err;
+
+    /*
+     * We must only let vmtrace_free_buffer() take any action in the success
+     * case when we've taken all the refs it intends to drop.
+     */
+    v->vmtrace.pg = pg;
+    return 0;
+
+ refcnt_err:
+    /*
+     * We can theoretically reach this point if someone has taken 2^43 refs on
+     * the frames in the time the above loop takes to execute, or someone has
+     * made a blind decrease reservation hypercall and managed to pick the
+     * right mfn.  Free the memory we safely can, and leak the rest.
+     */
+    while ( i-- )
+    {
+        put_page_alloc_ref(&pg[i]);
+        put_page_and_type(&pg[i]);
+    }
+
+    return -ENODATA;
+}
+
+/*
+ * Release resources held by a vcpu.  There may or may not be live references
+ * to the vcpu, and it may or may not be fully constructed.
+ *
+ * If d->is_dying is DOMDYING_dead, this must not return non-zero.
+ */
+static int vcpu_teardown(struct vcpu *v)
+{
+    vmtrace_free_buffer(v);
+
+    return 0;
+}
+
+/*
+ * Destoy a vcpu once all references to it have been dropped.  Used either
+ * from domain_destroy()'s RCU path, or from the vcpu_create() error path
+ * before the vcpu is placed on the domain's vcpu list.
+ */
 static void vcpu_destroy(struct vcpu *v)
 {
     free_vcpu_struct(v);
@@ -160,7 +245,7 @@ struct vcpu *vcpu_create(struct domain *d, unsigned int vcpu_id)
     v->vcpu_id = vcpu_id;
     v->dirty_cpu = VCPU_CPU_CLEAN;
 
-    spin_lock_init(&v->virq_lock);
+    rwlock_init(&v->virq_lock);
 
     tasklet_init(&v->continue_hypercall_tasklet, NULL, NULL);
 
@@ -181,6 +266,9 @@ struct vcpu *vcpu_create(struct domain *d, unsigned int vcpu_id)
     }
 
     if ( sched_init_vcpu(v) != 0 )
+        goto fail_wq;
+
+    if ( vmtrace_alloc_buffer(v) != 0 )
         goto fail_wq;
 
     if ( arch_vcpu_create(v) != 0 )
@@ -206,6 +294,11 @@ struct vcpu *vcpu_create(struct domain *d, unsigned int vcpu_id)
     sched_destroy_vcpu(v);
  fail_wq:
     destroy_waitqueue_vcpu(v);
+
+    /* Must not hit a continuation in this context. */
+    if ( vcpu_teardown(v) )
+        ASSERT_UNREACHABLE();
+
     vcpu_destroy(v);
 
     return NULL;
@@ -273,6 +366,91 @@ static int __init parse_extra_guest_irqs(const char *s)
 custom_param("extra_guest_irqs", parse_extra_guest_irqs);
 
 /*
+ * Release resources held by a domain.  There may or may not be live
+ * references to the domain, and it may or may not be fully constructed.
+ *
+ * d->is_dying differing between DOMDYING_dying and DOMDYING_dead can be used
+ * to determine if live references to the domain exist, and also whether
+ * continuations are permitted.
+ *
+ * If d->is_dying is DOMDYING_dead, this must not return non-zero.
+ */
+static int domain_teardown(struct domain *d)
+{
+    struct vcpu *v;
+    int rc;
+
+    BUG_ON(!d->is_dying);
+
+    /*
+     * This hypercall can take minutes of wallclock time to complete.  This
+     * logic implements a co-routine, stashing state in struct domain across
+     * hypercall continuation boundaries.
+     */
+    switch ( d->teardown.val )
+    {
+        /*
+         * Record the current progress.  Subsequent hypercall continuations
+         * will logically restart work from this point.
+         *
+         * PROGRESS() markers must not be in the middle of loops.  The loop
+         * variable isn't preserved across a continuation.  PROGRESS_VCPU()
+         * markers may be used in the middle of for_each_vcpu() loops, which
+         * preserve v but no other loop variables.
+         *
+         * To avoid redundant work, there should be a marker before each
+         * function which may return -ERESTART.
+         */
+#define PROGRESS(x)                             \
+        d->teardown.val = PROG_ ## x;           \
+        fallthrough;                            \
+    case PROG_ ## x
+
+#define PROGRESS_VCPU(x)                        \
+        d->teardown.val = PROG_vcpu_ ## x;      \
+        d->teardown.vcpu = v;                   \
+        fallthrough;                            \
+    case PROG_vcpu_ ## x:                       \
+        v = d->teardown.vcpu
+
+        enum {
+            PROG_none,
+            PROG_gnttab_mappings,
+            PROG_vcpu_teardown,
+            PROG_done,
+        };
+
+    case PROG_none:
+        BUILD_BUG_ON(PROG_none != 0);
+
+    PROGRESS(gnttab_mappings):
+        rc = gnttab_release_mappings(d);
+        if ( rc )
+            return rc;
+
+        for_each_vcpu ( d, v )
+        {
+            PROGRESS_VCPU(teardown);
+
+            rc = vcpu_teardown(v);
+            if ( rc )
+                return rc;
+        }
+
+    PROGRESS(done):
+        break;
+
+#undef PROGRESS_VCPU
+#undef PROGRESS
+
+    default:
+        BUG();
+    }
+
+    return 0;
+}
+
+/*
  * Destroy a domain once all references to it have been dropped.  Used either
  * from the RCU path, or from the domain_create() error path before the domain
  * is inserted into the domlist.
@@ -299,27 +477,24 @@ static void _domain_destroy(struct domain *d)
 
 static int sanitise_domain_config(struct xen_domctl_createdomain *config)
 {
-    if ( config->flags & ~(XEN_DOMCTL_CDF_hvm |
-                           XEN_DOMCTL_CDF_hap |
-                           XEN_DOMCTL_CDF_s3_integrity |
-                           XEN_DOMCTL_CDF_oos_off |
-                           XEN_DOMCTL_CDF_xs_domain |
-                           XEN_DOMCTL_CDF_iommu) )
+    bool hvm = config->flags & XEN_DOMCTL_CDF_hvm;
+    bool hap = config->flags & XEN_DOMCTL_CDF_hap;
+    bool iommu = config->flags & XEN_DOMCTL_CDF_iommu;
+    bool vpmu = config->flags & XEN_DOMCTL_CDF_vpmu;
+
+    if ( config->flags &
+         ~(XEN_DOMCTL_CDF_hvm | XEN_DOMCTL_CDF_hap |
+           XEN_DOMCTL_CDF_s3_integrity | XEN_DOMCTL_CDF_oos_off |
+           XEN_DOMCTL_CDF_xs_domain | XEN_DOMCTL_CDF_iommu |
+           XEN_DOMCTL_CDF_nested_virt | XEN_DOMCTL_CDF_vpmu) )
     {
         dprintk(XENLOG_INFO, "Unknown CDF flags %#x\n", config->flags);
         return -EINVAL;
     }
 
-    if ( config->iommu_opts & ~XEN_DOMCTL_IOMMU_no_sharept )
+    if ( config->grant_opts & ~XEN_DOMCTL_GRANT_version_mask )
     {
-        dprintk(XENLOG_INFO, "Unknown IOMMU options %#x\n", config->iommu_opts);
-        return -EINVAL;
-    }
-
-    if ( !(config->flags & XEN_DOMCTL_CDF_iommu) && config->iommu_opts )
-    {
-        dprintk(XENLOG_INFO,
-                "IOMMU options specified but IOMMU not enabled\n");
+        dprintk(XENLOG_INFO, "Unknown grant options %#x\n", config->grant_opts);
         return -EINVAL;
     }
 
@@ -329,16 +504,46 @@ static int sanitise_domain_config(struct xen_domctl_createdomain *config)
         return -EINVAL;
     }
 
-    if ( !(config->flags & XEN_DOMCTL_CDF_hvm) &&
-         (config->flags & XEN_DOMCTL_CDF_hap) )
+    if ( hap && !hvm )
     {
         dprintk(XENLOG_INFO, "HAP requested for non-HVM guest\n");
         return -EINVAL;
     }
 
-    if ( (config->flags & XEN_DOMCTL_CDF_iommu) && !iommu_enabled )
+    if ( iommu )
     {
-        dprintk(XENLOG_INFO, "IOMMU is not enabled\n");
+        if ( config->iommu_opts & ~XEN_DOMCTL_IOMMU_no_sharept )
+        {
+            dprintk(XENLOG_INFO, "Unknown IOMMU options %#x\n",
+                    config->iommu_opts);
+            return -EINVAL;
+        }
+
+        if ( !iommu_enabled )
+        {
+            dprintk(XENLOG_INFO, "IOMMU requested but not available\n");
+            return -EINVAL;
+        }
+    }
+    else
+    {
+        if ( config->iommu_opts )
+        {
+            dprintk(XENLOG_INFO,
+                    "IOMMU options specified but IOMMU not requested\n");
+            return -EINVAL;
+        }
+    }
+
+    if ( config->vmtrace_size && !vmtrace_available )
+    {
+        dprintk(XENLOG_INFO, "vmtrace requested but not available\n");
+        return -EINVAL;
+    }
+
+    if ( vpmu && !vpmu_is_available )
+    {
+        dprintk(XENLOG_INFO, "vpmu requested but cannot be enabled this way\n");
         return -EINVAL;
     }
 
@@ -360,13 +565,17 @@ struct domain *domain_create(domid_t domid,
     if ( (d = alloc_domain_struct()) == NULL )
         return ERR_PTR(-ENOMEM);
 
-    d->options = config ? config->flags : 0;
-
     /* Sort out our idea of is_system_domain(). */
     d->domain_id = domid;
 
     /* Debug sanity. */
     ASSERT(is_system_domain(d) ? config == NULL : config != NULL);
+
+    if ( config )
+    {
+        d->options = config->flags;
+        d->vmtrace_size = config->vmtrace_size;
+    }
 
     /* Sort out our idea of is_control_domain(). */
     d->is_privileged = is_priv;
@@ -377,31 +586,13 @@ struct domain *domain_create(domid_t domid,
         if ( hardware_domid < 0 || hardware_domid >= DOMID_FIRST_RESERVED )
             panic("The value of hardware_dom must be a valid domain ID\n");
 
-        d->disable_migrate = true;
         old_hwdom = hardware_domain;
         hardware_domain = d;
     }
 
     TRACE_1D(TRC_DOM0_DOM_ADD, d->domain_id);
 
-    /*
-     * Allocate d->vcpu[] and set ->max_vcpus up early.  Various per-domain
-     * resources want to be sized based on max_vcpus.
-     */
-    if ( !is_system_domain(d) )
-    {
-        err = -ENOMEM;
-        d->vcpu = xzalloc_array(struct vcpu *, config->max_vcpus);
-        if ( !d->vcpu )
-            goto fail;
-
-        d->max_vcpus = config->max_vcpus;
-    }
-
-    lock_profile_register_struct(LOCKPROF_TYPE_PERDOM, d, domid, "Domain");
-
-    if ( (err = xsm_alloc_security_domain(d)) != 0 )
-        goto fail;
+    lock_profile_register_struct(LOCKPROF_TYPE_PERDOM, d, domid);
 
     atomic_set(&d->refcnt, 1);
     RCU_READ_LOCK_INIT(&d->rcu_lock);
@@ -426,6 +617,25 @@ struct domain *domain_create(domid_t domid,
 #ifdef CONFIG_HAS_PCI
     INIT_LIST_HEAD(&d->pdev_list);
 #endif
+
+    /* All error paths can depend on the above setup. */
+
+    /*
+     * Allocate d->vcpu[] and set ->max_vcpus up early.  Various per-domain
+     * resources want to be sized based on max_vcpus.
+     */
+    if ( !is_system_domain(d) )
+    {
+        err = -ENOMEM;
+        d->vcpu = xzalloc_array(struct vcpu *, config->max_vcpus);
+        if ( !d->vcpu )
+            goto fail;
+
+        d->max_vcpus = config->max_vcpus;
+    }
+
+    if ( (err = xsm_alloc_security_domain(d)) != 0 )
+        goto fail;
 
     err = -ENOMEM;
     if ( !zalloc_cpumask_var(&d->dirty_cpumask) )
@@ -458,9 +668,6 @@ struct domain *domain_create(domid_t domid,
         watchdog_domain_init(d);
         init_status |= INIT_watchdog;
 
-        if ( is_xenstore_domain(d) )
-            d->disable_migrate = true;
-
         d->iomem_caps = rangeset_new(d, "I/O Memory", RANGESETF_prettyprint_hex);
         d->irq_caps   = rangeset_new(d, "Interrupts", 0);
         if ( !d->iomem_caps || !d->irq_caps )
@@ -477,7 +684,8 @@ struct domain *domain_create(domid_t domid,
         init_status |= INIT_evtchn;
 
         if ( (err = grant_table_init(d, config->max_grant_frames,
-                                     config->max_maptrack_frames)) != 0 )
+                                     config->max_maptrack_frames,
+                                     config->grant_opts)) != 0 )
             goto fail;
         init_status |= INIT_gnttab;
 
@@ -545,6 +753,10 @@ struct domain *domain_create(domid_t domid,
     }
     if ( init_status & INIT_watchdog )
         watchdog_domain_destroy(d);
+
+    /* Must not hit a continuation in this context. */
+    if ( domain_teardown(d) )
+        ASSERT_UNREACHABLE();
 
     _domain_destroy(d);
 
@@ -725,7 +937,7 @@ int domain_kill(struct domain *d)
         domain_set_outstanding_pages(d, 0);
         /* fallthrough */
     case DOMDYING_dying:
-        rc = gnttab_release_mappings(d);
+        rc = domain_teardown(d);
         if ( rc )
             break;
         rc = evtchn_destroy(d);
@@ -908,7 +1120,7 @@ static void complete_domain_destroy(struct rcu_head *head)
     free_xenoprof_pages(d);
 #endif
 
-#ifdef CONFIG_HAS_MEM_PAGING
+#ifdef CONFIG_MEM_PAGING
     xfree(d->vm_event_paging);
 #endif
     xfree(d->vm_event_monitor);
@@ -1239,17 +1451,18 @@ int map_vcpu_info(struct vcpu *v, unsigned long gfn, unsigned offset)
     struct page_info *page;
     unsigned int align;
 
-    if ( offset > (PAGE_SIZE - sizeof(vcpu_info_t)) )
-        return -EINVAL;
+    if ( offset > (PAGE_SIZE - sizeof(*new_info)) )
+        return -ENXIO;
 
 #ifdef CONFIG_COMPAT
+    BUILD_BUG_ON(sizeof(*new_info) != sizeof(new_info->compat));
     if ( has_32bit_shinfo(d) )
         align = alignof(new_info->compat);
     else
 #endif
         align = alignof(*new_info);
     if ( offset & (align - 1) )
-        return -EINVAL;
+        return -ENXIO;
 
     if ( !mfn_eq(v->vcpu_info_mfn, INVALID_MFN) )
         return -EINVAL;

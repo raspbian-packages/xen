@@ -156,7 +156,25 @@ static inline unsigned long __rdgsbase(void)
     return base;
 }
 
-static inline unsigned long rdfsbase(void)
+static inline void __wrfsbase(unsigned long base)
+{
+#ifdef HAVE_AS_FSGSBASE
+    asm volatile ( "wrfsbase %0" :: "r" (base) );
+#else
+    asm volatile ( ".byte 0xf3, 0x48, 0x0f, 0xae, 0xd0" :: "a" (base) );
+#endif
+}
+
+static inline void __wrgsbase(unsigned long base)
+{
+#ifdef HAVE_AS_FSGSBASE
+    asm volatile ( "wrgsbase %0" :: "r" (base) );
+#else
+    asm volatile ( ".byte 0xf3, 0x48, 0x0f, 0xae, 0xd8" :: "a" (base) );
+#endif
+}
+
+static inline unsigned long read_fs_base(void)
 {
     unsigned long base;
 
@@ -168,7 +186,7 @@ static inline unsigned long rdfsbase(void)
     return base;
 }
 
-static inline unsigned long rdgsbase(void)
+static inline unsigned long read_gs_base(void)
 {
     unsigned long base;
 
@@ -180,7 +198,7 @@ static inline unsigned long rdgsbase(void)
     return base;
 }
 
-static inline unsigned long rdgsshadow(void)
+static inline unsigned long read_gs_shadow(void)
 {
     unsigned long base;
 
@@ -196,31 +214,23 @@ static inline unsigned long rdgsshadow(void)
     return base;
 }
 
-static inline void wrfsbase(unsigned long base)
+static inline void write_fs_base(unsigned long base)
 {
     if ( read_cr4() & X86_CR4_FSGSBASE )
-#ifdef HAVE_AS_FSGSBASE
-        asm volatile ( "wrfsbase %0" :: "r" (base) );
-#else
-        asm volatile ( ".byte 0xf3, 0x48, 0x0f, 0xae, 0xd0" :: "a" (base) );
-#endif
+        __wrfsbase(base);
     else
         wrmsrl(MSR_FS_BASE, base);
 }
 
-static inline void wrgsbase(unsigned long base)
+static inline void write_gs_base(unsigned long base)
 {
     if ( read_cr4() & X86_CR4_FSGSBASE )
-#ifdef HAVE_AS_FSGSBASE
-        asm volatile ( "wrgsbase %0" :: "r" (base) );
-#else
-        asm volatile ( ".byte 0xf3, 0x48, 0x0f, 0xae, 0xd8" :: "a" (base) );
-#endif
+        __wrgsbase(base);
     else
         wrmsrl(MSR_GS_BASE, base);
 }
 
-static inline void wrgsshadow(unsigned long base)
+static inline void write_gs_shadow(unsigned long base)
 {
     if ( read_cr4() & X86_CR4_FSGSBASE )
     {
@@ -267,6 +277,8 @@ static inline void wrmsr_tsc_aux(uint32_t val)
     }
 }
 
+uint64_t msr_spec_ctrl_valid_bits(const struct cpuid_policy *cp);
+
 extern struct msr_policy     raw_msr_policy,
                             host_msr_policy,
                           pv_max_msr_policy,
@@ -277,7 +289,24 @@ extern struct msr_policy     raw_msr_policy,
 /* Container object for per-vCPU MSRs */
 struct vcpu_msrs
 {
-    /* 0x00000048 - MSR_SPEC_CTRL */
+    /*
+     * 0x00000048 - MSR_SPEC_CTRL
+     *
+     * For PV guests, this holds the guest kernel value.  It is accessed on
+     * every entry/exit path.
+     *
+     * For VT-x guests, the guest value is held in the MSR guest load/save
+     * list.
+     *
+     * For SVM, the guest value lives in the VMCB, and hardware saves/restores
+     * the host value automatically.  However, guests run with the OR of the
+     * host and guest value, which allows Xen to set protections behind the
+     * guest's back.
+     *
+     * We must clear/restore Xen's value before/after VMRUN to avoid unduly
+     * influencing the guest.  In order to support "behind the guest's back"
+     * protections, we load this value (commonly 0) before VMRUN.
+     */
     struct {
         uint32_t raw;
     } spec_ctrl;
@@ -295,6 +324,38 @@ struct vcpu_msrs
             bool cpuid_faulting:1;
         };
     } misc_features_enables;
+
+    /*
+     * 0x00000560 ... 57x - MSR_RTIT_*
+     *
+     * "Real Time Instruction Trace", now called Processor Trace.
+     *
+     * These MSRs are not exposed to guests.  They are controlled by Xen
+     * behind the scenes, when vmtrace is enabled for the domain.
+     *
+     * MSR_RTIT_OUTPUT_BASE not stored here.  It is fixed per vcpu, and
+     * derived from v->vmtrace.buf.
+     */
+    struct {
+        /*
+         * Placed in the MSR load/save lists.  Only modified by hypercall in
+         * the common case.
+         */
+        uint64_t ctl;
+
+        /*
+         * Updated by hardware in non-root mode.  Synchronised here on vcpu
+         * context switch.
+         */
+        uint64_t status;
+        union {
+            uint64_t output_mask;
+            struct {
+                uint32_t output_limit;
+                uint32_t output_offset;
+            };
+        };
+    } rtit;
 
     /* 0x00000da0 - MSR_IA32_XSS */
     struct {

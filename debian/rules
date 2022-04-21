@@ -5,6 +5,11 @@
 
 SHELL    := bash -e
 
+# SOURCE_BASE_DIR is used by our delta queue to find the top directory.  It
+# seems this information is currenty not directly provided by the Debian build
+# system.
+export SOURCE_BASE_DIR=$(shell pwd)
+
 # This influences dpkg-buildflags to specify better linker
 # options.  See https://wiki.debian.org/Hardening
 # Apparently some of these might incur silent breakage
@@ -19,15 +24,13 @@ SHELL    := bash -e
 # Inexplicably, if you tell make `export V=value' and `$(shell ...)'
 # it does not pass V to the shell.  WTF.  So we set a variable
 # dbmo which we include in the relevant $(shell ...) invocations.
-dbmo= DEB_BUILD_MAINT_OPTIONS="hardening=+all reproducible=+fixfilepath"
+dbmo= DEB_BUILD_MAINT_OPTIONS="hardening=+all"
 
 # Architecture handling.
 #
 # We need to explicitly specify the architecture because the Xen
 # upstream build system likes to use `uname' which can produce wrong
-# answers it other-bitness chroots, and because we need to build a
-# 64-bit hypervisor even on i386 (since there is no 32-bit hypervisor
-# anymore).
+# answers in other-bitness chroots.
 
 # Also there is terminological confusion.  The DEB_* variables follow
 # GNU GCC terminology:
@@ -42,12 +45,10 @@ include /usr/share/dpkg/architecture.mk
 # Debian nor GNU names.
 
 flavour_amd64 = amd64
-flavour_i386  = amd64
 flavour_armhf = armhf
 flavour_arm64 = arm64
 
 xen_arch_amd64 = x86_64
-xen_arch_i386  = x86_32
 xen_arch_armhf = arm32
 xen_arch_arm64 = arm64
 
@@ -164,12 +165,9 @@ export XEN_BUILD_TIME=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%T")
 export SMBIOS_REL_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%m/%d/%Y")
 export VGABIOS_REL_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%d %b %Y")
 
-export PYBUILD_NAME=xen
-export PYBUILD_DISABLE=test
-export PYBUILD_SYSTEM=distutils
 
 %:
-	dh $@ --with=python3 --buildsystem=pybuild
+	dh $@ --with=python3
 
 # Without this, something on stretch passes CFLAGS in the environment
 # to the Xen build system, which then (with 4.11) chokes printing
@@ -215,16 +213,14 @@ override_dh_auto_configure:
 
 # tools/firmware/xen-dir is the `shim' used for booting PV guests
 # in an HVM container, for security (particularly, for meltdown/spectre
-# mitigation).  It's actually a hypervisor.  On i386 it is not built
-# by `make tools' because run that with XEN_COMPILE_ARCH=x86_32 which
-# is no longer a supported hypervisor architecture.  And we want to
-# build it with $(make_args_xen) not $(make_args_tools).  So do it
-# separately.
+# mitigation).  It's actually a hypervisor. It's only built for amd64.
+# Since we want to build it with $(make_args_xen) not $(make_args_tools),
+# do it separately.
 override_dh_auto_build:
 	$(MAKE) $(make_args_xen) xen
 	$(MAKE) $(make_args_tools) tools docs CONFIG_PV_SHIM=n
 	case $(flavour) in \
-	amd64|i386) \
+	amd64) \
 		$(MAKE) $(make_args_xen) -C tools/firmware/xen-dir ;; \
 	esac
 	touch debian/xen-tools-built.stamp
@@ -239,8 +235,7 @@ override_dh_auto_install: $(TEMPLATED_FILES)
 		install-{tools,docs} CONFIG_PV_SHIM=n
 	:
 	@# shim install target needs to be run separately because we
-	@# need to pass it the make_args_xen settings, in particular
-	@# on i386 bwe need to pass x86_64 here to actually build it.
+	@# need to pass it the make_args_xen settings.
 	@# Luckily this target, unlike the build, is a noop on
 	@# shimless arches, so it does not need to be conditional.
 	$(MAKE) $(make_args_xen) DESTDIR=$t $(make_args_xen) \
@@ -298,6 +293,8 @@ override_dh_python3:
 	dh_python3
 	dh_python3 -pxen-utils-$(upstream_version) \
 		usr/lib/xen-$(upstream_version)/bin
+	dh_python3 -pxen-utils-$(upstream_version) \
+		usr/lib/xen-$(upstream_version)/lib/python
 
 # We have two init scripts.  (There used to be xend too.)
 override_dh_installinit:

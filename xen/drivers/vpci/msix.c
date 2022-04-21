@@ -23,8 +23,6 @@
 #include <asm/msi.h>
 #include <asm/p2m.h>
 
-#define VMSIX_SIZE(num) offsetof(struct vpci_msix, entries[num])
-
 #define VMSIX_ADDR_IN_RANGE(addr, vpci, nr)                               \
     ((addr) >= vmsix_table_addr(vpci, nr) &&                              \
      (addr) < vmsix_table_addr(vpci, nr) + vmsix_table_size(vpci, nr))
@@ -39,19 +37,18 @@ static uint32_t control_read(const struct pci_dev *pdev, unsigned int reg,
            (msix->masked ? PCI_MSIX_FLAGS_MASKALL : 0);
 }
 
-static int update_entry(struct vpci_msix_entry *entry,
-                        const struct pci_dev *pdev, unsigned int nr)
+static void update_entry(struct vpci_msix_entry *entry,
+                         const struct pci_dev *pdev, unsigned int nr)
 {
-    uint8_t slot = PCI_SLOT(pdev->devfn), func = PCI_FUNC(pdev->devfn);
     int rc = vpci_msix_arch_disable_entry(entry, pdev);
 
     /* Ignore ENOENT, it means the entry wasn't setup. */
     if ( rc && rc != -ENOENT )
     {
         gprintk(XENLOG_WARNING,
-                "%04x:%02x:%02x.%u: unable to disable entry %u for update: %d\n",
-                pdev->seg, pdev->bus, slot, func, nr, rc);
-        return rc;
+                "%pp: unable to disable entry %u for update: %d\n",
+                &pdev->sbdf, nr, rc);
+        return;
     }
 
     rc = vpci_msix_arch_enable_entry(entry, pdev,
@@ -59,20 +56,18 @@ static int update_entry(struct vpci_msix_entry *entry,
                                                       VPCI_MSIX_TABLE));
     if ( rc )
     {
-        gprintk(XENLOG_WARNING,
-                "%04x:%02x:%02x.%u: unable to enable entry %u: %d\n",
-                pdev->seg, pdev->bus, slot, func, nr, rc);
+        gprintk(XENLOG_WARNING, "%pp: unable to enable entry %u: %d\n",
+                &pdev->sbdf, nr, rc);
         /* Entry is likely not properly configured. */
-        return rc;
+        return;
     }
 
-    return 0;
+    entry->updated = false;
 }
 
 static void control_write(const struct pci_dev *pdev, unsigned int reg,
                           uint32_t val, void *data)
 {
-    uint8_t slot = PCI_SLOT(pdev->devfn), func = PCI_FUNC(pdev->devfn);
     struct vpci_msix *msix = data;
     bool new_masked = val & PCI_MSIX_FLAGS_MASKALL;
     bool new_enabled = val & PCI_MSIX_FLAGS_ENABLE;
@@ -95,13 +90,8 @@ static void control_write(const struct pci_dev *pdev, unsigned int reg,
     if ( new_enabled && !new_masked && (!msix->enabled || msix->masked) )
     {
         for ( i = 0; i < msix->max_entries; i++ )
-        {
-            if ( msix->entries[i].masked || !msix->entries[i].updated ||
-                 update_entry(&msix->entries[i], pdev, i) )
-                continue;
-
-            msix->entries[i].updated = false;
-        }
+            if ( !msix->entries[i].masked && msix->entries[i].updated )
+                update_entry(&msix->entries[i], pdev, i);
     }
     else if ( !new_enabled && msix->enabled )
     {
@@ -133,9 +123,8 @@ static void control_write(const struct pci_dev *pdev, unsigned int reg,
                 /* Ignore non-present entry. */
                 break;
             default:
-                gprintk(XENLOG_WARNING,
-                        "%04x:%02x:%02x.%u: unable to disable entry %u: %d\n",
-                        pdev->seg, pdev->bus, slot, func, i, rc);
+                gprintk(XENLOG_WARNING, "%pp: unable to disable entry %u: %d\n",
+                        &pdev->sbdf, i, rc);
                 return;
             }
         }
@@ -180,8 +169,7 @@ static bool access_allowed(const struct pci_dev *pdev, unsigned long addr,
         return true;
 
     gprintk(XENLOG_WARNING,
-            "%04x:%02x:%02x.%u: unaligned or invalid size MSI-X table access\n",
-            pdev->seg, pdev->bus, PCI_SLOT(pdev->devfn), PCI_FUNC(pdev->devfn));
+            "%pp: unaligned or invalid size MSI-X table access\n", &pdev->sbdf);
 
     return false;
 }
@@ -370,10 +358,7 @@ static int msix_write(struct vcpu *v, unsigned long addr, unsigned int len,
              * data fields Xen needs to disable and enable the entry in order
              * to pick up the changes.
              */
-            if ( update_entry(entry, pdev, vmsix_entry_nr(msix, entry)) )
-                break;
-
-            entry->updated = false;
+            update_entry(entry, pdev, vmsix_entry_nr(msix, entry));
         }
         else
             vpci_msix_arch_mask_entry(entry, pdev, entry->masked);
@@ -431,10 +416,9 @@ int vpci_make_msix_hole(const struct pci_dev *pdev)
             default:
                 put_gfn(d, start);
                 gprintk(XENLOG_WARNING,
-                        "%04x:%02x:%02x.%u: existing mapping (mfn: %" PRI_mfn
+                        "%pp: existing mapping (mfn: %" PRI_mfn
                         "type: %d) at %#lx clobbers MSIX MMIO area\n",
-                        pdev->seg, pdev->bus, PCI_SLOT(pdev->devfn),
-                        PCI_FUNC(pdev->devfn), mfn_x(mfn), t, start);
+                        &pdev->sbdf, mfn_x(mfn), t, start);
                 return -EEXIST;
             }
             put_gfn(d, start);
@@ -450,6 +434,7 @@ static int init_msix(struct pci_dev *pdev)
     uint8_t slot = PCI_SLOT(pdev->devfn), func = PCI_FUNC(pdev->devfn);
     unsigned int msix_offset, i, max_entries;
     uint16_t control;
+    struct vpci_msix *msix;
     int rc;
 
     msix_offset = pci_find_cap_offset(pdev->seg, pdev->bus, slot, func,
@@ -461,33 +446,37 @@ static int init_msix(struct pci_dev *pdev)
 
     max_entries = msix_table_size(control);
 
-    pdev->vpci->msix = xzalloc_bytes(VMSIX_SIZE(max_entries));
-    if ( !pdev->vpci->msix )
+    msix = xzalloc_flex_struct(struct vpci_msix, entries, max_entries);
+    if ( !msix )
         return -ENOMEM;
 
-    pdev->vpci->msix->max_entries = max_entries;
-    pdev->vpci->msix->pdev = pdev;
-
-    pdev->vpci->msix->tables[VPCI_MSIX_TABLE] =
-        pci_conf_read32(pdev->sbdf, msix_table_offset_reg(msix_offset));
-    pdev->vpci->msix->tables[VPCI_MSIX_PBA] =
-        pci_conf_read32(pdev->sbdf, msix_pba_offset_reg(msix_offset));
-
-    for ( i = 0; i < pdev->vpci->msix->max_entries; i++)
+    rc = vpci_add_register(pdev->vpci, control_read, control_write,
+                           msix_control_reg(msix_offset), 2, msix);
+    if ( rc )
     {
-        pdev->vpci->msix->entries[i].masked = true;
-        vpci_msix_arch_init_entry(&pdev->vpci->msix->entries[i]);
+        xfree(msix);
+        return rc;
     }
 
-    rc = vpci_add_register(pdev->vpci, control_read, control_write,
-                           msix_control_reg(msix_offset), 2, pdev->vpci->msix);
-    if ( rc )
-        return rc;
+    msix->max_entries = max_entries;
+    msix->pdev = pdev;
+
+    msix->tables[VPCI_MSIX_TABLE] =
+        pci_conf_read32(pdev->sbdf, msix_table_offset_reg(msix_offset));
+    msix->tables[VPCI_MSIX_PBA] =
+        pci_conf_read32(pdev->sbdf, msix_pba_offset_reg(msix_offset));
+
+    for ( i = 0; i < max_entries; i++)
+    {
+        msix->entries[i].masked = true;
+        vpci_msix_arch_init_entry(&msix->entries[i]);
+    }
 
     if ( list_empty(&d->arch.hvm.msix_tables) )
         register_mmio_handler(d, &vpci_msix_table_ops);
 
-    list_add(&pdev->vpci->msix->next, &d->arch.hvm.msix_tables);
+    pdev->vpci->msix = msix;
+    list_add(&msix->next, &d->arch.hvm.msix_tables);
 
     return 0;
 }

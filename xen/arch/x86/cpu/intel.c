@@ -15,6 +15,38 @@
 #include "cpu.h"
 
 /*
+ * MSR_MCU_OPT_CTRL is a collection of unrelated functionality, with separate
+ * enablement requirements, but which want to be consistent across the system.
+ */
+static uint32_t __read_mostly mcu_opt_ctrl_mask;
+static uint32_t __read_mostly mcu_opt_ctrl_val;
+
+void update_mcu_opt_ctrl(void)
+{
+    uint32_t mask = mcu_opt_ctrl_mask, lo, hi;
+
+    if ( !mask )
+        return;
+
+    rdmsr(MSR_MCU_OPT_CTRL, lo, hi);
+
+    lo &= ~mask;
+    lo |= mcu_opt_ctrl_val;
+
+    wrmsr(MSR_MCU_OPT_CTRL, lo, hi);
+}
+
+void __init set_in_mcu_opt_ctrl(uint32_t mask, uint32_t val)
+{
+    mcu_opt_ctrl_mask |= mask;
+
+    mcu_opt_ctrl_val &= ~mask;
+    mcu_opt_ctrl_val |= (val & mask);
+
+    update_mcu_opt_ctrl();
+}
+
+/*
  * Processors which have self-snooping capability can handle conflicting
  * memory type across CPUs by snooping its own cache. However, there exists
  * CPU models in which having conflicting memory types still leads to
@@ -270,14 +302,14 @@ static void early_init_intel(struct cpuinfo_x86 *c)
 	if (disable) {
 		wrmsrl(MSR_IA32_MISC_ENABLE, misc_enable & ~disable);
 		bootsym(trampoline_misc_enable_off) |= disable;
-		bootsym(trampoline_efer) |= EFER_NX;
+		bootsym(trampoline_efer) |= EFER_NXE;
 	}
 
 	if (disable & MSR_IA32_MISC_ENABLE_LIMIT_CPUID)
 		printk(KERN_INFO "revised cpuid level: %d\n",
 		       cpuid_eax(0));
 	if (disable & MSR_IA32_MISC_ENABLE_XD_DISABLE) {
-		write_efer(read_efer() | EFER_NX);
+		write_efer(read_efer() | EFER_NXE);
 		printk(KERN_INFO
 		       "re-enabled NX (Execute Disable) protection\n");
 	}

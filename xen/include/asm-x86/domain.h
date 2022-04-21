@@ -131,10 +131,19 @@ struct shadow_domain {
 
 struct shadow_vcpu {
 #ifdef CONFIG_SHADOW_PAGING
+#ifdef CONFIG_HVM
     /* PAE guests: per-vcpu shadow top-level table */
     l3_pgentry_t l3table[4] __attribute__((__aligned__(32)));
     /* PAE guests: per-vcpu cache of the top-level *guest* entries */
     l3_pgentry_t gl3e[4] __attribute__((__aligned__(32)));
+
+    /* shadow(s) of guest (MFN) */
+    pagetable_t shadow_table[4];
+#else
+    /* shadow of guest (MFN) */
+    pagetable_t shadow_table[1];
+#endif
+
     /* Last MFN that we emulated a write to as unshadow heuristics. */
     unsigned long last_emulated_mfn_for_unshadow;
     /* MFN of the last shadow that we shot a writeable mapping in */
@@ -181,8 +190,8 @@ struct log_dirty_domain {
     unsigned int   failed_allocs;
 
     /* log-dirty mode stats */
-    unsigned int   fault_count;
-    unsigned int   dirty_count;
+    unsigned long  fault_count;
+    unsigned long  dirty_count;
 
     /* functions which are paging mode specific */
     const struct log_dirty_ops {
@@ -298,7 +307,9 @@ struct arch_domain
 {
     struct page_info *perdomain_l3_pg;
 
+#ifdef CONFIG_PV32
     unsigned int hv_compat_vstart;
+#endif
 
     /* Maximum physical-address bitwidth supported by this guest. */
     unsigned int physaddr_bitsize;
@@ -425,6 +436,9 @@ struct arch_domain
 
     /* Mem_access emulation control */
     bool_t mem_access_emulate_each_rep;
+
+    /* Don't unconditionally inject #GP for unhandled MSRs. */
+    bool msr_relaxed;
 
     /* Emulated devices enabled bitmap. */
     uint32_t emulation_flags;
@@ -593,6 +607,10 @@ struct arch_vcpu
         struct hvm_vcpu hvm;
     };
 
+    /*
+     * guest_table{,_user} hold a ref to the page, and also a type-count
+     * unless shadow refcounts are in use
+     */
     pagetable_t guest_table_user;       /* (MFN) x86/64 user-space pagetable */
     pagetable_t guest_table;            /* (MFN) guest notion of cr3 */
     struct page_info *old_guest_table;  /* partially destructed pagetable */
@@ -600,9 +618,7 @@ struct arch_vcpu
                                         /* former, if any */
     bool old_guest_table_partial;       /* Are we dropping a type ref, or just
                                          * finishing up a partial de-validation? */
-    /* guest_table holds a ref to the page, and also a type-count unless
-     * shadow refcounts are in use */
-    pagetable_t shadow_table[4];        /* (MFN) shadow(s) of guest */
+
     unsigned long cr3;                  /* (MA) value to install in HW CR3 */
 
     /*

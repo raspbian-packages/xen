@@ -29,6 +29,7 @@ static bool __initdata pci_init;
 static void do_amd_iommu_irq(void *data);
 static DECLARE_SOFTIRQ_TASKLET(amd_iommu_irq_tasklet, do_amd_iommu_irq, NULL);
 
+unsigned int __read_mostly amd_iommu_acpi_info;
 unsigned int __read_mostly ivrs_bdf_entries;
 u8 __read_mostly ivhd_type;
 static struct radix_tree_root ivrs_maps;
@@ -385,8 +386,8 @@ static void iommu_reset_log(struct amd_iommu *iommu,
 
     if ( log_run )
     {
-        AMD_IOMMU_DEBUG("Warning: Log Run bit %d is not cleared"
-                        "before reset!\n", run_bit);
+        AMD_IOMMU_WARN("Log Run bit %d is not cleared before reset\n",
+                       run_bit);
         return;
     }
 
@@ -558,10 +559,10 @@ static void parse_event_log_entry(struct amd_iommu *iommu, u32 entry[])
         unsigned int flags = MASK_EXTR(entry[1], IOMMU_EVENT_FLAGS_MASK);
         uint64_t addr = *(uint64_t *)(entry + 2);
 
-        printk(XENLOG_ERR "AMD-Vi: %s: %04x:%02x:%02x.%u d%d addr %016"PRIx64
+        printk(XENLOG_ERR "AMD-Vi: %s: %pp d%u addr %016"PRIx64
                " flags %#x%s%s%s%s%s%s%s%s%s%s\n",
-               code_str, iommu->seg, PCI_BUS(device_id), PCI_SLOT(device_id),
-               PCI_FUNC(device_id), domain_id, addr, flags,
+               code_str, &PCI_SBDF2(iommu->seg, device_id),
+               domain_id, addr, flags,
                (flags & 0xe00) ? " ??" : "",
                (flags & 0x100) ? " TR" : "",
                (flags & 0x080) ? " RZ" : "",
@@ -753,9 +754,8 @@ static bool_t __init set_iommu_interrupt_handler(struct amd_iommu *iommu)
     pcidevs_unlock();
     if ( !iommu->msi.dev )
     {
-        AMD_IOMMU_DEBUG("IOMMU: no pdev for %04x:%02x:%02x.%u\n",
-                        iommu->seg, PCI_BUS(iommu->bdf),
-                        PCI_SLOT(iommu->bdf), PCI_FUNC(iommu->bdf));
+        AMD_IOMMU_WARN("no pdev for %pp\n",
+                       &PCI_SBDF2(iommu->seg, iommu->bdf));
         return 0;
     }
 
@@ -799,7 +799,7 @@ static bool_t __init set_iommu_interrupt_handler(struct amd_iommu *iommu)
     if ( ret )
     {
         destroy_irq(irq);
-        AMD_IOMMU_DEBUG("can't request irq\n");
+        AMD_IOMMU_ERROR("can't request irq\n");
         return 0;
     }
 
@@ -841,9 +841,6 @@ __initcall(iov_adjust_irq_affinities);
 static void amd_iommu_erratum_746_workaround(struct amd_iommu *iommu)
 {
     u32 value;
-    u8 bus = PCI_BUS(iommu->bdf);
-    u8 dev = PCI_SLOT(iommu->bdf);
-    u8 func = PCI_FUNC(iommu->bdf);
 
     if ( (boot_cpu_data.x86 != 0x15) ||
          (boot_cpu_data.x86_model < 0x10) ||
@@ -861,8 +858,8 @@ static void amd_iommu_erratum_746_workaround(struct amd_iommu *iommu)
 
     pci_conf_write32(PCI_SBDF2(iommu->seg, iommu->bdf), 0xf4, value | (1 << 2));
     printk(XENLOG_INFO
-           "AMD-Vi: Applying erratum 746 workaround for IOMMU at %04x:%02x:%02x.%u\n",
-           iommu->seg, bus, dev, func);
+           "AMD-Vi: Applying erratum 746 workaround for IOMMU at %pp\n",
+           &PCI_SBDF2(iommu->seg, iommu->bdf));
 
     /* Clear the enable writing bit */
     pci_conf_write32(PCI_SBDF2(iommu->seg, iommu->bdf), 0xf0, 0x90);
@@ -875,7 +872,10 @@ static void enable_iommu(struct amd_iommu *iommu)
     spin_lock_irqsave(&iommu->lock, flags);
 
     if ( unlikely(iommu->enabled) )
-        goto out;
+    {
+        spin_unlock_irqrestore(&iommu->lock, flags);
+        return;
+    }
 
     amd_iommu_erratum_746_workaround(iommu);
 
@@ -925,13 +925,12 @@ static void enable_iommu(struct amd_iommu *iommu)
 
     set_iommu_translation_control(iommu, IOMMU_CONTROL_ENABLED);
 
-    if ( iommu->features.flds.ia_sup )
-        amd_iommu_flush_all_caches(iommu);
-
     iommu->enabled = 1;
 
- out:
     spin_unlock_irqrestore(&iommu->lock, flags);
+
+    if ( iommu->features.flds.ia_sup )
+        amd_iommu_flush_all_caches(iommu);
 }
 
 static void disable_iommu(struct amd_iommu *iommu)
@@ -993,7 +992,7 @@ static void *__init allocate_buffer(unsigned long alloc_size,
 
     if ( buffer == NULL )
     {
-        AMD_IOMMU_DEBUG("Error allocating %s\n", name);
+        AMD_IOMMU_ERROR("cannot allocate %s\n", name);
         return NULL;
     }
 
@@ -1225,7 +1224,7 @@ static int __init alloc_ivrs_mappings(u16 seg)
     ivrs_mappings = xzalloc_array(struct ivrs_mappings, ivrs_bdf_entries + 1);
     if ( ivrs_mappings == NULL )
     {
-        AMD_IOMMU_DEBUG("Error allocating IVRS Mappings table\n");
+        AMD_IOMMU_ERROR("cannot allocate IVRS Mappings table\n");
         return -ENOMEM;
     }
     IVRS_MAPPINGS_SEG(ivrs_mappings) = seg;
@@ -1377,8 +1376,12 @@ static int __init amd_iommu_prepare_one(struct amd_iommu *iommu)
 
     get_iommu_features(iommu);
 
-    if ( iommu->features.raw )
-        iommuv2_enabled = true;
+    /*
+     * Late extended feature determination may cause previously mappable
+     * IVMD ranges to become unmappable.
+     */
+    if ( amd_iommu_max_paging_mode < amd_iommu_min_paging_mode )
+        return -ERANGE;
 
     return 0;
 }
@@ -1400,14 +1403,8 @@ int __init amd_iommu_prepare(bool xt)
         goto error_out;
 
     /* Have we been here before? */
-    if ( ivhd_type )
+    if ( ivrs_bdf_entries )
         return 0;
-
-    rc = amd_iommu_get_supported_ivhd_type();
-    if ( rc < 0 )
-        goto error_out;
-    BUG_ON(!rc);
-    ivhd_type = rc;
 
     rc = amd_iommu_get_ivrs_dev_entries();
     if ( !rc )
@@ -1426,6 +1423,9 @@ int __init amd_iommu_prepare(bool xt)
         if ( !iommu->features.flds.ga_sup || !iommu->features.flds.xt_sup )
             has_xt = false;
     }
+
+    if ( ivhd_type != ACPI_IVRS_TYPE_HARDWARE )
+        iommuv2_enabled = true;
 
     for_each_amd_iommu ( iommu )
     {
@@ -1548,7 +1548,6 @@ static int _invalidate_all_devices(
 {
     unsigned int bdf; 
     u16 req_id;
-    unsigned long flags;
     struct amd_iommu *iommu;
 
     for ( bdf = 0; bdf < ivrs_bdf_entries; bdf++ )
@@ -1557,10 +1556,8 @@ static int _invalidate_all_devices(
         req_id = ivrs_mappings[bdf].dte_requestor_id;
         if ( iommu )
         {
-            spin_lock_irqsave(&iommu->lock, flags);
             amd_iommu_flush_device(iommu, req_id);
             amd_iommu_flush_intremap(iommu, req_id);
-            spin_unlock_irqrestore(&iommu->lock, flags);
         }
     }
 

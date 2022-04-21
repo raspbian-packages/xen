@@ -116,7 +116,7 @@ xenstored state that needs to be restored.
 +-------+-------+-------+-------+
 | rw-socket-fd                  |
 +-------------------------------+
-| ro-socket-fd                  |
+| evtchn-fd                     |
 +-------------------------------+
 ```
 
@@ -126,8 +126,8 @@ xenstored state that needs to be restored.
 | `rw-socket-fd` | The file descriptor of the socket accepting  |
 |                | read-write connections                       |
 |                |                                              |
-| `ro-socket-fd` | The file descriptor of the socket accepting  |
-|                | read-only connections                        |
+| `evtchn-fd`    | The file descriptor used to communicate with |
+|                | the event channel driver                     |
 
 xenstored will resume in the original process context. Hence `rw-socket-fd` and
 `ro-socket-fd` simply specify the file descriptors of the sockets. Sockets
@@ -147,7 +147,7 @@ the domain being migrated.
 ```
     0       1       2       3       4       5       6       7    octet
 +-------+-------+-------+-------+-------+-------+-------+-------+
-| conn-id                       | conn-type     | flags         |
+| conn-id                       | conn-type     |               |
 +-------------------------------+---------------+---------------+
 | conn-spec
 ...
@@ -168,9 +168,6 @@ the domain being migrated.
 | `conn-type`    | 0x0000: shared ring                          |
 |                | 0x0001: socket                               |
 |                | 0x0002 - 0xFFFF: reserved for future use     |
-|                |                                              |
-| `flags`        | A bit-wise OR of:                            |
-|                | 0001: read-only                              |
 |                |                                              |
 | `conn-spec`    | See below                                    |
 |                |                                              |
@@ -216,11 +213,13 @@ For `shared ring` connections it is as follows:
 |           | operation [2] or DOMID_INVALID [3] otherwise      |
 |           |                                                   |
 | `evtchn`  | The port number of the interdomain channel used   |
-|           | by `domid` to communicate with xenstored          |
+|           | by xenstored to communicate with `domid`          |
 |           |                                                   |
 
-Since the ABI guarantees that entry 1 in `domid`'s grant table will always
-contain the GFN of the shared page.
+The GFN of the shared page is not preserved because the ABI reserves
+entry 1 in `domid`'s grant table to point to the xenstore shared page.
+Note there is no guarantee the page will still be valid at the time of
+the restore because a domain can revoke the permission.
 
 For `socket` connections it is as follows:
 
@@ -386,7 +385,7 @@ A node permission specifier has the following format:
 ```
     0       1       2       3    octet
 +-------+-------+-------+-------+
-| perm  | pad   | domid         |
+| perm  | flags | domid         |
 +-------+-------+---------------+
 ```
 
@@ -395,9 +394,13 @@ A node permission specifier has the following format:
 | `perm`  | One of the ASCII values `w`, `r`, `b` or `n` as     |
 |         | specified for the `SET_PERMS` operation [2]         |
 |         |                                                     |
+| `flags` | A bit-wise OR of:                                   |
+|         | 0x01: stale permission, ignore when checking        |
+|         |       permissions                                   |
+|         |                                                     |
 | `domid` | The domain-id to which the permission relates       |
 
-Note that perm1 defines the domain owning the code. See [4] for more
+Note that perm1 defines the domain owning the node. See [4] for more
 explanation of node permissions.
 
 * * *

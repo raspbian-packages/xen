@@ -37,9 +37,7 @@
 #include <asm/io.h>
 #include <asm/mpspec.h>
 #include <asm/processor.h>
-#ifdef CONFIG_HPET_TIMER
 #include <asm/hpet.h> /* for hpet_address */
-#endif
 #include <mach_apic.h>
 #include <mach_mpparse.h>
 
@@ -55,6 +53,8 @@ bool __initdata acpi_ioapic;
 static bool __initdata acpi_skip_timer_override;
 boolean_param("acpi_skip_timer_override", acpi_skip_timer_override);
 
+static uint8_t __initdata madt_revision;
+
 static u64 acpi_lapic_addr __initdata = APIC_DEFAULT_PHYS_BASE;
 
 /* --------------------------------------------------------------------------
@@ -63,9 +63,10 @@ static u64 acpi_lapic_addr __initdata = APIC_DEFAULT_PHYS_BASE;
 
 static int __init acpi_parse_madt(struct acpi_table_header *table)
 {
-	struct acpi_table_madt *madt;
+	struct acpi_table_madt *madt =
+		container_of(table, struct acpi_table_madt, header);
 
-	madt = (struct acpi_table_madt *)table;
+	madt_revision = madt->header.revision;
 
 	if (madt->address) {
 		acpi_lapic_addr = (u64) madt->address;
@@ -88,6 +89,12 @@ acpi_parse_x2apic(struct acpi_subtable_header *header, const unsigned long end)
 
 	if (BAD_MADT_ENTRY(processor, end))
 		return -EINVAL;
+
+	/* Don't register processors that cannot be onlined. */
+	if (madt_revision >= 5 &&
+	    !(processor->lapic_flags & ACPI_MADT_ENABLED) &&
+	    !(processor->lapic_flags & ACPI_MADT_ONLINE_CAPABLE))
+		return 0;
 
 	if ((processor->lapic_flags & ACPI_MADT_ENABLED) ||
 	    processor->local_apic_id != 0xffffffff || opt_cpu_info) {
@@ -138,6 +145,12 @@ acpi_parse_lapic(struct acpi_subtable_header * header, const unsigned long end)
 
 	if (BAD_MADT_ENTRY(processor, end))
 		return -EINVAL;
+
+	/* Don't register processors that cannot be onlined. */
+	if (madt_revision >= 5 &&
+	    !(processor->lapic_flags & ACPI_MADT_ENABLED) &&
+	    !(processor->lapic_flags & ACPI_MADT_ONLINE_CAPABLE))
+		return 0;
 
 	if ((processor->lapic_flags & ACPI_MADT_ENABLED) ||
 	    processor->id != 0xff || opt_cpu_info)
@@ -273,11 +286,10 @@ acpi_parse_nmi_src(struct acpi_subtable_header * header, const unsigned long end
 	return 0;
 }
 
-#ifdef CONFIG_HPET_TIMER
-
 static int __init acpi_parse_hpet(struct acpi_table_header *table)
 {
-	struct acpi_table_hpet *hpet_tbl = (struct acpi_table_hpet *)table;
+	const struct acpi_table_hpet *hpet_tbl =
+		container_of(table, const struct acpi_table_hpet, header);
 
 	if (hpet_tbl->address.space_id != ACPI_ADR_SPACE_SYSTEM_MEMORY) {
 		printk(KERN_WARNING PREFIX "HPET timers must be located in "
@@ -309,9 +321,6 @@ static int __init acpi_parse_hpet(struct acpi_table_header *table)
 
 	return 0;
 }
-#else
-#define	acpi_parse_hpet	NULL
-#endif
 
 static int __init acpi_invalidate_bgrt(struct acpi_table_header *table)
 {
@@ -389,8 +398,14 @@ acpi_fadt_parse_sleep_info(const struct acpi_table_fadt *fadt)
 		}
 	}
 
-	if (fadt->flags & ACPI_FADT_HW_REDUCED)
-		goto bad;
+	if (fadt->flags & ACPI_FADT_HW_REDUCED) {
+		memset(&acpi_sinfo, 0,
+		       offsetof(struct acpi_sleep_info, sleep_control));
+		memset(&acpi_sinfo.sleep_status + 1, 0,
+		       (long)(&acpi_sinfo + 1) -
+		       (long)(&acpi_sinfo.sleep_status + 1));
+		return;
+	}
 
 	acpi_fadt_copy_address(pm1a_cnt, pm1a_control, pm1_control);
 	acpi_fadt_copy_address(pm1b_cnt, pm1b_control, pm1_control);
@@ -433,19 +448,19 @@ acpi_fadt_parse_sleep_info(const struct acpi_table_fadt *fadt)
 	}
 
 	if (facs->length < 24) {
-		printk(KERN_ERR PREFIX "Invalid FACS table length: %#x",
+		printk(KERN_ERR PREFIX "Invalid FACS table length: %#x\n",
 			facs->length);
 		goto done;
 	}
 
 	if (facs->length < 64)
 		printk(KERN_WARNING PREFIX
-			"FACS is shorter than ACPI spec allow: %#x",
+			"FACS is shorter than ACPI spec allow: %#x\n",
 			facs->length);
 
 	if (facs_pa % 64)
 		printk(KERN_WARNING PREFIX
-			"FACS is not 64-byte aligned: %#lx",
+			"FACS is not 64-byte aligned: %#lx\n",
 			facs_pa);
 
 	acpi_sinfo.wakeup_vector = facs_pa + 
@@ -458,20 +473,12 @@ acpi_fadt_parse_sleep_info(const struct acpi_table_fadt *fadt)
 	printk(KERN_INFO PREFIX
 	       "            wakeup_vec[%"PRIx64"], vec_size[%x]\n",
 	       acpi_sinfo.wakeup_vector, acpi_sinfo.vector_width);
-	return;
-
- bad:
-	if (facs)
-		acpi_os_unmap_memory(facs, sizeof(*facs));
-	memset(&acpi_sinfo, 0,
-	       offsetof(struct acpi_sleep_info, sleep_control));
-	memset(&acpi_sinfo.sleep_status + 1, 0,
-	       (long)(&acpi_sinfo + 1) - (long)(&acpi_sinfo.sleep_status + 1));
 }
 
 static int __init acpi_parse_fadt(struct acpi_table_header *table)
 {
-	struct acpi_table_fadt *fadt = (struct acpi_table_fadt *)table;
+	const struct acpi_table_fadt *fadt =
+		container_of(table, const struct acpi_table_fadt, header);
 
 #ifdef	CONFIG_ACPI_INTERPRETER
 	/* initialize sci_int early for INT_SRC_OVR MADT parsing */
@@ -483,7 +490,6 @@ static int __init acpi_parse_fadt(struct acpi_table_header *table)
 	    fadt->force_apic_physical_destination_mode;
 #endif
 
-#ifdef CONFIG_X86_PM_TIMER
 	/* detect the location of the ACPI PM Timer */
 	if (fadt->header.revision >= FADT2_REVISION_ID &&
 	    fadt->xpm_timer_block.space_id == ACPI_ADR_SPACE_SYSTEM_IO) {
@@ -516,7 +522,6 @@ static int __init acpi_parse_fadt(struct acpi_table_header *table)
 	if (pmtmr_ioport)
 		printk(KERN_INFO PREFIX "PM-Timer IO Port: %#x (%u bits)\n",
 		       pmtmr_ioport, pmtmr_width);
-#endif
 
 	acpi_smi_cmd       = fadt->smi_command;
 	acpi_enable_value  = fadt->acpi_enable;

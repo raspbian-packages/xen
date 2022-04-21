@@ -743,7 +743,7 @@ static void mwait_idle(void)
 	unsigned int cpu = smp_processor_id();
 	struct acpi_processor_power *power = processor_powers[cpu];
 	struct acpi_processor_cx *cx = NULL;
-	unsigned int eax, next_state, cstate;
+	unsigned int next_state;
 	u64 before, after;
 	u32 exp = 0, pred = 0, irq_traced[4] = { 0 };
 
@@ -795,9 +795,6 @@ static void mwait_idle(void)
 	if ((cx->type >= 3) && errata_c6_workaround())
 		cx = power->safe_state;
 
-	eax = cx->address;
-	cstate = ((eax >> MWAIT_SUBSTATE_SIZE) & MWAIT_CSTATE_MASK) + 1;
-
 #if 0 /* XXX Can we/do we need to do something similar on Xen? */
 	/*
 	 * leave_mm() to avoid costly and often unnecessary wakeups
@@ -807,7 +804,7 @@ static void mwait_idle(void)
 		leave_mm(cpu);
 #endif
 
-	if (!(lapic_timer_reliable_states & (1 << cstate)))
+	if (!(lapic_timer_reliable_states & (1 << cx->type)))
 		lapic_timer_off();
 
 	before = alternative_call(cpuidle_get_tick);
@@ -816,7 +813,7 @@ static void mwait_idle(void)
 	update_last_cx_stat(power, cx, before);
 
 	if (cpu_is_haltable(cpu))
-		mwait_idle_with_hints(eax, MWAIT_ECX_INTERRUPT_BREAK);
+		mwait_idle_with_hints(cx->address, MWAIT_ECX_INTERRUPT_BREAK);
 
 	after = alternative_call(cpuidle_get_tick);
 
@@ -829,7 +826,7 @@ static void mwait_idle(void)
 	update_idle_stats(power, cx, before, after);
 	local_irq_enable();
 
-	if (!(lapic_timer_reliable_states & (1 << cstate)))
+	if (!(lapic_timer_reliable_states & (1 << cx->type)))
 		lapic_timer_on();
 
 	rcu_idle_exit(cpu);
@@ -843,9 +840,9 @@ static void auto_demotion_disable(void *dummy)
 {
 	u64 msr_bits;
 
-	rdmsrl(MSR_NHM_SNB_PKG_CST_CFG_CTL, msr_bits);
+	rdmsrl(MSR_PKG_CST_CONFIG_CONTROL, msr_bits);
 	msr_bits &= ~(icpu->auto_demotion_disable_flags);
-	wrmsrl(MSR_NHM_SNB_PKG_CST_CFG_CTL, msr_bits);
+	wrmsrl(MSR_PKG_CST_CONFIG_CONTROL, msr_bits);
 }
 
 static void byt_auto_demotion_disable(void *dummy)
@@ -1108,7 +1105,7 @@ static void __init sklh_idle_state_table_update(void)
 	if ((mwait_substates & (MWAIT_CSTATE_MASK << 28)) == 0)
 		return;
 
-	rdmsrl(MSR_NHM_SNB_PKG_CST_CFG_CTL, msr);
+	rdmsrl(MSR_PKG_CST_CONFIG_CONTROL, msr);
 
 	/* PC10 is not enabled in PKG C-state limit */
 	if ((msr & 0xF) != 8)
@@ -1310,4 +1307,21 @@ int __init mwait_idle_init(struct notifier_block *nfb)
 	}
 
 	return err;
+}
+
+/* Helper function for HPET. */
+bool __init mwait_pc10_supported(void)
+{
+	unsigned int ecx, edx, dummy;
+
+	if (boot_cpu_data.x86_vendor != X86_VENDOR_INTEL ||
+	    !cpu_has_monitor ||
+	    boot_cpu_data.cpuid_level < CPUID_MWAIT_LEAF)
+		return false;
+
+	cpuid(CPUID_MWAIT_LEAF, &dummy, &dummy, &ecx, &edx);
+
+	return (ecx & CPUID5_ECX_EXTENSIONS_SUPPORTED) &&
+	       (ecx & CPUID5_ECX_INTERRUPT_BREAK) &&
+	       (edx >> 28);
 }

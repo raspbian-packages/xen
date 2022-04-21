@@ -34,6 +34,12 @@ if test "x$sysconfdir" = 'x${prefix}/etc' ; then
     esac
 fi
 
+CONFIG_DIR=$sysconfdir
+AC_SUBST(CONFIG_DIR)
+
+XEN_CONFIG_DIR=$CONFIG_DIR/xen
+AC_SUBST(XEN_CONFIG_DIR)
+
 AC_ARG_WITH([initddir],
     AS_HELP_STRING([--with-initddir=DIR],
     [Path to directory with sysv runlevel scripts. [SYSCONFDIR/init.d]]),
@@ -69,6 +75,14 @@ AC_ARG_WITH([libexec-leaf-dir],
     [Name of subdirectory in libexecdir to use.]),
     [libexec_subdir=$withval],
     [libexec_subdir=$PACKAGE_TARNAME])
+
+AC_ARG_WITH([xen-scriptdir],
+    AS_HELP_STRING([--with-xen-scriptdir=DIR],
+    [Path to directory for dom0 hotplug scripts. [SYSCONFDIR/xen/scripts]]),
+    [xen_scriptdir_path=$withval],
+    [xen_scriptdir_path=$XEN_CONFIG_DIR/scripts])
+XEN_SCRIPT_DIR=$xen_scriptdir_path
+AC_SUBST(XEN_SCRIPT_DIR)
 
 dnl Allows .../libexec/lib (used for libfsimage) to have a multiarch path
 AC_ARG_WITH([libexec-libdir-suffix],
@@ -135,21 +149,12 @@ AC_SUBST(XEN_LIB_DIR)
 SHAREDIR=$prefix/share
 AC_SUBST(SHAREDIR)
 
-CONFIG_DIR=$sysconfdir
-AC_SUBST(CONFIG_DIR)
-
 INITD_DIR=$initddir_path
 AC_SUBST(INITD_DIR)
 
-XEN_CONFIG_DIR=$CONFIG_DIR/xen
-AC_SUBST(XEN_CONFIG_DIR)
-
-XEN_SCRIPT_DIR=$XEN_CONFIG_DIR/scripts
-AC_SUBST(XEN_SCRIPT_DIR)
-
 case "$host_os" in
 *freebsd*) XEN_LOCK_DIR=$localstatedir/lib ;;
-*netbsd*) XEN_LOCK_DIR=$localstatedir/lib ;;
+*netbsd*) XEN_LOCK_DIR=$rundir_path ;;
 *) XEN_LOCK_DIR=$localstatedir/lock ;;
 esac
 AC_SUBST(XEN_LOCK_DIR)

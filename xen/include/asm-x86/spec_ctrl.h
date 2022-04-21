@@ -37,7 +37,6 @@ extern bool opt_ibpb;
 extern bool opt_ssbd;
 extern int8_t opt_eager_fpu;
 extern int8_t opt_l1d_flush;
-extern bool opt_branch_harden;
 
 extern bool bsp_delay_spec_ctrl;
 extern uint8_t default_xen_spec_ctrl;
@@ -45,6 +44,7 @@ extern uint8_t default_spec_ctrl_flags;
 
 extern int8_t opt_xpti_hwdom, opt_xpti_domu;
 
+extern bool cpu_has_bug_l1tf;
 extern int8_t opt_pv_l1tf_hwdom, opt_pv_l1tf_domu;
 
 /*
@@ -53,8 +53,6 @@ extern int8_t opt_pv_l1tf_hwdom, opt_pv_l1tf_domu;
  * memory regions, thus unable to leak data via the L1TF vulnerability.
  */
 extern paddr_t l1tf_addr_mask, l1tf_safe_maddr;
-
-extern uint64_t default_xen_mcu_opt_ctrl;
 
 static inline void init_shadow_spec_ctrl_state(void)
 {

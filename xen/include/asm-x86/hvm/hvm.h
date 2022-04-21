@@ -106,6 +106,7 @@ struct hvm_function_table {
      * Initialise/destroy HVM domain/vcpu resources
      */
     int  (*domain_initialise)(struct domain *d);
+    void (*domain_creation_finished)(struct domain *d);
     void (*domain_relinquish_resources)(struct domain *d);
     void (*domain_destroy)(struct domain *d);
     int  (*vcpu_initialise)(struct vcpu *v);
@@ -192,7 +193,7 @@ struct hvm_function_table {
     void (*nhvm_domain_relinquish_resources)(struct domain *d);
 
     /* Virtual interrupt delivery */
-    void (*update_eoi_exit_bitmap)(struct vcpu *v, u8 vector, u8 trig);
+    void (*update_eoi_exit_bitmap)(struct vcpu *v, uint8_t vector, bool set);
     void (*process_isr)(int isr, struct vcpu *v);
     void (*deliver_posted_intr)(struct vcpu *v, u8 vector);
     void (*sync_pir_to_irr)(struct vcpu *v);
@@ -213,6 +214,16 @@ struct hvm_function_table {
     void (*altp2m_vcpu_update_vmfunc_ve)(struct vcpu *v);
     bool_t (*altp2m_vcpu_emulate_ve)(struct vcpu *v);
     int (*altp2m_vcpu_emulate_vmfunc)(const struct cpu_user_regs *regs);
+
+    /* vmtrace */
+    int (*vmtrace_control)(struct vcpu *v, bool enable, bool reset);
+    int (*vmtrace_output_position)(struct vcpu *v, uint64_t *pos);
+    int (*vmtrace_set_option)(struct vcpu *v, uint64_t key, uint64_t value);
+    int (*vmtrace_get_option)(struct vcpu *v, uint64_t key, uint64_t *value);
+    int (*vmtrace_reset)(struct vcpu *v);
+
+    uint64_t (*get_reg)(struct vcpu *v, unsigned int reg);
+    void (*set_reg)(struct vcpu *v, unsigned int reg, uint64_t val);
 
     /*
      * Parameters and callbacks for hardware-assisted TSC scaling,
@@ -306,7 +317,9 @@ enum hvm_access_type {
     hvm_access_read,
     hvm_access_write
 };
-bool_t hvm_virtual_to_linear_addr(
+
+bool hvm_vcpu_virtual_to_linear(
+    struct vcpu *v,
     enum x86_segment seg,
     const struct segment_register *reg,
     unsigned long offset,
@@ -314,6 +327,19 @@ bool_t hvm_virtual_to_linear_addr(
     enum hvm_access_type access_type,
     const struct segment_register *active_cs,
     unsigned long *linear_addr);
+
+static inline bool hvm_virtual_to_linear_addr(
+    enum x86_segment seg,
+    const struct segment_register *reg,
+    unsigned long offset,
+    unsigned int bytes,
+    enum hvm_access_type access_type,
+    const struct segment_register *active_cs,
+    unsigned long *linear)
+{
+    return hvm_vcpu_virtual_to_linear(current, seg, reg, offset, bytes,
+                                      access_type, active_cs, linear);
+}
 
 void *hvm_map_guest_frame_rw(unsigned long gfn, bool_t permanent,
                              bool_t *writable);
@@ -334,7 +360,7 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
 /* Check CR4/EFER values */
 const char *hvm_efer_valid(const struct vcpu *v, uint64_t value,
                            signed int cr0_pg);
-unsigned long hvm_cr4_guest_valid_bits(const struct domain *d, bool restore);
+unsigned long hvm_cr4_guest_valid_bits(const struct domain *d);
 
 int hvm_copy_context_and_params(struct domain *src, struct domain *dst);
 
@@ -368,7 +394,7 @@ int hvm_get_param(struct domain *d, uint32_t index, uint64_t *value);
 #define hvm_smap_enabled(v) \
     (hvm_paging_enabled(v) && ((v)->arch.hvm.guest_cr[4] & X86_CR4_SMAP))
 #define hvm_nx_enabled(v) \
-    ((v)->arch.hvm.guest_efer & EFER_NX)
+    ((v)->arch.hvm.guest_efer & EFER_NXE)
 #define hvm_pku_enabled(v) \
     (hvm_paging_enabled(v) && ((v)->arch.hvm.guest_cr[4] & X86_CR4_PKE))
 
@@ -381,6 +407,12 @@ int hvm_get_param(struct domain *d, uint32_t index, uint64_t *value);
 static inline bool hvm_has_set_descriptor_access_exiting(void)
 {
     return hvm_funcs.set_descriptor_access_exiting;
+}
+
+static inline void hvm_domain_creation_finished(struct domain *d)
+{
+    if ( hvm_funcs.domain_creation_finished )
+        alternative_vcall(hvm_funcs.domain_creation_finished, d);
 }
 
 static inline int
@@ -655,6 +687,61 @@ static inline bool altp2m_vcpu_emulate_ve(struct vcpu *v)
     return false;
 }
 
+static inline int hvm_vmtrace_control(struct vcpu *v, bool enable, bool reset)
+{
+    if ( hvm_funcs.vmtrace_control )
+        return hvm_funcs.vmtrace_control(v, enable, reset);
+
+    return -EOPNOTSUPP;
+}
+
+/* Returns -errno, or a boolean of whether tracing is currently active. */
+static inline int hvm_vmtrace_output_position(struct vcpu *v, uint64_t *pos)
+{
+    if ( hvm_funcs.vmtrace_output_position )
+        return hvm_funcs.vmtrace_output_position(v, pos);
+
+    return -EOPNOTSUPP;
+}
+
+static inline int hvm_vmtrace_set_option(
+    struct vcpu *v, uint64_t key, uint64_t value)
+{
+    if ( hvm_funcs.vmtrace_set_option )
+        return hvm_funcs.vmtrace_set_option(v, key, value);
+
+    return -EOPNOTSUPP;
+}
+
+static inline int hvm_vmtrace_get_option(
+    struct vcpu *v, uint64_t key, uint64_t *value)
+{
+    if ( hvm_funcs.vmtrace_get_option )
+        return hvm_funcs.vmtrace_get_option(v, key, value);
+
+    return -EOPNOTSUPP;
+}
+
+static inline int hvm_vmtrace_reset(struct vcpu *v)
+{
+    if ( hvm_funcs.vmtrace_reset )
+        return hvm_funcs.vmtrace_reset(v);
+
+    return -EOPNOTSUPP;
+}
+
+/*
+ * Accessors for registers which have per-guest-type or per-vendor locations
+ * (e.g. VMCS, msr load/save lists, VMCB, VMLOAD lazy, etc).
+ *
+ * The caller is responsible for all auditing - these accessors do not fail,
+ * but do use domain_crash() for usage errors.
+ *
+ * Must cope with being called in non-current context.
+ */
+uint64_t hvm_get_reg(struct vcpu *v, unsigned int reg);
+void hvm_set_reg(struct vcpu *v, unsigned int reg, uint64_t val);
+
 /*
  * This must be defined as a macro instead of an inline function,
  * because it uses 'struct vcpu' and 'struct domain' which have
@@ -716,6 +803,11 @@ static inline void hvm_invlpg(const struct vcpu *v, unsigned long linear)
     ASSERT_UNREACHABLE();
 }
 
+static inline void hvm_domain_creation_finished(struct domain *d)
+{
+    ASSERT_UNREACHABLE();
+}
+
 /*
  * Shadow code needs further cleanup to eliminate some HVM-only paths. For
  * now provide the stubs here but assert they will never be reached.
@@ -749,6 +841,38 @@ static inline void hvm_inject_hw_exception(unsigned int vector, int errcode)
 static inline bool hvm_has_set_descriptor_access_exiting(void)
 {
     return false;
+}
+
+static inline int hvm_vmtrace_control(struct vcpu *v, bool enable, bool reset)
+{
+    return -EOPNOTSUPP;
+}
+
+static inline int hvm_vmtrace_output_position(struct vcpu *v, uint64_t *pos)
+{
+    return -EOPNOTSUPP;
+}
+
+static inline int hvm_vmtrace_set_option(
+    struct vcpu *v, uint64_t key, uint64_t value)
+{
+    return -EOPNOTSUPP;
+}
+
+static inline int hvm_vmtrace_get_option(
+    struct vcpu *v, uint64_t key, uint64_t *value)
+{
+    return -EOPNOTSUPP;
+}
+
+static inline uint64_t hvm_get_reg(struct vcpu *v, unsigned int reg)
+{
+    ASSERT_UNREACHABLE();
+    return 0;
+}
+static inline void hvm_set_reg(struct vcpu *v, unsigned int reg, uint64_t val)
+{
+    ASSERT_UNREACHABLE();
 }
 
 #define is_viridian_domain(d) ((void)(d), false)

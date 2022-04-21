@@ -28,42 +28,6 @@
 #include <asm/hvm/vmx/vmcs.h>
 #include <asm/hvm/svm/vmcb.h>
 
-#include <public/hvm/dm_op.h>
-
-struct hvm_ioreq_page {
-    gfn_t gfn;
-    struct page_info *page;
-    void *va;
-};
-
-struct hvm_ioreq_vcpu {
-    struct list_head list_entry;
-    struct vcpu      *vcpu;
-    evtchn_port_t    ioreq_evtchn;
-    bool             pending;
-};
-
-#define NR_IO_RANGE_TYPES (XEN_DMOP_IO_RANGE_PCI + 1)
-#define MAX_NR_IO_RANGES  256
-
-struct hvm_ioreq_server {
-    struct domain          *target, *emulator;
-
-    /* Lock to serialize toolstack modifications */
-    spinlock_t             lock;
-
-    struct hvm_ioreq_page  ioreq;
-    struct list_head       ioreq_vcpu_list;
-    struct hvm_ioreq_page  bufioreq;
-
-    /* Lock to serialize access to buffered ioreq ring */
-    spinlock_t             bufioreq_lock;
-    evtchn_port_t          bufioreq_evtchn;
-    struct rangeset        *range[NR_IO_RANGE_TYPES];
-    bool                   enabled;
-    uint8_t                bufioreq_handling;
-};
-
 #ifdef CONFIG_MEM_SHARING
 struct mem_sharing_domain
 {
@@ -97,8 +61,6 @@ struct hvm_pi_ops {
     void (*vcpu_block)(struct vcpu *);
 };
 
-#define MAX_NR_IOREQ_SERVERS 8
-
 struct hvm_domain {
     /* Guest page range used for non-default ioreq servers */
     struct {
@@ -106,12 +68,6 @@ struct hvm_domain {
         unsigned long mask; /* indexed by GFN minus base */
         unsigned long legacy_mask; /* indexed by HVM param number */
     } ioreq_gfn;
-
-    /* Lock protects all other values in the sub-struct and the default */
-    struct {
-        spinlock_t              lock;
-        struct hvm_ioreq_server *server[MAX_NR_IOREQ_SERVERS];
-    } ioreq_server;
 
     /* Cached CF8 for guest PCI config cycles */
     uint32_t                pci_cf8;
@@ -157,15 +113,14 @@ struct hvm_domain {
      * mtrr/pat between vcpus is not the same, set is_in_uc_mode
      */
     spinlock_t             uc_lock;
-    bool_t                 is_in_uc_mode;
+    bool                   is_in_uc_mode;
+
+    bool                   is_s3_suspended;
 
     /* hypervisor intercepted msix table */
     struct list_head       msixtbl_list;
 
     struct viridian_domain *viridian;
-
-    bool_t                 qemu_mapcache_invalidate;
-    bool_t                 is_s3_suspended;
 
     /*
      * TSC value that VCPUs use to calculate their tsc_offset value.

@@ -8,8 +8,8 @@
 #define __X86_CURRENT_H__
 
 #include <xen/percpu.h>
+#include <xen/page-size.h>
 #include <public/xen.h>
-#include <asm/page.h>
 
 /*
  * Xen's cpu stacks are 8 pages (8-page aligned), arranged as:
@@ -56,6 +56,7 @@ struct cpu_info {
     /* See asm-x86/spec_ctrl_asm.h for usage. */
     unsigned int shadow_spec_ctrl;
     uint8_t      xen_spec_ctrl;
+    uint8_t      last_spec_ctrl;
     uint8_t      spec_ctrl_flags;
 
     /*
@@ -73,7 +74,6 @@ struct cpu_info {
      */
     bool         use_pv_cr3;
 
-    unsigned long __pad;
     /* get_stack_bottom() must be 16-byte aligned */
 };
 
@@ -120,6 +120,14 @@ unsigned long get_stack_dump_bottom (unsigned long sp);
 
 #ifdef CONFIG_LIVEPATCH
 # define CHECK_FOR_LIVEPATCH_WORK "call check_for_livepatch_work;"
+#elif defined(CONFIG_DEBUG)
+/* Mimic the clobbering effect a call has on registers. */
+# define CHECK_FOR_LIVEPATCH_WORK \
+    "mov $0x1234567890abcdef, %%rax\n\t" \
+    "mov %%rax, %%rcx; mov %%rax, %%rdx\n\t" \
+    "mov %%rax, %%rsi; mov %%rax, %%rdi\n\t" \
+    "mov %%rax, %%r8; mov %%rax, %%r9\n\t" \
+    "mov %%rax, %%r10; mov %%rax, %%r11\n\t"
 #else
 # define CHECK_FOR_LIVEPATCH_WORK ""
 #endif
@@ -155,9 +163,18 @@ unsigned long get_stack_dump_bottom (unsigned long sp);
 # define SHADOW_STACK_WORK ""
 #endif
 
+#if __GNUC__ >= 9
+# define ssaj_has_attr_noreturn(fn) __builtin_has_attribute(fn, __noreturn__)
+#else
+/* Simply can't check the property with older gcc. */
+# define ssaj_has_attr_noreturn(fn) true
+#endif
+
 #define switch_stack_and_jump(fn, instr, constr)                        \
     ({                                                                  \
         unsigned int tmp;                                               \
+        (void)((fn) == (void (*)(void))NULL);                           \
+        BUILD_BUG_ON(!ssaj_has_attr_noreturn(fn));                      \
         __asm__ __volatile__ (                                          \
             SHADOW_STACK_WORK                                           \
             "mov %[stk], %%rsp;"                                        \

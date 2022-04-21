@@ -23,7 +23,13 @@
 #include <asm/bug.h>
 
 #define BUG_ON(p)  do { if (unlikely(p)) BUG();  } while (0)
-#define WARN_ON(p) do { if (unlikely(p)) WARN(); } while (0)
+#define WARN_ON(p)  ({                  \
+    bool ret_warn_on_ = (p);            \
+                                        \
+    if ( unlikely(ret_warn_on_) )       \
+        WARN();                         \
+    unlikely(ret_warn_on_);             \
+})
 
 /* All clang versions supported by Xen have _Static_assert. */
 #if defined(__clang__) || \
@@ -42,21 +48,13 @@
 #define BUILD_BUG_ON(cond) ((void)BUILD_BUG_ON_ZERO(cond))
 #endif
 
-#ifdef CONFIG_GCOV
-#define gcov_string "gcov=y"
-#else
-#define gcov_string ""
-#endif
-
 #ifndef NDEBUG
 #define ASSERT(p) \
     do { if ( unlikely(!(p)) ) assert_failed(#p); } while (0)
 #define ASSERT_UNREACHABLE() assert_failed("unreachable")
-#define debug_build() 1
 #else
 #define ASSERT(p) do { if ( 0 && (p) ) {} } while (0)
 #define ASSERT_UNREACHABLE() do { } while (0)
-#define debug_build() 0
 #endif
 
 #define ABS(_x) ({                              \
@@ -178,10 +176,23 @@ unsigned long long parse_size_and_unit(const char *s, const char **ps);
 
 uint64_t muldiv64(uint64_t a, uint32_t b, uint32_t c);
 
+/*
+ * A slightly more typesafe variant of cmpxchg() when the entities dealt with
+ * are pointers.
+ */
+#define cmpxchgptr(ptr, o, n) ({                                        \
+    __typeof__(**(ptr)) *const o_ = (o);                                \
+    __typeof__(**(ptr)) *n_ = (n);                                      \
+    ((__typeof__(*(ptr)))__cmpxchg(ptr, (unsigned long)o_,              \
+                                   (unsigned long)n_, sizeof(*(ptr)))); \
+})
+
 #define TAINT_SYNC_CONSOLE              (1u << 0)
 #define TAINT_MACHINE_CHECK             (1u << 1)
 #define TAINT_ERROR_INJECT              (1u << 2)
 #define TAINT_HVM_FEP                   (1u << 3)
+#define TAINT_MACHINE_UNSECURE          (1u << 4)
+#define TAINT_CPU_OUT_OF_SPEC           (1u << 5)
 extern unsigned int tainted;
 #define TAINT_STRING_MAX_LEN            20
 extern char *print_tainted(char *str);
@@ -192,8 +203,48 @@ void dump_execstate(struct cpu_user_regs *);
 
 void init_constructors(void);
 
+/*
+ * bsearch - binary search an array of elements
+ * @key: pointer to item being searched for
+ * @base: pointer to first element to search
+ * @num: number of elements
+ * @size: size of each element
+ * @cmp: pointer to comparison function
+ *
+ * This function does a binary search on the given array.  The
+ * contents of the array should already be in ascending sorted order
+ * under the provided comparison function.
+ *
+ * Note that the key need not have the same type as the elements in
+ * the array, e.g. key could be a string and the comparison function
+ * could compare the string with the struct's name field.  However, if
+ * the key and elements in the array are of the same type, you can use
+ * the same comparison function for both sort() and bsearch().
+ */
+#ifndef BSEARCH_IMPLEMENTATION
+extern gnu_inline
+#endif
 void *bsearch(const void *key, const void *base, size_t num, size_t size,
-              int (*cmp)(const void *key, const void *elt));
+              int (*cmp)(const void *key, const void *elt))
+{
+    size_t start = 0, end = num;
+    int result;
+
+    while ( start < end )
+    {
+        size_t mid = start + (end - start) / 2;
+
+        result = cmp(key, base + mid * size);
+        if ( result < 0 )
+            end = mid;
+        else if ( result > 0 )
+            start = mid + 1;
+        else
+            return (void *)base + mid * size;
+    }
+
+    return NULL;
+}
 
 #endif /* __ASSEMBLY__ */
 

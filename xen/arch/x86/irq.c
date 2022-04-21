@@ -42,6 +42,10 @@ integer_param("nr_irqs", nr_irqs);
 int __read_mostly opt_irq_vector_map = OPT_IRQ_VECTOR_MAP_DEFAULT;
 custom_param("irq_vector_map", parse_irq_vector_map_param);
 
+/* Max number of guests IRQ could be shared with */
+static unsigned char __read_mostly irq_max_guests;
+integer_param("irq-max-guests", irq_max_guests);
+
 vmask_t global_used_vector_map;
 
 struct irq_desc __read_mostly *irq_desc = NULL;
@@ -126,8 +130,8 @@ static void _trace_irq_mask(uint32_t event, int irq, int vector,
                             const cpumask_t *mask)
 {
     struct {
-        unsigned int irq:16, vec:16;
-        unsigned int mask[6];
+        uint16_t irq, vec;
+        uint32_t mask[6];
     } d = {
        .irq = irq,
        .vec = vector,
@@ -319,7 +323,7 @@ void destroy_irq(unsigned int irq)
 
     if ( desc->arch.creator_domid != DOMID_INVALID )
     {
-        struct domain *d = get_domain_by_id(desc->arch.creator_domid);
+        struct domain *d = rcu_lock_domain_by_id(desc->arch.creator_domid);
 
         if ( d )
         {
@@ -330,7 +334,7 @@ void destroy_irq(unsigned int irq)
                        "Could not revoke %pd access to IRQ%u (error %d)\n",
                        d, irq, err);
 
-            put_domain(d);
+            rcu_unlock_domain(d);
         }
 
         desc->arch.creator_domid = DOMID_INVALID;
@@ -428,16 +432,28 @@ int __init init_irq_data(void)
 
     for ( irq = 0; irq < nr_irqs_gsi; irq++ )
     {
+        int rc;
+
         desc = irq_to_desc(irq);
         desc->irq = irq;
-        init_one_irq_desc(desc);
+
+        rc = init_one_irq_desc(desc);
+        if ( rc )
+            return rc;
     }
     for ( ; irq < nr_irqs; irq++ )
         irq_to_desc(irq)->irq = irq;
 
+    if ( !irq_max_guests )
+        irq_max_guests = 32;
+
 #ifdef CONFIG_PV
-    /* Never allocate the hypercall vector or Linux/BSD fast-trap vector. */
+    /* Never allocate the Linux/BSD fast-trap vector. */
     set_bit(LEGACY_SYSCALL_VECTOR, used_vectors);
+#endif
+
+#ifdef CONFIG_PV32
+    /* Never allocate the hypercall vector. */
     set_bit(HYPERCALL_VECTOR, used_vectors);
 #endif
     
@@ -1036,7 +1052,6 @@ int __init setup_irq(unsigned int irq, unsigned int irqflags,
  * HANDLING OF GUEST-BOUND PHYSICAL IRQS
  */
 
-#define IRQ_MAX_GUESTS 7
 typedef struct {
     u8 nr_guests;
     u8 in_flight;
@@ -1047,8 +1062,13 @@ typedef struct {
 #define ACKTYPE_EOI    2     /* EOI on the CPU that was interrupted  */
     cpumask_var_t cpu_eoi_map; /* CPUs that need to EOI this interrupt */
     struct timer eoi_timer;
-    struct domain *guest[IRQ_MAX_GUESTS];
+    struct domain *guest[];
 } irq_guest_action_t;
+
+static irq_guest_action_t *guest_action(const struct irq_desc *desc)
+{
+    return desc->status & IRQ_GUEST ? (void *)desc->action : NULL;
+}
 
 /*
  * Stack of interrupts awaiting EOI on each CPU. These must be popped in
@@ -1119,10 +1139,8 @@ static void irq_guest_eoi_timer_fn(void *data)
 
     spin_lock_irq(&desc->lock);
     
-    if ( !(desc->status & IRQ_GUEST) )
+    if ( !(action = guest_action(desc)) )
         goto out;
-
-    action = (irq_guest_action_t *)desc->action;
 
     ASSERT(action->ack_type != ACKTYPE_NONE);
 
@@ -1359,16 +1377,15 @@ static void flush_ready_eoi(void)
     pending_eoi_sp(peoi) = sp+1;
 }
 
-static void __set_eoi_ready(struct irq_desc *desc)
+static void __set_eoi_ready(const struct irq_desc *desc)
 {
-    irq_guest_action_t *action = (irq_guest_action_t *)desc->action;
+    irq_guest_action_t *action = guest_action(desc);
     struct pending_eoi *peoi = this_cpu(pending_eoi);
     int                 irq, sp;
 
     irq = desc - irq_desc;
 
-    if ( !(desc->status & IRQ_GUEST) ||
-         (action->in_flight != 0) ||
+    if ( !action || action->in_flight ||
          !cpumask_test_and_clear_cpu(smp_processor_id(),
                                      action->cpu_eoi_map) )
         return;
@@ -1408,20 +1425,11 @@ void pirq_guest_eoi(struct pirq *pirq)
 
 void desc_guest_eoi(struct irq_desc *desc, struct pirq *pirq)
 {
-    irq_guest_action_t *action;
+    irq_guest_action_t *action = guest_action(desc);
     cpumask_t           cpu_eoi_map;
-    int                 irq;
 
-    if ( !(desc->status & IRQ_GUEST) )
-    {
-        spin_unlock_irq(&desc->lock);
-        return;
-    }
-
-    action = (irq_guest_action_t *)desc->action;
-    irq = desc - irq_desc;
-
-    if ( unlikely(!test_and_clear_bool(pirq->masked)) ||
+    if ( unlikely(!action) ||
+         unlikely(!test_and_clear_bool(pirq->masked)) ||
          unlikely(--action->in_flight != 0) )
     {
         spin_unlock_irq(&desc->lock);
@@ -1520,8 +1528,8 @@ static int irq_acktype(const struct irq_desc *desc)
 
 int pirq_shared(struct domain *d, int pirq)
 {
-    struct irq_desc         *desc;
-    irq_guest_action_t *action;
+    struct irq_desc    *desc;
+    const irq_guest_action_t *action;
     unsigned long       flags;
     int                 shared;
 
@@ -1529,8 +1537,8 @@ int pirq_shared(struct domain *d, int pirq)
     if ( desc == NULL )
         return 0;
 
-    action = (irq_guest_action_t *)desc->action;
-    shared = ((desc->status & IRQ_GUEST) && (action->nr_guests > 1));
+    action = guest_action(desc);
+    shared = (action && (action->nr_guests > 1));
 
     spin_unlock_irqrestore(&desc->lock, flags);
 
@@ -1539,9 +1547,9 @@ int pirq_shared(struct domain *d, int pirq)
 
 int pirq_guest_bind(struct vcpu *v, struct pirq *pirq, int will_share)
 {
-    unsigned int        irq;
     struct irq_desc         *desc;
     irq_guest_action_t *action, *newaction = NULL;
+    unsigned int        max_nr_guests = will_share ? irq_max_guests : 1;
     int                 rc = 0;
 
     WARN_ON(!spin_is_locked(&v->domain->event_lock));
@@ -1555,10 +1563,7 @@ int pirq_guest_bind(struct vcpu *v, struct pirq *pirq, int will_share)
         goto out;
     }
 
-    action = (irq_guest_action_t *)desc->action;
-    irq = desc - irq_desc;
-
-    if ( !(desc->status & IRQ_GUEST) )
+    if ( !(action = guest_action(desc)) )
     {
         if ( desc->action != NULL )
         {
@@ -1572,7 +1577,8 @@ int pirq_guest_bind(struct vcpu *v, struct pirq *pirq, int will_share)
         if ( newaction == NULL )
         {
             spin_unlock_irq(&desc->lock);
-            if ( (newaction = xmalloc(irq_guest_action_t)) != NULL &&
+            if ( (newaction = xmalloc_flex_struct(irq_guest_action_t, guest,
+                                                  max_nr_guests)) != NULL &&
                  zalloc_cpumask_var(&newaction->cpu_eoi_map) )
                 goto retry;
             xfree(newaction);
@@ -1641,11 +1647,12 @@ int pirq_guest_bind(struct vcpu *v, struct pirq *pirq, int will_share)
         goto retry;
     }
 
-    if ( action->nr_guests == IRQ_MAX_GUESTS )
+    if ( action->nr_guests >= max_nr_guests )
     {
-        printk(XENLOG_G_INFO "Cannot bind IRQ%d to dom%d. "
-               "Already at max share.\n",
-               pirq->pirq, v->domain->domain_id);
+        printk(XENLOG_G_INFO
+               "Cannot bind IRQ%d to %pd: already at max share %u"
+               " (increase with irq-max-guests= option)\n",
+               pirq->pirq, v->domain, irq_max_guests);
         rc = -EBUSY;
         goto unlock_out;
     }
@@ -1671,22 +1678,17 @@ int pirq_guest_bind(struct vcpu *v, struct pirq *pirq, int will_share)
 static irq_guest_action_t *__pirq_guest_unbind(
     struct domain *d, struct pirq *pirq, struct irq_desc *desc)
 {
-    unsigned int        irq;
-    irq_guest_action_t *action;
+    irq_guest_action_t *action = guest_action(desc);
     cpumask_t           cpu_eoi_map;
     int                 i;
-
-    action = (irq_guest_action_t *)desc->action;
-    irq = desc - irq_desc;
 
     if ( unlikely(action == NULL) )
     {
         dprintk(XENLOG_G_WARNING, "dom%d: pirq %d: desc->action is NULL!\n",
                 d->domain_id, pirq->pirq);
+        BUG_ON(!(desc->status & IRQ_GUEST));
         return NULL;
     }
-
-    BUG_ON(!(desc->status & IRQ_GUEST));
 
     for ( i = 0; (i < action->nr_guests) && (action->guest[i] != d); i++ )
         continue;
@@ -1807,14 +1809,12 @@ static bool pirq_guest_force_unbind(struct domain *d, struct pirq *pirq)
     desc = pirq_spin_lock_irq_desc(pirq, NULL);
     BUG_ON(desc == NULL);
 
-    if ( !(desc->status & IRQ_GUEST) )
-        goto out;
-
-    action = (irq_guest_action_t *)desc->action;
+    action = guest_action(desc);
     if ( unlikely(action == NULL) )
     {
-        dprintk(XENLOG_G_WARNING, "dom%d: pirq %d: desc->action is NULL!\n",
-            d->domain_id, pirq->pirq);
+        if ( desc->status & IRQ_GUEST )
+            dprintk(XENLOG_G_WARNING, "%pd: pirq %d: desc->action is NULL!\n",
+                    d, pirq->pirq);
         goto out;
     }
 
@@ -1841,7 +1841,7 @@ static bool pirq_guest_force_unbind(struct domain *d, struct pirq *pirq)
 
 static void do_IRQ_guest(struct irq_desc *desc, unsigned int vector)
 {
-    irq_guest_action_t *action = (irq_guest_action_t *)desc->action;
+    irq_guest_action_t *action = guest_action(desc);
     unsigned int        i;
     struct pending_eoi *peoi = this_cpu(pending_eoi);
 
@@ -2305,7 +2305,6 @@ done:
 /* The pirq should have been unbound before this call. */
 int unmap_domain_pirq(struct domain *d, int pirq)
 {
-    unsigned long flags;
     struct irq_desc *desc;
     int irq, ret = 0, rc;
     unsigned int i, nr = 1;
@@ -2356,11 +2355,23 @@ int unmap_domain_pirq(struct domain *d, int pirq)
     if ( msi_desc != NULL )
         pci_disable_msi(msi_desc);
 
-    spin_lock_irqsave(&desc->lock, flags);
-
-    for ( i = 0; ; )
+    for ( i = 0; i < nr; i++, info = pirq_info(d, pirq + i) )
     {
+        unsigned long flags;
+
+        if ( !info || info->arch.irq <= 0 )
+        {
+            printk(XENLOG_G_ERR "%pd: MSI pirq %d not mapped\n",
+                   d, pirq + i);
+            continue;
+        }
+        irq = info->arch.irq;
+        desc = irq_to_desc(irq);
+
+        spin_lock_irqsave(&desc->lock, flags);
+
         BUG_ON(irq != domain_pirq_to_irq(d, pirq + i));
+        BUG_ON(desc->msi_desc != msi_desc + i);
 
         if ( !forced_unbind )
             clear_domain_irq_pirq(d, irq, info);
@@ -2378,45 +2389,6 @@ int unmap_domain_pirq(struct domain *d, int pirq)
             desc->msi_desc = NULL;
         }
 
-        if ( ++i == nr )
-            break;
-
-        spin_unlock_irqrestore(&desc->lock, flags);
-
-        if ( !forced_unbind )
-           cleanup_domain_irq_pirq(d, irq, info);
-
-        rc = irq_deny_access(d, irq);
-        if ( rc )
-        {
-            printk(XENLOG_G_ERR
-                   "dom%d: could not deny access to IRQ%d (pirq %d)\n",
-                   d->domain_id, irq, pirq + i);
-            ret = rc;
-        }
-
-        do {
-            info = pirq_info(d, pirq + i);
-            if ( info && (irq = info->arch.irq) > 0 )
-                break;
-            printk(XENLOG_G_ERR "dom%d: MSI pirq %d not mapped\n",
-                   d->domain_id, pirq + i);
-        } while ( ++i < nr );
-
-        if ( i == nr )
-        {
-            desc = NULL;
-            break;
-        }
-
-        desc = irq_to_desc(irq);
-        BUG_ON(desc->msi_desc != msi_desc + i);
-
-        spin_lock_irqsave(&desc->lock, flags);
-    }
-
-    if ( desc )
-    {
         spin_unlock_irqrestore(&desc->lock, flags);
 
         if ( !forced_unbind )
@@ -2427,7 +2399,7 @@ int unmap_domain_pirq(struct domain *d, int pirq)
         {
             printk(XENLOG_G_ERR
                    "dom%d: could not deny access to IRQ%d (pirq %d)\n",
-                   d->domain_id, irq, pirq + nr - 1);
+                   d->domain_id, irq, pirq + i);
             ret = rc;
         }
     }
@@ -2458,7 +2430,6 @@ static void dump_irqs(unsigned char key)
 {
     int i, irq, pirq;
     struct irq_desc *desc;
-    irq_guest_action_t *action;
     struct domain *d;
     const struct pirq *info;
     unsigned long flags;
@@ -2468,6 +2439,8 @@ static void dump_irqs(unsigned char key)
 
     for ( irq = 0; irq < nr_irqs; irq++ )
     {
+        const irq_guest_action_t *action;
+
         if ( !(irq & 0x1f) )
             process_pending_softirqs();
 
@@ -2487,10 +2460,9 @@ static void dump_irqs(unsigned char key)
         if ( ssid )
             printk("Z=%-25s ", ssid);
 
-        if ( desc->status & IRQ_GUEST )
+        action = guest_action(desc);
+        if ( action )
         {
-            action = (irq_guest_action_t *)desc->action;
-
             printk("in-flight=%d%c",
                    action->in_flight, action->nr_guests ? ' ' : '\n');
 
@@ -2536,6 +2508,10 @@ static void dump_irqs(unsigned char key)
 
 static int __init setup_dump_irqs(void)
 {
+    /* In lieu of being able to live in init_irq_data(). */
+    BUILD_BUG_ON(sizeof(irq_max_guests) >
+                 sizeof_field(irq_guest_action_t, nr_guests));
+
     register_keyhandler('i', dump_irqs, "dump interrupt bindings", 1);
     return 0;
 }
@@ -2665,17 +2641,15 @@ void fixup_irqs(const cpumask_t *mask, bool verbose)
 void fixup_eoi(void)
 {
     unsigned int irq, sp;
-    struct irq_desc *desc;
-    irq_guest_action_t *action;
     struct pending_eoi *peoi;
 
     /* Clean up cpu_eoi_map of every interrupt to exclude this CPU. */
     for ( irq = 0; irq < nr_irqs; irq++ )
     {
-        desc = irq_to_desc(irq);
-        if ( !(desc->status & IRQ_GUEST) )
+        irq_guest_action_t *action = guest_action(irq_to_desc(irq));
+
+        if ( !action )
             continue;
-        action = (irq_guest_action_t *)desc->action;
         cpumask_clear_cpu(smp_processor_id(), action->cpu_eoi_map);
     }
 

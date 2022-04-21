@@ -20,11 +20,17 @@
  */
 
 #include <xen/hypercall.h>
+#include <asm/multicall.h>
 
+#ifdef CONFIG_COMPAT
 #define ARGS(x, n)                              \
     [ __HYPERVISOR_ ## x ] = { n, n }
 #define COMP(x, n, c)                           \
     [ __HYPERVISOR_ ## x ] = { n, c }
+#else
+#define ARGS(x, n)    [ __HYPERVISOR_ ## x ] = { n }
+#define COMP(x, n, c) ARGS(x, n)
+#endif
 
 const hypercall_args_t hypercall_args_table[NR_hypercalls] =
 {
@@ -113,7 +119,11 @@ unsigned long hypercall_create_continuation(
 
         regs->rax = op;
 
+#ifdef CONFIG_COMPAT
         if ( !curr->hcall_compat )
+#else
+        if ( true )
+#endif
         {
             for ( i = 0; *p != '\0'; i++ )
             {
@@ -264,13 +274,18 @@ int hypercall_xlat_continuation(unsigned int *id, unsigned int nr,
     return rc;
 }
 
-#ifndef CONFIG_PV
-/* Stub for arch_do_multicall_call */
-enum mc_disposition arch_do_multicall_call(struct mc_state *mc)
+enum mc_disposition arch_do_multicall_call(struct mc_state *state)
 {
+    const struct domain *currd = current->domain;
+
+    if ( is_pv_domain(currd) )
+        return pv_do_multicall_call(state);
+
+    if ( is_hvm_domain(currd) )
+        return hvm_do_multicall_call(state);
+
     return mc_exit;
 }
-#endif
 
 /*
  * Local variables:

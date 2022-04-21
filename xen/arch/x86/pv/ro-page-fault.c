@@ -20,7 +20,7 @@
  * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <xen/trace.h>
+#include <asm/pv/trace.h>
 #include <asm/shadow.h>
 
 #include "emulate.h"
@@ -43,7 +43,7 @@ static int ptwr_emulated_read(enum x86_segment seg, unsigned long offset,
     unsigned long addr = offset;
 
     if ( !__addr_ok(addr) ||
-         (rc = __copy_from_user(p_data, (void *)addr, bytes)) )
+         (rc = __copy_from_guest_pv(p_data, (void *)addr, bytes)) )
     {
         x86_emul_pagefault(0, addr + bytes - rc, ctxt);  /* Read fault. */
         return X86EMUL_EXCEPTION;
@@ -90,7 +90,8 @@ static int ptwr_emulated_update(unsigned long addr, intpte_t *p_old,
 
         /* Align address; read full word. */
         addr &= ~(sizeof(full) - 1);
-        if ( (rc = copy_from_user(&full, (void *)addr, sizeof(full))) != 0 )
+        if ( (rc = copy_from_guest_pv(&full, (void __user *)addr,
+                                      sizeof(full))) != 0 )
         {
             x86_emul_pagefault(0, /* Read fault. */
                                addr + sizeof(full) - rc,
@@ -168,10 +169,9 @@ static int ptwr_emulated_update(unsigned long addr, intpte_t *p_old,
     if ( p_old )
     {
         ol1e = l1e_from_intpte(old);
-        if ( !paging_cmpxchg_guest_entry(v, &l1e_get_intpte(*pl1e),
-                                         &old, l1e_get_intpte(nl1e), mfn) )
-            ret = X86EMUL_UNHANDLEABLE;
-        else if ( l1e_get_intpte(ol1e) == old )
+        old = paging_cmpxchg_guest_entry(v, &l1e_get_intpte(*pl1e), old,
+                                         l1e_get_intpte(nl1e), mfn);
+        if ( l1e_get_intpte(ol1e) == old )
             ret = X86EMUL_OKAY;
         else
         {
@@ -262,29 +262,23 @@ static int ptwr_do_page_fault(struct x86_emulate_ctxt *ctxt,
         .pte = pte,
     };
     struct page_info *page;
-    int rc;
+    int rc = X86EMUL_UNHANDLEABLE;
 
     page = get_page_from_mfn(l1e_get_mfn(pte), current->domain);
     if ( !page )
         return X86EMUL_UNHANDLEABLE;
 
-    if ( !page_lock(page) )
+    if ( page_lock(page) )
     {
-        put_page(page);
-        return X86EMUL_UNHANDLEABLE;
-    }
+        if ( (page->u.inuse.type_info & PGT_type_mask) == PGT_l1_page_table )
+        {
+            ctxt->data = &ptwr_ctxt;
+            rc = x86_emulate(ctxt, &ptwr_emulate_ops);
+        }
 
-    if ( (page->u.inuse.type_info & PGT_type_mask) != PGT_l1_page_table )
-    {
         page_unlock(page);
-        put_page(page);
-        return X86EMUL_UNHANDLEABLE;
     }
 
-    ctxt->data = &ptwr_ctxt;
-    rc = x86_emulate(ctxt, &ptwr_emulate_ops);
-
-    page_unlock(page);
     put_page(page);
 
     return rc;
@@ -349,7 +343,7 @@ int pv_ro_page_fault(unsigned long addr, struct cpu_user_regs *regs)
     bool mmio_ro;
 
     /* Attempt to read the PTE that maps the VA being accessed. */
-    pte = guest_get_eff_l1e(addr);
+    pte = guest_get_eff_kern_l1e(addr);
 
     /* We are only looking for read-only mappings */
     if ( ((l1e_get_flags(pte) & (_PAGE_PRESENT | _PAGE_RW)) != _PAGE_PRESENT) )

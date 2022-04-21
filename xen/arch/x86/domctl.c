@@ -40,181 +40,12 @@
 #ifdef CONFIG_GDBSX
 static int gdbsx_guest_mem_io(domid_t domid, struct xen_domctl_gdbsx_memio *iop)
 {
-    void * __user gva = (void *)iop->gva, * __user uva = (void *)iop->uva;
-
-    iop->remain = dbg_rw_mem(gva, uva, iop->len, domid,
-                             !!iop->gwr, iop->pgd3val);
+    iop->remain = dbg_rw_mem(iop->gva, guest_handle_from_ptr(iop->uva, void),
+                             iop->len, domid, iop->gwr, iop->pgd3val);
 
     return iop->remain ? -EFAULT : 0;
 }
 #endif
-
-void domain_cpu_policy_changed(struct domain *d)
-{
-    const struct cpuid_policy *p = d->arch.cpuid;
-    struct vcpu *v;
-
-    if ( is_pv_domain(d) )
-    {
-        if ( ((levelling_caps & LCAP_1cd) == LCAP_1cd) )
-        {
-            uint64_t mask = cpuidmask_defaults._1cd;
-            uint32_t ecx = p->basic._1c;
-            uint32_t edx = p->basic._1d;
-
-            /*
-             * Must expose hosts HTT and X2APIC value so a guest using native
-             * CPUID can correctly interpret other leaves which cannot be
-             * masked.
-             */
-            if ( cpu_has_x2apic )
-                ecx |= cpufeat_mask(X86_FEATURE_X2APIC);
-            if ( cpu_has_htt )
-                edx |= cpufeat_mask(X86_FEATURE_HTT);
-
-            switch ( boot_cpu_data.x86_vendor )
-            {
-            case X86_VENDOR_INTEL:
-                /*
-                 * Intel masking MSRs are documented as AND masks.
-                 * Experimentally, they are applied after OSXSAVE and APIC
-                 * are fast-forwarded from real hardware state.
-                 */
-                mask &= ((uint64_t)edx << 32) | ecx;
-
-                if ( ecx & cpufeat_mask(X86_FEATURE_XSAVE) )
-                    ecx = cpufeat_mask(X86_FEATURE_OSXSAVE);
-                else
-                    ecx = 0;
-                edx = cpufeat_mask(X86_FEATURE_APIC);
-
-                mask |= ((uint64_t)edx << 32) | ecx;
-                break;
-
-            case X86_VENDOR_AMD:
-            case X86_VENDOR_HYGON:
-                mask &= ((uint64_t)ecx << 32) | edx;
-
-                /*
-                 * AMD masking MSRs are documented as overrides.
-                 * Experimentally, fast-forwarding of the OSXSAVE and APIC
-                 * bits from real hardware state only occurs if the MSR has
-                 * the respective bits set.
-                 */
-                if ( ecx & cpufeat_mask(X86_FEATURE_XSAVE) )
-                    ecx = cpufeat_mask(X86_FEATURE_OSXSAVE);
-                else
-                    ecx = 0;
-                edx = cpufeat_mask(X86_FEATURE_APIC);
-
-                /*
-                 * If the Hypervisor bit is set in the policy, we can also
-                 * forward it into real CPUID.
-                 */
-                if ( p->basic.hypervisor )
-                    ecx |= cpufeat_mask(X86_FEATURE_HYPERVISOR);
-
-                mask |= ((uint64_t)ecx << 32) | edx;
-                break;
-            }
-
-            d->arch.pv.cpuidmasks->_1cd = mask;
-        }
-
-        if ( ((levelling_caps & LCAP_6c) == LCAP_6c) )
-        {
-            uint64_t mask = cpuidmask_defaults._6c;
-
-            if ( boot_cpu_data.x86_vendor == X86_VENDOR_AMD )
-                mask &= (~0ULL << 32) | p->basic.raw[6].c;
-
-            d->arch.pv.cpuidmasks->_6c = mask;
-        }
-
-        if ( ((levelling_caps & LCAP_7ab0) == LCAP_7ab0) )
-        {
-            uint64_t mask = cpuidmask_defaults._7ab0;
-
-            /*
-             * Leaf 7[0].eax is max_subleaf, not a feature mask.  Take it
-             * wholesale from the policy, but clamp the features in 7[0].ebx
-             * per usual.
-             */
-            if ( boot_cpu_data.x86_vendor &
-                 (X86_VENDOR_AMD | X86_VENDOR_HYGON) )
-                mask = (((uint64_t)p->feat.max_subleaf << 32) |
-                        ((uint32_t)mask & p->feat._7b0));
-
-            d->arch.pv.cpuidmasks->_7ab0 = mask;
-        }
-
-        if ( ((levelling_caps & LCAP_Da1) == LCAP_Da1) )
-        {
-            uint64_t mask = cpuidmask_defaults.Da1;
-            uint32_t eax = p->xstate.Da1;
-
-            if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
-                mask &= (~0ULL << 32) | eax;
-
-            d->arch.pv.cpuidmasks->Da1 = mask;
-        }
-
-        if ( ((levelling_caps & LCAP_e1cd) == LCAP_e1cd) )
-        {
-            uint64_t mask = cpuidmask_defaults.e1cd;
-            uint32_t ecx = p->extd.e1c;
-            uint32_t edx = p->extd.e1d;
-
-            /*
-             * Must expose hosts CMP_LEGACY value so a guest using native
-             * CPUID can correctly interpret other leaves which cannot be
-             * masked.
-             */
-            if ( cpu_has_cmp_legacy )
-                ecx |= cpufeat_mask(X86_FEATURE_CMP_LEGACY);
-
-            /*
-             * If not emulating AMD or Hygon, clear the duplicated features
-             * in e1d.
-             */
-            if ( !(p->x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON)) )
-                edx &= ~CPUID_COMMON_1D_FEATURES;
-
-            switch ( boot_cpu_data.x86_vendor )
-            {
-            case X86_VENDOR_INTEL:
-                mask &= ((uint64_t)edx << 32) | ecx;
-                break;
-
-            case X86_VENDOR_AMD:
-            case X86_VENDOR_HYGON:
-                mask &= ((uint64_t)ecx << 32) | edx;
-
-                /*
-                 * Fast-forward bits - Must be set in the masking MSR for
-                 * fast-forwarding to occur in hardware.
-                 */
-                ecx = 0;
-                edx = cpufeat_mask(X86_FEATURE_APIC);
-
-                mask |= ((uint64_t)ecx << 32) | edx;
-                break;
-            }
-
-            d->arch.pv.cpuidmasks->e1cd = mask;
-        }
-    }
-
-    for_each_vcpu ( d, v )
-    {
-        cpuid_policy_updated(v);
-
-        /* If PMU version is zero then the guest doesn't have VPMU */
-        if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL &&
-             p->basic.pmu_version == 0 )
-            vpmu_destroy(v);
-    }
-}
 
 static int update_domain_cpu_policy(struct domain *d,
                                     xen_domctl_cpu_policy_t *xdpc)
@@ -320,6 +151,56 @@ void arch_get_domain_info(const struct domain *d,
         info->flags |= XEN_DOMINF_hap;
 
     info->arch_config.emulation_flags = d->arch.emulation_flags;
+    info->gpaddr_bits = hap_paddr_bits;
+}
+
+static int do_vmtrace_op(struct domain *d, struct xen_domctl_vmtrace_op *op,
+                         XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
+{
+    struct vcpu *v;
+    int rc;
+
+    if ( !d->vmtrace_size || d == current->domain /* No vcpu_pause() */ )
+        return -EINVAL;
+
+    ASSERT(is_hvm_domain(d)); /* Restricted by domain creation logic. */
+
+    v = domain_vcpu(d, op->vcpu);
+    if ( !v )
+        return -ENOENT;
+
+    vcpu_pause(v);
+    switch ( op->cmd )
+    {
+    case XEN_DOMCTL_vmtrace_enable:
+    case XEN_DOMCTL_vmtrace_disable:
+    case XEN_DOMCTL_vmtrace_reset_and_enable:
+        rc = hvm_vmtrace_control(
+            v, op->cmd != XEN_DOMCTL_vmtrace_disable,
+            op->cmd == XEN_DOMCTL_vmtrace_reset_and_enable);
+        break;
+
+    case XEN_DOMCTL_vmtrace_output_position:
+        rc = hvm_vmtrace_output_position(v, &op->value);
+        if ( rc >= 0 )
+            rc = 0;
+        break;
+
+    case XEN_DOMCTL_vmtrace_get_option:
+        rc = hvm_vmtrace_get_option(v, op->key, &op->value);
+        break;
+
+    case XEN_DOMCTL_vmtrace_set_option:
+        rc = hvm_vmtrace_set_option(v, op->key, op->value);
+        break;
+
+    default:
+        rc = -EOPNOTSUPP;
+        break;
+    }
+    vcpu_unpause(v);
+
+    return rc;
 }
 
 #define MAX_IOPORTS 0x10000
@@ -382,7 +263,7 @@ long arch_do_domctl(
 
         for ( i = 0; i < num; ++i )
         {
-            unsigned long gfn = 0, type = 0;
+            unsigned long gfn = 0, type = XEN_DOMCTL_PFINFO_NOTAB;
             struct page_info *page;
             p2m_type_t t;
 
@@ -422,6 +303,8 @@ long arch_do_domctl(
 
                 if ( page->u.inuse.type_info & PGT_pinned )
                     type |= XEN_DOMCTL_PFINFO_LPINTAB;
+                else if ( !(page->u.inuse.type_info & PGT_validated) )
+                    type = XEN_DOMCTL_PFINFO_NOTAB;
 
                 if ( page->count_info & PGC_broken )
                     type = XEN_DOMCTL_PFINFO_BROKEN;
@@ -1179,7 +1062,7 @@ long arch_do_domctl(
         break;
 #endif
 
-#if P2M_AUDIT && defined(CONFIG_HVM)
+#if P2M_AUDIT
     case XEN_DOMCTL_audit_p2m:
         if ( d == currd )
             ret = -EPERM;
@@ -1198,9 +1081,12 @@ long arch_do_domctl(
     {
         p2m_type_t pt;
         unsigned long pfn = domctl->u.set_broken_page_p2m.pfn;
-        mfn_t mfn = get_gfn_query(d, pfn, &pt);
 
-        if ( unlikely(!mfn_valid(mfn)) || unlikely(!p2m_is_ram(pt)) )
+        if ( !is_hvm_domain(d) )
+            return -EINVAL;
+
+        if ( unlikely(!mfn_valid(get_gfn_query(d, pfn, &pt))) ||
+             unlikely(!p2m_is_ram(pt)) )
             ret = -EINVAL;
         else
             ret = p2m_change_type_one(d, pfn, pt, p2m_ram_broken);
@@ -1444,11 +1330,6 @@ long arch_do_domctl(
 
         break;
 
-    case XEN_DOMCTL_disable_migrate:
-        d->disable_migrate = domctl->u.disable_migrate.disable;
-        recalculate_cpuid_policy(d);
-        break;
-
     case XEN_DOMCTL_get_cpu_policy:
         /* Process the CPUID leaves. */
         if ( guest_handle_is_null(domctl->u.cpu_policy.cpuid_policy) )
@@ -1492,6 +1373,12 @@ long arch_do_domctl(
         domain_unpause(d);
         break;
 
+    case XEN_DOMCTL_vmtrace_op:
+        ret = do_vmtrace_op(d, &domctl->u.vmtrace_op, u_domctl);
+        if ( !ret )
+            copyback = true;
+        break;
+
     default:
         ret = iommu_do_domctl(domctl, d, u_domctl);
         break;
@@ -1503,18 +1390,24 @@ long arch_do_domctl(
     return ret;
 }
 
+#ifdef CONFIG_COMPAT
 #define xen_vcpu_guest_context vcpu_guest_context
 #define fpu_ctxt fpu_ctxt.x
 CHECK_FIELD_(struct, vcpu_guest_context, fpu_ctxt);
 #undef fpu_ctxt
 #undef xen_vcpu_guest_context
+#endif
 
 void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
 {
     unsigned int i;
     const struct domain *d = v->domain;
     bool compat = is_pv_32bit_domain(d);
+#ifdef CONFIG_COMPAT
 #define c(fld) (!compat ? (c.nat->fld) : (c.cmp->fld))
+#else
+#define c(fld) (c.nat->fld)
+#endif
 
     memcpy(&c.nat->fpu_ctxt, v->arch.fpu_ctxt, sizeof(c.nat->fpu_ctxt));
     if ( is_pv_domain(d) )
@@ -1532,6 +1425,7 @@ void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
             memcpy(c.nat->trap_ctxt, v->arch.pv.trap_ctxt,
                    sizeof(c.nat->trap_ctxt));
     }
+#ifdef CONFIG_COMPAT
     else
     {
         XLAT_cpu_user_regs(&c.cmp->user_regs, &v->arch.user_regs);
@@ -1542,6 +1436,7 @@ void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
                                v->arch.pv.trap_ctxt + i);
         }
     }
+#endif
 
     for ( i = 0; i < ARRAY_SIZE(v->arch.dr); ++i )
         c(debugreg[i] = v->arch.dr[i]);
@@ -1587,8 +1482,10 @@ void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
         c(ldt_ents = v->arch.pv.ldt_ents);
         for ( i = 0; i < ARRAY_SIZE(v->arch.pv.gdt_frames); ++i )
             c(gdt_frames[i] = v->arch.pv.gdt_frames[i]);
+#ifdef CONFIG_COMPAT
         BUILD_BUG_ON(ARRAY_SIZE(c.nat->gdt_frames) !=
                      ARRAY_SIZE(c.cmp->gdt_frames));
+#endif
         for ( ; i < ARRAY_SIZE(c.nat->gdt_frames); ++i )
             c(gdt_frames[i] = 0);
         c(gdt_ents = v->arch.pv.gdt_ents);
@@ -1623,6 +1520,7 @@ void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
                 pagetable_is_null(v->arch.guest_table_user) ? 0
                 : xen_pfn_to_cr3(pagetable_get_pfn(v->arch.guest_table_user));
         }
+#ifdef CONFIG_COMPAT
         else
         {
             const l4_pgentry_t *l4e =
@@ -1631,6 +1529,7 @@ void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
             c.cmp->ctrlreg[3] = compat_pfn_to_cr3(l4e_get_pfn(*l4e));
             unmap_domain_page(l4e);
         }
+#endif
 
         if ( guest_kernel_mode(v, &v->arch.user_regs) )
             c(flags |= VGCF_in_kernel);

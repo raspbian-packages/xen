@@ -3,9 +3,11 @@ include $(XEN_ROOT)/tools/Rules.mk
 
 # Xen script dir and scripts to go there.
 XEN_SCRIPTS =
+XEN_SCRIPTS += locking.sh
 XEN_SCRIPTS += block
 XEN_SCRIPTS += vif-bridge
 XEN_SCRIPTS += vif-ip
+XEN_SCRIPTS += qemu-ifup
 
 XEN_SCRIPT_DATA =
 XEN_RCD_PROG = rc.d/xencommons rc.d/xendomains rc.d/xen-watchdog rc.d/xendriverdomain

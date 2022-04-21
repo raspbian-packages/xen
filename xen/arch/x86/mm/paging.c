@@ -47,6 +47,8 @@
 /* Per-CPU variable for enforcing the lock ordering */
 DEFINE_PER_CPU(int, mm_lock_level);
 
+#if PG_log_dirty
+
 /************************************************/
 /*              LOG DIRTY SUPPORT               */
 /************************************************/
@@ -444,14 +446,16 @@ static int paging_log_dirty_op(struct domain *d,
 
     clean = (sc->op == XEN_DOMCTL_SHADOW_OP_CLEAN);
 
-    PAGING_DEBUG(LOGDIRTY, "log-dirty %s: dom %u faults=%u dirty=%u\n",
+    PAGING_DEBUG(LOGDIRTY, "log-dirty %s: dom %u faults=%lu dirty=%lu\n",
                  (clean) ? "clean" : "peek",
                  d->domain_id,
                  d->arch.paging.log_dirty.fault_count,
                  d->arch.paging.log_dirty.dirty_count);
 
-    sc->stats.fault_count = d->arch.paging.log_dirty.fault_count;
-    sc->stats.dirty_count = d->arch.paging.log_dirty.dirty_count;
+    sc->stats.fault_count = min(d->arch.paging.log_dirty.fault_count,
+                                UINT32_MAX + 0UL);
+    sc->stats.dirty_count = min(d->arch.paging.log_dirty.dirty_count,
+                                UINT32_MAX + 0UL);
 
     if ( guest_handle_is_null(sc->dirty_bitmap) )
         /* caller may have wanted just to clean the state or access stats. */
@@ -586,6 +590,7 @@ static int paging_log_dirty_op(struct domain *d,
     return rv;
 }
 
+#ifdef CONFIG_HVM
 void paging_log_dirty_range(struct domain *d,
                            unsigned long begin_pfn,
                            unsigned long nr,
@@ -615,6 +620,7 @@ void paging_log_dirty_range(struct domain *d,
 
     guest_flush_tlb_mask(d, d->dirty_cpumask);
 }
+#endif
 
 /*
  * Callers must supply log_dirty_ops for the log dirty code to call. This
@@ -627,6 +633,8 @@ void paging_log_dirty_init(struct domain *d, const struct log_dirty_ops *ops)
 {
     d->arch.paging.log_dirty.ops = ops;
 }
+
+#endif /* PG_log_dirty */
 
 /************************************************/
 /*           CODE FOR PAGING SUPPORT            */
@@ -667,7 +675,7 @@ void paging_vcpu_init(struct vcpu *v)
         shadow_vcpu_init(v);
 }
 
-
+#if PG_log_dirty
 int paging_domctl(struct domain *d, struct xen_domctl_shadow_op *sc,
                   XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl,
                   bool_t resuming)
@@ -788,6 +796,15 @@ long paging_domctl_continuation(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 
     return ret;
 }
+#endif /* PG_log_dirty */
+
+void paging_vcpu_teardown(struct vcpu *v)
+{
+    if ( hap_enabled(v->domain) )
+        hap_vcpu_teardown(v);
+    else
+        shadow_vcpu_teardown(v);
+}
 
 /* Call when destroying a domain */
 int paging_teardown(struct domain *d)
@@ -803,10 +820,12 @@ int paging_teardown(struct domain *d)
     if ( preempted )
         return -ERESTART;
 
+#if PG_log_dirty
     /* clean up log dirty resources. */
     rc = paging_free_log_dirty_bitmap(d, 0);
     if ( rc == -ERESTART )
         return rc;
+#endif
 
     /* Move populate-on-demand cache back to domain_list for destruction */
     rc = p2m_pod_empty_cache(d);
@@ -934,27 +953,7 @@ void paging_update_nestedmode(struct vcpu *v)
         v->arch.paging.nestedmode = NULL;
     hvm_asid_flush_vcpu(v);
 }
-#endif
 
-int paging_write_p2m_entry(struct p2m_domain *p2m, unsigned long gfn,
-                           l1_pgentry_t *p, l1_pgentry_t new,
-                           unsigned int level)
-{
-    struct domain *d = p2m->domain;
-    struct vcpu *v = current;
-    int rc = 0;
-
-    if ( v->domain != d )
-        v = d->vcpu ? d->vcpu[0] : NULL;
-    if ( likely(v && paging_mode_enabled(d) && paging_get_hostmode(v) != NULL) )
-        rc = paging_get_hostmode(v)->write_p2m_entry(p2m, gfn, p, new, level);
-    else
-        safe_write_pte(p, new);
-
-    return rc;
-}
-
-#ifdef CONFIG_HVM
 int __init paging_set_allocation(struct domain *d, unsigned int pages,
                                  bool *preempted)
 {

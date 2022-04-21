@@ -12,14 +12,13 @@ PYTHON              := @PYTHON@
 PYTHON_PATH         := @PYTHONPATH@
 PY_NOOPT_CFLAGS     := @PY_NOOPT_CFLAGS@
 PERL                := @PERL@
-BASH                := @BASH@
-XGETTTEXT           := @XGETTEXT@
 AS86                := @AS86@
 LD86                := @LD86@
 BCC                 := @BCC@
 IASL                := @IASL@
 AWK                 := @AWK@
 FETCHER             := @FETCHER@
+ABI_DUMPER          := @ABI_DUMPER@
 
 # Extra folder for libs/includes
 PREPEND_INCLUDES    := @PREPEND_INCLUDES@
@@ -75,3 +74,5 @@ TINFO_LIBS          := @TINFO_LIBS@
 ARGP_LDFLAGS        := @argp_ldflags@
 
 FILE_OFFSET_BITS    := @FILE_OFFSET_BITS@
+
+CONFIG_PV_SHIM      ?= @pvshim@

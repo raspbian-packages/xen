@@ -7,6 +7,7 @@
 #include <xen/mem_access.h>
 
 #include <asm/current.h>
+#include <asm/hsr.h>
 
 #define paddr_bits PADDR_BITS
 
@@ -161,6 +162,15 @@ typedef enum {
 #endif
 #include <xen/p2m-common.h>
 
+static inline bool arch_acquire_resource_check(struct domain *d)
+{
+    /*
+     * The reference counting of foreign entries in set_foreign_p2m_entry()
+     * is supported on Arm.
+     */
+    return true;
+}
+
 static inline
 void p2m_altp2m_check(struct vcpu *v, uint16_t idx)
 {
@@ -263,7 +273,8 @@ void p2m_invalidate_root(struct p2m_domain *p2m);
  */
 int p2m_cache_flush_range(struct domain *d, gfn_t *pstart, gfn_t end);
 
-void p2m_set_way_flush(struct vcpu *v);
+void p2m_set_way_flush(struct vcpu *v, struct cpu_user_regs *regs,
+                       const union hsr hsr);
 
 void p2m_toggle_cache(struct vcpu *v, bool was_enabled);
 
@@ -289,6 +300,9 @@ int map_dev_mmio_region(struct domain *d,
                         unsigned long nr,
                         mfn_t mfn);
 
+int p2m_insert_mapping(struct domain *d, gfn_t start_gfn, unsigned long nr,
+                       mfn_t mfn, p2m_type_t t);
+
 int guest_physmap_add_entry(struct domain *d,
                             gfn_t gfn,
                             mfn_t mfn,
@@ -296,12 +310,19 @@ int guest_physmap_add_entry(struct domain *d,
                             p2m_type_t t);
 
 /* Untyped version for RAM only, for compatibility */
-static inline int guest_physmap_add_page(struct domain *d,
-                                         gfn_t gfn,
-                                         mfn_t mfn,
-                                         unsigned int page_order)
+static inline int __must_check
+guest_physmap_add_page(struct domain *d, gfn_t gfn, mfn_t mfn,
+                       unsigned int page_order)
 {
     return guest_physmap_add_entry(d, gfn, mfn, page_order, p2m_ram_rw);
+}
+
+static inline int guest_physmap_add_pages(struct domain *d,
+                                          gfn_t gfn,
+                                          mfn_t mfn,
+                                          unsigned int nr_pages)
+{
+    return p2m_insert_mapping(d, gfn, nr_pages, mfn, p2m_ram_rw);
 }
 
 mfn_t gfn_to_mfn(struct domain *d, gfn_t gfn);
@@ -390,16 +411,6 @@ static inline gfn_t gfn_next_boundary(gfn_t gfn, unsigned int order)
     gfn = _gfn(gfn_x(gfn) & ~((1UL << order) - 1));
 
     return gfn_add(gfn, 1UL << order);
-}
-
-static inline int set_foreign_p2m_entry(struct domain *d, unsigned long gfn,
-                                        mfn_t mfn)
-{
-    /*
-     * NOTE: If this is implemented then proper reference counting of
-     *       foreign entries will need to be implemented.
-     */
-    return -EOPNOTSUPP;
 }
 
 /*

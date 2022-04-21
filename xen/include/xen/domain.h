@@ -27,9 +27,6 @@ struct xen_domctl_getdomaininfo;
 void getdomaininfo(struct domain *d, struct xen_domctl_getdomaininfo *info);
 void arch_get_domain_info(const struct domain *d,
                           struct xen_domctl_getdomaininfo *info);
-int xenctl_bitmap_to_bitmap(unsigned long *bitmap,
-                            const struct xenctl_bitmap *xenctl_bitmap,
-                            unsigned int nbits);
 
 /*
  * Arch-specifics.
@@ -128,6 +125,14 @@ struct vnuma_info {
     struct xen_vmemrange *vmemrange;
 };
 
+#ifndef CONFIG_PV_SHIM_EXCLUSIVE
 void vnuma_destroy(struct vnuma_info *vnuma);
+#else
+static inline void vnuma_destroy(struct vnuma_info *vnuma) { ASSERT(!vnuma); }
+#endif
+
+extern bool vmtrace_available;
+
+extern bool vpmu_is_available;
 
 #endif /* __XEN_DOMAIN_H__ */

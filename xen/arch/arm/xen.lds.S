@@ -49,6 +49,8 @@ SECTIONS
        __stop_bug_frames_1 = .;
        *(.bug_frames.2)
        __stop_bug_frames_2 = .;
+       *(.bug_frames.3)
+       __stop_bug_frames_3 = .;
        *(.rodata)
        *(.rodata.*)
        *(.data.rel.ro)
@@ -58,7 +60,7 @@ SECTIONS
        *(.proc.info)
        __proc_info_end = .;
 
-#if defined(CONFIG_HAS_VPCI) && defined(CONFIG_LATE_HWDOM)
+#ifdef CONFIG_HAS_VPCI
        . = ALIGN(POINTER_ALIGN);
        __start_vpci_array = .;
        *(SORT(.data.vpci.*))
@@ -146,6 +148,8 @@ SECTIONS
        _sinittext = .;
        *(.init.text)
        _einittext = .;
+       . = ALIGN(PAGE_SIZE);        /* Avoid mapping alt insns executable */
+       *(.altinstr_replacement)
   } :text
   . = ALIGN(PAGE_SIZE);
   .init.data : {
@@ -167,8 +171,6 @@ SECTIONS
        __alt_instructions = .;
        *(.altinstructions)
        __alt_instructions_end = .;
-       . = ALIGN(4);
-       *(.altinstr_replacement)
 
 #ifdef CONFIG_DEBUG_LOCK_PROFILE
        . = ALIGN(POINTER_ALIGN);
@@ -187,13 +189,6 @@ SECTIONS
        *(.init_array)
        *(SORT(.init_array.*))
        __ctors_end = .;
-
-#if defined(CONFIG_HAS_VPCI) && !defined(CONFIG_LATE_HWDOM)
-       . = ALIGN(POINTER_ALIGN);
-       __start_vpci_array = .;
-       *(SORT(.data.vpci.*))
-       __end_vpci_array = .;
-#endif
   } :text
   __init_end_efi = .;
   . = ALIGN(STACK_SIZE);
@@ -218,11 +213,8 @@ SECTIONS
   } :text
   _end = . ;
 
-#ifdef CONFIG_DTB_FILE
   /* Section for the device tree blob (if any). */
-  _sdtb = .;
   .dtb : { *(.dtb) } :text
-#endif
 
   /* Sections to be discarded */
   /DISCARD/ : {

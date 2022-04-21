@@ -21,7 +21,7 @@
 #include <xen/guest_access.h>
 #include <xen/xenoprof.h>
 #include <xen/iommu.h>
-#ifdef CONFIG_HAS_PCI
+#ifdef CONFIG_HAS_PCI_MSI
 #include <asm/msi.h>
 #endif
 #include <public/xen.h>
@@ -114,7 +114,7 @@ static int get_irq_sid(int irq, u32 *sid, struct avc_audit_data *ad)
         }
         return security_irq_sid(irq, sid);
     }
-#ifdef CONFIG_HAS_PCI
+#ifdef CONFIG_HAS_PCI_MSI
     {
         struct irq_desc *desc = irq_to_desc(irq);
         if ( desc->msi_desc && desc->msi_desc->dev ) {
@@ -307,19 +307,25 @@ static int flask_evtchn_reset(struct domain *d1, struct domain *d2)
     return domain_has_perm(d1, d2, SECCLASS_EVENT, EVENT__RESET);
 }
 
-static int flask_alloc_security_evtchn(struct evtchn *chn)
+static int flask_alloc_security_evtchns(struct evtchn chn[], unsigned int nr)
 {
-    chn->ssid.flask_sid = SECINITSID_UNLABELED;
+    unsigned int i;
 
-    return 0;    
+    for ( i = 0; i < nr; ++i )
+        chn[i].ssid.flask_sid = SECINITSID_UNLABELED;
+
+    return 0;
 }
 
-static void flask_free_security_evtchn(struct evtchn *chn)
+static void flask_free_security_evtchns(struct evtchn chn[], unsigned int nr)
 {
+    unsigned int i;
+
     if ( !chn )
         return;
 
-    chn->ssid.flask_sid = SECINITSID_UNLABELED;
+    for ( i = 0; i < nr; ++i )
+        chn[i].ssid.flask_sid = SECINITSID_UNLABELED;
 }
 
 static char *flask_show_security_evtchn(struct domain *d, const struct evtchn *chn)
@@ -703,6 +709,7 @@ static int flask_domctl(struct domain *d, int cmd)
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__VM_EVENT);
 
     case XEN_DOMCTL_debug_op:
+    case XEN_DOMCTL_vmtrace_op:
     case XEN_DOMCTL_gdbsx_guestmemio:
     case XEN_DOMCTL_gdbsx_pausevcpu:
     case XEN_DOMCTL_gdbsx_unpausevcpu:
@@ -710,7 +717,6 @@ static int flask_domctl(struct domain *d, int cmd)
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__SETDEBUGGING);
 
     case XEN_DOMCTL_subscribe:
-    case XEN_DOMCTL_disable_migrate:
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__SET_MISC_INFO);
 
     case XEN_DOMCTL_set_virq_handler:
@@ -868,7 +874,7 @@ static int flask_map_domain_pirq (struct domain *d)
 static int flask_map_domain_msi (struct domain *d, int irq, const void *data,
                                  u32 *sid, struct avc_audit_data *ad)
 {
-#ifdef CONFIG_HAS_PCI
+#ifdef CONFIG_HAS_PCI_MSI
     const struct msi_info *msi = data;
     u32 machine_bdf = (msi->seg << 16) | (msi->bus << 8) | msi->devfn;
 
@@ -934,7 +940,7 @@ static int flask_unmap_domain_pirq (struct domain *d)
 static int flask_unmap_domain_msi (struct domain *d, int irq, const void *data,
                                    u32 *sid, struct avc_audit_data *ad)
 {
-#ifdef CONFIG_HAS_PCI
+#ifdef CONFIG_HAS_PCI_MSI
     const struct pci_dev *pdev = data;
     u32 machine_bdf = (pdev->seg << 16) | (pdev->bus << 8) | pdev->devfn;
 
@@ -1209,11 +1215,6 @@ static int flask_hvm_param(struct domain *d, unsigned long op)
     return current_has_perm(d, SECCLASS_HVM, perm);
 }
 
-static int flask_hvm_param_nested(struct domain *d)
-{
-    return current_has_perm(d, SECCLASS_HVM, HVM__NESTED);
-}
-
 static int flask_hvm_param_altp2mhvm(struct domain *d)
 {
     return current_has_perm(d, SECCLASS_HVM, HVM__ALTP2MHVM);
@@ -1255,7 +1256,7 @@ static int flask_mem_access(struct domain *d)
 }
 #endif
 
-#ifdef CONFIG_HAS_MEM_PAGING
+#ifdef CONFIG_MEM_PAGING
 static int flask_mem_paging(struct domain *d)
 {
     return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__MEM_PAGING);
@@ -1662,13 +1663,12 @@ static int flask_pmu_op (struct domain *d, unsigned int op)
         return -EPERM;
     }
 }
+#endif /* CONFIG_X86 */
 
 static int flask_dm_op(struct domain *d)
 {
     return current_has_perm(d, SECCLASS_HVM, HVM__DM);
 }
-
-#endif /* CONFIG_X86 */
 
 static int flask_xen_version (uint32_t op)
 {
@@ -1742,10 +1742,10 @@ static int flask_argo_send(const struct domain *d, const struct domain *t)
 
 #endif
 
-long do_flask_op(XEN_GUEST_HANDLE_PARAM(xsm_op_t) u_flask_op);
-int compat_flask_op(XEN_GUEST_HANDLE_PARAM(xsm_op_t) u_flask_op);
+long do_flask_op(XEN_GUEST_HANDLE_PARAM(void) u_flask_op);
+int compat_flask_op(XEN_GUEST_HANDLE_PARAM(void) u_flask_op);
 
-static struct xsm_operations flask_ops = {
+static const struct xsm_ops __initconstrel flask_ops = {
     .security_domaininfo = flask_security_domaininfo,
     .domain_create = flask_domain_create,
     .getdomaininfo = flask_getdomaininfo,
@@ -1772,8 +1772,8 @@ static struct xsm_operations flask_ops = {
 
     .alloc_security_domain = flask_domain_alloc_security,
     .free_security_domain = flask_domain_free_security,
-    .alloc_security_evtchn = flask_alloc_security_evtchn,
-    .free_security_evtchn = flask_free_security_evtchn,
+    .alloc_security_evtchns = flask_alloc_security_evtchns,
+    .free_security_evtchns = flask_free_security_evtchns,
     .show_security_evtchn = flask_show_security_evtchn,
     .init_hardware_domain = flask_init_hardware_domain,
 
@@ -1817,7 +1817,6 @@ static struct xsm_operations flask_ops = {
     .hypfs_op = flask_hypfs_op,
     .hvm_param = flask_hvm_param,
     .hvm_control = flask_hvm_param,
-    .hvm_param_nested = flask_hvm_param_nested,
     .hvm_param_altp2mhvm = flask_hvm_param_altp2mhvm,
     .hvm_altp2mhvm_op = flask_hvm_altp2mhvm_op,
 
@@ -1830,7 +1829,7 @@ static struct xsm_operations flask_ops = {
     .mem_access = flask_mem_access,
 #endif
 
-#ifdef CONFIG_HAS_MEM_PAGING
+#ifdef CONFIG_MEM_PAGING
     .mem_paging = flask_mem_paging,
 #endif
 
@@ -1872,8 +1871,8 @@ static struct xsm_operations flask_ops = {
     .ioport_permission = flask_ioport_permission,
     .ioport_mapping = flask_ioport_mapping,
     .pmu_op = flask_pmu_op,
-    .dm_op = flask_dm_op,
 #endif
+    .dm_op = flask_dm_op,
     .xen_version = flask_xen_version,
     .domain_resource_map = flask_domain_resource_map,
 #ifdef CONFIG_ARGO
@@ -1884,7 +1883,8 @@ static struct xsm_operations flask_ops = {
 #endif
 };
 
-void __init flask_init(const void *policy_buffer, size_t policy_size)
+const struct xsm_ops *__init flask_init(const void *policy_buffer,
+                                        size_t policy_size)
 {
     int ret = -ENOENT;
 
@@ -1892,7 +1892,7 @@ void __init flask_init(const void *policy_buffer, size_t policy_size)
     {
     case FLASK_BOOTPARAM_DISABLED:
         printk(XENLOG_INFO "Flask: Disabled at boot.\n");
-        return;
+        return NULL;
 
     case FLASK_BOOTPARAM_PERMISSIVE:
         flask_enforcing = 0;
@@ -1909,9 +1909,6 @@ void __init flask_init(const void *policy_buffer, size_t policy_size)
 
     avc_init();
 
-    if ( register_xsm(&flask_ops) )
-        panic("Flask: Unable to register with XSM\n");
-
     if ( policy_size && flask_bootparam != FLASK_BOOTPARAM_LATELOAD )
         ret = security_load_policy(policy_buffer, policy_size);
 
@@ -1924,6 +1921,8 @@ void __init flask_init(const void *policy_buffer, size_t policy_size)
         printk(XENLOG_INFO "Flask:  Starting in enforcing mode.\n");
     else
         printk(XENLOG_INFO "Flask:  Starting in permissive mode.\n");
+
+    return &flask_ops;
 }
 
 /*

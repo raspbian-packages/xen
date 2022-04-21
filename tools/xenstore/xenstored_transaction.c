@@ -168,12 +168,6 @@ struct transaction
 extern int quota_max_transaction;
 uint64_t generation;
 
-static void set_tdb_key(const char *name, TDB_DATA *key)
-{
-	key->dptr = (char *)name;
-	key->dsize = strlen(name);
-}
-
 static struct accessed_node *find_accessed_node(struct transaction *trans,
 						const char *name)
 {
@@ -479,6 +473,8 @@ int do_transaction_start(struct connection *conn, struct buffered_data *in)
 	list_add_tail(&trans->list, &conn->transaction_list);
 	talloc_steal(conn, trans);
 	talloc_set_destructor(trans, destroy_transaction);
+	if (!conn->transaction_started)
+		conn->ta_start_time = time(NULL);
 	conn->transaction_started++;
 	wrl_ntransactions++;
 
@@ -517,6 +513,8 @@ int do_transaction_end(struct connection *conn, struct buffered_data *in)
 	conn->transaction = NULL;
 	list_del(&trans->list);
 	conn->transaction_started--;
+	if (!conn->transaction_started)
+		conn->ta_start_time = 0;
 
 	/* Attach transaction to in for auto-cleanup */
 	talloc_steal(in, trans);
@@ -595,6 +593,7 @@ void conn_delete_all_transactions(struct connection *conn)
 	assert(conn->transaction == NULL);
 
 	conn->transaction_started = 0;
+	conn->ta_start_time = 0;
 }
 
 int check_transactions(struct hashtable *hash)

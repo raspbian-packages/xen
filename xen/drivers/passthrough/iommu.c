@@ -22,7 +22,7 @@
 #include <xen/keyhandler.h>
 #include <xsm/xsm.h>
 
-static void iommu_dump_p2m_table(unsigned char key);
+static void iommu_dump_page_tables(unsigned char key);
 
 unsigned int __read_mostly iommu_dev_iotlb_timeout = 1000;
 integer_param("iommu_dev_iotlb_timeout", iommu_dev_iotlb_timeout);
@@ -31,8 +31,23 @@ bool_t __initdata iommu_enable = 1;
 bool_t __read_mostly iommu_enabled;
 bool_t __read_mostly force_iommu;
 bool_t __read_mostly iommu_verbose;
-bool __read_mostly iommu_quarantine = true;
 bool_t __read_mostly iommu_crash_disable;
+
+#define IOMMU_quarantine_none         0 /* aka false */
+#define IOMMU_quarantine_basic        1 /* aka true */
+#define IOMMU_quarantine_scratch_page 2
+#ifdef CONFIG_HAS_PCI
+uint8_t __read_mostly iommu_quarantine =
+# if defined(CONFIG_IOMMU_QUARANTINE_NONE)
+    IOMMU_quarantine_none;
+# elif defined(CONFIG_IOMMU_QUARANTINE_BASIC)
+    IOMMU_quarantine_basic;
+# elif defined(CONFIG_IOMMU_QUARANTINE_SCRATCH_PAGE)
+    IOMMU_quarantine_scratch_page;
+# endif
+#else
+# define iommu_quarantine IOMMU_quarantine_none
+#endif /* CONFIG_HAS_PCI */
 
 static bool __hwdom_initdata iommu_hwdom_none;
 bool __hwdom_initdata iommu_hwdom_strict;
@@ -49,10 +64,6 @@ bool_t __read_mostly amd_iommu_perdev_intremap = 1;
 
 DEFINE_PER_CPU(bool_t, iommu_dont_flush_iotlb);
 
-DEFINE_SPINLOCK(iommu_pt_cleanup_lock);
-PAGE_LIST_HEAD(iommu_pt_cleanup_list);
-static struct tasklet iommu_pt_cleanup_tasklet;
-
 static int __init parse_iommu_param(const char *s)
 {
     const char *ss;
@@ -68,8 +79,12 @@ static int __init parse_iommu_param(const char *s)
         else if ( (val = parse_boolean("force", s, ss)) >= 0 ||
                   (val = parse_boolean("required", s, ss)) >= 0 )
             force_iommu = val;
+#ifdef CONFIG_HAS_PCI
         else if ( (val = parse_boolean("quarantine", s, ss)) >= 0 )
             iommu_quarantine = val;
+        else if ( ss == s + 23 && !strncmp(s, "quarantine=scratch-page", 23) )
+            iommu_quarantine = IOMMU_quarantine_scratch_page;
+#endif
 #ifdef CONFIG_X86
         else if ( (val = parse_boolean("igfx", s, ss)) >= 0 )
             iommu_igfx = val;
@@ -216,7 +231,7 @@ void __hwdom_init iommu_hwdom_init(struct domain *d)
     if ( !is_iommu_enabled(d) )
         return;
 
-    register_keyhandler('o', &iommu_dump_p2m_table, "dump iommu p2m table", 0);
+    register_keyhandler('o', &iommu_dump_page_tables, "dump iommu page tables", 0);
 
     hd->platform_ops->hwdom_init(d);
 }
@@ -232,8 +247,7 @@ static void iommu_teardown(struct domain *d)
     if ( !hd->platform_ops )
         return;
 
-    hd->platform_ops->teardown(d);
-    tasklet_schedule(&iommu_pt_cleanup_tasklet);
+    iommu_vcall(hd->platform_ops, teardown, d);
 }
 
 void iommu_domain_destroy(struct domain *d)
@@ -247,7 +261,7 @@ void iommu_domain_destroy(struct domain *d)
 }
 
 int iommu_map(struct domain *d, dfn_t dfn, mfn_t mfn,
-              unsigned int page_order, unsigned int flags,
+              unsigned long page_count, unsigned int flags,
               unsigned int *flush_flags)
 {
     const struct domain_iommu *hd = dom_iommu(d);
@@ -257,10 +271,7 @@ int iommu_map(struct domain *d, dfn_t dfn, mfn_t mfn,
     if ( !is_iommu_enabled(d) )
         return 0;
 
-    ASSERT(IS_ALIGNED(dfn_x(dfn), (1ul << page_order)));
-    ASSERT(IS_ALIGNED(mfn_x(mfn), (1ul << page_order)));
-
-    for ( i = 0; i < (1ul << page_order); i++ )
+    for ( i = 0; i < page_count; i++ )
     {
         rc = iommu_call(hd->platform_ops, map_page, d, dfn_add(dfn, i),
                         mfn_add(mfn, i), flags, flush_flags);
@@ -286,28 +297,30 @@ int iommu_map(struct domain *d, dfn_t dfn, mfn_t mfn,
         break;
     }
 
+    /*
+     * Something went wrong so, if we were dealing with more than a single
+     * page, flush everything and clear flush flags.
+     */
+    if ( page_count > 1 && unlikely(rc) &&
+         !iommu_iotlb_flush_all(d, *flush_flags) )
+        *flush_flags = 0;
+
     return rc;
 }
 
 int iommu_legacy_map(struct domain *d, dfn_t dfn, mfn_t mfn,
-                     unsigned int page_order, unsigned int flags)
+                     unsigned long page_count, unsigned int flags)
 {
     unsigned int flush_flags = 0;
-    int rc = iommu_map(d, dfn, mfn, page_order, flags, &flush_flags);
+    int rc = iommu_map(d, dfn, mfn, page_count, flags, &flush_flags);
 
-    if ( !this_cpu(iommu_dont_flush_iotlb) )
-    {
-        int err = iommu_iotlb_flush(d, dfn, (1u << page_order),
-                                    flush_flags);
-
-        if ( !rc )
-            rc = err;
-    }
+    if ( !this_cpu(iommu_dont_flush_iotlb) && !rc )
+        rc = iommu_iotlb_flush(d, dfn, page_count, flush_flags);
 
     return rc;
 }
 
-int iommu_unmap(struct domain *d, dfn_t dfn, unsigned int page_order,
+int iommu_unmap(struct domain *d, dfn_t dfn, unsigned long page_count,
                 unsigned int *flush_flags)
 {
     const struct domain_iommu *hd = dom_iommu(d);
@@ -317,9 +330,7 @@ int iommu_unmap(struct domain *d, dfn_t dfn, unsigned int page_order,
     if ( !is_iommu_enabled(d) )
         return 0;
 
-    ASSERT(IS_ALIGNED(dfn_x(dfn), (1ul << page_order)));
-
-    for ( i = 0; i < (1ul << page_order); i++ )
+    for ( i = 0; i < page_count; i++ )
     {
         int err = iommu_call(hd->platform_ops, unmap_page, d, dfn_add(dfn, i),
                              flush_flags);
@@ -342,22 +353,24 @@ int iommu_unmap(struct domain *d, dfn_t dfn, unsigned int page_order,
         }
     }
 
+    /*
+     * Something went wrong so, if we were dealing with more than a single
+     * page, flush everything and clear flush flags.
+     */
+    if ( page_count > 1 && unlikely(rc) &&
+         !iommu_iotlb_flush_all(d, *flush_flags) )
+        *flush_flags = 0;
+
     return rc;
 }
 
-int iommu_legacy_unmap(struct domain *d, dfn_t dfn, unsigned int page_order)
+int iommu_legacy_unmap(struct domain *d, dfn_t dfn, unsigned long page_count)
 {
     unsigned int flush_flags = 0;
-    int rc = iommu_unmap(d, dfn, page_order, &flush_flags);
+    int rc = iommu_unmap(d, dfn, page_count, &flush_flags);
 
-    if ( !this_cpu(iommu_dont_flush_iotlb) )
-    {
-        int err = iommu_iotlb_flush(d, dfn, (1u << page_order),
-                                    flush_flags);
-
-        if ( !rc )
-            rc = err;
-    }
+    if ( !this_cpu(iommu_dont_flush_iotlb) && !rc )
+        rc = iommu_iotlb_flush(d, dfn, page_count, flush_flags);
 
     return rc;
 }
@@ -373,24 +386,7 @@ int iommu_lookup_page(struct domain *d, dfn_t dfn, mfn_t *mfn,
     return iommu_call(hd->platform_ops, lookup_page, d, dfn, mfn, flags);
 }
 
-static void iommu_free_pagetables(void *unused)
-{
-    do {
-        struct page_info *pg;
-
-        spin_lock(&iommu_pt_cleanup_lock);
-        pg = page_list_remove_head(&iommu_pt_cleanup_list);
-        spin_unlock(&iommu_pt_cleanup_lock);
-        if ( !pg )
-            return;
-        iommu_vcall(iommu_get_ops(), free_page_table, pg);
-    } while ( !softirq_pending(smp_processor_id()) );
-
-    tasklet_schedule_on_cpu(&iommu_pt_cleanup_tasklet,
-                            cpumask_cycle(smp_processor_id(), &cpu_online_map));
-}
-
-int iommu_iotlb_flush(struct domain *d, dfn_t dfn, unsigned int page_count,
+int iommu_iotlb_flush(struct domain *d, dfn_t dfn, unsigned long page_count,
                       unsigned int flush_flags)
 {
     const struct domain_iommu *hd = dom_iommu(d);
@@ -409,7 +405,7 @@ int iommu_iotlb_flush(struct domain *d, dfn_t dfn, unsigned int page_count,
     {
         if ( !d->is_shutting_down && printk_ratelimit() )
             printk(XENLOG_ERR
-                   "d%d: IOMMU IOTLB flush failed: %d, dfn %"PRI_dfn", page count %u flags %x\n",
+                   "d%d: IOMMU IOTLB flush failed: %d, dfn %"PRI_dfn", page count %lu flags %x\n",
                    d->domain_id, rc, dfn_x(dfn), page_count, flush_flags);
 
         if ( !is_hardware_domain(d) )
@@ -455,7 +451,7 @@ static int __init iommu_quarantine_init(void)
     dom_io->options |= XEN_DOMCTL_CDF_iommu;
 
     rc = iommu_domain_init(dom_io, 0);
-    if ( rc )
+    if ( rc || iommu_quarantine < IOMMU_quarantine_scratch_page )
         return rc;
 
     if ( !hd->platform_ops->quarantine_init )
@@ -513,7 +509,6 @@ int __init iommu_setup(void)
 #ifndef iommu_intremap
         printk("Interrupt remapping %sabled\n", iommu_intremap ? "en" : "dis");
 #endif
-        tasklet_init(&iommu_pt_cleanup_tasklet, iommu_free_pagetables, NULL);
     }
 
     return rc;
@@ -554,14 +549,6 @@ int iommu_do_domctl(
     return ret;
 }
 
-void iommu_share_p2m_table(struct domain* d)
-{
-    ASSERT(hap_enabled(d));
-
-    if ( iommu_use_hap_pt(d) )
-        iommu_get_ops()->share_p2m(d);
-}
-
 void iommu_crash_shutdown(void)
 {
     if ( !iommu_crash_disable )
@@ -597,18 +584,11 @@ bool_t iommu_has_feature(struct domain *d, enum iommu_feature feature)
     return is_iommu_enabled(d) && test_bit(feature, dom_iommu(d)->features);
 }
 
-static void iommu_dump_p2m_table(unsigned char key)
+static void iommu_dump_page_tables(unsigned char key)
 {
     struct domain *d;
-    const struct iommu_ops *ops;
 
-    if ( !iommu_enabled )
-    {
-        printk("IOMMU not enabled!\n");
-        return;
-    }
-
-    ops = iommu_get_ops();
+    ASSERT(iommu_enabled);
 
     rcu_read_lock(&domlist_read_lock);
 
@@ -619,12 +599,11 @@ static void iommu_dump_p2m_table(unsigned char key)
 
         if ( iommu_use_hap_pt(d) )
         {
-            printk("\ndomain%d IOMMU p2m table shared with MMU: \n", d->domain_id);
+            printk("%pd sharing page tables\n", d);
             continue;
         }
 
-        printk("\ndomain%d IOMMU p2m table: \n", d->domain_id);
-        ops->dump_p2m_table(d);
+        dom_iommu(d)->platform_ops->dump_page_tables(d);
     }
 
     rcu_read_unlock(&domlist_read_lock);

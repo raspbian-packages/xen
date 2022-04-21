@@ -1,12 +1,25 @@
 #ifndef _XEN_P2M_COMMON_H
 #define _XEN_P2M_COMMON_H
 
-#include <xen/mm.h>
+#include <xen/mm-frame.h>
+
+/* Set foreign entry in the p2m table */
+int set_foreign_p2m_entry(struct domain *d, const struct domain *fd,
+                          unsigned long gfn, mfn_t mfn);
 
 /* Remove a page from a domain's p2m table */
+#ifdef CONFIG_HVM
 int __must_check
 guest_physmap_remove_page(struct domain *d, gfn_t gfn, mfn_t mfn,
                           unsigned int page_order);
+#else
+static inline int
+guest_physmap_remove_page(struct domain *d, gfn_t gfn, mfn_t mfn,
+                          unsigned int page_order)
+{
+    return 0;
+}
+#endif
 
 /* Map MMIO regions in the p2m: start_gfn and nr describe the range in
  *  * the guest physical address space to map, starting from the machine

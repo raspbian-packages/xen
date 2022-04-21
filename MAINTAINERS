@@ -60,7 +60,7 @@ The maintainer for this branch is:
 
 Tools backport requests should also be copied to:
 
-	Ian Jackson <Ian.Jackson@eu.citrix.com>
+	Anthony Perard <anthony.perard@citrix.com>
 
 
 	Unstable Subsystem Maintainers
@@ -152,12 +152,13 @@ M:	Stewart Hildebrand <stewart.hildebrand@dornerworks.com>
 S:	Supported
 L:	xen-devel@dornerworks.com
 F:	xen/common/sched/arinc653.c
-F:	tools/libxc/xc_arinc653.c
+F:	tools/libs/ctrl/xc_arinc653.c
 
 ARM (W/ VIRTUALISATION EXTENSIONS) ARCHITECTURE
 M:	Stefano Stabellini <sstabellini@kernel.org>
 M:	Julien Grall <julien@xen.org>
 R:	Volodymyr Babchuk <Volodymyr_Babchuk@epam.com>
+R:	Bertrand Marquis <bertrand.marquis@arm.com>
 S:	Supported
 L:	xen-devel@lists.xenproject.org
 F:	docs/misc/arm/
@@ -175,8 +176,14 @@ F:	xen/include/asm-arm/
 F:	xen/include/public/arch-arm/
 F:	xen/include/public/arch-arm.h
 
+ARM SMMUv3
+M:	Bertrand Marquis <bertrand.marquis@arm.com>
+M:	Rahul Singh <rahul.singh@arm.com>
+S:	Supported
+F:	xen/drivers/passthrough/arm/smmu-v3.c
+
 Change Log
-M:	Paul Durrant <paul@xen.org>
+M:	Ian Jackson <iwj@xenproject.org>
 R:	Community Manager <community.manager@xenproject.org>
 S:	Maintained
 F:	CHANGELOG.md
@@ -224,8 +231,18 @@ F:	tools/debugger/gdbsx/
 
 GOLANG BINDINGS
 M:	George Dunlap <george.dunlap@citrix.com>
+M:     Nick Rosbrook <rosbrookn@ainfosec.com>
 S:	Maintained
 F:	tools/golang
+
+HYPFS
+M:	Juergen Gross <jgross@suse.com>
+S:	Supported
+F:	tools/include/xenhypfs.h
+F:	tools/libs/hypfs/
+F:	tools/misc/xenhypfs.c
+F:	xen/common/hypfs.c
+F:	xen/include/xen/hypfs.h
 
 INTEL(R) TRUSTED EXECUTION TECHNOLOGY (TXT)
 R:	Lukasz Hawrylko <lukasz.hawrylko@linux.intel.com>
@@ -258,6 +275,13 @@ X:	xen/drivers/passthrough/vtd/
 X:	xen/drivers/passthrough/device_tree.c
 F:	xen/include/xen/iommu.h
 
+I/O EMULATION (IOREQ)
+M:	Paul Durrant <paul@xen.org>
+S:	Supported
+F:	xen/common/ioreq.c
+F:	xen/include/xen/ioreq.h
+F:	xen/include/public/hvm/ioreq.h
+
 KCONFIG
 M:	Doug Goldstein <cardoe@cardoe.com>
 S:	Supported
@@ -273,16 +297,39 @@ KEXEC
 M:	Andrew Cooper <andrew.cooper3@citrix.com>
 S:	Supported
 F:	xen/common/{kexec,kimage}.c
-F:	xen/include/{kexec,kimage}.h
+F:	xen/include/xen/{kexec,kimage}.h
 F:	xen/arch/x86/machine_kexec.c
 F:	xen/arch/x86/x86_64/kexec_reloc.S
 
+LIBS
+M:	Ian Jackson <iwj@xenproject.org>
+M:	Wei Liu <wl@xen.org>
+R:	Juergen Gross <jgross@suse.com>
+S:	Supported
+F:	tools/include/libxenvchan.h
+F:	tools/include/xencall.h
+F:	tools/include/xenctrl*.h
+F:	tools/include/xendevicemodel.h
+F:	tools/include/xenevtchn.h
+F:	tools/include/xenforeignmemory.h
+F:	tools/include/xengnttab.h
+F:	tools/include/xenguest.h
+F:	tools/include/xenhypfs.h
+F:	tools/include/xenstat.h
+F:	tools/include/xenstore*.h
+F:	tools/include/xenstore-compat/*.h
+F:	tools/include/xentoolcore*.h
+F:	tools/include/xentoollog.h
+F:	tools/libs/
+
 LIBXENLIGHT
-M:	Ian Jackson <ian.jackson@eu.citrix.com>
+M:	Ian Jackson <iwj@xenproject.org>
 M:	Wei Liu <wl@xen.org>
 M:	Anthony PERARD <anthony.perard@citrix.com>
 S:	Supported
-F:	tools/libxl/
+F:	tools/include/libxl*.h
+F:	tools/libs/light/
+F:	tools/libs/util/
 F:	tools/xl/
 
 LIVEPATCH
@@ -338,7 +385,7 @@ S:	Supported
 F:	tools/python
 
 QEMU-DM
-M:	Ian Jackson <ian.jackson@eu.citrix.com>
+M:	Ian Jackson <iwj@xenproject.org>
 S:	Supported
 T:	git https://xenbits.xenproject.org/git-http/qemu-xen-traditional.git
 
@@ -350,14 +397,22 @@ T:	git https://xenbits.xenproject.org/git-http/qemu-xen.git
 
 REMUS
 M:	Shriram Rajagopalan <rshriram@cs.ubc.ca>
-M:	Yang Hongyang <imhy.yang@gmail.com>
 S:	Maintained
 F:	docs/README.remus
-F:	tools/libxl/libxl_remus_*
-F:	tools/libxl/libxl_netbuffer.c
-F:	tools/libxl/libxl_nonetbuffer.c
+F:	tools/libs/light/libxl_remus_*
+F:	tools/libs/light/libxl_netbuffer.c
+F:	tools/libs/light/libxl_nonetbuffer.c
 F:	tools/hotplug/Linux/remus-netbuf-setup
 F:	tools/hotplug/Linux/block-drbd-probe
+
+RISCV
+M:	Bob Eshleman <bobbyeshleman@gmail.com>
+M:	Alistair Francis <alistair.francis@wdc.com>
+R:	Connor Davis <connojdavis@gmail.com>
+S:	Supported
+F:	config/riscv64.mk
+F:	xen/arch/riscv/
+F:	xen/include/asm-riscv/
 
 RTDS SCHEDULER
 M:	Dario Faggioli <dfaggioli@suse.com>
@@ -390,7 +445,7 @@ F:	xen/arch/arm/tee/
 F:	xen/include/asm-arm/tee
 
 TOOLSTACK
-M:	Ian Jackson <ian.jackson@eu.citrix.com>
+M:	Ian Jackson <iwj@xenproject.org>
 M:	Wei Liu <wl@xen.org>
 S:	Supported
 F:	autogen.sh
@@ -411,7 +466,7 @@ M:	Tamas K Lengyel <tamas@tklengyel.com>
 R:	Alexandru Isaila <aisaila@bitdefender.com>
 R:	Petre Pircalabu <ppircalabu@bitdefender.com>
 S:	Supported
-F:	tools/tests/xen-access
+F:	tools/misc/xen-access.c
 F:	xen/arch/*/monitor.c
 F:	xen/arch/*/vm_event.c
 F:	xen/arch/arm/mem_access.c
@@ -446,8 +501,8 @@ F:	docs/misc/vtpm-platforms.txt
 X86 ARCHITECTURE
 M:	Jan Beulich <jbeulich@suse.com>
 M:	Andrew Cooper <andrew.cooper3@citrix.com>
+M:	Roger Pau Monné <roger.pau@citrix.com>
 R:	Wei Liu <wl@xen.org>
-R:	Roger Pau Monné <roger.pau@citrix.com>
 S:	Supported
 L:	xen-devel@lists.xenproject.org
 F:	xen/arch/x86/
@@ -474,7 +529,7 @@ F:	xen/arch/x86/hvm/ioreq.c
 F:	xen/include/asm-x86/hvm/emulate.h
 F:	xen/include/asm-x86/hvm/io.h
 F:	xen/include/asm-x86/hvm/ioreq.h
-F:	xen/include/public/hvm/ioreq.h
+F:	xen/include/asm-x86/ioreq.h
 
 X86 MEMORY MANAGEMENT
 M:	Jan Beulich <jbeulich@suse.com>
@@ -494,7 +549,9 @@ F:	xen/arch/x86/mm/mem_sharing.c
 F:	tools/tests/mem-sharing/
 
 X86 SHADOW PAGETABLES
-M:	Tim Deegan <tim@xen.org>
+M:	Jan Beulich <jbeulich@suse.com>
+M:	Andrew Cooper <andrew.cooper3@citrix.com>
+R:	Tim Deegan <tim@xen.org>
 S:	Maintained
 F:	xen/arch/x86/mm/shadow/
 
@@ -509,6 +566,14 @@ F:	xen/include/asm-x86/guest/hyperv-hcall.h
 F:	xen/include/asm-x86/guest/hyperv-tlfs.h
 F:	xen/include/asm-x86/hvm/viridian.h
 
+XENSTORE
+M:	Ian Jackson <iwj@xenproject.org>
+M:	Wei Liu <wl@xen.org>
+M:	Juergen Gross <jgross@suse.com>
+R:	Julien Grall <julien@xen.org>
+S:	Supported
+F:	tools/xenstore/
+
 XENTRACE
 M:	George Dunlap <george.dunlap@citrix.com>
 S:	Supported
@@ -518,6 +583,7 @@ F:	xen/include/xen/trace.h
 
 XSM/FLASK
 M:	Daniel De Graaf <dgdegra@tycho.nsa.gov>
+R:	Daniel P. Smith <dpsmith@apertussolutions.com>
 S:	Supported
 F:	tools/flask/
 F:	xen/include/xsm/
@@ -527,7 +593,7 @@ F:	docs/misc/xsm-flask.txt
 THE REST
 M:	Andrew Cooper <andrew.cooper3@citrix.com>
 M:	George Dunlap <george.dunlap@citrix.com>
-M:	Ian Jackson <ian.jackson@eu.citrix.com>
+M:	Ian Jackson <iwj@xenproject.org>
 M:	Jan Beulich <jbeulich@suse.com>
 M:	Julien Grall <julien@xen.org>
 M:	Stefano Stabellini <sstabellini@kernel.org>

@@ -315,6 +315,7 @@ static int __init acpi_parse_dev_scope(
     struct acpi_drhd_unit *drhd = type == DMAR_TYPE ?
         container_of(scope, struct acpi_drhd_unit, scope) : NULL;
     int depth, cnt, didx = 0, ret;
+    bool gfx_only = false;
 
     if ( (cnt = scope_device_count(start, end)) < 0 )
         return cnt;
@@ -324,6 +325,8 @@ static int __init acpi_parse_dev_scope(
         scope->devices = xzalloc_array(u16, cnt);
         if ( !scope->devices )
             return -ENOMEM;
+
+        gfx_only = drhd && !drhd->include_all;
     }
     scope->devices_cnt = cnt;
 
@@ -349,18 +352,18 @@ static int __init acpi_parse_dev_scope(
             sub_bus = pci_conf_read8(PCI_SBDF(seg, bus, path->dev, path->fn),
                                      PCI_SUBORDINATE_BUS);
             if ( iommu_verbose )
-                printk(VTDPREFIX
-                       " bridge: %04x:%02x:%02x.%u start=%x sec=%x sub=%x\n",
-                       seg, bus, path->dev, path->fn,
+                printk(VTDPREFIX " bridge: %pp start=%x sec=%x sub=%x\n",
+                       &PCI_SBDF(seg, bus, path->dev, path->fn),
                        acpi_scope->bus, sec_bus, sub_bus);
 
             dmar_scope_add_buses(scope, sec_bus, sub_bus);
+            gfx_only = false;
             break;
 
         case ACPI_DMAR_SCOPE_TYPE_HPET:
             if ( iommu_verbose )
-                printk(VTDPREFIX " MSI HPET: %04x:%02x:%02x.%u\n",
-                       seg, bus, path->dev, path->fn);
+                printk(VTDPREFIX " MSI HPET: %pp\n",
+                       &PCI_SBDF(seg, bus, path->dev, path->fn));
 
             if ( drhd )
             {
@@ -375,28 +378,36 @@ static int __init acpi_parse_dev_scope(
                 acpi_hpet_unit->dev = path->dev;
                 acpi_hpet_unit->func = path->fn;
                 list_add(&acpi_hpet_unit->list, &drhd->hpet_list);
+
+                gfx_only = false;
             }
 
             break;
 
         case ACPI_DMAR_SCOPE_TYPE_ENDPOINT:
             if ( iommu_verbose )
-                printk(VTDPREFIX " endpoint: %04x:%02x:%02x.%u\n",
-                       seg, bus, path->dev, path->fn);
+                printk(VTDPREFIX " endpoint: %pp\n",
+                       &PCI_SBDF(seg, bus, path->dev, path->fn));
 
             if ( drhd )
             {
                 if ( (seg == 0) && (bus == 0) && (path->dev == 2) &&
                      (path->fn == 0) )
                     igd_drhd_address = drhd->address;
+
+                if ( gfx_only &&
+                     pci_conf_read8(PCI_SBDF(seg, bus, path->dev, path->fn),
+                                    PCI_CLASS_DEVICE + 1) != 0x03
+                                    /* PCI_BASE_CLASS_DISPLAY */ )
+                    gfx_only = false;
             }
 
             break;
 
         case ACPI_DMAR_SCOPE_TYPE_IOAPIC:
             if ( iommu_verbose )
-                printk(VTDPREFIX " IOAPIC: %04x:%02x:%02x.%u\n",
-                       seg, bus, path->dev, path->fn);
+                printk(VTDPREFIX " IOAPIC: %pp\n",
+                       &PCI_SBDF(seg, bus, path->dev, path->fn));
 
             if ( drhd )
             {
@@ -409,6 +420,8 @@ static int __init acpi_parse_dev_scope(
                 acpi_ioapic_unit->ioapic.bdf.dev = path->dev;
                 acpi_ioapic_unit->ioapic.bdf.func = path->fn;
                 list_add(&acpi_ioapic_unit->list, &drhd->ioapic_list);
+
+                gfx_only = false;
             }
 
             break;
@@ -418,11 +431,15 @@ static int __init acpi_parse_dev_scope(
                 printk(XENLOG_WARNING VTDPREFIX "Unknown scope type %#x\n",
                        acpi_scope->entry_type);
             start += acpi_scope->length;
+            gfx_only = false;
             continue;
         }
         scope->devices[didx++] = PCI_BDF(bus, path->dev, path->fn);
         start += acpi_scope->length;
-   }
+    }
+
+    if ( drhd && gfx_only )
+        drhd->gfx_only = true;
 
     ret = 0;
 
@@ -525,8 +542,8 @@ acpi_parse_one_drhd(struct acpi_dmar_header *header)
 
             if ( !pci_device_detect(drhd->segment, b, d, f) )
                 printk(XENLOG_WARNING VTDPREFIX
-                       " Non-existent device (%04x:%02x:%02x.%u) in this DRHD's scope!\n",
-                       drhd->segment, b, d, f);
+                       " Non-existent device (%pp) in this DRHD's scope!\n",
+                       &PCI_SBDF(drhd->segment, b, d, f));
         }
 
         acpi_register_drhd_unit(dmaru);
@@ -562,9 +579,9 @@ static int register_one_rmrr(struct acpi_rmrr_unit *rmrru)
         if ( pci_device_detect(rmrru->segment, b, d, f) == 0 )
         {
             dprintk(XENLOG_WARNING VTDPREFIX,
-                    " Non-existent device (%04x:%02x:%02x.%u) is reported"
-                    " in RMRR [%"PRIx64",%"PRIx64"]'s scope!\n",
-                    rmrru->segment, b, d, f,
+                    " Non-existent device (%pp) is reported"
+                    " in RMRR [%"PRIx64", %"PRIx64"]'s scope!\n",
+                    &PCI_SBDF(rmrru->segment, b, d, f),
                     rmrru->base_address, rmrru->end_address);
             ignore = true;
         }

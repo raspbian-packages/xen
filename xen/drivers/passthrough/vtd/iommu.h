@@ -121,30 +121,30 @@
 #define DMA_TLB_IVA_HINT(x) ((((u64)x) & 1) << 6)
 
 /* GCMD_REG */
-#define DMA_GCMD_TE     (((u64)1) << 31)
-#define DMA_GCMD_SRTP   (((u64)1) << 30)
-#define DMA_GCMD_SFL    (((u64)1) << 29)
-#define DMA_GCMD_EAFL   (((u64)1) << 28)
-#define DMA_GCMD_WBF    (((u64)1) << 27)
-#define DMA_GCMD_QIE    (((u64)1) << 26)
-#define DMA_GCMD_IRE    (((u64)1) << 25)
-#define DMA_GCMD_SIRTP  (((u64)1) << 24)
-#define DMA_GCMD_CFI    (((u64)1) << 23)
+#define DMA_GCMD_TE     (1u << 31)
+#define DMA_GCMD_SRTP   (1u << 30)
+#define DMA_GCMD_SFL    (1u << 29)
+#define DMA_GCMD_EAFL   (1u << 28)
+#define DMA_GCMD_WBF    (1u << 27)
+#define DMA_GCMD_QIE    (1u << 26)
+#define DMA_GCMD_IRE    (1u << 25)
+#define DMA_GCMD_SIRTP  (1u << 24)
+#define DMA_GCMD_CFI    (1u << 23)
 
 /* GSTS_REG */
-#define DMA_GSTS_TES    (((u64)1) << 31)
-#define DMA_GSTS_RTPS   (((u64)1) << 30)
-#define DMA_GSTS_FLS    (((u64)1) << 29)
-#define DMA_GSTS_AFLS   (((u64)1) << 28)
-#define DMA_GSTS_WBFS   (((u64)1) << 27)
-#define DMA_GSTS_QIES   (((u64)1) <<26)
-#define DMA_GSTS_IRES   (((u64)1) <<25)
-#define DMA_GSTS_SIRTPS (((u64)1) << 24)
-#define DMA_GSTS_CFIS   (((u64)1) <<23)
+#define DMA_GSTS_TES    (1u << 31)
+#define DMA_GSTS_RTPS   (1u << 30)
+#define DMA_GSTS_FLS    (1u << 29)
+#define DMA_GSTS_AFLS   (1u << 28)
+#define DMA_GSTS_WBFS   (1u << 27)
+#define DMA_GSTS_QIES   (1u << 26)
+#define DMA_GSTS_IRES   (1u << 25)
+#define DMA_GSTS_SIRTPS (1u << 24)
+#define DMA_GSTS_CFIS   (1u << 23)
 
 /* PMEN_REG */
-#define DMA_PMEN_EPM    (((u32)1) << 31)
-#define DMA_PMEN_PRS    (((u32)1) << 0)
+#define DMA_PMEN_EPM    (1u << 31)
+#define DMA_PMEN_PRS    (1u <<  0)
 
 /* CCMD_REG */
 #define DMA_CCMD_INVL_GRANU_OFFSET  61
@@ -164,22 +164,22 @@
 #define DMA_CCMD_CAIG_MASK(x) (((u64)x) & ((u64) 0x3 << 59))
 
 /* FECTL_REG */
-#define DMA_FECTL_IM (((u64)1) << 31)
+#define DMA_FECTL_IM (1u << 31)
 
 /* FSTS_REG */
-#define DMA_FSTS_PFO ((u64)1 << 0)
-#define DMA_FSTS_PPF ((u64)1 << 1)
-#define DMA_FSTS_AFO ((u64)1 << 2)
-#define DMA_FSTS_APF ((u64)1 << 3)
-#define DMA_FSTS_IQE ((u64)1 << 4)
-#define DMA_FSTS_ICE ((u64)1 << 5)
-#define DMA_FSTS_ITE ((u64)1 << 6)
+#define DMA_FSTS_PFO (1u << 0)
+#define DMA_FSTS_PPF (1u << 1)
+#define DMA_FSTS_AFO (1u << 2)
+#define DMA_FSTS_APF (1u << 3)
+#define DMA_FSTS_IQE (1u << 4)
+#define DMA_FSTS_ICE (1u << 5)
+#define DMA_FSTS_ITE (1u << 6)
 #define DMA_FSTS_FAULTS (DMA_FSTS_PFO | DMA_FSTS_AFO | DMA_FSTS_APF | \
                          DMA_FSTS_IQE | DMA_FSTS_ICE | DMA_FSTS_ITE)
 #define dma_fsts_fault_record_index(s) (((s) >> 8) & 0xff)
 
 /* FRCD_REG, 32 bits access */
-#define DMA_FRCD_F (((u64)1) << 31)
+#define DMA_FRCD_F (1u << 31)
 #define dma_frcd_type(d) ((d >> 30) & 1)
 #define dma_frcd_fault_reason(c) (c & 0xff)
 #define dma_frcd_source_id(c) (c & 0xffff)
@@ -451,36 +451,11 @@ struct qinval_entry {
     }q;
 };
 
-/* Each entry is 16 bytes, so 2^8 entries per page */
-#define QINVAL_ENTRY_ORDER  ( PAGE_SHIFT - 4 )
-#define QINVAL_MAX_ENTRY_NR (1u << (7 + QINVAL_ENTRY_ORDER))
-
-/* Status data flag */
-#define QINVAL_STAT_INIT  0
-#define QINVAL_STAT_DONE  1
-
-/* Queue invalidation head/tail shift */
-#define QINVAL_INDEX_SHIFT 4
-
-#define qinval_present(v) ((v).lo & 1)
-#define qinval_fault_disable(v) (((v).lo >> 1) & 1)
-
-#define qinval_set_present(v) do {(v).lo |= 1;} while(0)
-#define qinval_clear_present(v) do {(v).lo &= ~1;} while(0)
-
-#define RESERVED_VAL        0
-
 #define TYPE_INVAL_CONTEXT      0x1
 #define TYPE_INVAL_IOTLB        0x2
 #define TYPE_INVAL_DEVICE_IOTLB 0x3
 #define TYPE_INVAL_IEC          0x4
 #define TYPE_INVAL_WAIT         0x5
-
-#define NOTIFY_TYPE_POLL        1
-#define NOTIFY_TYPE_INTR        1
-#define INTERRUTP_FLAG          1
-#define STATUS_WRITE            1
-#define FENCE_FLAG              1
 
 #define IEC_GLOBAL_INVL         0
 #define IEC_INDEX_INVL          1
@@ -491,8 +466,6 @@ struct qinval_entry {
 
 #define VTD_PAGE_TABLE_LEVEL_3  3
 #define VTD_PAGE_TABLE_LEVEL_4  4
-
-#define MAX_IOMMU_REGS 0xc0
 
 extern struct list_head acpi_drhd_units;
 extern struct list_head acpi_rmrr_units;

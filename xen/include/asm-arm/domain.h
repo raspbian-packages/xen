@@ -2,7 +2,7 @@
 #define __ASM_DOMAIN_H__
 
 #include <xen/cache.h>
-#include <xen/sched.h>
+#include <xen/timer.h>
 #include <asm/page.h>
 #include <asm/p2m.h>
 #include <asm/vfp.h>
@@ -11,8 +11,6 @@
 #include <asm/vgic.h>
 #include <asm/vpl011.h>
 #include <public/hvm/params.h>
-#include <xen/serial.h>
-#include <xen/rbtree.h>
 
 struct hvm_domain
 {
@@ -32,13 +30,13 @@ enum domain_type {
 #endif
 
 /* The hardware domain has always its memory direct mapped. */
-#define is_domain_direct_mapped(d) ((d) == hardware_domain)
+#define is_domain_direct_mapped(d) is_hardware_domain(d)
 
 struct vtimer {
     struct vcpu *v;
     int irq;
     struct timer timer;
-    uint32_t ctl;
+    register_t ctl;
     uint64_t cval;
 };
 
@@ -168,6 +166,7 @@ struct arch_vcpu
 
     /* HYP configuration */
     register_t hcr_el2;
+    register_t mdcr_el2;
 
     uint32_t teecr, teehbr; /* ThumbEE, 32-bit guests only */
 #ifdef CONFIG_ARM_32
@@ -192,7 +191,7 @@ struct arch_vcpu
     struct vgic_cpu vgic;
 
     /* Timer registers  */
-    uint32_t cntkctl;
+    register_t cntkctl;
 
     struct vtimer phys_timer;
     struct vtimer virt_timer;
@@ -263,6 +262,9 @@ static inline void free_vcpu_guest_context(struct vcpu_guest_context *vgc)
 static inline void arch_vcpu_block(struct vcpu *v) {}
 
 #define arch_vm_assist_valid_mask(d) (1UL << VMASST_TYPE_runstate_update_flag)
+
+/* vPCI is not available on Arm */
+#define has_vpci(d)    ({ (void)(d); false; })
 
 #endif /* __ASM_DOMAIN_H__ */
 

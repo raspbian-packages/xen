@@ -46,6 +46,13 @@
 #define MSR_CORE_CAPABILITIES               0x000000cf
 #define  CORE_CAPS_SPLITLOCK_DETECT         (_AC(1, ULL) <<  5)
 
+#define MSR_PKG_CST_CONFIG_CONTROL          0x000000e2
+#define  NHM_C3_AUTO_DEMOTE                 (_AC(1, ULL) << 25)
+#define  NHM_C1_AUTO_DEMOTE                 (_AC(1, ULL) << 26)
+#define  ATM_LNC_C6_AUTO_DEMOTE             (_AC(1, ULL) << 25)
+#define  SNB_C3_AUTO_UNDEMOTE               (_AC(1, ULL) << 27)
+#define  SNB_C1_AUTO_UNDEMOTE               (_AC(1, ULL) << 28)
+
 #define MSR_ARCH_CAPABILITIES               0x0000010a
 #define  ARCH_CAPS_RDCL_NO                  (_AC(1, ULL) <<  0)
 #define  ARCH_CAPS_IBRS_ALL                 (_AC(1, ULL) <<  1)
@@ -71,46 +78,40 @@
 
 #define MSR_MCU_OPT_CTRL                    0x00000123
 #define  MCU_OPT_CTRL_RNGDS_MITG_DIS        (_AC(1, ULL) <<  0)
+#define  MCU_OPT_CTRL_RTM_ALLOW             (_AC(1, ULL) <<  1)
+#define  MCU_OPT_CTRL_RTM_LOCKED            (_AC(1, ULL) <<  2)
 
 #define MSR_RTIT_OUTPUT_BASE                0x00000560
 #define MSR_RTIT_OUTPUT_MASK                0x00000561
 #define MSR_RTIT_CTL                        0x00000570
+#define  RTIT_CTL_TRACE_EN                  (_AC(1, ULL) <<  0)
+#define  RTIT_CTL_CYC_EN                    (_AC(1, ULL) <<  1)
+#define  RTIT_CTL_OS                        (_AC(1, ULL) <<  2)
+#define  RTIT_CTL_USR                       (_AC(1, ULL) <<  3)
+#define  RTIT_CTL_PWR_EVT_EN                (_AC(1, ULL) <<  4)
+#define  RTIT_CTL_FUP_ON_PTW                (_AC(1, ULL) <<  5)
+#define  RTIT_CTL_FABRIC_EN                 (_AC(1, ULL) <<  6)
+#define  RTIT_CTL_CR3_FILTER                (_AC(1, ULL) <<  7)
+#define  RTIT_CTL_TOPA                      (_AC(1, ULL) <<  8)
+#define  RTIT_CTL_MTC_EN                    (_AC(1, ULL) <<  9)
+#define  RTIT_CTL_TSC_EN                    (_AC(1, ULL) << 10)
+#define  RTIT_CTL_DIS_RETC                  (_AC(1, ULL) << 11)
+#define  RTIT_CTL_PTW_EN                    (_AC(1, ULL) << 12)
+#define  RTIT_CTL_BRANCH_EN                 (_AC(1, ULL) << 13)
+#define  RTIT_CTL_MTC_FREQ                  (_AC(0xf, ULL) << 14)
+#define  RTIT_CTL_CYC_THRESH                (_AC(0xf, ULL) << 19)
+#define  RTIT_CTL_PSB_FREQ                  (_AC(0xf, ULL) << 24)
+#define  RTIT_CTL_ADDR(n)                   (_AC(0xf, ULL) << (32 + 4 * (n)))
 #define MSR_RTIT_STATUS                     0x00000571
+#define  RTIT_STATUS_FILTER_EN              (_AC(1, ULL) <<  0)
+#define  RTIT_STATUS_CONTEXT_EN             (_AC(1, ULL) <<  1)
+#define  RTIT_STATUS_TRIGGER_EN             (_AC(1, ULL) <<  2)
+#define  RTIT_STATUS_ERROR                  (_AC(1, ULL) <<  4)
+#define  RTIT_STATUS_STOPPED                (_AC(1, ULL) <<  5)
+#define  RTIT_STATUS_BYTECNT                (_AC(0x1ffff, ULL) << 32)
 #define MSR_RTIT_CR3_MATCH                  0x00000572
 #define MSR_RTIT_ADDR_A(n)                 (0x00000580 + (n) * 2)
 #define MSR_RTIT_ADDR_B(n)                 (0x00000581 + (n) * 2)
-
-/*
- * Intel Runtime Average Power Limiting (RAPL) interface.  Power plane base
- * addresses (MSR_*_POWER_LIMIT) are model specific, but have so-far been
- * consistent since their introduction in SandyBridge.
- *
- * Offsets of functionality from the power plane base is architectural, but
- * not all power planes support all functionality.
- */
-#define MSR_RAPL_POWER_UNIT                 0x00000606
-
-#define MSR_PKG_POWER_LIMIT                 0x00000610
-#define MSR_PKG_ENERGY_STATUS               0x00000611
-#define MSR_PKG_PERF_STATUS                 0x00000613
-#define MSR_PKG_POWER_INFO                  0x00000614
-
-#define MSR_DRAM_POWER_LIMIT                0x00000618
-#define MSR_DRAM_ENERGY_STATUS              0x00000619
-#define MSR_DRAM_PERF_STATUS                0x0000061b
-#define MSR_DRAM_POWER_INFO                 0x0000061c
-
-#define MSR_PP0_POWER_LIMIT                 0x00000638
-#define MSR_PP0_ENERGY_STATUS               0x00000639
-#define MSR_PP0_POLICY                      0x0000063a
-
-#define MSR_PP1_POWER_LIMIT                 0x00000640
-#define MSR_PP1_ENERGY_STATUS               0x00000641
-#define MSR_PP1_POLICY                      0x00000642
-
-/* Intel Platform-wide power interface. */
-#define MSR_PLATFORM_ENERGY_COUNTER         0x0000064d
-#define MSR_PLATFORM_POWER_LIMIT            0x0000065c
 
 #define MSR_U_CET                           0x000006a0
 #define MSR_S_CET                           0x000006a2
@@ -123,61 +124,69 @@
 #define MSR_PL3_SSP                         0x000006a7
 #define MSR_INTERRUPT_SSP_TABLE             0x000006a8
 
+#define MSR_X2APIC_FIRST                    0x00000800
+#define MSR_X2APIC_LAST                     0x00000bff
+
+#define MSR_X2APIC_TPR                      0x00000808
+#define MSR_X2APIC_PPR                      0x0000080a
+#define MSR_X2APIC_EOI                      0x0000080b
+#define MSR_X2APIC_TMICT                    0x00000838
+#define MSR_X2APIC_TMCCT                    0x00000839
+#define MSR_X2APIC_SELF                     0x0000083f
+
 #define MSR_PASID                           0x00000d93
 #define  PASID_PASID_MASK                   0x000fffff
 #define  PASID_VALID                        (_AC(1, ULL) << 31)
 
-#define MSR_F15H_CU_POWER                   0xc001007a
-#define MSR_F15H_CU_MAX_POWER               0xc001007b
+#define MSR_EFER                            0xc0000080 /* Extended Feature Enable Register */
+#define  EFER_SCE                           (_AC(1, ULL) <<  0) /* SYSCALL Enable */
+#define  EFER_LME                           (_AC(1, ULL) <<  8) /* Long Mode Enable */
+#define  EFER_LMA                           (_AC(1, ULL) << 10) /* Long Mode Active */
+#define  EFER_NXE                           (_AC(1, ULL) << 11) /* No Execute Enable */
+#define  EFER_SVME                          (_AC(1, ULL) << 12) /* Secure Virtual Machine Enable */
+#define  EFER_FFXSE                         (_AC(1, ULL) << 14) /* Fast FXSAVE/FXRSTOR */
+
+#define EFER_KNOWN_MASK \
+    (EFER_SCE | EFER_LME | EFER_LMA | EFER_NXE | EFER_SVME | EFER_FFXSE)
+
+#define MSR_STAR                            0xc0000081 /* legacy mode SYSCALL target */
+#define MSR_LSTAR                           0xc0000082 /* long mode SYSCALL target */
+#define MSR_CSTAR                           0xc0000083 /* compat mode SYSCALL target */
+#define MSR_SYSCALL_MASK                    0xc0000084 /* EFLAGS mask for syscall */
+#define MSR_FS_BASE                         0xc0000100 /* 64bit FS base */
+#define MSR_GS_BASE                         0xc0000101 /* 64bit GS base */
+#define MSR_SHADOW_GS_BASE                  0xc0000102 /* SwapGS GS shadow */
+#define MSR_TSC_AUX                         0xc0000103 /* Auxiliary TSC */
+
+#define MSR_K8_SYSCFG                       0xc0010010
+#define  SYSCFG_MTRR_FIX_DRAM_EN            (_AC(1, ULL) << 18)
+#define  SYSCFG_MTRR_FIX_DRAM_MOD_EN        (_AC(1, ULL) << 19)
+#define  SYSCFG_MTRR_VAR_DRAM_EN            (_AC(1, ULL) << 20)
+#define  SYSCFG_MTRR_TOM2_EN                (_AC(1, ULL) << 21)
+#define  SYSCFG_TOM2_FORCE_WB               (_AC(1, ULL) << 22)
+
+#define MSR_K8_IORR_BASE0                   0xc0010016
+#define MSR_K8_IORR_MASK0                   0xc0010017
+#define MSR_K8_IORR_BASE1                   0xc0010018
+#define MSR_K8_IORR_MASK1                   0xc0010019
+
+#define MSR_K8_TSEG_BASE                    0xc0010112 /* AMD doc: SMMAddr */
+#define MSR_K8_TSEG_MASK                    0xc0010113 /* AMD doc: SMMMask */
+
+#define MSR_K8_VM_CR                        0xc0010114
+#define  VM_CR_INIT_REDIRECTION             (_AC(1, ULL) <<  1)
+#define  VM_CR_SVM_DISABLE                  (_AC(1, ULL) <<  4)
 
 #define MSR_VIRT_SPEC_CTRL                  0xc001011f /* Layout matches MSR_SPEC_CTRL */
-
-#define MSR_AMD_RAPL_POWER_UNIT             0xc0010299
-#define MSR_AMD_CORE_ENERGY_STATUS          0xc001029a
-#define MSR_AMD_PKG_ENERGY_STATUS           0xc001029b
 
 /*
  * Legacy MSR constants in need of cleanup.  No new MSRs below this comment.
  */
 
-/* x86-64 specific MSRs */
-#define MSR_EFER		0xc0000080 /* extended feature register */
-#define MSR_STAR		0xc0000081 /* legacy mode SYSCALL target */
-#define MSR_LSTAR		0xc0000082 /* long mode SYSCALL target */
-#define MSR_CSTAR		0xc0000083 /* compat mode SYSCALL target */
-#define MSR_SYSCALL_MASK	0xc0000084 /* EFLAGS mask for syscall */
-#define MSR_FS_BASE		0xc0000100 /* 64bit FS base */
-#define MSR_GS_BASE		0xc0000101 /* 64bit GS base */
-#define MSR_SHADOW_GS_BASE	0xc0000102 /* SwapGS GS shadow */
-#define MSR_TSC_AUX		0xc0000103 /* Auxiliary TSC */
-
-/* EFER bits: */
-#define _EFER_SCE		0  /* SYSCALL/SYSRET */
-#define _EFER_LME		8  /* Long mode enable */
-#define _EFER_LMA		10 /* Long mode active (read-only) */
-#define _EFER_NX		11 /* No execute enable */
-#define _EFER_SVME		12 /* AMD: SVM enable */
-#define _EFER_FFXSE		14 /* AMD: Fast FXSAVE/FXRSTOR enable */
-
-#define EFER_SCE		(1<<_EFER_SCE)
-#define EFER_LME		(1<<_EFER_LME)
-#define EFER_LMA		(1<<_EFER_LMA)
-#define EFER_NX			(1<<_EFER_NX)
-#define EFER_SVME		(1<<_EFER_SVME)
-#define EFER_FFXSE		(1<<_EFER_FFXSE)
-
-#define EFER_KNOWN_MASK		(EFER_SCE | EFER_LME | EFER_LMA | EFER_NX | \
-				 EFER_SVME | EFER_FFXSE)
-
 /* Intel MSRs. Some also available on other CPUs */
 #define MSR_IA32_PERFCTR0		0x000000c1
 #define MSR_IA32_A_PERFCTR0		0x000004c1
 #define MSR_FSB_FREQ			0x000000cd
-
-#define MSR_NHM_SNB_PKG_CST_CFG_CTL	0x000000e2
-#define NHM_C3_AUTO_DEMOTE		(1UL << 25)
-#define NHM_C1_AUTO_DEMOTE		(1UL << 26)
-#define ATM_LNC_C6_AUTO_DEMOTE		(1UL << 25)
 
 #define MSR_MTRRcap			0x000000fe
 #define MTRRcap_VCNT			0x000000ff
@@ -295,14 +304,10 @@
 #define MSR_K8_TOP_MEM1			0xc001001a
 #define MSR_K7_CLK_CTL			0xc001001b
 #define MSR_K8_TOP_MEM2			0xc001001d
-#define MSR_K8_SYSCFG			0xc0010010
 
-#define K8_MTRRFIXRANGE_DRAM_ENABLE	0x00040000 /* MtrrFixDramEn bit    */
-#define K8_MTRRFIXRANGE_DRAM_MODIFY	0x00080000 /* MtrrFixDramModEn bit */
-#define K8_MTRR_RDMEM_WRMEM_MASK	0x18181818 /* Mask: RdMem|WrMem    */
-
-#define MSR_K7_HWCR			0xc0010015
 #define MSR_K8_HWCR			0xc0010015
+#define K8_HWCR_TSC_FREQ_SEL		(1ULL << 24)
+
 #define MSR_K7_FID_VID_CTL		0xc0010041
 #define MSR_K7_FID_VID_STATUS		0xc0010042
 #define MSR_K8_PSTATE_LIMIT		0xc0010061
@@ -317,7 +322,6 @@
 #define MSR_K8_PSTATE6			0xc001006A
 #define MSR_K8_PSTATE7			0xc001006B
 #define MSR_K8_ENABLE_C1E		0xc0010055
-#define MSR_K8_VM_CR			0xc0010114
 #define MSR_K8_VM_HSAVE_PA		0xc0010117
 
 #define MSR_AMD_FAM15H_EVNTSEL0		0xc0010200
@@ -338,10 +342,6 @@
 #define MSR_K8_FEATURE_MASK		0xc0011004
 #define MSR_K8_EXT_FEATURE_MASK		0xc0011005
 
-/* MSR_K8_VM_CR bits: */
-#define _K8_VMCR_SVME_DISABLE		4
-#define K8_VMCR_SVME_DISABLE		(1 << _K8_VMCR_SVME_DISABLE)
-
 /* AMD64 MSRs */
 #define MSR_AMD64_NB_CFG		0xc001001f
 #define AMD64_NB_CFG_CF8_EXT_ENABLE_BIT	46
@@ -350,6 +350,7 @@
 #define MSR_AMD64_DC_CFG		0xc0011022
 #define MSR_AMD64_DE_CFG		0xc0011029
 #define AMD64_DE_CFG_LFENCE_SERIALISE	(_AC(1, ULL) << 1)
+#define MSR_AMD64_EX_CFG		0xc001102c
 
 #define MSR_AMD64_DR0_ADDRESS_MASK	0xc0011027
 #define MSR_AMD64_DR1_ADDRESS_MASK	0xc0011019
@@ -447,16 +448,6 @@
 #define IA32_FEATURE_CONTROL_LMCE_ON                  0x100000
 
 #define MSR_IA32_TSC_ADJUST		0x0000003b
-
-#define MSR_X2APIC_FIRST                0x00000800
-#define MSR_X2APIC_LAST                 0x00000bff
-
-#define MSR_X2APIC_TPR                  0x00000808
-#define MSR_X2APIC_PPR                  0x0000080a
-#define MSR_X2APIC_EOI                  0x0000080b
-#define MSR_X2APIC_TMICT                0x00000838
-#define MSR_X2APIC_TMCCT                0x00000839
-#define MSR_X2APIC_SELF                 0x0000083f
 
 #define MSR_IA32_UCODE_WRITE		0x00000079
 #define MSR_IA32_UCODE_REV		0x0000008b

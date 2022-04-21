@@ -8,6 +8,7 @@
       - binaries/
       - xen-config
       - '*.log'
+      - '*/*.log'
     when: always
   except:
     - master
@@ -117,6 +118,33 @@
   variables:
     <<: *clang
 
+.arm32-cross-build-tmpl:
+  <<: *build
+  variables:
+    XEN_TARGET_ARCH: arm32
+  tags:
+    - x86_64
+
+.arm32-cross-build:
+  extends: .arm32-cross-build-tmpl
+  variables:
+    debug: n
+
+.arm32-cross-build-debug:
+  extends: .arm32-cross-build-tmpl
+  variables:
+    debug: y
+
+.gcc-arm32-cross-build:
+  extends: .arm32-cross-build
+  variables:
+    <<: *gcc
+
+.gcc-arm32-cross-build-debug:
+  extends: .arm32-cross-build-debug
+  variables:
+    <<: *gcc
+
 .arm64-build-tmpl:
   <<: *build
   variables:
@@ -175,16 +203,6 @@ centos-7-gcc-debug:
   extends: .gcc-x86-64-build-debug
   variables:
     CONTAINER: centos:7
-
-centos-6-gcc:
-  extends: .gcc-x86-64-build
-  variables:
-    CONTAINER: centos:6
-
-centos-6-gcc-debug:
-  extends: .gcc-x86-64-build-debug
-  variables:
-    CONTAINER: centos:6
 
 debian-jessie-clang:
   extends: .clang-x86-64-build
@@ -400,6 +418,26 @@ ubuntu-bionic-gcc-debug:
   variables:
     CONTAINER: ubuntu:bionic
 
+ubuntu-focal-gcc:
+  extends: .gcc-x86-64-build
+  variables:
+    CONTAINER: ubuntu:focal
+
+ubuntu-focal-gcc-debug:
+  extends: .gcc-x86-64-build-debug
+  variables:
+    CONTAINER: ubuntu:focal
+
+ubuntu-focal-clang:
+  extends: .clang-x86-64-build
+  variables:
+    CONTAINER: ubuntu:focal
+
+ubuntu-focal-clang-debug:
+  extends: .clang-x86-64-build-debug
+  variables:
+    CONTAINER: ubuntu:focal
+
 opensuse-leap-clang:
   extends: .clang-x86-64-build
   variables:
@@ -419,6 +457,74 @@ opensuse-leap-gcc-debug:
   extends: .gcc-x86-64-build-debug
   variables:
     CONTAINER: suse:opensuse-leap
+
+opensuse-tumbleweed-clang:
+  extends: .clang-x86-64-build
+  variables:
+    CONTAINER: suse:opensuse-tumbleweed
+  allow_failure: true
+
+opensuse-tumbleweed-clang-debug:
+  extends: .clang-x86-64-build-debug
+  variables:
+    CONTAINER: suse:opensuse-tumbleweed
+  allow_failure: true
+
+opensuse-tumbleweed-gcc:
+  extends: .gcc-x86-64-build
+  variables:
+    CONTAINER: suse:opensuse-tumbleweed
+  allow_failure: true
+
+opensuse-tumbleweed-gcc-debug:
+  extends: .gcc-x86-64-build-debug
+  variables:
+    CONTAINER: suse:opensuse-tumbleweed
+  allow_failure: true
+
+alpine-3.12-gcc:
+  extends: .gcc-x86-64-build
+  variables:
+    CONTAINER: alpine:3.12
+
+alpine-3.12-gcc-debug:
+  extends: .gcc-x86-64-build-debug
+  variables:
+    CONTAINER: alpine:3.12
+
+alpine-3.12-clang:
+  extends: .clang-x86-64-build
+  variables:
+    CONTAINER: alpine:3.12
+
+alpine-3.12-clang-debug:
+  extends: .clang-x86-64-build-debug
+  variables:
+    CONTAINER: alpine:3.12
+
+# Arm32 cross-build
+
+debian-unstable-gcc-arm32:
+  extends: .gcc-arm32-cross-build
+  variables:
+    CONTAINER: debian:unstable-arm32-gcc
+
+debian-unstable-gcc-arm32-debug:
+  extends: .gcc-arm32-cross-build-debug
+  variables:
+    CONTAINER: debian:unstable-arm32-gcc
+
+debian-unstable-gcc-arm32-randconfig:
+  extends: .gcc-arm32-cross-build
+  variables:
+    CONTAINER: debian:unstable-arm32-gcc
+    RANDCONFIG: y
+
+debian-unstable-gcc-arm32-debug-randconfig:
+  extends: .gcc-arm32-cross-build-debug
+  variables:
+    CONTAINER: debian:unstable-arm32-gcc
+    RANDCONFIG: y
 
 # Arm builds
 
@@ -444,3 +550,73 @@ debian-unstable-gcc-debug-arm64-randconfig:
     CONTAINER: debian:unstable-arm64v8
     RANDCONFIG: y
 
+alpine-3.12-gcc-arm64:
+  extends: .gcc-arm64-build
+  variables:
+    CONTAINER: alpine:3.12-arm64v8
+
+alpine-3.12-gcc-debug-arm64:
+  extends: .gcc-arm64-build-debug
+  variables:
+    CONTAINER: alpine:3.12-arm64v8
+
+
+# Arm test artifacts
+
+alpine-3.12-arm64-rootfs-export:
+  stage: build
+  image: registry.gitlab.com/xen-project/xen/tests-artifacts/alpine:3.12-arm64v8
+  script:
+    - mkdir binaries && cp /initrd.tar.gz binaries/initrd.tar.gz
+  artifacts:
+    paths:
+      - binaries/initrd.tar.gz
+  tags:
+    - arm64
+
+kernel-5.9.9-arm64-export:
+  stage: build
+  image: registry.gitlab.com/xen-project/xen/tests-artifacts/kernel:5.9.9-arm64v8
+  script:
+    - mkdir binaries && cp /Image binaries/Image
+  artifacts:
+    paths:
+      - binaries/Image
+  tags:
+    - arm64
+
+qemu-system-aarch64-5.2.0-arm64-export:
+  stage: build
+  image: registry.gitlab.com/xen-project/xen/tests-artifacts/qemu-system-aarch64:5.2.0-arm64v8
+  script:
+    - mkdir binaries && cp /qemu-system-aarch64 binaries/qemu-system-aarch64
+  artifacts:
+    paths:
+      - binaries/qemu-system-aarch64
+  tags:
+    - arm64
+
+
+# x86_64 test artifacts
+
+alpine-3.12-rootfs-export:
+  stage: build
+  image: registry.gitlab.com/xen-project/xen/tests-artifacts/alpine:3.12
+  script:
+    - mkdir binaries && cp /initrd.tar.gz binaries/initrd.tar.gz
+  artifacts:
+    paths:
+      - binaries/initrd.tar.gz
+  tags:
+    - x86_64
+
+kernel-5.10.74-export:
+  stage: build
+  image: registry.gitlab.com/xen-project/xen/tests-artifacts/kernel:5.10.74
+  script:
+    - mkdir binaries && cp /bzImage binaries/bzImage
+  artifacts:
+    paths:
+      - binaries/bzImage
+  tags:
+    - x86_64

@@ -27,8 +27,10 @@
 #include <xen/virtual_region.h>
 #include <xen/watchdog.h>
 #include <public/version.h>
+#ifdef CONFIG_COMPAT
 #include <compat/platform.h>
 #include <compat/xen.h>
+#endif
 #include <xen/bitops.h>
 #include <asm/smp.h>
 #include <asm/processor.h>
@@ -78,6 +80,7 @@ unsigned long __read_mostly cr4_pv32_mask;
 /* "acpi=force":  Override the disable blacklist.                   */
 /* "acpi=ht":     Limit ACPI just to boot-time to enable HT.        */
 /* "acpi=noirq":  Disables ACPI interrupt routing.                  */
+/* "acpi=verbose": Enables more verbose ACPI boot time logging.     */
 static int parse_acpi_param(const char *s);
 custom_param("acpi", parse_acpi_param);
 
@@ -216,9 +219,6 @@ static char __initdata acpi_param[10] = "";
 
 static int __init parse_acpi_param(const char *s)
 {
-    /* Save the parameter so it can be propagated to domain0. */
-    safe_strcpy(acpi_param, s);
-
     /* Interpret the parameter for use within Xen. */
     if ( !parse_bool(s, NULL) )
     {
@@ -240,8 +240,16 @@ static int __init parse_acpi_param(const char *s)
     {
         acpi_noirq_set();
     }
+    else if ( !strcmp(s, "verbose") )
+    {
+        opt_acpi_verbose = true;
+        return 0;
+    }
     else
         return -EINVAL;
+
+    /* Save the parameter so it can be propagated to domain0. */
+    safe_strcpy(acpi_param, s);
 
     return 0;
 }
@@ -619,7 +627,7 @@ static inline bool using_2M_mapping(void)
            !l1_table_offset((unsigned long)__2M_rwdata_end);
 }
 
-static void noinline init_done(void)
+static void noreturn init_done(void)
 {
     void *va;
     unsigned long start, end;
@@ -685,6 +693,15 @@ static void __init noreturn reinit_bsp_stack(void)
 }
 
 /*
+ * x86 early command line parsing in xen/arch/x86/boot/cmdline.c
+ * has options that are only used during the very initial boot process,
+ * so they can be ignored now.
+ */
+ignore_param("real-mode");
+ignore_param("edd");
+ignore_param("edid");
+
+/*
  * Some scripts add "placeholder" to work around a grub error where it ate the
  * first parameter.
  */
@@ -738,7 +755,11 @@ static struct domain *__init create_dom0(const module_t *image,
         .max_evtchn_port = -1,
         .max_grant_frames = -1,
         .max_maptrack_frames = -1,
+        .grant_opts = XEN_DOMCTL_GRANT_version(opt_gnttab_max_version),
         .max_vcpus = dom0_max_vcpus(),
+        .arch = {
+            .misc_flags = opt_dom0_msr_relaxed ? XEN_X86_MSR_RELAXED : 0,
+        },
     };
     struct domain *d;
     char *cmdline;
@@ -826,6 +847,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     module_t *mod;
     unsigned long nr_pages, raw_max_page, modules_headroom, module_map[1];
     int i, j, e820_warn = 0, bytes = 0;
+    unsigned long eb_start, eb_end;
     bool acpi_boot_table_init_done = false, relocated = false;
     int ret;
     struct ns16550_defaults ns16550 = {
@@ -1054,28 +1076,6 @@ void __init noreturn __start_xen(unsigned long mbi_p)
             bytes += map->size + 4;
         }
     }
-    else if ( bootsym(lowmem_kb) )
-    {
-        memmap_type = "Xen-e801";
-        e820_raw.map[0].addr = 0;
-        e820_raw.map[0].size = bootsym(lowmem_kb) << 10;
-        e820_raw.map[0].type = E820_RAM;
-        e820_raw.map[1].addr = 0x100000;
-        e820_raw.map[1].size = bootsym(highmem_kb) << 10;
-        e820_raw.map[1].type = E820_RAM;
-        e820_raw.nr_map = 2;
-    }
-    else if ( mbi->flags & MBI_MEMLIMITS )
-    {
-        memmap_type = "Multiboot-e801";
-        e820_raw.map[0].addr = 0;
-        e820_raw.map[0].size = mbi->mem_lower << 10;
-        e820_raw.map[0].type = E820_RAM;
-        e820_raw.map[1].addr = 0x100000;
-        e820_raw.map[1].size = mbi->mem_upper << 10;
-        e820_raw.map[1].type = E820_RAM;
-        e820_raw.nr_map = 2;
-    }
     else
         panic("Bootloader provided no memory information\n");
 
@@ -1141,7 +1141,8 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
         /*
          * This needs to remain in sync with xen_in_range() and the
-         * respective reserve_e820_ram() invocation below.
+         * respective reserve_e820_ram() invocation below. No need to
+         * query efi_boot_mem_unused() here, though.
          */
         mod[mbi->mods_count].mod_start = virt_to_mfn(_stext);
         mod[mbi->mods_count].mod_end = __2M_rwdata_end - _stext;
@@ -1252,7 +1253,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
                     continue;
                 *pl4e = l4e_from_intpte(l4e_get_intpte(*pl4e) +
                                         xen_phys_start);
-                pl3e = l4e_to_l3e(*pl4e);
+                pl3e = __va(l4e_get_paddr(*pl4e));
                 for ( j = 0; j < L3_PAGETABLE_ENTRIES; j++, pl3e++ )
                 {
                     /* Not present, 1GB mapping, or already relocated? */
@@ -1262,7 +1263,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
                         continue;
                     *pl3e = l3e_from_intpte(l3e_get_intpte(*pl3e) +
                                             xen_phys_start);
-                    pl2e = l3e_to_l2e(*pl3e);
+                    pl2e = __va(l3e_get_paddr(*pl3e));
                     for ( k = 0; k < L2_PAGETABLE_ENTRIES; k++, pl2e++ )
                     {
                         /* Not present, PSE, or already relocated? */
@@ -1413,8 +1414,18 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     if ( !xen_phys_start )
         panic("Not enough memory to relocate Xen\n");
 
+    /* FIXME: Putting a hole in .bss would shatter the large page mapping. */
+    if ( using_2M_mapping() )
+        efi_boot_mem_unused(NULL, NULL);
+
     /* This needs to remain in sync with xen_in_range(). */
-    reserve_e820_ram(&boot_e820, __pa(_stext), __pa(__2M_rwdata_end));
+    if ( efi_boot_mem_unused(&eb_start, &eb_end) )
+    {
+        reserve_e820_ram(&boot_e820, __pa(_stext), __pa(eb_start));
+        reserve_e820_ram(&boot_e820, __pa(eb_end), __pa(__2M_rwdata_end));
+    }
+    else
+        reserve_e820_ram(&boot_e820, __pa(_stext), __pa(__2M_rwdata_end));
 
     /* Late kexec reservation (dynamic start address). */
     kexec_reserve_area(&boot_e820);
@@ -1601,21 +1612,23 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     total_pages = nr_pages;
 
     /* Sanity check for unwanted bloat of certain hypercall structures. */
-    BUILD_BUG_ON(sizeof(((struct xen_platform_op *)0)->u) !=
-                 sizeof(((struct xen_platform_op *)0)->u.pad));
-    BUILD_BUG_ON(sizeof(((struct xen_domctl *)0)->u) !=
-                 sizeof(((struct xen_domctl *)0)->u.pad));
-    BUILD_BUG_ON(sizeof(((struct xen_sysctl *)0)->u) !=
-                 sizeof(((struct xen_sysctl *)0)->u.pad));
+    BUILD_BUG_ON(sizeof_field(struct xen_platform_op, u) !=
+                 sizeof_field(struct xen_platform_op, u.pad));
+    BUILD_BUG_ON(sizeof_field(struct xen_domctl, u) !=
+                 sizeof_field(struct xen_domctl, u.pad));
+    BUILD_BUG_ON(sizeof_field(struct xen_sysctl, u) !=
+                 sizeof_field(struct xen_sysctl, u.pad));
 
     BUILD_BUG_ON(sizeof(start_info_t) > PAGE_SIZE);
     BUILD_BUG_ON(sizeof(shared_info_t) > PAGE_SIZE);
     BUILD_BUG_ON(sizeof(struct vcpu_info) != 64);
 
-    BUILD_BUG_ON(sizeof(((struct compat_platform_op *)0)->u) !=
-                 sizeof(((struct compat_platform_op *)0)->u.pad));
+#ifdef CONFIG_COMPAT
+    BUILD_BUG_ON(sizeof_field(struct compat_platform_op, u) !=
+                 sizeof_field(struct compat_platform_op, u.pad));
     BUILD_BUG_ON(sizeof(start_info_compat_t) > PAGE_SIZE);
     BUILD_BUG_ON(sizeof(struct compat_vcpu_info) != 64);
+#endif
 
     /* Check definitions in public headers match internal defs. */
     BUILD_BUG_ON(__HYPERVISOR_VIRT_START != HYPERVISOR_VIRT_START);
@@ -1783,6 +1796,9 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     if ( boot_cpu_has(X86_FEATURE_FSGSBASE) )
         set_in_cr4(X86_CR4_FSGSBASE);
 
+    if ( boot_cpu_has(X86_FEATURE_PKU) )
+        set_in_cr4(X86_CR4_PKE);
+
     if ( opt_invpcid && cpu_has_invpcid )
         use_invpcid = true;
 
@@ -1928,9 +1944,12 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     if ( bsp_delay_spec_ctrl )
     {
-        get_cpu_info()->spec_ctrl_flags &= ~SCF_use_shadow;
+        struct cpu_info *info = get_cpu_info();
+
+        info->spec_ctrl_flags &= ~SCF_use_shadow;
         barrier();
         wrmsrl(MSR_SPEC_CTRL, default_xen_spec_ctrl);
+        info->last_spec_ctrl = default_xen_spec_ctrl;
     }
 
     /* Jump to the 1:1 virtual mappings of cpu0_stack. */
@@ -1975,7 +1994,7 @@ int __hwdom_init xen_in_range(unsigned long mfn)
     paddr_t start, end;
     int i;
 
-    enum { region_s3, region_ro, region_rw, nr_regions };
+    enum { region_s3, region_ro, region_rw, region_bss, nr_regions };
     static struct {
         paddr_t s, e;
     } xen_regions[nr_regions] __hwdom_initdata;
@@ -2000,6 +2019,14 @@ int __hwdom_init xen_in_range(unsigned long mfn)
         /* hypervisor .data + .bss */
         xen_regions[region_rw].s = __pa(&__2M_rwdata_start);
         xen_regions[region_rw].e = __pa(&__2M_rwdata_end);
+        if ( efi_boot_mem_unused(&start, &end) )
+        {
+            ASSERT(__pa(start) >= xen_regions[region_rw].s);
+            ASSERT(__pa(end) <= xen_regions[region_rw].e);
+            xen_regions[region_rw].e = __pa(start);
+            xen_regions[region_bss].s = __pa(end);
+            xen_regions[region_bss].e = __pa(&__2M_rwdata_end);
+        }
     }
 
     start = (paddr_t)mfn << PAGE_SHIFT;

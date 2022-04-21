@@ -51,13 +51,16 @@
 #include <asm/platform.h>
 #include <asm/procinfo.h>
 #include <asm/setup.h>
-#include <asm/tee/tee.h>
 #include <xsm/xsm.h>
 #include <asm/acpi.h>
 
 struct bootinfo __initdata bootinfo;
 
-struct cpuinfo_arm __read_mostly boot_cpu_data;
+/*
+ * Sanitized version of cpuinfo containing only features available on all
+ * cores (only on arm64 as there is no sanitization support on arm32).
+ */
+struct cpuinfo_arm __read_mostly system_cpuinfo;
 
 #ifdef CONFIG_ACPI
 bool __read_mostly acpi_disabled;
@@ -101,7 +104,7 @@ static const char * __initdata processor_implementers[] = {
 static void __init processor_id(void)
 {
     const char *implementer = "Unknown";
-    struct cpuinfo_arm *c = &boot_cpu_data;
+    struct cpuinfo_arm *c = &system_cpuinfo;
 
     identify_cpu(c);
     current_cpu_data = *c;
@@ -114,14 +117,14 @@ static void __init processor_id(void)
         printk("Huh, cpu architecture %x, expected 0xf (defined by cpuid)\n",
                c->midr.architecture);
 
-    printk("Processor: %08"PRIx32": \"%s\", variant: 0x%x, part 0x%03x, rev 0x%x\n",
-           c->midr.bits, implementer,
+    printk("Processor: %"PRIregister": \"%s\", variant: 0x%x, part 0x%03x,"
+           "rev 0x%x\n", c->midr.bits, implementer,
            c->midr.variant, c->midr.part_number, c->midr.revision);
 
 #if defined(CONFIG_ARM_64)
     printk("64-bit Execution:\n");
     printk("  Processor Features: %016"PRIx64" %016"PRIx64"\n",
-           boot_cpu_data.pfr64.bits[0], boot_cpu_data.pfr64.bits[1]);
+           system_cpuinfo.pfr64.bits[0], system_cpuinfo.pfr64.bits[1]);
     printk("    Exception Levels: EL3:%s EL2:%s EL1:%s EL0:%s\n",
            cpu_has_el3_32 ? "64+32" : cpu_has_el3_64 ? "64" : "No",
            cpu_has_el2_32 ? "64+32" : cpu_has_el2_64 ? "64" : "No",
@@ -132,14 +135,26 @@ static void __init processor_id(void)
            cpu_has_simd ? " AdvancedSIMD" : "",
            cpu_has_gicv3 ? " GICv3-SysReg" : "");
 
+    /* Warn user if we find unknown floating-point features */
+    if ( cpu_has_fp && (boot_cpu_feature64(fp) >= 2) )
+        printk(XENLOG_WARNING "WARNING: Unknown Floating-point ID:%d, "
+               "this may result in corruption on the platform\n",
+               boot_cpu_feature64(fp));
+
+    /* Warn user if we find unknown AdvancedSIMD features */
+    if ( cpu_has_simd && (boot_cpu_feature64(simd) >= 2) )
+        printk(XENLOG_WARNING "WARNING: Unknown AdvancedSIMD ID:%d, "
+               "this may result in corruption on the platform\n",
+               boot_cpu_feature64(simd));
+
     printk("  Debug Features: %016"PRIx64" %016"PRIx64"\n",
-           boot_cpu_data.dbg64.bits[0], boot_cpu_data.dbg64.bits[1]);
+           system_cpuinfo.dbg64.bits[0], system_cpuinfo.dbg64.bits[1]);
     printk("  Auxiliary Features: %016"PRIx64" %016"PRIx64"\n",
-           boot_cpu_data.aux64.bits[0], boot_cpu_data.aux64.bits[1]);
+           system_cpuinfo.aux64.bits[0], system_cpuinfo.aux64.bits[1]);
     printk("  Memory Model Features: %016"PRIx64" %016"PRIx64"\n",
-           boot_cpu_data.mm64.bits[0], boot_cpu_data.mm64.bits[1]);
+           system_cpuinfo.mm64.bits[0], system_cpuinfo.mm64.bits[1]);
     printk("  ISA Features:  %016"PRIx64" %016"PRIx64"\n",
-           boot_cpu_data.isa64.bits[0], boot_cpu_data.isa64.bits[1]);
+           system_cpuinfo.isa64.bits[0], system_cpuinfo.isa64.bits[1]);
 #endif
 
     /*
@@ -149,8 +164,8 @@ static void __init processor_id(void)
     if ( cpu_has_aarch32 )
     {
         printk("32-bit Execution:\n");
-        printk("  Processor Features: %08"PRIx32":%08"PRIx32"\n",
-               boot_cpu_data.pfr32.bits[0], boot_cpu_data.pfr32.bits[1]);
+        printk("  Processor Features: %"PRIregister":%"PRIregister"\n",
+               system_cpuinfo.pfr32.bits[0], system_cpuinfo.pfr32.bits[1]);
         printk("    Instruction Sets:%s%s%s%s%s%s\n",
                cpu_has_aarch32 ? " AArch32" : "",
                cpu_has_arm ? " A32" : "",
@@ -162,18 +177,19 @@ static void __init processor_id(void)
                cpu_has_gentimer ? " GenericTimer" : "",
                cpu_has_security ? " Security" : "");
 
-        printk("  Debug Features: %08"PRIx32"\n",
-               boot_cpu_data.dbg32.bits[0]);
-        printk("  Auxiliary Features: %08"PRIx32"\n",
-               boot_cpu_data.aux32.bits[0]);
-        printk("  Memory Model Features: "
-               "%08"PRIx32" %08"PRIx32" %08"PRIx32" %08"PRIx32"\n",
-               boot_cpu_data.mm32.bits[0], boot_cpu_data.mm32.bits[1],
-               boot_cpu_data.mm32.bits[2], boot_cpu_data.mm32.bits[3]);
-        printk(" ISA Features: %08x %08x %08x %08x %08x %08x\n",
-               boot_cpu_data.isa32.bits[0], boot_cpu_data.isa32.bits[1],
-               boot_cpu_data.isa32.bits[2], boot_cpu_data.isa32.bits[3],
-               boot_cpu_data.isa32.bits[4], boot_cpu_data.isa32.bits[5]);
+        printk("  Debug Features: %"PRIregister"\n",
+               system_cpuinfo.dbg32.bits[0]);
+        printk("  Auxiliary Features: %"PRIregister"\n",
+               system_cpuinfo.aux32.bits[0]);
+        printk("  Memory Model Features: %"PRIregister" %"PRIregister"\n"
+               "                         %"PRIregister" %"PRIregister"\n",
+               system_cpuinfo.mm32.bits[0], system_cpuinfo.mm32.bits[1],
+               system_cpuinfo.mm32.bits[2], system_cpuinfo.mm32.bits[3]);
+        printk("  ISA Features: %"PRIregister" %"PRIregister" %"PRIregister"\n"
+               "                %"PRIregister" %"PRIregister" %"PRIregister"\n",
+               system_cpuinfo.isa32.bits[0], system_cpuinfo.isa32.bits[1],
+               system_cpuinfo.isa32.bits[2], system_cpuinfo.isa32.bits[3],
+               system_cpuinfo.isa32.bits[4], system_cpuinfo.isa32.bits[5]);
     }
     else
     {
@@ -597,6 +613,29 @@ static void __init init_pdx(void)
     }
 }
 
+/* Static memory initialization */
+static void __init init_staticmem_pages(void)
+{
+#ifdef CONFIG_STATIC_MEMORY
+    unsigned int bank;
+
+    for ( bank = 0 ; bank < bootinfo.reserved_mem.nr_banks; bank++ )
+    {
+        if ( bootinfo.reserved_mem.bank[bank].xen_domain )
+        {
+            mfn_t bank_start = _mfn(PFN_UP(bootinfo.reserved_mem.bank[bank].start));
+            unsigned long bank_pages = PFN_DOWN(bootinfo.reserved_mem.bank[bank].size);
+            mfn_t bank_end = mfn_add(bank_start, bank_pages);
+
+            if ( mfn_x(bank_end) <= mfn_x(bank_start) )
+                return;
+
+            free_staticmem_pages(mfn_to_page(bank_start), bank_pages, false);
+        }
+    }
+#endif
+}
+
 #ifdef CONFIG_ARM_32
 static void __init setup_mm(void)
 {
@@ -611,7 +650,7 @@ static void __init setup_mm(void)
         panic("No memory bank\n");
 
     /* We only supports instruction caches implementing the IVIPT extension. */
-    if ( ((ctr >> CTR_L1Ip_SHIFT) & CTR_L1Ip_MASK) == CTR_L1Ip_AIVIVT )
+    if ( ((ctr >> CTR_L1IP_SHIFT) & CTR_L1IP_MASK) == ICACHE_POLICY_AIVIVT )
         panic("AIVIVT instruction cache not supported\n");
 
     init_pdx();
@@ -724,6 +763,8 @@ static void __init setup_mm(void)
     /* Add xenheap memory that was not already added to the boot allocator. */
     init_xenheap_pages(mfn_to_maddr(xenheap_mfn_start),
                        mfn_to_maddr(xenheap_mfn_end));
+
+    init_staticmem_pages();
 }
 #else /* CONFIG_ARM_64 */
 static void __init setup_mm(void)
@@ -777,8 +818,42 @@ static void __init setup_mm(void)
 
     setup_frametable_mappings(ram_start, ram_end);
     max_page = PFN_DOWN(ram_end);
+
+    init_staticmem_pages();
 }
 #endif
+
+static bool __init is_dom0less_mode(void)
+{
+    struct bootmodules *mods = &bootinfo.modules;
+    struct bootmodule *mod;
+    unsigned int i;
+    bool dom0found = false;
+    bool domUfound = false;
+
+    /* Look into the bootmodules */
+    for ( i = 0 ; i < mods->nr_mods ; i++ )
+    {
+        mod = &mods->module[i];
+        /* Find if dom0 and domU kernels are present */
+        if ( mod->kind == BOOTMOD_KERNEL )
+        {
+            if ( mod->domU == false )
+            {
+                dom0found = true;
+                break;
+            }
+            else
+                domUfound = true;
+        }
+    }
+
+    /*
+     * If there is no dom0 kernel but at least one domU, then we are in
+     * dom0less mode
+     */
+    return ( !dom0found && domUfound );
+}
 
 size_t __read_mostly dcache_line_bytes;
 
@@ -790,13 +865,7 @@ void __init start_xen(unsigned long boot_phys_offset,
     int cpus, i;
     const char *cmdline;
     struct bootmodule *xen_bootmodule;
-    struct domain *dom0, *d;
-    struct xen_domctl_createdomain dom0_cfg = {
-        .flags = XEN_DOMCTL_CDF_hvm | XEN_DOMCTL_CDF_hap,
-        .max_evtchn_port = -1,
-        .max_grant_frames = gnttab_dom0_frames(),
-        .max_maptrack_frames = -1,
-    };
+    struct domain *d;
     int rc;
 
     dcache_line_bytes = read_dcache_line_bytes();
@@ -930,6 +999,9 @@ void __init start_xen(unsigned long boot_phys_offset,
     printk("Brought up %ld CPUs\n", (long)num_online_cpus());
     /* TODO: smp_cpus_done(); */
 
+    /* This should be done in a vpmu driver but we do not have one yet. */
+    vpmu_is_available = cpu_has_pmu;
+
     /*
      * The IOMMU subsystem must be initialized before P2M as we need
      * to gather requirements regarding the maximum IPA bits supported by
@@ -951,27 +1023,10 @@ void __init start_xen(unsigned long boot_phys_offset,
     enable_errata_workarounds();
 
     /* Create initial domain 0. */
-    /* The vGIC for DOM0 is exactly emulating the hardware GIC */
-    dom0_cfg.arch.gic_version = XEN_DOMCTL_CONFIG_GIC_NATIVE;
-    /*
-     * Xen vGIC supports a maximum of 992 interrupt lines.
-     * 32 are substracted to cover local IRQs.
-     */
-    dom0_cfg.arch.nr_spis = min(gic_number_lines(), (unsigned int) 992) - 32;
-    if ( gic_number_lines() > 992 )
-        printk(XENLOG_WARNING "Maximum number of vGIC IRQs exceeded.\n");
-    dom0_cfg.arch.tee_type = tee_get_type();
-    dom0_cfg.max_vcpus = dom0_max_vcpus();
-
-    if ( iommu_enabled )
-        dom0_cfg.flags |= XEN_DOMCTL_CDF_iommu;
-
-    dom0 = domain_create(0, &dom0_cfg, true);
-    if ( IS_ERR(dom0) || (alloc_dom0_vcpu0(dom0) == NULL) )
-        panic("Error creating domain 0\n");
-
-    if ( construct_dom0(dom0) != 0)
-        panic("Could not set up DOM0 guest OS\n");
+    if ( !is_dom0less_mode() )
+        create_dom0();
+    else
+        printk(XENLOG_INFO "Xen dom0less mode detected\n");
 
     if ( acpi_disabled )
         create_domUs();

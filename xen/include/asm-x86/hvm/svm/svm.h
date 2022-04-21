@@ -45,17 +45,21 @@ static inline void svm_invlpga(unsigned long linear, uint32_t asid)
         "a" (linear), "c" (asid));
 }
 
+struct cpu_user_regs;
+struct vcpu;
+
 unsigned long *svm_msrbit(unsigned long *msr_bitmap, uint32_t msr);
 void __update_guest_eip(struct cpu_user_regs *regs, unsigned int inst_len);
 void svm_update_guest_cr(struct vcpu *, unsigned int cr, unsigned int flags);
 
 /*
- * PV context switch helper. Calls with zero ldt_base request a prefetch of
- * the VMCB area to be loaded from, instead of an actual load of state.
+ * PV context switch helpers.  Prefetching the VMCB area itself has been shown
+ * to be useful for performance.
  *
  * Must only be used for NUL FS/GS, as the segment attributes/limits are not
  * read from the GDT/LDT.
  */
+void svm_load_segs_prefetch(void);
 bool svm_load_segs(unsigned int ldt_ents, unsigned long ldt_base,
                    unsigned long fs_base, unsigned long gs_base,
                    unsigned long gs_shadow);
@@ -74,6 +78,7 @@ extern u32 svm_feature_flags;
 #define SVM_FEATURE_PAUSETHRESH   12 /* Pause intercept filter support */
 #define SVM_FEATURE_VLOADSAVE     15 /* virtual vmload/vmsave */
 #define SVM_FEATURE_VGIF          16 /* Virtual GIF */
+#define SVM_FEATURE_SSS           19 /* NPT Supervisor Shadow Stacks */
 #define SVM_FEATURE_SPEC_CTRL     20 /* MSR_SPEC_CTRL virtualisation */
 
 #define cpu_has_svm_feature(f) (svm_feature_flags & (1u << (f)))
@@ -89,6 +94,7 @@ extern u32 svm_feature_flags;
 #define cpu_has_pause_thresh  cpu_has_svm_feature(SVM_FEATURE_PAUSETHRESH)
 #define cpu_has_tsc_ratio     cpu_has_svm_feature(SVM_FEATURE_TSCRATEMSR)
 #define cpu_has_svm_vloadsave cpu_has_svm_feature(SVM_FEATURE_VLOADSAVE)
+#define cpu_has_svm_sss       cpu_has_svm_feature(SVM_FEATURE_SSS)
 #define cpu_has_svm_spec_ctrl cpu_has_svm_feature(SVM_FEATURE_SPEC_CTRL)
 
 #define SVM_PAUSEFILTER_INIT    4000

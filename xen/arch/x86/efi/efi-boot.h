@@ -86,10 +86,12 @@ static void __init efi_arch_relocate_image(unsigned long delta)
                 }
                 break;
             case PE_BASE_RELOC_DIR64:
-                if ( in_page_tables(addr) )
-                    blexit(L"Unexpected relocation type");
                 if ( delta )
+                {
                     *(u64 *)addr += delta;
+                    if ( in_page_tables(addr) )
+                        *(u64 *)addr += xen_phys_start;
+                }
                 break;
             default:
                 blexit(L"Unsupported relocation type");
@@ -272,13 +274,20 @@ static void __init noreturn efi_arch_post_exit_boot(void)
     unreachable();
 }
 
-static void __init efi_arch_cfg_file_early(EFI_FILE_HANDLE dir_handle, char *section)
+static void __init efi_arch_cfg_file_early(const EFI_LOADED_IMAGE *image,
+                                           EFI_FILE_HANDLE dir_handle,
+                                           const char *section)
 {
 }
 
-static void __init efi_arch_cfg_file_late(EFI_FILE_HANDLE dir_handle, char *section)
+static void __init efi_arch_cfg_file_late(const EFI_LOADED_IMAGE *image,
+                                          EFI_FILE_HANDLE dir_handle,
+                                          const char *section)
 {
     union string name;
+
+    if ( read_section(image, L"ucode", &ucode, NULL) )
+        return;
 
     name.s = get_value(&cfg, section, "ucode");
     if ( !name.s )
@@ -294,7 +303,7 @@ static void __init efi_arch_cfg_file_late(EFI_FILE_HANDLE dir_handle, char *sect
 
 static void __init efi_arch_handle_cmdline(CHAR16 *image_name,
                                            CHAR16 *cmdline_options,
-                                           char *cfgfile_options)
+                                           const char *cfgfile_options)
 {
     union string name;
 
@@ -635,8 +644,9 @@ static void __init efi_arch_memory_setup(void)
 #undef l2_4G_offset
 }
 
-static void __init efi_arch_handle_module(struct file *file, const CHAR16 *name,
-                                          char *options)
+static void __init efi_arch_handle_module(const struct file *file,
+                                          const CHAR16 *name,
+                                          const char *options)
 {
     union string local_name;
     void *ptr;
@@ -682,13 +692,13 @@ static void __init efi_arch_cpu(void)
         caps[cpufeat_word(X86_FEATURE_SYSCALL)] = cpuid_edx(0x80000001);
 
         if ( cpu_has_nx )
-            trampoline_efer |= EFER_NX;
+            trampoline_efer |= EFER_NXE;
     }
 }
 
 static void __init efi_arch_blexit(void)
 {
-    if ( ucode.addr )
+    if ( ucode.need_to_free )
         efi_bs->FreePages(ucode.addr, PFN_UP(ucode.size));
 }
 

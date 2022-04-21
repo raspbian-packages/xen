@@ -110,12 +110,6 @@ static int parse_pcid(const char *s)
     return rc;
 }
 
-static void noreturn continue_nonidle_domain(void)
-{
-    check_wakeup_from_wait();
-    reset_stack_and_jump(ret_from_intr);
-}
-
 static int setup_compat_l4(struct vcpu *v)
 {
     struct page_info *pg;
@@ -188,7 +182,21 @@ unsigned long pv_make_cr4(const struct vcpu *v)
 {
     const struct domain *d = v->domain;
     unsigned long cr4 = mmu_cr4_features &
-        ~(X86_CR4_PCIDE | X86_CR4_PGE | X86_CR4_TSD);
+        ~(X86_CR4_PCIDE | X86_CR4_PGE | X86_CR4_TSD | X86_CR4_PKE);
+
+    /*
+     * We want CR4.PKE set in HVM context when available, but don't support it
+     * in PV context at all.
+     *
+     * _PAGE_PKEY_BITS where previously software available PTE bits.  In
+     * principle, we could let an aware PV guest enable PKE.
+     *
+     * However, Xen uses _PAGE_GNTTAB in debug builds which overlaps with
+     * _PAGE_PKEY_BITS, and the ownership of (and eligibility to move)
+     * software PTE bits is not considered in the PV ABI at all.  For now,
+     * punt the problem to whichever unluckly person finds a compelling
+     * usecase for PKRU in PV guests.
+     */
 
     /*
      * PCIDE or PGE depends on the PCID/XPTI settings, but must not both be
@@ -218,6 +226,7 @@ unsigned long pv_make_cr4(const struct vcpu *v)
     return cr4;
 }
 
+#ifdef CONFIG_PV32
 int switch_compat(struct domain *d)
 {
     struct vcpu *v;
@@ -262,6 +271,7 @@ int switch_compat(struct domain *d)
 
     return rc;
 }
+#endif
 
 static int pv_create_gdt_ldt_l1tab(struct vcpu *v)
 {
@@ -341,13 +351,14 @@ void pv_domain_destroy(struct domain *d)
     FREE_XENHEAP_PAGE(d->arch.pv.gdt_ldt_l1tab);
 }
 
+void noreturn continue_pv_domain(void);
 
 int pv_domain_initialise(struct domain *d)
 {
     static const struct arch_csw pv_csw = {
         .from = paravirt_ctxt_switch_from,
         .to   = paravirt_ctxt_switch_to,
-        .tail = continue_nonidle_domain,
+        .tail = continue_pv_domain,
     };
     int rc = -ENOMEM;
 
@@ -452,7 +463,7 @@ void toggle_guest_mode(struct vcpu *v)
      * Update the cached value of the GS base about to become inactive, as a
      * subsequent context switch won't bother re-reading it.
      */
-    gs_base = rdgsbase();
+    gs_base = read_gs_base();
     if ( v->arch.flags & TF_kernel_mode )
         v->arch.pv.gs_base_kernel = gs_base;
     else

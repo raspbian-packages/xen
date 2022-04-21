@@ -3,20 +3,20 @@
  *
  * Copyright (C) 2011 Citrix Systems, Inc.
  */
+#include <xen/domain_page.h>
 #include <xen/errno.h>
+#include <xen/guest_access.h>
+#include <xen/gunzip.h>
 #include <xen/init.h>
 #include <xen/lib.h>
-#include <xen/mm.h>
-#include <xen/domain_page.h>
-#include <xen/sched.h>
-#include <asm/byteorder.h>
-#include <asm/setup.h>
 #include <xen/libfdt/libfdt.h>
-#include <xen/gunzip.h>
+#include <xen/mm.h>
+#include <xen/sched.h>
 #include <xen/vmap.h>
 
-#include <asm/guest_access.h>
+#include <asm/byteorder.h>
 #include <asm/kernel.h>
+#include <asm/setup.h>
 
 #define UIMAGE_MAGIC          0x27051956
 #define UIMAGE_NMLEN          32
@@ -292,6 +292,12 @@ static __init int kernel_decompress(struct bootmodule *mod)
     iounmap(input);
     vunmap(output);
 
+    if ( rc )
+    {
+        free_domheap_pages(pages, kernel_order_out);
+        return rc;
+    }
+
     mod->start = page_to_maddr(pages);
     mod->size = output_size;
 
@@ -503,7 +509,7 @@ int __init kernel_probe(struct kernel_info *info,
 
     /* if it is a gzip'ed image, 32bit or 64bit, uncompress it */
     rc = kernel_decompress(mod);
-    if (rc < 0 && rc != -EINVAL)
+    if ( rc && rc != -EINVAL )
         return rc;
 
 #ifdef CONFIG_ARM_64

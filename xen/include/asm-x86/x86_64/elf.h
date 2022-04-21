@@ -1,6 +1,9 @@
 #ifndef __X86_64_ELF_H__
 #define __X86_64_ELF_H__
 
+#include <asm/msr.h>
+#include <asm/regs.h>
+
 typedef struct {
     unsigned long r15;
     unsigned long r14;
@@ -34,47 +37,39 @@ typedef struct {
 static inline void elf_core_save_regs(ELF_Gregset *core_regs, 
                                       crash_xen_core_t *xen_core_regs)
 {
-    unsigned long tmp;
+    asm ( "movq %%r15, %0" : "=m" (core_regs->r15) );
+    asm ( "movq %%r14, %0" : "=m" (core_regs->r14) );
+    asm ( "movq %%r13, %0" : "=m" (core_regs->r13) );
+    asm ( "movq %%r12, %0" : "=m" (core_regs->r12) );
+    asm ( "movq %%rbp, %0" : "=m" (core_regs->rbp) );
+    asm ( "movq %%rbx, %0" : "=m" (core_regs->rbx) );
+    asm ( "movq %%r11, %0" : "=m" (core_regs->r11) );
+    asm ( "movq %%r10, %0" : "=m" (core_regs->r10) );
+    asm ( "movq %%r9, %0" : "=m" (core_regs->r9) );
+    asm ( "movq %%r8, %0" : "=m" (core_regs->r8) );
+    asm ( "movq %%rax, %0" : "=m" (core_regs->rax) );
+    asm ( "movq %%rcx, %0" : "=m" (core_regs->rcx) );
+    asm ( "movq %%rdx, %0" : "=m" (core_regs->rdx) );
+    asm ( "movq %%rsi, %0" : "=m" (core_regs->rsi) );
+    asm ( "movq %%rdi, %0" : "=m" (core_regs->rdi) );
 
-    asm volatile("movq %%r15,%0" : "=m"(core_regs->r15));
-    asm volatile("movq %%r14,%0" : "=m"(core_regs->r14));
-    asm volatile("movq %%r13,%0" : "=m"(core_regs->r13));
-    asm volatile("movq %%r12,%0" : "=m"(core_regs->r12));
-    asm volatile("movq %%rbp,%0" : "=m"(core_regs->rbp));
-    asm volatile("movq %%rbx,%0" : "=m"(core_regs->rbx));
-    asm volatile("movq %%r11,%0" : "=m"(core_regs->r11));
-    asm volatile("movq %%r10,%0" : "=m"(core_regs->r10));
-    asm volatile("movq %%r9,%0" : "=m"(core_regs->r9));
-    asm volatile("movq %%r8,%0" : "=m"(core_regs->r8));
-    asm volatile("movq %%rax,%0" : "=m"(core_regs->rax));
-    asm volatile("movq %%rcx,%0" : "=m"(core_regs->rcx));
-    asm volatile("movq %%rdx,%0" : "=m"(core_regs->rdx));
-    asm volatile("movq %%rsi,%0" : "=m"(core_regs->rsi));
-    asm volatile("movq %%rdi,%0" : "=m"(core_regs->rdi));
     /* orig_rax not filled in for now */
-    core_regs->rip = (unsigned long)elf_core_save_regs;
-    asm volatile("movl %%cs, %%eax;" :"=a"(core_regs->cs));
-    asm volatile("pushfq; popq %0" :"=m"(core_regs->rflags));
-    asm volatile("movq %%rsp,%0" : "=m"(core_regs->rsp));
-    asm volatile("movl %%ss, %%eax;" :"=a"(core_regs->ss));
-    /* thread_fs not filled in for now */
-    /* thread_gs not filled in for now */
-    asm volatile("movl %%ds, %%eax;" :"=a"(core_regs->ds));
-    asm volatile("movl %%es, %%eax;" :"=a"(core_regs->es));
-    asm volatile("movl %%fs, %%eax;" :"=a"(core_regs->fs));
-    asm volatile("movl %%gs, %%eax;" :"=a"(core_regs->gs));
+    asm ( "call 0f; 0: popq %0" : "=m" (core_regs->rip) );
+    core_regs->cs = read_sreg(cs);
+    asm ( "pushfq; popq %0" : "=m" (core_regs->rflags) );
+    asm ( "movq %%rsp, %0" : "=m" (core_regs->rsp) );
+    core_regs->ss = read_sreg(ss);
+    rdmsrl(MSR_FS_BASE, core_regs->thread_fs);
+    rdmsrl(MSR_GS_BASE, core_regs->thread_gs);
+    core_regs->ds = read_sreg(ds);
+    core_regs->es = read_sreg(es);
+    core_regs->fs = read_sreg(fs);
+    core_regs->gs = read_sreg(gs);
 
-    asm volatile("mov %%cr0, %0" : "=r" (tmp) : );
-    xen_core_regs->cr0 = tmp;
-
-    asm volatile("mov %%cr2, %0" : "=r" (tmp) : );
-    xen_core_regs->cr2 = tmp;
-
-    asm volatile("mov %%cr3, %0" : "=r" (tmp) : );
-    xen_core_regs->cr3 = tmp;
-
-    asm volatile("mov %%cr4, %0" : "=r" (tmp) : );
-    xen_core_regs->cr4 = tmp;
+    asm ( "mov %%cr0, %0" : "=r" (xen_core_regs->cr0) );
+    asm ( "mov %%cr2, %0" : "=r" (xen_core_regs->cr2) );
+    asm ( "mov %%cr3, %0" : "=r" (xen_core_regs->cr3) );
+    asm ( "mov %%cr4, %0" : "=r" (xen_core_regs->cr4) );
 }
 
 #endif /* __X86_64_ELF_H__ */

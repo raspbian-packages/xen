@@ -488,6 +488,7 @@ static const struct ext0f38_table {
     [0x62] = { .simd_size = simd_packed_int, .two_op = 1, .d8s = d8s_bw },
     [0x63] = { .simd_size = simd_packed_int, .to_mem = 1, .two_op = 1, .d8s = d8s_bw },
     [0x64 ... 0x66] = { .simd_size = simd_packed_int, .d8s = d8s_vl },
+    [0x68] = { .simd_size = simd_packed_int, .d8s = d8s_vl },
     [0x70 ... 0x73] = { .simd_size = simd_packed_int, .d8s = d8s_vl },
     [0x75 ... 0x76] = { .simd_size = simd_packed_int, .d8s = d8s_vl },
     [0x77] = { .simd_size = simd_packed_fp, .d8s = d8s_vl },
@@ -515,7 +516,7 @@ static const struct ext0f38_table {
     [0x9d] = { .simd_size = simd_scalar_vexw, .d8s = d8s_dq },
     [0x9e] = { .simd_size = simd_packed_fp, .d8s = d8s_vl },
     [0x9f] = { .simd_size = simd_scalar_vexw, .d8s = d8s_dq },
-    [0xa0 ... 0xa3] = { .simd_size = simd_other, .vsib = 1, .d8s = d8s_dq },
+    [0xa0 ... 0xa3] = { .simd_size = simd_other, .to_mem = 1, .vsib = 1, .d8s = d8s_dq },
     [0xa6 ... 0xa8] = { .simd_size = simd_packed_fp, .d8s = d8s_vl },
     [0xa9] = { .simd_size = simd_scalar_vexw, .d8s = d8s_dq },
     [0xaa] = { .simd_size = simd_packed_fp, .d8s = d8s_vl },
@@ -1999,14 +2000,16 @@ amd_like(const struct x86_emulate_ctxt *ctxt)
 #define vcpu_has_avx512_vnni() (ctxt->cpuid->feat.avx512_vnni)
 #define vcpu_has_avx512_bitalg() (ctxt->cpuid->feat.avx512_bitalg)
 #define vcpu_has_avx512_vpopcntdq() (ctxt->cpuid->feat.avx512_vpopcntdq)
-#define vcpu_has_tsxldtrk()    (ctxt->cpuid->feat.tsxldtrk)
 #define vcpu_has_rdpid()       (ctxt->cpuid->feat.rdpid)
 #define vcpu_has_movdiri()     (ctxt->cpuid->feat.movdiri)
 #define vcpu_has_movdir64b()   (ctxt->cpuid->feat.movdir64b)
 #define vcpu_has_enqcmd()      (ctxt->cpuid->feat.enqcmd)
 #define vcpu_has_avx512_4vnniw() (ctxt->cpuid->feat.avx512_4vnniw)
 #define vcpu_has_avx512_4fmaps() (ctxt->cpuid->feat.avx512_4fmaps)
+#define vcpu_has_avx512_vp2intersect() (ctxt->cpuid->feat.avx512_vp2intersect)
 #define vcpu_has_serialize()   (ctxt->cpuid->feat.serialize)
+#define vcpu_has_tsxldtrk()    (ctxt->cpuid->feat.tsxldtrk)
+#define vcpu_has_avx_vnni()    (ctxt->cpuid->feat.avx_vnni)
 #define vcpu_has_avx512_bf16() (ctxt->cpuid->feat.avx512_bf16)
 
 #define vcpu_must_have(feat) \
@@ -5813,6 +5816,39 @@ x86_emulate(
             }
             break;
 
+        case 0xee:
+            switch ( vex.pfx )
+            {
+            case vex_none: /* rdpkru */
+                if ( !ops->read_cr ||
+                     ops->read_cr(4, &cr4, ctxt) != X86EMUL_OKAY )
+                    cr4 = 0;
+                generate_exception_if(!(cr4 & X86_CR4_PKE), EXC_UD);
+                generate_exception_if(_regs.ecx, EXC_GP, 0);
+                _regs.r(ax) = rdpkru();
+                _regs.r(dx) = 0;
+                break;
+            default:
+                goto unimplemented_insn;
+            }
+            break;
+
+        case 0xef:
+            switch ( vex.pfx )
+            {
+            case vex_none: /* wrpkru */
+                if ( !ops->read_cr ||
+                     ops->read_cr(4, &cr4, ctxt) != X86EMUL_OKAY )
+                    cr4 = 0;
+                generate_exception_if(!(cr4 & X86_CR4_PKE), EXC_UD);
+                generate_exception_if(_regs.ecx | _regs.edx, EXC_GP, 0);
+                wrpkru(_regs.eax);
+                break;
+            default:
+                goto unimplemented_insn;
+            }
+            break;
+
         case 0xf8: /* swapgs */
             generate_exception_if(!mode_64bit(), EXC_UD);
             generate_exception_if(!mode_ring0(), EXC_GP, 0);
@@ -6828,7 +6864,8 @@ x86_emulate(
         }
         opc[2] = 0xc3;
 
-        invoke_stub(_PRE_EFLAGS("[eflags]", "[mask]", "[tmp]"),
+        _regs.eflags &= ~EFLAGS_MASK;
+        invoke_stub("",
                     _POST_EFLAGS("[eflags]", "[mask]", "[tmp]"),
                     [eflags] "+g" (_regs.eflags),
                     [tmp] "=&r" (dummy), "+m" (*mmvalp)
@@ -7364,7 +7401,6 @@ x86_emulate(
     case X86EMUL_OPC_EVEX_66(0x0f38, 0x0b): /* vpmulhrsw [xyz]mm/mem,[xyz]mm,[xyz]mm{k} */
     case X86EMUL_OPC_EVEX_66(0x0f38, 0x1c): /* vpabsb [xyz]mm/mem,[xyz]mm{k} */
     case X86EMUL_OPC_EVEX_66(0x0f38, 0x1d): /* vpabsw [xyz]mm/mem,[xyz]mm{k} */
-    case X86EMUL_OPC_EVEX_66(0x0f38, 0x66): /* vpblendm{b,w} [xyz]mm/mem,[xyz]mm,[xyz]mm{k} */
         host_and_vcpu_must_have(avx512bw);
         generate_exception_if(evex.brs, EXC_UD);
         elem_bytes = 1 << (b & 1);
@@ -8076,7 +8112,8 @@ x86_emulate(
         opc[2] = 0xc3;
 
         copy_VEX(opc, vex);
-        invoke_stub(_PRE_EFLAGS("[eflags]", "[mask]", "[tmp]"),
+        _regs.eflags &= ~EFLAGS_MASK;
+        invoke_stub("",
                     _POST_EFLAGS("[eflags]", "[mask]", "[tmp]"),
                     [eflags] "+g" (_regs.eflags),
                     "=a" (dst.val), [tmp] "=&r" (dummy)
@@ -9460,6 +9497,14 @@ x86_emulate(
         generate_exception_if(vex.l, EXC_UD);
         goto simd_0f_avx;
 
+    case X86EMUL_OPC_VEX_66(0x0f38, 0x50): /* vpdpbusd [xy]mm/mem,[xy]mm,[xy]mm */
+    case X86EMUL_OPC_VEX_66(0x0f38, 0x51): /* vpdpbusds [xy]mm/mem,[xy]mm,[xy]mm */
+    case X86EMUL_OPC_VEX_66(0x0f38, 0x52): /* vpdpwssd [xy]mm/mem,[xy]mm,[xy]mm */
+    case X86EMUL_OPC_VEX_66(0x0f38, 0x53): /* vpdpwssds [xy]mm/mem,[xy]mm,[xy]mm */
+        host_and_vcpu_must_have(avx_vnni);
+        generate_exception_if(vex.w, EXC_UD);
+        goto simd_0f_avx;
+
     case X86EMUL_OPC_EVEX_66(0x0f38, 0x50): /* vpdpbusd [xyz]mm/mem,[xyz]mm,[xyz]mm{k} */
     case X86EMUL_OPC_EVEX_66(0x0f38, 0x51): /* vpdpbusds [xyz]mm/mem,[xyz]mm,[xyz]mm{k} */
     case X86EMUL_OPC_EVEX_66(0x0f38, 0x52): /* vpdpwssd [xyz]mm/mem,[xyz]mm,[xyz]mm{k} */
@@ -9512,6 +9557,9 @@ x86_emulate(
         /* fall through */
     case X86EMUL_OPC_EVEX_66(0x0f38, 0x54): /* vpopcnt{b,w} [xyz]mm/mem,[xyz]mm{k} */
         host_and_vcpu_must_have(avx512_bitalg);
+        /* fall through */
+    case X86EMUL_OPC_EVEX_66(0x0f38, 0x66): /* vpblendm{b,w} [xyz]mm/mem,[xyz]mm,[xyz]mm{k} */
+        host_and_vcpu_must_have(avx512bw);
         generate_exception_if(evex.brs, EXC_UD);
         elem_bytes = 1 << evex.w;
         goto avx512f_no_sae;
@@ -9553,6 +9601,12 @@ x86_emulate(
                 op_mask = ~0ULL >> (64 - n);
         }
         goto simd_zmm;
+
+    case X86EMUL_OPC_EVEX_F2(0x0f38, 0x68): /* vp2intersect{d,q} [xyz]mm/mem,[xyz]mm,k+1 */
+        host_and_vcpu_must_have(avx512_vp2intersect);
+        generate_exception_if(evex.opmsk || !evex.r || !evex.R, EXC_UD);
+        op_bytes = 16 << evex.lr;
+        goto avx512f_no_sae;
 
     case X86EMUL_OPC_EVEX_66(0x0f38, 0x70): /* vpshldvw [xyz]mm/mem,[xyz]mm,[xyz]mm{k} */
     case X86EMUL_OPC_EVEX_66(0x0f38, 0x72): /* vpshrdvw [xyz]mm/mem,[xyz]mm,[xyz]mm{k} */
@@ -11670,13 +11724,14 @@ int x86_emul_rmw(
         break;
 
     case rmw_xadd:
+        *eflags &= ~EFLAGS_MASK;
         switch ( state->op_bytes )
         {
             unsigned long dummy;
 
 #define XADD(sz, cst, mod) \
         case sz: \
-            asm ( _PRE_EFLAGS("[efl]", "[msk]", "[tmp]") \
+            asm ( "" \
                   COND_LOCK(xadd) " %"#mod"[reg], %[mem]; " \
                   _POST_EFLAGS("[efl]", "[msk]", "[tmp]") \
                   : [reg] "+" #cst (state->ea.val), \
@@ -12289,6 +12344,8 @@ x86_insn_is_mem_access(const struct x86_emulate_state *state,
          ... X86EMUL_OPC_F2(0x0f, 0x1f): /* NOP space */
         case X86EMUL_OPC(0x0f, 0xb9): /* UD1 */
         case X86EMUL_OPC(0x0f, 0xff): /* UD0 */
+        case X86EMUL_OPC_EVEX_66(0x0f38, 0xc6): /* V{GATH,SCATT}ERPF*D* */
+        case X86EMUL_OPC_EVEX_66(0x0f38, 0xc7): /* V{GATH,SCATT}ERPF*Q* */
             return false;
 
         case X86EMUL_OPC(0x0f, 0x01):
@@ -12383,6 +12440,14 @@ x86_insn_is_mem_write(const struct x86_emulate_state *state,
         case X86EMUL_OPC_F2(0x0f38, 0xf8): /* ENQCMD */
         case X86EMUL_OPC_F3(0x0f38, 0xf8): /* ENQCMDS */
             return true;
+
+        case X86EMUL_OPC_EVEX_F3(0x0f38, 0x10) ...
+             X86EMUL_OPC_EVEX_F3(0x0f38, 0x15): /* VPMOVUS* */
+        case X86EMUL_OPC_EVEX_F3(0x0f38, 0x20) ...
+             X86EMUL_OPC_EVEX_F3(0x0f38, 0x25): /* VPMOVS* */
+        case X86EMUL_OPC_EVEX_F3(0x0f38, 0x30) ...
+             X86EMUL_OPC_EVEX_F3(0x0f38, 0x35): /* VPMOV{D,Q,W}* */
+            return state->modrm_mod != 3;
         }
 
         return false;
@@ -12424,12 +12489,6 @@ x86_insn_is_mem_write(const struct x86_emulate_state *state,
     case X86EMUL_OPC(0x0f, 0xab):        /* BTS */
     case X86EMUL_OPC(0x0f, 0xb3):        /* BTR */
     case X86EMUL_OPC(0x0f, 0xbb):        /* BTC */
-    case X86EMUL_OPC_EVEX_F3(0x0f38, 0x10) ...
-         X86EMUL_OPC_EVEX_F3(0x0f38, 0x15): /* VPMOVUS* */
-    case X86EMUL_OPC_EVEX_F3(0x0f38, 0x20) ...
-         X86EMUL_OPC_EVEX_F3(0x0f38, 0x25): /* VPMOVS* */
-    case X86EMUL_OPC_EVEX_F3(0x0f38, 0x30) ...
-         X86EMUL_OPC_EVEX_F3(0x0f38, 0x35): /* VPMOV{D,Q,W}* */
         return true;
 
     case 0xd9:

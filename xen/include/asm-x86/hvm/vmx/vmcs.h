@@ -58,7 +58,6 @@ struct ept_data {
 #define _VMX_DOMAIN_PML_ENABLED    0
 #define VMX_DOMAIN_PML_ENABLED     (1ul << _VMX_DOMAIN_PML_ENABLED)
 struct vmx_domain {
-    mfn_t apic_access_mfn;
     /* VMX_DOMAIN_* */
     unsigned int status;
 
@@ -155,6 +154,9 @@ struct vmx_vcpu {
 
     /* Do we need to tolerate a spurious EPT_MISCONFIG VM exit? */
     bool_t               ept_spurious_misconfig;
+
+    /* Processor Trace configured and enabled for the vcpu. */
+    bool                 ipt_active;
 
     /* Is the guest in real mode? */
     uint8_t              vmx_realmode;
@@ -283,6 +285,7 @@ extern u32 vmx_secondary_exec_control;
 #define VMX_VPID_INVVPID_SINGLE_CONTEXT_RETAINING_GLOBAL 0x80000000000ULL
 extern u64 vmx_ept_vpid_cap;
 
+#define VMX_MISC_PROC_TRACE                     0x00004000
 #define VMX_MISC_CR3_TARGET                     0x01ff0000
 #define VMX_MISC_VMWRITE_ALL                    0x20000000
 

@@ -224,7 +224,7 @@ static void __init print_mtrr_state(const char *level)
 		uint64_t syscfg, tom2;
 
 		rdmsrl(MSR_K8_SYSCFG, syscfg);
-		if (syscfg & (1 << 21)) {
+		if (syscfg & SYSCFG_MTRR_TOM2_EN) {
 			rdmsrl(MSR_K8_TOP_MEM2, tom2);
 			printk("%sTOM2: %012"PRIx64"%s\n", level, tom2,
 			       syscfg & (1 << 22) ? " (WB)" : "");
@@ -569,23 +569,6 @@ static void generic_set_mtrr(unsigned int reg, unsigned long base,
 int generic_validate_add_page(unsigned long base, unsigned long size, unsigned int type)
 {
 	unsigned long lbase, last;
-
-	/*  For Intel PPro stepping <= 7, must be 4 MiB aligned 
-	    and not touch 0x70000000->0x7003FFFF */
-	if (is_cpu(INTEL) && boot_cpu_data.x86 == 6 &&
-	    boot_cpu_data.x86_model == 1 &&
-	    boot_cpu_data.x86_mask <= 7) {
-		if (base & ((1 << (22 - PAGE_SHIFT)) - 1)) {
-			printk(KERN_WARNING "mtrr: base(%#lx000) is not 4 MiB aligned\n", base);
-			return -EINVAL;
-		}
-		if (!(base + size < 0x70000 || base > 0x7003F) &&
-		    (type == MTRR_TYPE_WRCOMB
-		     || type == MTRR_TYPE_WRBACK)) {
-			printk(KERN_WARNING "mtrr: writable mtrr between 0x70000000 and 0x7003FFFF may hang the CPU.\n");
-			return -EINVAL;
-		}
-	}
 
 	/*  Check upper bits of base and last are equal and lower bits are 0
 	    for base and 1 for last  */

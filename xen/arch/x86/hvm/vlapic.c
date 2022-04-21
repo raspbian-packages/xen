@@ -462,12 +462,8 @@ void vlapic_handle_EOI(struct vlapic *vlapic, u8 vector)
     struct vcpu *v = vlapic_vcpu(vlapic);
     struct domain *d = v->domain;
 
-    /* All synic SINTx vectors are edge triggered */
-
     if ( vlapic_test_vector(vector, &vlapic->regs->data[APIC_TMR]) )
         vioapic_update_EOI(d, vector);
-    else if ( has_viridian_synic(d) )
-        viridian_synic_ack_sint(v, vector);
 
     hvm_dpci_msi_eoi(d, vector);
 }
@@ -1271,15 +1267,18 @@ static int __vlapic_accept_pic_intr(struct vcpu *v)
 
 int vlapic_accept_pic_intr(struct vcpu *v)
 {
+    bool target, accept = false;
+
     if ( vlapic_hw_disabled(vcpu_vlapic(v)) || !has_vpic(v->domain) )
         return 0;
 
-    TRACE_2D(TRC_HVM_EMUL_LAPIC_PIC_INTR,
-             (v == v->domain->arch.hvm.i8259_target),
-             v ? __vlapic_accept_pic_intr(v) : -1);
+    target = v == v->domain->arch.hvm.i8259_target;
+    if ( target )
+        accept = __vlapic_accept_pic_intr(v);
 
-    return ((v == v->domain->arch.hvm.i8259_target) &&
-            __vlapic_accept_pic_intr(v));
+    TRACE_2D(TRC_HVM_EMUL_LAPIC_PIC_INTR, target, accept);
+
+    return target && accept;
 }
 
 void vlapic_adjust_i8259_target(struct domain *d)
@@ -1453,6 +1452,7 @@ static void lapic_rearm(struct vlapic *s)
 {
     unsigned long tmict;
     uint64_t period, tdt_msr;
+    bool is_periodic;
 
     s->pt.irq = vlapic_get_reg(s, APIC_LVTT) & APIC_VECTOR_MASK;
 
@@ -1468,12 +1468,15 @@ static void lapic_rearm(struct vlapic *s)
 
     period = ((uint64_t)APIC_BUS_CYCLE_NS *
               (uint32_t)tmict * s->hw.timer_divisor);
+    is_periodic = vlapic_lvtt_period(s);
+
     TRACE_2_LONG_3D(TRC_HVM_EMUL_LAPIC_START_TIMER, TRC_PAR_LONG(period),
-             TRC_PAR_LONG(vlapic_lvtt_period(s) ? period : 0LL), s->pt.irq);
+             TRC_PAR_LONG(is_periodic ? period : 0LL), s->pt.irq);
+
     create_periodic_time(vlapic_vcpu(s), &s->pt, period,
-                         vlapic_lvtt_period(s) ? period : 0,
+                         is_periodic ? period : 0,
                          s->pt.irq,
-                         vlapic_lvtt_period(s) ? vlapic_pt_cb : NULL,
+                         is_periodic ? vlapic_pt_cb : NULL,
                          &s->timer_last_update, false);
     s->timer_last_update = s->pt.last_plt_gtime;
 }
@@ -1614,27 +1617,17 @@ int vlapic_init(struct vcpu *v)
 
     vlapic->pt.source = PTSRC_lapic;
 
-    if (vlapic->regs_page == NULL)
+    vlapic->regs_page = alloc_domheap_page(v->domain, MEMF_no_owner);
+    if ( !vlapic->regs_page )
+        return -ENOMEM;
+
+    vlapic->regs = __map_domain_page_global(vlapic->regs_page);
+    if ( vlapic->regs == NULL )
     {
-        vlapic->regs_page = alloc_domheap_page(v->domain, MEMF_no_owner);
-        if ( vlapic->regs_page == NULL )
-        {
-            dprintk(XENLOG_ERR, "alloc vlapic regs error: %d/%d\n",
-                    v->domain->domain_id, v->vcpu_id);
-            return -ENOMEM;
-        }
+        free_domheap_page(vlapic->regs_page);
+        return -ENOMEM;
     }
-    if (vlapic->regs == NULL) 
-    {
-        vlapic->regs = __map_domain_page_global(vlapic->regs_page);
-        if ( vlapic->regs == NULL )
-        {
-            free_domheap_page(vlapic->regs_page);
-            dprintk(XENLOG_ERR, "map vlapic regs error: %d/%d\n",
-                    v->domain->domain_id, v->vcpu_id);
-            return -ENOMEM;
-        }
-    }
+
     clear_page(vlapic->regs);
 
     vlapic_reset(vlapic);

@@ -283,10 +283,6 @@ HOSTCFLAGS-x86_64 := -fno-PIE
 $(call cc-option-add,HOSTCFLAGS-x86_64,HOSTCC,-no-pie)
 HOSTCFLAGS += $(CFLAGS_xeninclude) -I. $(HOSTCFLAGS-$(XEN_COMPILE_ARCH))
 
-ifeq ($(XEN_TARGET_ARCH),x86_32)
-HOSTCFLAGS += -no-pie -fno-pic
-endif
-
 x86.h := $(addprefix $(XEN_ROOT)/tools/include/xen/asm/,\
                      x86-vendors.h x86-defns.h msr-index.h) \
          $(addprefix $(XEN_ROOT)/tools/include/xen/lib/x86/, \
@@ -298,5 +294,10 @@ x86-emulate.o cpuid.o test_x86_emulator.o evex-disp8.o predicates.o wrappers.o: 
 
 x86-emulate.o: x86_emulate/x86_emulate.c
 x86-emulate.o: HOSTCFLAGS += -D__XEN_TOOLS__
+
+# In order for our custom .type assembler directives to reliably land after
+# gcc's, we need to keep it from re-ordering top-level constructs.
+$(call cc-option-add,HOSTCFLAGS-toplevel,HOSTCC,-fno-toplevel-reorder)
+test_x86_emulator.o: HOSTCFLAGS += $(HOSTCFLAGS-toplevel)
 
 test_x86_emulator.o: $(addsuffix .h,$(TESTCASES)) $(addsuffix -opmask.h,$(OPMASK))

@@ -468,14 +468,14 @@ static void check_syscfg_dram_mod_en(void)
 		return;
 
 	rdmsrl(MSR_K8_SYSCFG, syscfg);
-	if (!(syscfg & K8_MTRRFIXRANGE_DRAM_MODIFY))
+	if (!(syscfg & SYSCFG_MTRR_FIX_DRAM_MOD_EN))
 		return;
 
 	if (!test_and_set_bool(printed))
 		printk(KERN_ERR "MTRR: SYSCFG[MtrrFixDramModEn] not "
 			"cleared by BIOS, clearing this bit\n");
 
-	syscfg &= ~K8_MTRRFIXRANGE_DRAM_MODIFY;
+	syscfg &= ~SYSCFG_MTRR_FIX_DRAM_MOD_EN;
 	wrmsrl(MSR_K8_SYSCFG, syscfg);
 }
 
@@ -642,6 +642,45 @@ void early_init_amd(struct cpuinfo_x86 *c)
 	ctxt_switch_levelling(NULL);
 }
 
+void amd_init_lfence(struct cpuinfo_x86 *c)
+{
+	uint64_t value;
+
+	/*
+	 * Some hardware has LFENCE dispatch serialising always enabled,
+	 * nothing to do on that case.
+	 */
+	if (test_bit(X86_FEATURE_LFENCE_DISPATCH, c->x86_capability))
+		return;
+
+	/*
+	 * Attempt to set lfence to be Dispatch Serialising.  This MSR almost
+	 * certainly isn't virtualised (and Xen at least will leak the real
+	 * value in but silently discard writes), as well as being per-core
+	 * rather than per-thread, so do a full safe read/write/readback cycle
+	 * in the worst case.
+	 */
+	if (rdmsr_safe(MSR_AMD64_DE_CFG, value))
+		/* Unable to read.  Assume the safer default. */
+		__clear_bit(X86_FEATURE_LFENCE_DISPATCH,
+			    c->x86_capability);
+	else if (value & AMD64_DE_CFG_LFENCE_SERIALISE)
+		/* Already dispatch serialising. */
+		__set_bit(X86_FEATURE_LFENCE_DISPATCH,
+			  c->x86_capability);
+	else if (wrmsr_safe(MSR_AMD64_DE_CFG,
+			    value | AMD64_DE_CFG_LFENCE_SERIALISE) ||
+		 rdmsr_safe(MSR_AMD64_DE_CFG, value) ||
+		 !(value & AMD64_DE_CFG_LFENCE_SERIALISE))
+		/* Attempt to set failed.  Assume the safer default. */
+		__clear_bit(X86_FEATURE_LFENCE_DISPATCH,
+			    c->x86_capability);
+	else
+		/* Successfully enabled! */
+		__set_bit(X86_FEATURE_LFENCE_DISPATCH,
+			  c->x86_capability);
+}
+
 /*
  * Refer to the AMD Speculative Store Bypass whitepaper:
  * https://developer.amd.com/wp-content/resources/124441_AMD64_SpeculativeStoreBypassDisable_Whitepaper_final.pdf
@@ -654,7 +693,7 @@ void amd_init_ssbd(const struct cpuinfo_x86 *c)
 		return;
 
 	if (cpu_has_amd_ssbd) {
-		wrmsrl(MSR_SPEC_CTRL, opt_ssbd ? SPEC_CTRL_SSBD : 0);
+		/* Handled by common MSR_SPEC_CTRL logic */
 		return;
 	}
 
@@ -692,6 +731,19 @@ void amd_init_ssbd(const struct cpuinfo_x86 *c)
 		printk_once(XENLOG_ERR "No SSBD controls available\n");
 }
 
+void __init detect_zen2_null_seg_behaviour(void)
+{
+	uint64_t base;
+
+	wrmsrl(MSR_FS_BASE, 1);
+	asm volatile ( "mov %0, %%fs" :: "rm" (0) );
+	rdmsrl(MSR_FS_BASE, base);
+
+	if (base == 0)
+		setup_force_cpu_cap(X86_FEATURE_NSCB);
+
+}
+
 static void init_amd(struct cpuinfo_x86 *c)
 {
 	u32 l, h;
@@ -705,9 +757,9 @@ static void init_amd(struct cpuinfo_x86 *c)
 	 * Errata 122 for all steppings (F+ have it disabled by default)
 	 */
 	if (c->x86 == 15) {
-		rdmsrl(MSR_K7_HWCR, value);
+		rdmsrl(MSR_K8_HWCR, value);
 		value |= 1 << 6;
-		wrmsrl(MSR_K7_HWCR, value);
+		wrmsrl(MSR_K8_HWCR, value);
 	}
 
 	/*
@@ -736,39 +788,25 @@ static void init_amd(struct cpuinfo_x86 *c)
 	if (c == &boot_cpu_data && !cpu_has(c, X86_FEATURE_RSTR_FP_ERR_PTRS))
 		setup_force_cpu_cap(X86_BUG_FPU_PTRS);
 
-	/*
-	 * Attempt to set lfence to be Dispatch Serialising.  This MSR almost
-	 * certainly isn't virtualised (and Xen at least will leak the real
-	 * value in but silently discard writes), as well as being per-core
-	 * rather than per-thread, so do a full safe read/write/readback cycle
-	 * in the worst case.
-	 */
 	if (c->x86 == 0x0f || c->x86 == 0x11)
 		/* Always dispatch serialising on this hardare. */
 		__set_bit(X86_FEATURE_LFENCE_DISPATCH, c->x86_capability);
-	else /* Implicily "== 0x10 || >= 0x12" by being 64bit. */ {
-		if (rdmsr_safe(MSR_AMD64_DE_CFG, value))
-			/* Unable to read.  Assume the safer default. */
-			__clear_bit(X86_FEATURE_LFENCE_DISPATCH,
-				    c->x86_capability);
-		else if (value & AMD64_DE_CFG_LFENCE_SERIALISE)
-			/* Already dispatch serialising. */
-			__set_bit(X86_FEATURE_LFENCE_DISPATCH,
-				  c->x86_capability);
-		else if (wrmsr_safe(MSR_AMD64_DE_CFG,
-				    value | AMD64_DE_CFG_LFENCE_SERIALISE) ||
-			 rdmsr_safe(MSR_AMD64_DE_CFG, value) ||
-			 !(value & AMD64_DE_CFG_LFENCE_SERIALISE))
-			/* Attempt to set failed.  Assume the safer default. */
-			__clear_bit(X86_FEATURE_LFENCE_DISPATCH,
-				    c->x86_capability);
-		else
-			/* Successfully enabled! */
-			__set_bit(X86_FEATURE_LFENCE_DISPATCH,
-				  c->x86_capability);
-	}
+	else /* Implicily "== 0x10 || >= 0x12" by being 64bit. */
+		amd_init_lfence(c);
 
 	amd_init_ssbd(c);
+
+	/* Probe for NSCB on Zen2 CPUs when not virtualised */
+	if (!cpu_has_hypervisor && !cpu_has_nscb && c == &boot_cpu_data &&
+	    c->x86 == 0x17)
+		detect_zen2_null_seg_behaviour();
+
+	/*
+	 * AMD CPUs before Zen2 don't clear segment bases/limits when loading
+	 * a NULL selector.
+	 */
+	if (c == &boot_cpu_data && !cpu_has_nscb)
+		setup_force_cpu_cap(X86_BUG_NULL_SEG);
 
 	/* MFENCE stops RDTSC speculation */
 	if (!cpu_has_lfence_dispatch)
@@ -948,9 +986,9 @@ static void init_amd(struct cpuinfo_x86 *c)
 	}
 
 	if (cpu_has(c, X86_FEATURE_EFRO)) {
-		rdmsr(MSR_K7_HWCR, l, h);
+		rdmsr(MSR_K8_HWCR, l, h);
 		l |= (1 << 27); /* Enable read-only APERF/MPERF bit */
-		wrmsr(MSR_K7_HWCR, l, h);
+		wrmsr(MSR_K8_HWCR, l, h);
 	}
 
 	/* Prevent TSC drift in non single-processor, single-core platforms. */

@@ -2,20 +2,10 @@
 #define __ARM_PAGE_H__
 
 #include <public/xen.h>
+#include <xen/page-size.h>
 #include <asm/processor.h>
 #include <asm/lpae.h>
 #include <asm/sysregs.h>
-
-#ifdef CONFIG_ARM_64
-#define PADDR_BITS              48
-#else
-#define PADDR_BITS              40
-#endif
-#define PADDR_MASK              ((1ULL << PADDR_BITS)-1)
-#define PAGE_OFFSET(ptr)        ((vaddr_t)(ptr) & ~PAGE_MASK)
-
-#define VADDR_BITS              32
-#define VADDR_MASK              (~0UL)
 
 /* Shareability values for the LPAE entries */
 #define LPAE_SH_NON_SHAREABLE 0x0
@@ -147,10 +137,10 @@ extern size_t dcache_line_bytes;
 
 static inline size_t read_dcache_line_bytes(void)
 {
-    uint32_t ctr;
+    register_t ctr;
 
     /* Read CTR */
-    ctr = READ_SYSREG32(CTR_EL0);
+    ctr = READ_SYSREG(CTR_EL0);
 
     /* Bits 16-19 are the log2 number of words in the cacheline. */
     return (size_t) (4 << ((ctr >> 16) & 0xf));

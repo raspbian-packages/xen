@@ -90,8 +90,8 @@ static uint64_t __read_mostly global_ovf_ctrl_mask, global_ctrl_mask;
 static unsigned int __read_mostly regs_sz;
 /* Offset into context of the beginning of PMU register block */
 static const unsigned int regs_off =
-        sizeof(((struct xen_pmu_intel_ctxt *)0)->fixed_counters) +
-        sizeof(((struct xen_pmu_intel_ctxt *)0)->arch_counters);
+    sizeof_field(struct xen_pmu_intel_ctxt, fixed_counters) +
+    sizeof_field(struct xen_pmu_intel_ctxt, arch_counters);
 
 /*
  * QUIRK to workaround an issue on various family 6 cpus.
@@ -461,10 +461,10 @@ static int core2_vpmu_alloc_resource(struct vcpu *v)
             goto out_err;
     }
 
-    core2_vpmu_cxt = xzalloc_bytes(sizeof(*core2_vpmu_cxt) +
-                                   sizeof(uint64_t) * fixed_pmc_cnt +
-                                   sizeof(struct xen_pmu_cntr_pair) *
-                                   arch_pmc_cnt);
+    core2_vpmu_cxt = xzalloc_flex_struct(struct xen_pmu_intel_ctxt, regs,
+                                         fixed_pmc_cnt + arch_pmc_cnt *
+                                         (sizeof(struct xen_pmu_cntr_pair) /
+                                          sizeof(*core2_vpmu_cxt->regs)));
     p = xzalloc(uint64_t);
     if ( !core2_vpmu_cxt || !p )
         goto out_err;
@@ -839,7 +839,7 @@ int vmx_vpmu_initialise(struct vcpu *v)
         return 0;
 
     if ( v->domain->arch.cpuid->basic.pmu_version <= 1 ||
-         v->domain->arch.cpuid->basic.pmu_version >= 5 )
+         v->domain->arch.cpuid->basic.pmu_version >= 6 )
         return -EINVAL;
 
     if ( (arch_pmc_cnt + fixed_pmc_cnt) == 0 )
@@ -909,8 +909,9 @@ int __init core2_vpmu_init(void)
     switch ( version )
     {
     case 4:
-        printk(XENLOG_INFO "VPMU: PMU version 4 is not fully supported. "
-               "Emulating version 3\n");
+    case 5:
+        printk(XENLOG_INFO "VPMU: PMU version %u is not fully supported. "
+               "Emulating version 3\n", version);
         /* FALLTHROUGH */
 
     case 2:

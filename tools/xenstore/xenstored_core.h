@@ -19,20 +19,29 @@
 #ifndef _XENSTORED_CORE_H
 #define _XENSTORED_CORE_H
 
-#define XC_WANT_COMPAT_MAP_FOREIGN_API
 #include <xenctrl.h>
 #include <xengnttab.h>
 
 #include <sys/types.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <errno.h>
 
 #include "xenstore_lib.h"
+#include "xenstore_state.h"
 #include "list.h"
 #include "tdb.h"
 #include "hashtable.h"
+
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0
+/* O_CLOEXEC support is needed for Live Update in the daemon case. */
+#ifndef __MINIOS__
+#define NO_LIVE_UPDATE
+#endif
+#endif
 
 /* DEFAULT_BUFFER_SIZE should be large enough for each errno string. */
 #define DEFAULT_BUFFER_SIZE 16
@@ -40,6 +49,8 @@
 typedef int32_t wrl_creditt;
 #define WRL_CREDIT_MAX (1000*1000*1000)
 /* ^ satisfies non-overflow condition for wrl_xfer_credit */
+
+struct xs_state_connection;
 
 struct buffered_data
 {
@@ -61,9 +72,28 @@ struct buffered_data
 	char default_buffer[DEFAULT_BUFFER_SIZE];
 };
 
+struct delayed_request {
+	/* Next delayed request. */
+	struct list_head list;
+
+	/* The delayed request. */
+	struct buffered_data *in;
+
+	/* Function to call. */
+	bool (*func)(struct delayed_request *req);
+
+	/* Further data. */
+	void *data;
+};
+
 struct connection;
-typedef int connwritefn_t(struct connection *, const void *, unsigned int);
-typedef int connreadfn_t(struct connection *, void *, unsigned int);
+
+struct interface_funcs {
+	int (*write)(struct connection *, const void *, unsigned int);
+	int (*read)(struct connection *, void *, unsigned int);
+	bool (*can_write)(struct connection *);
+	bool (*can_read)(struct connection *);
+};
 
 struct connection
 {
@@ -77,11 +107,11 @@ struct connection
 	/* Who am I? 0 for socket connections. */
 	unsigned int id;
 
-	/* Is this a read-only connection? */
-	bool can_write;
-
 	/* Is this connection ignored? */
 	bool is_ignored;
+
+	/* Is the connection stalled? */
+	bool is_stalled;
 
 	/* Buffered incoming data. */
 	struct buffered_data *in;
@@ -96,6 +126,10 @@ struct connection
 	struct list_head transaction_list;
 	uint32_t next_transaction_id;
 	unsigned int transaction_started;
+	time_t ta_start_time;
+
+	/* List of delayed requests. */
+	struct list_head delayed;
 
 	/* The domain I'm associated with, if any. */
 	struct domain *domain;
@@ -106,9 +140,11 @@ struct connection
 	/* My watches. */
 	struct list_head watches;
 
-	/* Methods for communicating over this connection: write can be NULL */
-	connwritefn_t *write;
-	connreadfn_t *read;
+	/* Methods for communicating over this connection. */
+	const struct interface_funcs *funcs;
+
+	/* Support for live update: connection id. */
+	unsigned int conn_id;
 };
 extern struct list_head connections;
 
@@ -145,6 +181,7 @@ const char *onearg(struct buffered_data *in);
 /* Break input into vectors, return the number, fill in up to num of them. */
 unsigned int get_strings(struct buffered_data *data,
 			 char *vec[], unsigned int num);
+unsigned int get_string(const struct buffered_data *data, unsigned int offset);
 
 void send_reply(struct connection *conn, enum xsd_sockmsg_type type,
 		const void *data, unsigned int len);
@@ -156,8 +193,8 @@ void send_ack(struct connection *conn, enum xsd_sockmsg_type type);
 char *canonicalize(struct connection *conn, const void *ctx, const char *node);
 
 /* Get access permissions. */
-enum xs_perm_type perm_for_conn(struct connection *conn,
-				const struct node_perms *perms);
+unsigned int perm_for_conn(struct connection *conn,
+			   const struct node_perms *perms);
 
 /* Write a node to the tdb data base. */
 int write_node_raw(struct connection *conn, TDB_DATA *key, struct node *node,
@@ -167,11 +204,11 @@ int write_node_raw(struct connection *conn, TDB_DATA *key, struct node *node,
 struct node *read_node(struct connection *conn, const void *ctx,
 		       const char *name);
 
-struct connection *new_connection(connwritefn_t *write, connreadfn_t *read);
+struct connection *new_connection(const struct interface_funcs *funcs);
+struct connection *get_connection_by_id(unsigned int conn_id);
+void ignore_connection(struct connection *conn);
 void check_store(void);
 void corrupt(struct connection *conn, const char *fmt, ...);
-enum xs_perm_type perm_for_conn(struct connection *conn,
-				const struct node_perms *perms);
 
 /* Is this a valid node name? */
 bool is_valid_nodename(const char *node);
@@ -179,13 +216,21 @@ bool is_valid_nodename(const char *node);
 /* Get name of parent node. */
 char *get_parent(const void *ctx, const char *node);
 
+/* Delay a request. */
+int delay_request(struct connection *conn, struct buffered_data *in,
+		  bool (*func)(struct delayed_request *), void *data,
+		  bool no_quota_check);
+
 /* Tracing infrastructure. */
 void trace_create(const void *data, const char *type);
 void trace_destroy(const void *data, const char *type);
-void trace(const char *fmt, ...);
+void trace(const char *fmt, ...) __attribute__ ((format (printf, 1, 2)));
 void dtrace_io(const struct connection *conn, const struct buffered_data *data, int out);
 void reopen_log(void);
 void close_log(void);
+
+extern int orig_argc;
+extern char **orig_argv;
 
 extern char *tracefile;
 extern int tracefd;
@@ -219,9 +264,26 @@ void finish_daemonize(void);
 /* Open a pipe for signal handling */
 void init_pipe(int reopen_log_pipe[2]);
 
+#ifndef NO_SOCKETS
+extern const struct interface_funcs socket_funcs;
+#endif
 extern xengnttab_handle **xgt_handle;
 
 int remember_string(struct hashtable *hash, const char *str);
+
+void set_tdb_key(const char *name, TDB_DATA *key);
+
+const char *dump_state_global(FILE *fp);
+const char *dump_state_buffered_data(FILE *fp, const struct connection *c,
+				     struct xs_state_connection *sc);
+const char *dump_state_nodes(FILE *fp, const void *ctx);
+const char *dump_state_node_perms(FILE *fp, const struct xs_permissions *perms,
+				  unsigned int n_perms);
+
+void read_state_global(const void *ctx, const void *state);
+void read_state_buffered_data(const void *ctx, struct connection *conn,
+			      const struct xs_state_connection *sc);
+void read_state_node(const void *ctx, const void *state);
 
 #endif /* _XENSTORED_CORE_H */
 

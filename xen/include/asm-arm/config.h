@@ -69,6 +69,7 @@
 #endif
 
 #include <xen/const.h>
+#include <xen/page-size.h>
 
 /*
  * Common ARM32 and ARM64 layout:
@@ -176,11 +177,6 @@
 #define FIXMAP_ACPI_BEGIN  2  /* Start mappings of ACPI tables */
 #define FIXMAP_ACPI_END    (FIXMAP_ACPI_BEGIN + NUM_FIXMAP_ACPI_PAGES - 1)  /* End mappings of ACPI tables */
 
-#define PAGE_SHIFT              12
-#define PAGE_SIZE           (_AC(1,L) << PAGE_SHIFT)
-#define PAGE_MASK           (~(PAGE_SIZE-1))
-#define PAGE_FLAG_MASK      (~0)
-
 #define NR_hypercalls 64
 
 #define STACK_ORDER 3
@@ -194,6 +190,11 @@ extern unsigned long frametable_virt_end;
 
 #define watchdog_disable() ((void)0)
 #define watchdog_enable()  ((void)0)
+
+#if defined(__ASSEMBLY__) && !defined(__LINKER__)
+#include <asm/asm_defns.h>
+#include <asm/macros.h>
+#endif
 
 #endif /* __ARM_CONFIG_H__ */
 /*

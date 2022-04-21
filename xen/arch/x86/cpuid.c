@@ -14,14 +14,16 @@
 #include <asm/xstate.h>
 
 const uint32_t known_features[] = INIT_KNOWN_FEATURES;
-const uint32_t special_features[] = INIT_SPECIAL_FEATURES;
 
-static const uint32_t pv_max_featuremask[] = INIT_PV_MAX_FEATURES;
+static const uint32_t __initconst pv_max_featuremask[] = INIT_PV_MAX_FEATURES;
 static const uint32_t hvm_shadow_max_featuremask[] = INIT_HVM_SHADOW_MAX_FEATURES;
-static const uint32_t hvm_hap_max_featuremask[] = INIT_HVM_HAP_MAX_FEATURES;
-static const uint32_t pv_def_featuremask[] = INIT_PV_DEF_FEATURES;
-static const uint32_t hvm_shadow_def_featuremask[] = INIT_HVM_SHADOW_DEF_FEATURES;
-static const uint32_t hvm_hap_def_featuremask[] = INIT_HVM_HAP_DEF_FEATURES;
+static const uint32_t __initconst hvm_hap_max_featuremask[] =
+    INIT_HVM_HAP_MAX_FEATURES;
+static const uint32_t __initconst pv_def_featuremask[] = INIT_PV_DEF_FEATURES;
+static const uint32_t __initconst hvm_shadow_def_featuremask[] =
+    INIT_HVM_SHADOW_DEF_FEATURES;
+static const uint32_t __initconst hvm_hap_def_featuremask[] =
+    INIT_HVM_HAP_DEF_FEATURES;
 static const uint32_t deep_features[] = INIT_DEEP_FEATURES;
 
 static int __init parse_xen_cpuid(const char *s)
@@ -308,6 +310,7 @@ static void __init calculate_raw_policy(void)
 static void __init calculate_host_policy(void)
 {
     struct cpuid_policy *p = &host_cpuid_policy;
+    unsigned int max_extd_leaf;
 
     *p = raw_cpuid_policy;
 
@@ -315,7 +318,19 @@ static void __init calculate_host_policy(void)
         min_t(uint32_t, p->basic.max_leaf,   ARRAY_SIZE(p->basic.raw) - 1);
     p->feat.max_subleaf =
         min_t(uint32_t, p->feat.max_subleaf, ARRAY_SIZE(p->feat.raw) - 1);
-    p->extd.max_leaf = 0x80000000 | min_t(uint32_t, p->extd.max_leaf & 0xffff,
+
+    max_extd_leaf = p->extd.max_leaf;
+
+    /*
+     * For AMD/Hygon hardware before Zen3, we unilaterally modify LFENCE to be
+     * dispatch serialising for Spectre mitigations.  Extend max_extd_leaf
+     * beyond what hardware supports, to include the feature leaf containing
+     * this information.
+     */
+    if ( cpu_has_lfence_dispatch )
+        max_extd_leaf = max(max_extd_leaf, 0x80000021);
+
+    p->extd.max_leaf = 0x80000000 | min_t(uint32_t, max_extd_leaf & 0xffff,
                                           ARRAY_SIZE(p->extd.raw) - 1);
 
     cpuid_featureset_to_policy(boot_cpu_data.x86_capability, p);
@@ -381,6 +396,8 @@ static void __init guest_common_feature_adjustments(uint32_t *fs)
      */
     if ( test_bit(X86_FEATURE_IBRSB, fs) )
         __set_bit(X86_FEATURE_STIBP, fs);
+    if ( test_bit(X86_FEATURE_IBRS, fs) )
+        __set_bit(X86_FEATURE_AMD_STIBP, fs);
 
     /*
      * On hardware which supports IBRS/IBPB, we can offer IBPB independently
@@ -404,11 +421,14 @@ static void __init calculate_pv_max_policy(void)
         pv_featureset[i] &= pv_max_featuremask[i];
 
     /*
-     * If Xen isn't virtualising MSR_SPEC_CTRL for PV guests because of
-     * administrator choice, hide the feature.
+     * If Xen isn't virtualising MSR_SPEC_CTRL for PV guests (functional
+     * availability, or admin choice), hide the feature.
      */
     if ( !boot_cpu_has(X86_FEATURE_SC_MSR_PV) )
+    {
         __clear_bit(X86_FEATURE_IBRSB, pv_featureset);
+        __clear_bit(X86_FEATURE_IBRS, pv_featureset);
+    }
 
     guest_common_feature_adjustments(pv_featureset);
 
@@ -463,6 +483,12 @@ static void __init calculate_hvm_max_policy(void)
     __set_bit(X86_FEATURE_X2APIC, hvm_featureset);
 
     /*
+     * We don't support EFER.LMSLE at all.  AMD has dropped the feature from
+     * hardware and allocated a CPUID bit to indicate its absence.
+     */
+    __set_bit(X86_FEATURE_NO_LMSL, hvm_featureset);
+
+    /*
      * On AMD, PV guests are entirely unable to use SYSENTER as Xen runs in
      * long mode (and init_amd() has cleared it out of host capabilities), but
      * HVM guests are able if running in protected mode.
@@ -472,11 +498,14 @@ static void __init calculate_hvm_max_policy(void)
         __set_bit(X86_FEATURE_SEP, hvm_featureset);
 
     /*
-     * If Xen isn't virtualising MSR_SPEC_CTRL for HVM guests because of
-     * administrator choice, hide the feature.
+     * If Xen isn't virtualising MSR_SPEC_CTRL for HVM guests (functional
+     * availability, or admin choice), hide the feature.
      */
     if ( !boot_cpu_has(X86_FEATURE_SC_MSR_HVM) )
+    {
         __clear_bit(X86_FEATURE_IBRSB, hvm_featureset);
+        __clear_bit(X86_FEATURE_IBRS, hvm_featureset);
+    }
 
     /*
      * With VT-x, some features are only supported by Xen if dedicated
@@ -630,14 +659,6 @@ void recalculate_cpuid_policy(struct domain *d)
             __clear_bit(X86_FEATURE_SYSCALL, max_fs);
     }
 
-    /*
-     * ITSC is masked by default (so domains are safe to migrate), but a
-     * toolstack which has configured disable_migrate or vTSC for a domain may
-     * safely select it, and needs a way of doing so.
-     */
-    if ( cpu_has_itsc && (d->disable_migrate || d->arch.vtsc) )
-        __set_bit(X86_FEATURE_ITSC, max_fs);
-
     /* Clamp the toolstacks choices to reality. */
     for ( i = 0; i < ARRAY_SIZE(fs); i++ )
         fs[i] &= max_fs[i];
@@ -714,7 +735,8 @@ int init_domain_cpuid_policy(struct domain *d)
     if ( !p )
         return -ENOMEM;
 
-    if ( d->disable_migrate )
+    /* The hardware domain can't migrate.  Give it ITSC if available. */
+    if ( is_hardware_domain(d) )
         p->extd.itsc = cpu_has_itsc;
 
     /*
@@ -1105,7 +1127,6 @@ void guest_cpuid(const struct vcpu *v, uint32_t leaf,
 static void __init __maybe_unused build_assertions(void)
 {
     BUILD_BUG_ON(ARRAY_SIZE(known_features) != FSCAPINTS);
-    BUILD_BUG_ON(ARRAY_SIZE(special_features) != FSCAPINTS);
     BUILD_BUG_ON(ARRAY_SIZE(pv_max_featuremask) != FSCAPINTS);
     BUILD_BUG_ON(ARRAY_SIZE(hvm_shadow_max_featuremask) != FSCAPINTS);
     BUILD_BUG_ON(ARRAY_SIZE(hvm_hap_max_featuremask) != FSCAPINTS);

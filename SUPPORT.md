@@ -9,13 +9,13 @@ for the definitions of the support status levels etc.
 
 # Release Support
 
-    Xen-Version: 4.14
-    Initial-Release: 2020-07-24
-    Supported-Until: 2022-01-24
-    Security-Support-Until: 2023-07-24
+    Xen-Version: 4.16
+    Initial-Release: 2021-12-02
+    Supported-Until: 2023-06-02
+    Security-Support-Until: 2024-12-02
 
 Release Notes
-: <a href="https://wiki.xenproject.org/wiki/Xen_Project_4.14_Release_Notes">RN</a>
+: <a href="https://wiki.xenproject.org/wiki/Xen_Project_4.16_Release_Notes">RN</a>
 
 # Feature Support
 
@@ -38,6 +38,9 @@ supported in this document.
 ### ARM v8
 
     Status: Supported
+    Status, Cortex A57 r0p0-r1p1: Supported, not security supported
+
+For the Cortex A57 r0p0 - r1p1, see Errata 832075.
 
 ## Host hardware support
 
@@ -64,7 +67,8 @@ supported in this document.
     Status, Intel VT-d: Supported
     Status, ARM SMMUv1: Supported, not security supported
     Status, ARM SMMUv2: Supported, not security supported
-    Status, Renesas IPMMU-VMSA: Tech Preview
+    Status, ARM SMMUv3: Tech Preview
+    Status, Renesas IPMMU-VMSA: Supported, not security supported
 
 ### ARM/GICv3 ITS
 
@@ -175,6 +179,14 @@ Support for running qemu-xen device model in a linux stubdomain.
 
     Status: Tech Preview
 
+## Liveupdate of C xenstored daemon
+
+    Status: Tech Preview
+
+## Liveupdate of OCaml xenstored daemon
+
+    Status: Tech Preview
+
 ## Toolstack/3rd party
 
 ### libvirt driver for xl
@@ -236,6 +248,13 @@ Tool to capture Xen trace buffer data
 Export hypervisor coverage data suitable for analysis by gcov or lcov.
 
     Status: Supported, Not security supported
+
+### Processor trace support
+
+Support for using Intel Processor Trace technology to trace guests
+from dom0.
+
+    Status, x86: Tech Preview
 
 ## Memory Management
 
@@ -325,9 +344,10 @@ Currently only single-vcpu domains are supported.
 A very simple, very static scheduling policy
 that always schedules the same vCPU(s) on the same pCPU(s).
 It is designed for maximum determinism and minimum overhead
-on embedded platforms.
+on embedded platforms and the x86 PV shim.
 
     Status: Experimental
+    Status, x86/shim: Supported
 
 ### NUMA scheduler affinity
 
@@ -413,7 +433,8 @@ Guest-side driver capable of speaking the Xen PV Framebuffer protocol
 
 Guest-side driver capable of speaking the Xen PV display protocol
 
-    Status, Linux: Supported
+    Status, Linux: Supported (outside of "backend allocation" mode)
+    Status, Linux: Experimental (in "backend allocation" mode)
 
 ### PV Console (frontend)
 
@@ -650,11 +671,19 @@ such as KVM, Hyper-V, Bromium, and so on as guests.
 
 ### vPMU
 
-Virtual Performance Management Unit for HVM guests
+Virtual Performance Management Unit
 
-    Status, x86: Supported, Not security supported
+    Status, x86 HVM: Supported, Not security supported
+    Status, ARM: Experimental
 
-Disabled by default (enable with hypervisor command line option).
+On ARM, support for accessing PMU registers from the guests.
+There is no interrupt support and Xen will not save/restore
+the register values on context switches.
+
+Disabled by default.
+On ARM, enable with guest parameter.
+On x86, enable with hypervisor command line option.
+
 This feature is not security supported: see https://xenbits.xen.org/xsa/advisory-163.html
 
 ### Argo: Inter-domain message delivery by hypercall
@@ -688,6 +717,10 @@ This allows for custom or proprietary device emulators
 to be used in addition to QEMU.
 
 	Status: Experimental
+
+### ARM/IOREQ servers
+
+	Status: Tech Preview
 
 ### ARM/Non-PCI device passthrough
 

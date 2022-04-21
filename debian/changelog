@@ -1,4 +1,4 @@
-xen (4.14.3+32-g9de3671772-1+rpi1) bookworm-staging; urgency=medium
+xen (4.16.0+51-g0941d6cb-1+rpi1) bookworm-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,7 +9,87 @@ xen (4.14.3+32-g9de3671772-1+rpi1) bookworm-staging; urgency=medium
   [changes introduced in 4.11.1+26-g87f51bf366-3+rpi1 by Peter Michael Green]
   * Do not fail on files that are not installed.
 
- -- Raspbian forward porter <root@raspbian.org>  Sun, 05 Dec 2021 22:05:07 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Thu, 21 Apr 2022 07:22:13 +0000
+
+xen (4.16.0+51-g0941d6cb-1) unstable; urgency=medium
+
+  * Update to new upstream version 4.16.0+51-g0941d6cb, which also contains
+    security fixes for the following issues:
+    - arm: guest_physmap_remove_page not removing the p2m mappings
+      XSA-393 CVE-2022-23033
+    - A PV guest could DoS Xen while unmapping a grant
+      XSA-394 CVE-2022-23034
+    - Insufficient cleanup of passed-through device IRQs
+      XSA-395 CVE-2022-23035
+  * Note that the following XSA are not listed, because...
+    - XSA-391 and XSA-392 have patches for the Linux kernel.
+  * Upload to unstable now, which obsoletes the Xen 4.14 FTBFS issue.
+    (Closes: #1002658)
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Sat, 19 Feb 2022 20:29:32 +0100
+
+xen (4.16.0-1~exp1) experimental; urgency=medium
+
+  Significant changes:
+  * Update to new upstream version 4.16.0. This also includes a security fix
+    for the following issue, which was not applicable to Xen 4.14 yet:
+    - certain VT-d IOMMUs may not work in shared page table mode
+      XSA-390 CVE-2021-28710
+  * No longer build any package for the i386 architecture. It was already not
+    possible to use x86_32 hardware because the i386 packages already
+    shipped a 64-bit hypervisor and PV shim. Running 32-bit utils with a
+    64-bit hypervisor requires using a compatibility layer that is fragile and
+    becomes harder to maintain and test upstream. This change ends the 'grace
+    period' in which users should have moved to using a fully 64-bit dom0.
+    - debian/{control,rules,salsa-ci.yml,xen-utils-V.install.vsn-in}: make the
+      necessary changes
+    - Remove the Recommends on libc6-xen, which already actually does not
+      exist any more. (Closes: #992909)
+    - Drop patch "tools/tests/x86_emulator: Pass -no-pie -fno-pic to gcc on
+      x86_32" because it is not relevant any more.
+
+  Changes related to upgrading to Xen 4.16:
+  * debian/control: adjust to 4.16  [Maximilian Engelhardt]
+  * Drop patches that have been applied upstream
+  * Refresh remaining patches if needed
+  * debian: follow upstream removal of '.sh' suffix in xl bash_completion file
+    [Maximilian Engelhardt]
+  * debian/control, debian/libxenstore*: ship a libxenstore4 package instead
+    of libxenstore3.0, since upstream bumped the soname
+    [Maximilian Engelhardt]
+
+  Packaging minor fixes and improvements  [Maximilian Engelhardt]:
+  * debian/rules: set SOURCE_BASE_DIR to the top level build dir so that the
+    "Display Debian package version in hypervisor log" patch can use it.
+  * Add patch "xen/arch/x86: make objdump output user locale agnostic" to fix
+    reproducable builds. This patch will also be sent upstream.
+  * d/rules: remove reproducible=+fixfilepath from DEB_BUILD_MAINT_OPTIONS
+  * d/salsa-ci.yml: Explicitly set RELEASE variable to unstable
+  * d/salsa-ci.yml: disable cross building as it's currently not working
+  * debian: call update-grub when installing/removing xen-hypervisor-common
+    (Closes: #988901)
+  * debian: fix dependency generation for python after dh-python was fixed
+    first. (Closes: #976597)
+  * debian/rules: remove unused pybuild settings
+
+  Packaging minor fixes and improvements:
+  * Improve patches for building the PV shim separately. This enables to
+    drop the extra Revert of an upstream commit that was done in
+    4.14.0+80-gd101b417b7-1~exp1:
+    - Drop patch: Revert "pvshim: make PV shim build selectable from
+      configure"
+    - Update patch "[...] Respect caller's CONFIG_PV_SHIM" to follow moving
+      of a line to a different file
+    - Drop patch: "tools/firmware/Makefile: CONFIG_PV_SHIM: enable only on
+      x86_64" because that's now already the default upstream
+  * debian/control.md5sum: remove this obsolete file
+  * Merge patches "vif-common: disable handle_iptable" and
+    "t/h/L/vif-common.sh: fix handle_iptable return value" into a single
+    patch, since the latter was a fix for the first.
+  * debian/control: change the Uploaders email address for Ian Jackson,
+    since he does not work at Citrix any more now
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Mon, 17 Jan 2022 18:36:02 +0100
 
 xen (4.14.3+32-g9de3671772-1) unstable; urgency=medium
 

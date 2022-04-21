@@ -1,7 +1,7 @@
 XEN_ROOT = $(CURDIR)/../../..
 include $(XEN_ROOT)/tools/libfsimage/Rules.mk
 
-MAJOR = 4.14
+MAJOR = 4.16
 MINOR = 0
 
 CFLAGS += -DFSDIR="\"$(LIBEXEC_LIB)/fs\""

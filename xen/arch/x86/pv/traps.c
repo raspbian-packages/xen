@@ -22,21 +22,12 @@
 #include <xen/event.h>
 #include <xen/hypercall.h>
 #include <xen/lib.h>
-#include <xen/trace.h>
 #include <xen/softirq.h>
 
-#include <asm/apic.h>
+#include <asm/pv/trace.h>
 #include <asm/shared.h>
 #include <asm/traps.h>
 #include <irq_vectors.h>
-
-void do_entry_int82(struct cpu_user_regs *regs)
-{
-    if ( unlikely(untrusted_msi) )
-        check_for_unexpected_msi((uint8_t)regs->entry_vector);
-
-    pv_hypercall(regs);
-}
 
 void pv_inject_event(const struct x86_event *event)
 {
@@ -155,9 +146,11 @@ static void nmi_softirq(void)
 
 void __init pv_trap_init(void)
 {
+#ifdef CONFIG_PV32
     /* The 32-on-64 hypercall vector is only accessible from ring 1. */
     _set_gate(idt_table + HYPERCALL_VECTOR,
               SYS_DESC_trap_gate, 1, entry_int82);
+#endif
 
     /* Fast trap for int80 (faster than taking the #GP-fixup path). */
     _set_gate(idt_table + LEGACY_SYSCALL_VECTOR, SYS_DESC_trap_gate, 3,

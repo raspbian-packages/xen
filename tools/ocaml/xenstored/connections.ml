@@ -21,7 +21,7 @@ type t = {
 	anonymous: (Unix.file_descr, Connection.t) Hashtbl.t;
 	domains: (int, Connection.t) Hashtbl.t;
 	ports: (Xeneventchn.t, Connection.t) Hashtbl.t;
-	mutable watches: (string, Connection.watch list) Trie.t;
+	mutable watches: Connection.watch list Trie.t;
 }
 
 let create () = {
@@ -31,7 +31,7 @@ let create () = {
 	watches = Trie.create ()
 }
 
-let add_anonymous cons fd _can_write =
+let add_anonymous cons fd =
 	let xbcon = Xenbus.Xb.open_fd fd in
 	let con = Connection.create xbcon None in
 	Hashtbl.add cons.anonymous (Xenbus.Xb.get_fd xbcon) con
@@ -196,3 +196,11 @@ let debug cons =
 	let anonymous = Hashtbl.fold (fun _ con accu -> Connection.debug con :: accu) cons.anonymous [] in
 	let domains = Hashtbl.fold (fun _ con accu -> Connection.debug con :: accu) cons.domains [] in
 	String.concat "" (domains @ anonymous)
+
+let filter ~f cons =
+	let fold _ v acc = if f v then v :: acc else acc in
+	[]
+	|> Hashtbl.fold fold cons.anonymous
+	|> Hashtbl.fold fold cons.domains
+
+let prevents_quit cons = filter ~f:Connection.prevents_live_update cons

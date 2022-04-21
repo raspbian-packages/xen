@@ -42,8 +42,12 @@ type x86_arch_emulation_flags =
   | X86_EMU_USE_PIRQ
   | X86_EMU_VPCI
 
+type x86_arch_misc_flags =
+  | X86_MSR_RELAXED
+
 type xen_x86_arch_domainconfig = {
   emulation_flags: x86_arch_emulation_flags list;
+  misc_flags: x86_arch_misc_flags list;
 }
 
 type arch_domainconfig =
@@ -57,6 +61,8 @@ type domain_create_flag =
   | CDF_OOS_OFF
   | CDF_XS_DOMAIN
   | CDF_IOMMU
+  | CDF_NESTED_VIRT
+  | CDF_VPMU
 
 type domain_create_iommu_opts =
   | IOMMU_NO_SHAREPT
@@ -70,6 +76,7 @@ type domctl_create_config = {
   max_evtchn_port: int;
   max_grant_frames: int;
   max_maptrack_frames: int;
+  max_grant_version: int;
   arch: arch_domainconfig;
 }
 
@@ -100,6 +107,10 @@ type physinfo_cap_flag =
   | CAP_HAP
   | CAP_Shadow
   | CAP_IOMMU_HAP_PT_SHARE
+  | CAP_Vmtrace
+  | CAP_Vpmu
+  | CAP_Gnttab_v1
+  | CAP_Gnttab_v2
 
 type physinfo = {
   threads_per_core : int;
@@ -132,16 +143,18 @@ external interface_close : handle -> unit = "stub_xc_interface_close"
  * interface_open and interface_close or with_intf although mixing both
  * is possible *)
 val with_intf : (handle -> 'a) -> 'a
+
 (** [get_handle] returns the global handle used by [with_intf] *)
 val get_handle: unit -> handle option
+
 (** [close handle] closes the handle maintained by [with_intf]. This
  * should only be closed before process exit. It must not be called from
  * a function called directly or indirectly by with_intf as this
  * would invalidate the handle that with_intf passes to its argument. *)
 val close_handle: unit -> unit
 
-external domain_create : handle -> domctl_create_config -> domid
-  = "stub_xc_domain_create"
+val domain_create: handle -> ?domid:int -> domctl_create_config -> domid
+
 external domain_sethandle : handle -> domid -> string -> unit = "stub_xc_domain_sethandle"
 external domain_max_vcpus : handle -> domid -> int -> unit
   = "stub_xc_domain_max_vcpus"

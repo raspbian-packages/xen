@@ -3,45 +3,39 @@ ifneq ($(CONFIG_COMPAT),)
 compat-arch-$(CONFIG_X86) := x86_32
 
 headers-y := \
-    compat/argo.h \
-    compat/callback.h \
+    compat/arch-$(compat-arch-y).h \
     compat/elfnote.h \
     compat/event_channel.h \
     compat/features.h \
-    compat/grant_table.h \
-    compat/hypfs.h \
-    compat/kexec.h \
     compat/memory.h \
     compat/nmi.h \
     compat/physdev.h \
     compat/platform.h \
+    compat/pmu.h \
     compat/sched.h \
-    compat/trace.h \
     compat/vcpu.h \
     compat/version.h \
     compat/xen.h \
-    compat/xenoprof.h
+    compat/xlat.h
 headers-$(CONFIG_X86)     += compat/arch-x86/pmu.h
 headers-$(CONFIG_X86)     += compat/arch-x86/xen-mca.h
 headers-$(CONFIG_X86)     += compat/arch-x86/xen.h
 headers-$(CONFIG_X86)     += compat/arch-x86/xen-$(compat-arch-y).h
-headers-$(CONFIG_X86)     += compat/hvm/dm_op.h
-headers-$(CONFIG_X86)     += compat/hvm/hvm_op.h
-headers-$(CONFIG_X86)     += compat/hvm/hvm_vcpu.h
-headers-y                 += compat/arch-$(compat-arch-y).h compat/pmu.h compat/xlat.h
+headers-$(CONFIG_ARGO)    += compat/argo.h
+headers-$(CONFIG_PV)      += compat/callback.h
+headers-$(CONFIG_GRANT_TABLE) += compat/grant_table.h
+headers-$(CONFIG_PV_SHIM) += compat/grant_table.h
+headers-$(CONFIG_HVM)     += compat/hvm/dm_op.h
+headers-$(CONFIG_HVM)     += compat/hvm/hvm_op.h
+headers-$(CONFIG_HVM)     += compat/hvm/hvm_vcpu.h
+headers-$(CONFIG_HYPFS)   += compat/hypfs.h
+headers-$(CONFIG_KEXEC)   += compat/kexec.h
+headers-$(CONFIG_TRACEBUFFER) += compat/trace.h
+headers-$(CONFIG_XENOPROF) += compat/xenoprof.h
 headers-$(CONFIG_XSM_FLASK) += compat/xsm/flask_op.h
 
 cppflags-y                := -include public/xen-compat.h -DXEN_GENERATING_COMPAT_HEADERS
 cppflags-$(CONFIG_X86)    += -m32
-
-# 8-byte types are 4-byte aligned on x86_32 ...
-ifeq ($(CONFIG_CC_IS_CLANG),y)
-prefix-$(CONFIG_X86)      := \#pragma pack(push, 4)
-suffix-$(CONFIG_X86)      := \#pragma pack(pop)
-else
-prefix-$(CONFIG_X86)      := \#pragma pack(4)
-suffix-$(CONFIG_X86)      := \#pragma pack()
-endif
 
 endif
 
@@ -52,16 +46,7 @@ public-$(CONFIG_ARM) := $(wildcard public/arch-arm/*.h public/arch-arm/*/*.h)
 all: $(headers-y)
 
 compat/%.h: compat/%.i Makefile $(BASEDIR)/tools/compat-build-header.py
-	set -e; id=_$$(echo $@ | tr '[:lower:]-/.' '[:upper:]___'); \
-	echo "#ifndef $$id" >$@.new; \
-	echo "#define $$id" >>$@.new; \
-	echo "#include <xen/compat.h>" >>$@.new; \
-	$(if $(filter-out compat/arch-%.h,$@),echo "#include <$(patsubst compat/%,public/%,$@)>" >>$@.new;) \
-	$(if $(prefix-y),echo "$(prefix-y)" >>$@.new;) \
-	grep -v '^# [0-9]' $< | \
-	$(PYTHON) $(BASEDIR)/tools/compat-build-header.py | uniq >>$@.new; \
-	$(if $(suffix-y),echo "$(suffix-y)" >>$@.new;) \
-	echo "#endif /* $$id */" >>$@.new
+	$(PYTHON) $(BASEDIR)/tools/compat-build-header.py <$< $@ >>$@.new; \
 	mv -f $@.new $@
 
 compat/%.i: compat/%.c Makefile
@@ -69,8 +54,7 @@ compat/%.i: compat/%.c Makefile
 
 compat/%.c: public/%.h xlat.lst Makefile $(BASEDIR)/tools/compat-build-source.py
 	mkdir -p $(@D)
-	grep -v 'DEFINE_XEN_GUEST_HANDLE(long)' $< | \
-	$(PYTHON) $(BASEDIR)/tools/compat-build-source.py >$@.new
+	$(PYTHON) $(BASEDIR)/tools/compat-build-source.py xlat.lst <$< >$@.new
 	mv -f $@.new $@
 
 compat/.xlat/%.h: compat/%.h compat/.xlat/%.lst $(BASEDIR)/tools/get-fields.sh Makefile

@@ -12,8 +12,7 @@
  * GNU General Public License for more details.
  *
  * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
+ * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/argo.h>
@@ -445,13 +444,13 @@ signal_domain(struct domain *d)
 static void
 signal_domid(domid_t domain_id)
 {
-    struct domain *d = get_domain_by_id(domain_id);
+    struct domain *d = rcu_lock_domain_by_id(domain_id);
 
     if ( !d )
         return;
 
     signal_domain(d);
-    put_domain(d);
+    rcu_unlock_domain(d);
 }
 
 static void
@@ -983,7 +982,7 @@ ringbuf_insert(const struct domain *d, struct argo_ring_info *ring_info,
 static void
 wildcard_pending_list_remove(domid_t domain_id, struct pending_ent *ent)
 {
-    struct domain *d = get_domain_by_id(domain_id);
+    struct domain *d = rcu_lock_domain_by_id(domain_id);
 
     if ( !d )
         return;
@@ -996,13 +995,13 @@ wildcard_pending_list_remove(domid_t domain_id, struct pending_ent *ent)
         list_del(&ent->wildcard_node);
         spin_unlock(&d->argo->wildcard_L2_lock);
     }
-    put_domain(d);
+    rcu_unlock_domain(d);
 }
 
 static void
 wildcard_pending_list_insert(domid_t domain_id, struct pending_ent *ent)
 {
-    struct domain *d = get_domain_by_id(domain_id);
+    struct domain *d = rcu_lock_domain_by_id(domain_id);
 
     if ( !d )
         return;
@@ -1015,7 +1014,7 @@ wildcard_pending_list_insert(domid_t domain_id, struct pending_ent *ent)
         list_add(&ent->wildcard_node, &d->argo->wildcard_pend_list);
         spin_unlock(&d->argo->wildcard_L2_lock);
     }
-    put_domain(d);
+    rcu_unlock_domain(d);
 }
 
 static void
@@ -1283,7 +1282,7 @@ partner_rings_remove(struct domain *src_d)
                                                       struct argo_send_info,
                                                       node)) )
         {
-            struct domain *dst_d = get_domain_by_id(send_info->id.domain_id);
+            struct domain *dst_d = rcu_lock_domain_by_id(send_info->id.domain_id);
 
             if ( dst_d && dst_d->argo )
             {
@@ -1302,7 +1301,7 @@ partner_rings_remove(struct domain *src_d)
                 ASSERT_UNREACHABLE();
 
             if ( dst_d )
-                put_domain(dst_d);
+                rcu_unlock_domain(dst_d);
 
             list_del(&send_info->node);
             xfree(send_info);
@@ -1330,7 +1329,7 @@ fill_ring_data(const struct domain *currd,
 
     ent.flags = 0;
 
-    dst_d = get_domain_by_id(ent.ring.domain_id);
+    dst_d = rcu_lock_domain_by_id(ent.ring.domain_id);
     if ( !dst_d || !dst_d->argo )
         goto out;
 
@@ -1340,10 +1339,7 @@ fill_ring_data(const struct domain *currd,
      */
     ret = xsm_argo_send(currd, dst_d);
     if ( ret )
-    {
-        put_domain(dst_d);
-        return ret;
-    }
+        goto out;
 
     read_lock(&dst_d->argo->rings_L2_rwlock);
 
@@ -1405,7 +1401,7 @@ fill_ring_data(const struct domain *currd,
 
  out:
     if ( dst_d )
-        put_domain(dst_d);
+        rcu_unlock_domain(dst_d);
 
     if ( !ret && (__copy_field_to_guest(data_ent_hnd, &ent, flags) ||
                   __copy_field_to_guest(data_ent_hnd, &ent, max_message_size)) )
@@ -1569,7 +1565,7 @@ unregister_ring(struct domain *currd,
     if ( ring_id.partner_id == XEN_ARGO_DOMID_ANY )
         goto out;
 
-    dst_d = get_domain_by_id(ring_id.partner_id);
+    dst_d = rcu_lock_domain_by_id(ring_id.partner_id);
     if ( !dst_d || !dst_d->argo )
     {
         ASSERT_UNREACHABLE();
@@ -1592,7 +1588,7 @@ unregister_ring(struct domain *currd,
     read_unlock(&L1_global_argo_rwlock);
 
     if ( dst_d )
-        put_domain(dst_d);
+        rcu_unlock_domain(dst_d);
 
     xfree(send_info);
 
@@ -1663,7 +1659,7 @@ register_ring(struct domain *currd,
     }
     else
     {
-        dst_d = get_domain_by_id(reg.partner_id);
+        dst_d = rcu_lock_domain_by_id(reg.partner_id);
         if ( !dst_d )
         {
             argo_dprintk("!dst_d, ESRCH\n");
@@ -1845,7 +1841,7 @@ register_ring(struct domain *currd,
 
  out:
     if ( dst_d )
-        put_domain(dst_d);
+        rcu_unlock_domain(dst_d);
 
     if ( ret )
         xfree(send_info);
@@ -1988,7 +1984,7 @@ sendv(struct domain *src_d, xen_argo_addr_t *src_addr,
     src_id.domain_id = src_d->domain_id;
     src_id.partner_id = dst_addr->domain_id;
 
-    dst_d = get_domain_by_id(dst_addr->domain_id);
+    dst_d = rcu_lock_domain_by_id(dst_addr->domain_id);
     if ( !dst_d )
         return -ESRCH;
 
@@ -1998,7 +1994,7 @@ sendv(struct domain *src_d, xen_argo_addr_t *src_addr,
         gprintk(XENLOG_ERR, "argo: XSM REJECTED %i -> %i\n",
                 src_d->domain_id, dst_d->domain_id);
 
-        put_domain(dst_d);
+        rcu_unlock_domain(dst_d);
 
         return ret;
     }
@@ -2068,7 +2064,7 @@ sendv(struct domain *src_d, xen_argo_addr_t *src_addr,
         signal_domain(dst_d);
 
     if ( dst_d )
-        put_domain(dst_d);
+        rcu_unlock_domain(dst_d);
 
     return ( ret < 0 ) ? ret : len;
 }

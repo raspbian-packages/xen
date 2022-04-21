@@ -19,6 +19,7 @@
  */
 
 #include <xen/init.h>
+#include <xen/ioreq.h>
 #include <xen/mm.h>
 #include <xen/lib.h>
 #include <xen/errno.h>
@@ -35,7 +36,6 @@
 #include <asm/shadow.h>
 #include <asm/p2m.h>
 #include <asm/hvm/hvm.h>
-#include <asm/hvm/ioreq.h>
 #include <asm/hvm/support.h>
 #include <asm/hvm/vpt.h>
 #include <asm/hvm/vpic.h>
@@ -60,22 +60,8 @@ void send_timeoffset_req(unsigned long timeoff)
     if ( timeoff == 0 )
         return;
 
-    if ( hvm_broadcast_ioreq(&p, true) != 0 )
+    if ( ioreq_broadcast(&p, true) != 0 )
         gprintk(XENLOG_ERR, "Unsuccessful timeoffset update\n");
-}
-
-/* Ask ioemu mapcache to invalidate mappings. */
-void send_invalidate_req(void)
-{
-    ioreq_t p = {
-        .type = IOREQ_TYPE_INVALIDATE,
-        .size = 4,
-        .dir = IOREQ_WRITE,
-        .data = ~0UL, /* flush all */
-    };
-
-    if ( hvm_broadcast_ioreq(&p, false) != 0 )
-        gprintk(XENLOG_ERR, "Unsuccessful map-cache invalidate\n");
 }
 
 bool hvm_emulate_one_insn(hvm_emulate_validate_t *validate, const char *descr)
@@ -85,7 +71,7 @@ bool hvm_emulate_one_insn(hvm_emulate_validate_t *validate, const char *descr)
 
     hvm_emulate_init_once(&ctxt, validate, guest_cpu_user_regs());
 
-    switch ( rc = hvm_emulate_one(&ctxt, HVMIO_no_completion) )
+    switch ( rc = hvm_emulate_one(&ctxt, VIO_no_completion) )
     {
     case X86EMUL_UNHANDLEABLE:
         hvm_dump_emulation_state(XENLOG_G_WARNING, descr, &ctxt, rc);
@@ -109,20 +95,20 @@ bool hvm_emulate_one_insn(hvm_emulate_validate_t *validate, const char *descr)
 bool handle_mmio_with_translation(unsigned long gla, unsigned long gpfn,
                                   struct npfec access)
 {
-    struct hvm_vcpu_io *vio = &current->arch.hvm.hvm_io;
+    struct hvm_vcpu_io *hvio = &current->arch.hvm.hvm_io;
 
-    vio->mmio_access = access.gla_valid &&
-                       access.kind == npfec_kind_with_gla
-                       ? access : (struct npfec){};
-    vio->mmio_gla = gla & PAGE_MASK;
-    vio->mmio_gpfn = gpfn;
+    hvio->mmio_access = access.gla_valid &&
+                        access.kind == npfec_kind_with_gla
+                        ? access : (struct npfec){};
+    hvio->mmio_gla = gla & PAGE_MASK;
+    hvio->mmio_gpfn = gpfn;
     return handle_mmio();
 }
 
 bool handle_pio(uint16_t port, unsigned int size, int dir)
 {
     struct vcpu *curr = current;
-    struct hvm_vcpu_io *vio = &curr->arch.hvm.hvm_io;
+    struct vcpu_io *vio = &curr->io;
     unsigned int data;
     int rc;
 
@@ -135,8 +121,8 @@ bool handle_pio(uint16_t port, unsigned int size, int dir)
 
     rc = hvmemul_do_pio_buffer(port, size, dir, &data);
 
-    if ( hvm_ioreq_needs_completion(&vio->io_req) )
-        vio->io_completion = HVMIO_pio_completion;
+    if ( ioreq_needs_completion(&vio->req) )
+        vio->completion = VIO_pio_completion;
 
     switch ( rc )
     {
@@ -155,7 +141,7 @@ bool handle_pio(uint16_t port, unsigned int size, int dir)
          * We should not advance RIP/EIP if the domain is shutting down or
          * if X86EMUL_RETRY has been returned by an internal handler.
          */
-        if ( curr->domain->is_shutting_down || !hvm_io_pending(curr) )
+        if ( curr->domain->is_shutting_down || !vcpu_ioreq_pending(curr) )
             return false;
         break;
 
@@ -175,7 +161,7 @@ static bool_t g2m_portio_accept(const struct hvm_io_handler *handler,
 {
     struct vcpu *curr = current;
     const struct hvm_domain *hvm = &curr->domain->arch.hvm;
-    struct hvm_vcpu_io *vio = &curr->arch.hvm.hvm_io;
+    struct hvm_vcpu_io *hvio = &curr->arch.hvm.hvm_io;
     struct g2m_ioport *g2m_ioport;
     unsigned int start, end;
 
@@ -185,7 +171,7 @@ static bool_t g2m_portio_accept(const struct hvm_io_handler *handler,
         end = start + g2m_ioport->np;
         if ( (p->addr >= start) && (p->addr + p->size <= end) )
         {
-            vio->g2m_ioport = g2m_ioport;
+            hvio->g2m_ioport = g2m_ioport;
             return 1;
         }
     }
@@ -196,8 +182,8 @@ static bool_t g2m_portio_accept(const struct hvm_io_handler *handler,
 static int g2m_portio_read(const struct hvm_io_handler *handler,
                            uint64_t addr, uint32_t size, uint64_t *data)
 {
-    struct hvm_vcpu_io *vio = &current->arch.hvm.hvm_io;
-    const struct g2m_ioport *g2m_ioport = vio->g2m_ioport;
+    struct hvm_vcpu_io *hvio = &current->arch.hvm.hvm_io;
+    const struct g2m_ioport *g2m_ioport = hvio->g2m_ioport;
     unsigned int mport = (addr - g2m_ioport->gport) + g2m_ioport->mport;
 
     switch ( size )
@@ -221,8 +207,8 @@ static int g2m_portio_read(const struct hvm_io_handler *handler,
 static int g2m_portio_write(const struct hvm_io_handler *handler,
                             uint64_t addr, uint32_t size, uint64_t data)
 {
-    struct hvm_vcpu_io *vio = &current->arch.hvm.hvm_io;
-    const struct g2m_ioport *g2m_ioport = vio->g2m_ioport;
+    struct hvm_vcpu_io *hvio = &current->arch.hvm.hvm_io;
+    const struct g2m_ioport *g2m_ioport = hvio->g2m_ioport;
     unsigned int mport = (addr - g2m_ioport->gport) + g2m_ioport->mport;
 
     switch ( size )
@@ -272,20 +258,6 @@ unsigned int hvm_pci_decode_addr(unsigned int cf8, unsigned int addr,
      * offset into the 0xcfc register when reading/writing to it.
      */
     return CF8_ADDR_LO(cf8) | (addr & 3);
-}
-
-/* Do some sanity checks. */
-static bool vpci_access_allowed(unsigned int reg, unsigned int len)
-{
-    /* Check access size. */
-    if ( len != 1 && len != 2 && len != 4 && len != 8 )
-        return false;
-
-    /* Check that access is size aligned. */
-    if ( (reg & (len - 1)) )
-        return false;
-
-    return true;
 }
 
 /* vPCI config space IO ports handlers (0xcf8/0xcfc). */
@@ -408,7 +380,7 @@ static unsigned int vpci_mmcfg_decode_addr(const struct hvm_mmcfg *mmcfg,
                                            paddr_t addr, pci_sbdf_t *sbdf)
 {
     addr -= mmcfg->addr;
-    sbdf->bdf = MMCFG_BDF(addr);
+    sbdf->bdf = VPCI_ECAM_BDF(addr);
     sbdf->bus += mmcfg->start_bus;
     sbdf->seg = mmcfg->segment;
 
@@ -448,25 +420,8 @@ static int vpci_mmcfg_read(struct vcpu *v, unsigned long addr,
     reg = vpci_mmcfg_decode_addr(mmcfg, addr, &sbdf);
     read_unlock(&d->arch.hvm.mmcfg_lock);
 
-    if ( !vpci_access_allowed(reg, len) ||
-         (reg + len) > PCI_CFG_SPACE_EXP_SIZE )
-        return X86EMUL_OKAY;
-
-    /*
-     * According to the PCIe 3.1A specification:
-     *  - Configuration Reads and Writes must usually be DWORD or smaller
-     *    in size.
-     *  - Because Root Complex implementations are not required to support
-     *    accesses to a RCRB that cross DW boundaries [...] software
-     *    should take care not to cause the generation of such accesses
-     *    when accessing a RCRB unless the Root Complex will support the
-     *    access.
-     *  Xen however supports 8byte accesses by splitting them into two
-     *  4byte accesses.
-     */
-    *data = vpci_read(sbdf, reg, min(4u, len));
-    if ( len == 8 )
-        *data |= (uint64_t)vpci_read(sbdf, reg + 4, 4) << 32;
+    /* Failed reads are not propagated to the caller */
+    vpci_ecam_read(sbdf, reg, len, data);
 
     return X86EMUL_OKAY;
 }
@@ -490,13 +445,8 @@ static int vpci_mmcfg_write(struct vcpu *v, unsigned long addr,
     reg = vpci_mmcfg_decode_addr(mmcfg, addr, &sbdf);
     read_unlock(&d->arch.hvm.mmcfg_lock);
 
-    if ( !vpci_access_allowed(reg, len) ||
-         (reg + len) > PCI_CFG_SPACE_EXP_SIZE )
-        return X86EMUL_OKAY;
-
-    vpci_write(sbdf, reg, min(4u, len), data);
-    if ( len == 8 )
-        vpci_write(sbdf, reg + 4, 4, data >> 32);
+    /* Failed writes are not propagated to the caller */
+    vpci_ecam_write(sbdf, reg, len, data);
 
     return X86EMUL_OKAY;
 }

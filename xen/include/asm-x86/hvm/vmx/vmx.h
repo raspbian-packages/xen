@@ -46,8 +46,7 @@ typedef union {
         mfn         :   40, /* bits 51:12 - Machine physical frame number */
         sa_p2mt     :   6,  /* bits 57:52 - Software available 2 */
         access      :   4,  /* bits 61:58 - p2m_access_t */
-        tm          :   1,  /* bit 62 - VT-d transient-mapping hint in
-                               shared EPT/VT-d usage */
+        _rsvd       :   1,  /* bit 62 - reserved */
         suppress_ve :   1;  /* bit 63 - suppress #VE */
     };
     u64 epte;
@@ -93,7 +92,6 @@ typedef enum {
 #define PI_xAPIC_NDST_MASK      0xFF00
 
 void vmx_asm_vmexit_handler(struct cpu_user_regs);
-void vmx_asm_do_vmentry(void);
 void vmx_intr_assist(void);
 void noreturn vmx_do_resume(void);
 void vmx_vlapic_msr_changed(struct vcpu *v);
@@ -600,6 +598,8 @@ void ept_p2m_uninit(struct p2m_domain *p2m);
 
 void ept_walk_table(struct domain *d, unsigned long gfn);
 bool_t ept_handle_misconfig(uint64_t gpa);
+int epte_get_entry_emt(struct domain *d, gfn_t gfn, mfn_t mfn,
+                       unsigned int order, bool *ipat, p2m_type_t type);
 void setup_ept_dump(void);
 void p2m_init_altp2m_ept(struct domain *d, unsigned int i);
 /* Locate an alternate p2m by its EPTP */
