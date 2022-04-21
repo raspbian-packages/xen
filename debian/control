@@ -102,7 +102,7 @@ Section: admin
 Architecture: amd64 arm64 armhf
 Provides: xen-utils
 Depends: ${shlibs:Depends}, ${misc:Depends}, ${python3:Depends}, xen-utils-common (>= ${source:Version})
-Recommends: bridge-utils, xen-hypervisor-4.16, qemu-system-x86 [amd64], grub-xen-host [amd64]
+Recommends: bridge-utils, xen-hypervisor-4.16, qemu-system-xen [amd64], grub-xen-host [amd64]
 Suggests: qemu-utils [amd64], seabios [amd64], ovmf
 Description: XEN administrative tools
  The userspace tools to manage a system virtualized through the XEN virtual
