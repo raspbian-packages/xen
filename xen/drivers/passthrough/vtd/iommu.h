@@ -202,8 +202,12 @@ struct root_entry {
     do {(root).val |= ((value) & PAGE_MASK_4K);} while(0)
 
 struct context_entry {
-    u64 lo;
-    u64 hi;
+    union {
+        struct {
+            uint64_t lo, hi;
+        };
+        __uint128_t full;
+    };
 };
 #define ROOT_ENTRY_NR (PAGE_SIZE_4K/sizeof(struct root_entry))
 #define context_present(c) ((c).lo & 1)
@@ -478,7 +482,7 @@ struct vtd_iommu {
     u32 nr_pt_levels;
     u64	cap;
     u64	ecap;
-    spinlock_t lock; /* protect context, domain ids */
+    spinlock_t lock; /* protect context */
     spinlock_t register_lock; /* protect iommu register handling */
     u64 root_maddr; /* root entry machine address */
     nodeid_t node;
@@ -504,6 +508,7 @@ struct vtd_iommu {
     } flush;
 
     struct list_head ats_devices;
+    unsigned long *pseudo_domid_map; /* "pseudo" domain id bitmap */
     unsigned long *domid_bitmap;  /* domain id bitmap */
     u16 *domid_map;               /* domain id mapping array */
     uint32_t version;

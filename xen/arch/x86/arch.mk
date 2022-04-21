@@ -41,10 +41,24 @@ CFLAGS += -mno-red-zone -fpic
 # SSE setup for variadic function calls.
 CFLAGS += -mno-sse $(call cc-option,$(CC),-mskip-rax-setup)
 
-# Compile with thunk-extern, indirect-branch-register if avaiable.
-CFLAGS-$(CONFIG_INDIRECT_THUNK) += -mindirect-branch=thunk-extern
-CFLAGS-$(CONFIG_INDIRECT_THUNK) += -mindirect-branch-register
-CFLAGS-$(CONFIG_INDIRECT_THUNK) += -fno-jump-tables
+ifeq ($(CONFIG_INDIRECT_THUNK),y)
+# Compile with gcc thunk-extern, indirect-branch-register if available.
+CFLAGS-$(CONFIG_CC_IS_GCC) += -mindirect-branch=thunk-extern
+CFLAGS-$(CONFIG_CC_IS_GCC) += -mindirect-branch-register
+CFLAGS-$(CONFIG_CC_IS_GCC) += -fno-jump-tables
+
+# Enable clang retpoline support if available.
+CFLAGS-$(CONFIG_CC_IS_CLANG) += -mretpoline-external-thunk
+endif
+
+ifdef CONFIG_XEN_IBT
+# Force -fno-jump-tables to work around
+#   https://gcc.gnu.org/bugzilla/show_bug.cgi?id=104816
+#   https://github.com/llvm/llvm-project/issues/54247
+CFLAGS += -fcf-protection=branch -fno-jump-tables
+else
+$(call cc-option-add,CFLAGS,CC,-fcf-protection=none)
+endif
 
 # If supported by the compiler, reduce stack alignment to 8 bytes. But allow
 # this to be overridden elsewhere.
