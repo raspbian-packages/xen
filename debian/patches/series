@@ -20,3 +20,4 @@ misc/tools-pygrub-remove-static-solaris-support
 0020-tools-don-t-build-ship-xenmon.patch
 0021-docs-set-date-to-SOURCE_DATE_EPOCH-if-available.patch
 0022-xen-arch-x86-make-objdump-output-user-locale-agnosti.patch
+auto-4.16.0+51-g0941d6cb-1+rpi1-d71dd53be8eac2f1436a7af474c831ee9dbc9813-1650525821

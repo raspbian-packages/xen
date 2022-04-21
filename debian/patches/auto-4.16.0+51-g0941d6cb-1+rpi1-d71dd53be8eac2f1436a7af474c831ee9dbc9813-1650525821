@@ -1,0 +1,43 @@
+From: Raspbian forward porter <root@raspbian.org>
+Subject: Automatically generated patch (4.16.0+51-g0941d6cb-1+rpi1)
+
+Last (up to) 3 git changes, FYI:
+
+commit d71dd53be8eac2f1436a7af474c831ee9dbc9813
+Author: Raspbian automatic forward porter <root@raspbian.org>
+Date:   Thu Apr 21 08:23:35 2022 +0100
+
+    Defuzz fuzzy quilt patches and/or disable broken quilt patches
+
+commit 70020fc80943ea8182b170a12be977c34b073247
+Merge: fc803bd07f 01c9f027d2
+Author: Raspbian automatic forward porter <root@raspbian.org>
+Date:   Thu Apr 21 08:23:26 2022 +0100
+
+    Merge version 4.14.3+32-g9de3671772-1+rpi1 and 4.16.0+51-g0941d6cb-1 to produce 4.16.0+51-g0941d6cb-1+rpi1
+
+commit 01c9f027d2774a32bafdf84286a908053d2cb1aa
+Merge: 1bfd67745d 526f8ffa01
+Author: Hans van Kranenburg <hans@knorrie.org>
+Date:   Sat Feb 19 21:33:00 2022 +0100
+
+    Declare fast forward / record previous work
+    
+    [git-debrebase pseudomerge: stitch]
+---
+
+--- xen-4.16.0+51-g0941d6cb.orig/tools/include/xenctrl.h
++++ xen-4.16.0+51-g0941d6cb/tools/include/xenctrl.h
+@@ -76,9 +76,9 @@
+ #define xen_rmb() xen_barrier()
+ #define xen_wmb() xen_barrier()
+ #elif defined(__arm__)
+-#define xen_mb()   asm volatile ("dmb" : : : "memory")
+-#define xen_rmb()  asm volatile ("dmb" : : : "memory")
+-#define xen_wmb()  asm volatile ("dmb" : : : "memory")
++#define xen_mb()   asm volatile ("mcr p15, #0, r0, c7, c10, #5" : : : "memory")
++#define xen_rmb()  asm volatile ("mcr p15, #0, r0, c7, c10, #5" : : : "memory")
++#define xen_wmb()  asm volatile ("mcr p15, #0, r0, c7, c10, #5" : : : "memory")
+ #elif defined(__aarch64__)
+ #define xen_mb()   asm volatile ("dmb sy" : : : "memory")
+ #define xen_rmb()  asm volatile ("dmb sy" : : : "memory")
