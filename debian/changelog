@@ -1,8 +1,46 @@
-xen (4.16.1-1) UNRELEASED; urgency=medium
+xen (4.16.1-1) unstable; urgency=medium
 
-  * Update to new upstream version 4.16.1.
+  * Update to new upstream version 4.16.1, which also contains security fixes
+    for the following issues:
+    - Racy interactions between dirty vram tracking and paging log dirty
+      hypercalls
+      XSA-397 CVE-2022-26356
+    - Multiple speculative security issues
+      XSA-398 (no CVE yet)
+    - race in VT-d domain ID cleanup
+      XSA-399 CVE-2022-26357
+    - IOMMU: RMRR (VT-d) and unity map (AMD-Vi) handling issues
+      XSA-400 CVE-2022-26358 CVE-2022-26359 CVE-2022-26360 CVE-2022-26361
+  * Note that the following XSA are not listed, because...
+    - XSA-396 has patches for the Linux kernel.
+  * Don't ship NEWS in libxen* packages. Instead, only ship relevant NEWS
+    items for actual hypervisor and/or utils packages they belong to.
+    (Closes: #962267)
+  * d/control: make xen-hypervisor-common arch specific, just like
+    xen-utils-common.
+  * d/control: stop recommending qemu-system-x86 on arm, because qemu is not
+    being built with xen support on arm...
+  * Add a patch for tools/libs/light/Makefile which prevents build.o and
+    build.opic to be rebuilt unneededly during the package install phase,
+    causing a FTBFS because it triggers the use of ccache, which is not
+    allowed in the install phase of building the Debian packages.
 
- -- Hans van Kranenburg <hans@knorrie.org>  Thu, 21 Apr 2022 23:39:06 +0200
+  Improvements related to Qemu integration:  [Michael Tokarev]
+  * d/xen-utils-common.xen.init: properly disable qemu monitor/serial/parallel
+    devices for qemu started at boot.
+  * debian: switch from recommending qemu-system-x86 to qemu-system-xen and
+    mention this change in the NEWS file.
+  * Add patch "give meaningful error message if qemu device model is
+    unavailable" to give a useful error message only in case the domU needs
+    the qemu device model which is not installed, instead of giving a warning
+    about missing qemu even if it is not used by this domain.
+
+  Documentation, grammar and spelling fixes and improvements:
+  * d/control: drop obsolete paragraph about separate xen linux kernel package
+  * d/control: Harmonize the capitalization of the 'Xen' word  [Diederik de Haas]
+  * d/control: Improve spelling and grammar  [Diederik de Haas]`
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Mon, 09 May 2022 22:29:23 +0200
 
 xen (4.16.0+51-g0941d6cb-1) unstable; urgency=medium
 
