@@ -109,6 +109,7 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
             b_info->device_model_version =
                 LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN;
         }
+#if HAVE_QEMU_TRADITIONAL
         if (b_info->device_model_version
                 == LIBXL_DEVICE_MODEL_VERSION_QEMU_XEN) {
             const char *dm;
@@ -128,6 +129,7 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
                 }
             }
         }
+#endif
     }
 
     if (b_info->blkdev_start == NULL)
