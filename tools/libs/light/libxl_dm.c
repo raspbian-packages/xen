@@ -2880,6 +2880,9 @@ void libxl__spawn_local_dm(libxl__egc *egc, libxl__dm_spawn_state *dmss)
     }
     if (access(dm, X_OK) < 0) {
         LOGED(ERROR, domid, "device model %s is not executable", dm);
+        if (strcmp(dm, QEMU_XEN_PATH) == 0) {
+           LOGD(ERROR, domid, "Please install the qemu-system-xen package for this domain to work");
+        }
         rc = ERROR_FAIL;
         goto out;
     }
