@@ -121,10 +121,6 @@ Description: Xen Hypervisor on AMD64
  The hypervisor is the "core" for XEN itself.  It gets booted by the boot
  loader and controls cpu and memory, sharing them between your
  administrative domain (Domain 0) and the virtual guest systems.
- .
- In order to boot a XEN system along with this package you also need a
- kernel specifically crafted to work as the Domain 0, mediating hardware
- access for XEN itself.
 
 Package: xen-system-amd64
 Section: admin
@@ -145,10 +141,6 @@ Description: Xen Hypervisor on ARM64
  The hypervisor is the "core" for XEN itself.  It gets booted by the boot
  loader and controls cpu and memory, sharing them between your
  administrative domain (Domain 0) and the virtual guest systems.
- .
- In order to boot a XEN system along with this package you also need a
- kernel specifically crafted to work as the Domain 0, mediating hardware
- access for XEN itself.
 
 Package: xen-system-arm64
 Section: admin
@@ -169,10 +161,6 @@ Description: Xen Hypervisor on ARMHF
  The hypervisor is the "core" for XEN itself.  It gets booted by the boot
  loader and controls cpu and memory, sharing them between your
  administrative domain (Domain 0) and the virtual guest systems.
- .
- In order to boot a XEN system along with this package you also need a
- kernel specifically crafted to work as the Domain 0, mediating hardware
- access for XEN itself.
 
 Package: xen-system-armhf
 Section: admin
