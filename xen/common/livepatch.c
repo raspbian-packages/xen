@@ -301,9 +301,6 @@ static int move_payload(struct payload *payload, struct livepatch_elf *elf)
          * and .shstrtab. For the non-relocate we allocate and copy these
          * via other means - and the .rel we can ignore as we only use it
          * once during loading.
-         *
-         * Also ignore sections with zero size. Those can be for example:
-         * data, or .bss.
          */
         if ( livepatch_elf_ignore_section(elf->sec[i].sec) )
             offset[i] = UINT_MAX;
@@ -362,8 +359,17 @@ static int move_payload(struct payload *payload, struct livepatch_elf *elf)
             else if ( elf->sec[i].sec->sh_flags & SHF_WRITE )
             {
                 buf = rw_buf;
-                rw_buf_sec = i;
-                rw_buf_cnt++;
+                if ( elf->sec[i].sec->sh_size )
+                {
+                    /*
+                     * Special handling of RW empty regions: do not account for
+                     * them in order to decide whether a patch can safely be
+                     * re-applied, but assign them a load address so symbol
+                     * resolution and relocations work.
+                     */
+                    rw_buf_sec = i;
+                    rw_buf_cnt++;
+                }
             }
             else
                 buf = ro_buf;
@@ -685,11 +691,11 @@ static int prepare_payload(struct payload *payload,
                 return -EINVAL;
             }
 
-            rc = arch_livepatch_verify_func(f);
+            rc = resolve_old_address(f, elf);
             if ( rc )
                 return rc;
 
-            rc = resolve_old_address(f, elf);
+            rc = arch_livepatch_verify_func(f);
             if ( rc )
                 return rc;
 

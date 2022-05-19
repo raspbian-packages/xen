@@ -22,7 +22,7 @@ Maximilian Engelhardt <maxi@daemonizer.de>
  6 files changed, 32 insertions(+), 32 deletions(-)
 
 diff --git a/xen/Makefile b/xen/Makefile
-index e3e2811..211f64c 100644
+index 8abc71c..503104f 100644
 --- a/xen/Makefile
 +++ b/xen/Makefile
 @@ -430,7 +430,7 @@ endef

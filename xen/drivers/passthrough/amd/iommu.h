@@ -96,6 +96,7 @@ struct amd_iommu {
     struct ring_buffer cmd_buffer;
     struct ring_buffer event_log;
     struct ring_buffer ppr_log;
+    unsigned long *domid_map;
 
     int exclusion_enable;
     int exclusion_allow_all;
@@ -236,7 +237,8 @@ int amd_iommu_init_late(void);
 int amd_iommu_update_ivrs_mapping_acpi(void);
 int iov_adjust_irq_affinities(void);
 
-int amd_iommu_quarantine_init(struct domain *d);
+int amd_iommu_quarantine_init(struct pci_dev *pdev, bool scratch_page);
+void amd_iommu_quarantine_teardown(struct pci_dev *pdev);
 
 /* mapping functions */
 int __must_check amd_iommu_map_page(struct domain *d, dfn_t dfn,
@@ -262,9 +264,13 @@ void amd_iommu_set_intremap_table(struct amd_iommu_dte *dte,
                                   const void *ptr,
                                   const struct amd_iommu *iommu,
                                   bool valid);
-void amd_iommu_set_root_page_table(struct amd_iommu_dte *dte,
-				   uint64_t root_ptr, uint16_t domain_id,
-				   uint8_t paging_mode, bool valid);
+#define SET_ROOT_VALID          (1u << 0)
+#define SET_ROOT_WITH_UNITY_MAP (1u << 1)
+int __must_check amd_iommu_set_root_page_table(struct amd_iommu_dte *dte,
+                                               uint64_t root_ptr,
+                                               uint16_t domain_id,
+                                               uint8_t paging_mode,
+                                               unsigned int flags);
 void iommu_dte_add_device_entry(struct amd_iommu_dte *dte,
                                 const struct ivrs_mappings *ivrs_dev);
 

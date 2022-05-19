@@ -1,0 +1,106 @@
+From: Hans van Kranenburg <hans@knorrie.org>
+Date: Thu, 5 May 2022 19:44:29 +0200
+Subject: libxl: Fix unneededly rebuilding build.o(pic)
+
+[The symptoms]
+
+When doing a Xen package build for Debian with ccache enabled, we
+started getting the following error:
+
+    x86_64-linux-gnu-gcc [...] -o build.o
+    /builds/xen-team/debian-xen/debian/output/source_dir/tools/libs/light/../../../tools/libacpi/build.c
+    ccache: error: Failed to create temporary file for
+    /run/user/0/ccache-tmp/tmp.cpp_stdout.bqxKOP: Permission denied
+
+It turns out to be the case that during the install step of tools (the
+install-tools that happens inside the override_dh_auto_install part of
+d/rules), the upstream build machinery *again* tries to build this
+build.c file, while this has already been done earlier during the actual
+build phase.
+
+Since the Debian build process stopped to allow usage of ccache during
+the install phase of the process, this issue surfaces.
+
+[The cause]
+
+In tools/libs/light/Makefile, we see the following lines:
+
+    .PHONY: acpi
+    acpi:
+        $(MAKE) -C $(ACPI_PATH) ACPI_BUILD_DIR=$(CURDIR) DSDT_FILES="$(DSDT_FILES-y)"
+
+    [...]
+
+    $(DSDT_FILES-y) build.o build.opic: acpi
+
+'acpi' is defined as phony target. In the last line, we see that build.o
+depdends on acpi.
+
+Also see:
+    "4.6 Phony Targets"
+    https://www.gnu.org/software/make/manual/make.html#Phony-Targets
+
+A 'normal' target gives make the possibility to track timestamps of a
+target file. E.g. compiling foo.c results in foo.o, and as long as foo.c
+keeps being 'older' than foo.o, make will think "nothing to do here,
+foo.o is up to date, let's move along".
+
+Now, a phony target is some kind of fake target that does not come with
+this kind of information, and such behaves like a target that is always
+out-of-date. Hence, with a configuration as seen above, it will try to
+always unneededly build this build.o and build.opic again.
+
+[Discussion]
+
+Upstream commit e006b2e3be ("libxl: fix libacpi dependency") which
+introduced the problem tells us that the purpose of the current
+configuration is to make sure the libacpi/ dir is built before we
+attempt to work on build.c in here. The changes in there remove an
+apparently obsolete line referencing build.o from the libacpi Makefile,
+which might mean that in the past this build.* stuff was located in that
+part of the code, and was moved into libs/light later.
+
+[The fix]
+
+If it is enough to just have an order-only dependency, we can use an
+order-only prerequisite instead, in this place:
+
+    $(DSDT_FILES-y): acpi
+    build.o build.opic: | acpi
+
+Also see:
+    "4.3 Types of Prerequisites"
+    https://www.gnu.org/software/make/manual/make.html#Prerequisite-Types
+
+Now the build machinery will not attempt to unconditionally rebuild
+build.o during make install.
+
+[Suggestions for further work]
+
+As can be seen, there's still the $(DSDT_FILES-y) which has the same
+acpi dependency and which may lead to similar unwanted side effects.
+However, since none of the files in that list have a corresponding build
+target in *this* Makefile, it does not trigger the problem for us, and
+we leave it alone, for now.
+
+Suggested-by: Michael Tokarev <mjt@tls.msk.ru>
+Signed-off-by: Hans van Kranenburg <hans@knorrie.org>
+Fixes: e006b2e3be ("libxl: fix libacpi dependency")
+---
+ tools/libs/light/Makefile | 3 ++-
+ 1 file changed, 2 insertions(+), 1 deletion(-)
+
+diff --git a/tools/libs/light/Makefile b/tools/libs/light/Makefile
+index dd43f37..3458c44 100644
+--- a/tools/libs/light/Makefile
++++ b/tools/libs/light/Makefile
+@@ -32,7 +32,8 @@ ACPI_PATH  = $(XEN_ROOT)/tools/libacpi
+ DSDT_FILES-$(CONFIG_X86) = dsdt_pvh.c
+ ACPI_OBJS  = $(patsubst %.c,%.o,$(DSDT_FILES-y)) build.o static_tables.o
+ ACPI_PIC_OBJS = $(patsubst %.o,%.opic,$(ACPI_OBJS))
+-$(DSDT_FILES-y) build.o build.opic: acpi
++$(DSDT_FILES-y): acpi
++build.o build.opic: | acpi
+ vpath build.c $(ACPI_PATH)/
+ vpath static_tables.c $(ACPI_PATH)/
+ 
