@@ -56,6 +56,11 @@
 #define  ARCH_CAPS_IF_PSCHANGE_MC_NO        (_AC(1, ULL) <<  6)
 #define  ARCH_CAPS_TSX_CTRL                 (_AC(1, ULL) <<  7)
 #define  ARCH_CAPS_TAA_NO                   (_AC(1, ULL) <<  8)
+#define  ARCH_CAPS_SBDR_SSDP_NO             (_AC(1, ULL) << 13)
+#define  ARCH_CAPS_FBSDP_NO                 (_AC(1, ULL) << 14)
+#define  ARCH_CAPS_PSDP_NO                  (_AC(1, ULL) << 15)
+#define  ARCH_CAPS_FB_CLEAR                 (_AC(1, ULL) << 17)
+#define  ARCH_CAPS_FB_CLEAR_CTRL            (_AC(1, ULL) << 18)
 
 #define MSR_FLUSH_CMD                       0x0000010b
 #define  FLUSH_CMD_L1D                      (_AC(1, ULL) <<  0)
@@ -73,6 +78,7 @@
 #define  MCU_OPT_CTRL_RNGDS_MITG_DIS        (_AC(1, ULL) <<  0)
 #define  MCU_OPT_CTRL_RTM_ALLOW             (_AC(1, ULL) <<  1)
 #define  MCU_OPT_CTRL_RTM_LOCKED            (_AC(1, ULL) <<  2)
+#define  MCU_OPT_CTRL_FB_CLEAR_DIS          (_AC(1, ULL) <<  3)
 
 #define MSR_RTIT_OUTPUT_BASE                0x00000560
 #define MSR_RTIT_OUTPUT_MASK                0x00000561
@@ -353,6 +359,7 @@
 #define MSR_AMD64_DC_CFG		0xc0011022
 #define MSR_AMD64_DE_CFG		0xc0011029
 #define AMD64_DE_CFG_LFENCE_SERIALISE	(_AC(1, ULL) << 1)
+#define MSR_AMD64_DE_CFG2		0xc00110e3
 
 #define MSR_AMD64_DR0_ADDRESS_MASK	0xc0011027
 #define MSR_AMD64_DR1_ADDRESS_MASK	0xc0011019

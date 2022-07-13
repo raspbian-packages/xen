@@ -88,6 +88,35 @@
  *  - SPEC_CTRL_EXIT_TO_{SVM,VMX}
  */
 
+.macro DO_SPEC_CTRL_COND_IBPB maybexen:req
+/*
+ * Requires %rsp=regs (also cpuinfo if !maybexen)
+ * Requires %r14=stack_end (if maybexen), %rdx=0
+ * Clobbers %rax, %rcx, %rdx
+ *
+ * Conditionally issue IBPB if SCF_entry_ibpb is active.  In the maybexen
+ * case, we can safely look at UREGS_cs to skip taking the hit when
+ * interrupting Xen.
+ */
+    .if \maybexen
+        testb  $SCF_entry_ibpb, STACK_CPUINFO_FIELD(spec_ctrl_flags)(%r14)
+        jz     .L\@_skip
+        testb  $3, UREGS_cs(%rsp)
+    .else
+        testb  $SCF_entry_ibpb, CPUINFO_xen_spec_ctrl(%rsp)
+    .endif
+    jz     .L\@_skip
+
+    mov     $MSR_PRED_CMD, %ecx
+    mov     $PRED_CMD_IBPB, %eax
+    wrmsr
+    jmp     .L\@_done
+
+.L\@_skip:
+    lfence
+.L\@_done:
+.endm
+
 .macro DO_OVERWRITE_RSB tmp=rax
 /*
  * Requires nothing
@@ -134,6 +163,19 @@
     incsspd %ecx                    /* Restore old SSP */
 .L\@_shstk_done:
 #endif
+.endm
+
+.macro DO_SPEC_CTRL_COND_VERW
+/*
+ * Requires %rsp=cpuinfo
+ *
+ * Issue a VERW for its flushing side effect, if indicated.  This is a Spectre
+ * v1 gadget, but the IRET/VMEntry is serialising.
+ */
+    testb $SCF_verw, CPUINFO_spec_ctrl_flags(%rsp)
+    jz .L\@_verw_skip
+    verw CPUINFO_verw_sel(%rsp)
+.L\@_verw_skip:
 .endm
 
 .macro DO_SPEC_CTRL_ENTRY maybexen:req
@@ -212,12 +254,16 @@
 
 /* Use after an entry from PV context (syscall/sysenter/int80/int82/etc). */
 #define SPEC_CTRL_ENTRY_FROM_PV                                         \
+    ALTERNATIVE "", __stringify(DO_SPEC_CTRL_COND_IBPB maybexen=0),     \
+        X86_FEATURE_IBPB_ENTRY_PV;                                      \
     ALTERNATIVE "", DO_OVERWRITE_RSB, X86_FEATURE_SC_RSB_PV;            \
     ALTERNATIVE "", __stringify(DO_SPEC_CTRL_ENTRY maybexen=0),         \
         X86_FEATURE_SC_MSR_PV
 
 /* Use in interrupt/exception context.  May interrupt Xen or PV context. */
 #define SPEC_CTRL_ENTRY_FROM_INTR                                       \
+    ALTERNATIVE "", __stringify(DO_SPEC_CTRL_COND_IBPB maybexen=1),     \
+        X86_FEATURE_IBPB_ENTRY_PV;                                      \
     ALTERNATIVE "", DO_OVERWRITE_RSB, X86_FEATURE_SC_RSB_PV;            \
     ALTERNATIVE "", __stringify(DO_SPEC_CTRL_ENTRY maybexen=1),         \
         X86_FEATURE_SC_MSR_PV
@@ -231,45 +277,52 @@
 #define SPEC_CTRL_EXIT_TO_PV                                            \
     ALTERNATIVE "",                                                     \
         DO_SPEC_CTRL_EXIT_TO_GUEST, X86_FEATURE_SC_MSR_PV;              \
-    ALTERNATIVE "", __stringify(verw CPUINFO_verw_sel(%rsp)),           \
-        X86_FEATURE_SC_VERW_PV
+    DO_SPEC_CTRL_COND_VERW
 
 /*
  * Use in IST interrupt/exception context.  May interrupt Xen or PV context.
- * Fine grain control of SCF_ist_wrmsr is needed for safety in the S3 resume
- * path to avoid using MSR_SPEC_CTRL before the microcode introducing it has
- * been reloaded.
  */
 .macro SPEC_CTRL_ENTRY_FROM_INTR_IST
 /*
- * Requires %rsp=regs, %r14=stack_end
- * Clobbers %rax, %rcx, %rdx
+ * Requires %rsp=regs, %r14=stack_end, %rdx=0
+ * Clobbers %rax, %rbx, %rcx, %rdx
  *
- * This is logical merge of DO_OVERWRITE_RSB and DO_SPEC_CTRL_ENTRY
- * maybexen=1, but with conditionals rather than alternatives.
+ * This is logical merge of:
+ *    DO_SPEC_CTRL_COND_IBPB maybexen=0
+ *    DO_OVERWRITE_RSB
+ *    DO_SPEC_CTRL_ENTRY maybexen=1
+ * but with conditionals rather than alternatives.
  */
-    movzbl STACK_CPUINFO_FIELD(spec_ctrl_flags)(%r14), %eax
+    movzbl STACK_CPUINFO_FIELD(spec_ctrl_flags)(%r14), %ebx
 
-    test $SCF_ist_rsb, %al
+    test    $SCF_ist_ibpb, %bl
+    jz      .L\@_skip_ibpb
+
+    mov     $MSR_PRED_CMD, %ecx
+    mov     $PRED_CMD_IBPB, %eax
+    wrmsr
+
+.L\@_skip_ibpb:
+
+    test $SCF_ist_rsb, %bl
     jz .L\@_skip_rsb
 
-    DO_OVERWRITE_RSB tmp=rdx /* Clobbers %rcx/%rdx */
+    DO_OVERWRITE_RSB         /* Clobbers %rax/%rcx */
 
 .L\@_skip_rsb:
 
-    test $SCF_ist_wrmsr, %al
-    jz .L\@_skip_wrmsr
+    test $SCF_ist_sc_msr, %bl
+    jz .L\@_skip_msr_spec_ctrl
 
-    xor %edx, %edx
+    xor %eax, %eax
     testb $3, UREGS_cs(%rsp)
-    setnz %dl
-    not %edx
-    and %dl, STACK_CPUINFO_FIELD(spec_ctrl_flags)(%r14)
+    setnz %al
+    not %eax
+    and %al, STACK_CPUINFO_FIELD(spec_ctrl_flags)(%r14)
 
     /* Load Xen's intended value. */
     mov $MSR_SPEC_CTRL, %ecx
     movzbl STACK_CPUINFO_FIELD(xen_spec_ctrl)(%r14), %eax
-    xor %edx, %edx
     wrmsr
 
     /* Opencoded UNLIKELY_START() with no condition. */
@@ -281,7 +334,7 @@ UNLIKELY_DISPATCH_LABEL(\@_serialise):
      * to speculate around the WRMSR.  As a result, we need a dispatch
      * serialising instruction in the else clause.
      */
-.L\@_skip_wrmsr:
+.L\@_skip_msr_spec_ctrl:
     lfence
     UNLIKELY_END(\@_serialise)
 .endm
@@ -292,7 +345,7 @@ UNLIKELY_DISPATCH_LABEL(\@_serialise):
  * Requires %rbx=stack_end
  * Clobbers %rax, %rcx, %rdx
  */
-    testb $SCF_ist_wrmsr, STACK_CPUINFO_FIELD(spec_ctrl_flags)(%rbx)
+    testb $SCF_ist_sc_msr, STACK_CPUINFO_FIELD(spec_ctrl_flags)(%rbx)
     jz .L\@_skip
 
     DO_SPEC_CTRL_EXIT_TO_XEN

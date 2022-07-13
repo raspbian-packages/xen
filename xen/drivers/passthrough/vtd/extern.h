@@ -77,7 +77,6 @@ int __must_check qinval_device_iotlb_sync(struct vtd_iommu *iommu,
                                           struct pci_dev *pdev,
                                           u16 did, u16 size, u64 addr);
 
-unsigned int get_cache_line_size(void);
 void flush_all_cache(void);
 
 uint64_t alloc_pgtable_maddr(unsigned long npages, nodeid_t node);
@@ -89,7 +88,7 @@ int domain_context_mapping_one(struct domain *domain, struct vtd_iommu *iommu,
                                const struct pci_dev *pdev, domid_t domid,
                                paddr_t pgd_maddr, unsigned int mode);
 int domain_context_unmap_one(struct domain *domain, struct vtd_iommu *iommu,
-                             uint8_t bus, uint8_t devfn, domid_t domid);
+                             uint8_t bus, uint8_t devfn);
 int intel_iommu_get_reserved_device_memory(iommu_grdm_t *func, void *ctxt);
 
 unsigned int io_apic_read_remap_rte(unsigned int apic, unsigned int reg);
