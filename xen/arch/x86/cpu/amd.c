@@ -731,6 +731,31 @@ void amd_init_ssbd(const struct cpuinfo_x86 *c)
 		printk_once(XENLOG_ERR "No SSBD controls available\n");
 }
 
+/*
+ * On Zen2 we offer this chicken (bit) on the altar of Speculation.
+ *
+ * Refer to the AMD Branch Type Confusion whitepaper:
+ * https://XXX
+ *
+ * Setting this unnamed bit supposedly causes prediction information on
+ * non-branch instructions to be ignored.  It is to be set unilaterally in
+ * newer microcode.
+ *
+ * This chickenbit is something unrelated on Zen1, and Zen1 vs Zen2 isn't a
+ * simple model number comparison, so use STIBP as a heuristic to separate the
+ * two uarches in Fam17h(AMD)/18h(Hygon).
+ */
+void amd_init_spectral_chicken(void)
+{
+	uint64_t val, chickenbit = 1 << 1;
+
+	if (cpu_has_hypervisor || !boot_cpu_has(X86_FEATURE_AMD_STIBP))
+		return;
+
+	if (rdmsr_safe(MSR_AMD64_DE_CFG2, val) == 0 && !(val & chickenbit))
+		wrmsr_safe(MSR_AMD64_DE_CFG2, val | chickenbit);
+}
+
 static void init_amd(struct cpuinfo_x86 *c)
 {
 	u32 l, h;
@@ -783,9 +808,20 @@ static void init_amd(struct cpuinfo_x86 *c)
 
 	amd_init_ssbd(c);
 
+	if (c->x86 == 0x17)
+		amd_init_spectral_chicken();
+
 	/* MFENCE stops RDTSC speculation */
 	if (!cpu_has_lfence_dispatch)
 		__set_bit(X86_FEATURE_MFENCE_RDTSC, c->x86_capability);
+
+	/*
+	 * On pre-CLFLUSHOPT AMD CPUs, CLFLUSH is weakly ordered with
+	 * everything, including reads and writes to address, and
+	 * LFENCE/SFENCE instructions.
+	 */
+	if (!cpu_has_clflushopt)
+		setup_force_cpu_cap(X86_BUG_CLFLUSH_MFENCE);
 
 	switch(c->x86)
 	{
@@ -813,6 +849,16 @@ static void init_amd(struct cpuinfo_x86 *c)
 			setup_clear_cpu_cap(X86_FEATURE_RDRAND);
 			warning_add(text);
 		}
+		break;
+
+	case 0x19:
+		/*
+		 * Zen3 (Fam19h model < 0x10) parts are not susceptible to
+		 * Branch Type Confusion, but predate the allocation of the
+		 * BTC_NO bit.  Fill it back in if we're not virtualised.
+		 */
+		if (!cpu_has_hypervisor && !cpu_has(c, X86_FEATURE_BTC_NO))
+			__set_bit(X86_FEATURE_BTC_NO, c->x86_capability);
 		break;
 	}
 

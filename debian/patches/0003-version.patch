@@ -12,7 +12,7 @@ Subject: version
  6 files changed, 31 insertions(+), 31 deletions(-)
 
 diff --git a/xen/Makefile b/xen/Makefile
-index 7c98e4a..2cf10a4 100644
+index 46c8177..ac117b5 100644
 --- a/xen/Makefile
 +++ b/xen/Makefile
 @@ -382,7 +382,7 @@ delete-unfresh-files:
@@ -39,10 +39,10 @@ index 7c98e4a..2cf10a4 100644
  
  include/asm-$(TARGET_ARCH)/asm-offsets.h: arch/$(TARGET_ARCH)/asm-offsets.s
 diff --git a/xen/common/kernel.c b/xen/common/kernel.c
-index c3a943f..12bdf9d 100644
+index f07ff41..e41525d 100644
 --- a/xen/common/kernel.c
 +++ b/xen/common/kernel.c
-@@ -398,9 +398,9 @@ static int __init buildinfo_init(void)
+@@ -410,9 +410,9 @@ static int __init buildinfo_init(void)
  
      hypfs_add_dir(&buildinfo, &compileinfo, true);
      hypfs_string_set_reference(&compiler, xen_compiler());
@@ -54,7 +54,7 @@ index c3a943f..12bdf9d 100644
      hypfs_add_leaf(&compileinfo, &compiler, true);
      hypfs_add_leaf(&compileinfo, &compile_by, true);
      hypfs_add_leaf(&compileinfo, &compile_date, true);
-@@ -481,8 +481,8 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
+@@ -493,8 +493,8 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
  
          memset(&info, 0, sizeof(info));
          safe_strcpy(info.compiler,       deny ? xen_deny() : xen_compiler());
