@@ -7,7 +7,3 @@ binary-has-unneeded-section usr/lib/xen-@version@/boot/xen-shim .note
 
 # This is a symbols file for the shim
 binary-from-other-architecture usr/lib/debug/xen-syms-@version@-shim/xen-shim-syms
-
-# This module needs to load the libxenfsimage .so from within
-# the xen-utils private directory.  less +/xenfsimage debian/rules
-binary-or-shlib-defines-rpath usr/lib/xen-@version@/lib/python/xenfsimage.*.so /usr/lib/xen-@version@/lib/x86_64-linux-gnu
