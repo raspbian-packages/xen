@@ -4,6 +4,3 @@ statically-linked-binary usr/lib/xen-@version@/boot/xen-shim
 # That section is certainly needed for the tools etc. to be able
 # to load it!
 binary-has-unneeded-section usr/lib/xen-@version@/boot/xen-shim .note
-
-# This is a symbols file for the shim
-binary-from-other-architecture usr/lib/debug/xen-syms-@version@-shim/xen-shim-syms
