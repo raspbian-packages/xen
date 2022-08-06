@@ -1,2 +1,2 @@
 # These have --upto as a command line argument
-spelling-error-in-binary usr/bin/xenstore* upto up to
+spelling-error-in-binary *usr/bin/xenstore*
