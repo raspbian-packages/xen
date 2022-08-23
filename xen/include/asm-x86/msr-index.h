@@ -15,6 +15,9 @@
  * abbreviated name.  Exceptions will be considered on a case-by-case basis.
  */
 
+#define MSR_P5_MC_ADDR                      0
+#define MSR_P5_MC_TYPE                      0x00000001
+
 #define MSR_APIC_BASE                       0x0000001b
 #define  APIC_BASE_BSP                      (_AC(1, ULL) <<  8)
 #define  APIC_BASE_EXTD                     (_AC(1, ULL) << 10)
@@ -63,6 +66,14 @@
 #define  ARCH_CAPS_IF_PSCHANGE_MC_NO        (_AC(1, ULL) <<  6)
 #define  ARCH_CAPS_TSX_CTRL                 (_AC(1, ULL) <<  7)
 #define  ARCH_CAPS_TAA_NO                   (_AC(1, ULL) <<  8)
+#define  ARCH_CAPS_SBDR_SSDP_NO             (_AC(1, ULL) << 13)
+#define  ARCH_CAPS_FBSDP_NO                 (_AC(1, ULL) << 14)
+#define  ARCH_CAPS_PSDP_NO                  (_AC(1, ULL) << 15)
+#define  ARCH_CAPS_FB_CLEAR                 (_AC(1, ULL) << 17)
+#define  ARCH_CAPS_FB_CLEAR_CTRL            (_AC(1, ULL) << 18)
+#define  ARCH_CAPS_RRSBA                    (_AC(1, ULL) << 19)
+#define  ARCH_CAPS_BHI_NO                   (_AC(1, ULL) << 20)
+#define  ARCH_CAPS_PBRSB_NO                 (_AC(1, ULL) << 24)
 
 #define MSR_FLUSH_CMD                       0x0000010b
 #define  FLUSH_CMD_L1D                      (_AC(1, ULL) <<  0)
@@ -80,6 +91,7 @@
 #define  MCU_OPT_CTRL_RNGDS_MITG_DIS        (_AC(1, ULL) <<  0)
 #define  MCU_OPT_CTRL_RTM_ALLOW             (_AC(1, ULL) <<  1)
 #define  MCU_OPT_CTRL_RTM_LOCKED            (_AC(1, ULL) <<  2)
+#define  MCU_OPT_CTRL_FB_CLEAR_DIS          (_AC(1, ULL) <<  3)
 
 #define MSR_RTIT_OUTPUT_BASE                0x00000560
 #define MSR_RTIT_OUTPUT_MASK                0x00000561
@@ -126,7 +138,7 @@
 #define MSR_INTERRUPT_SSP_TABLE             0x000006a8
 
 #define MSR_X2APIC_FIRST                    0x00000800
-#define MSR_X2APIC_LAST                     0x00000bff
+#define MSR_X2APIC_LAST                     0x000008ff
 
 #define MSR_X2APIC_TPR                      0x00000808
 #define MSR_X2APIC_PPR                      0x0000080a
@@ -352,6 +364,7 @@
 #define MSR_AMD64_DE_CFG		0xc0011029
 #define AMD64_DE_CFG_LFENCE_SERIALISE	(_AC(1, ULL) << 1)
 #define MSR_AMD64_EX_CFG		0xc001102c
+#define MSR_AMD64_DE_CFG2		0xc00110e3
 
 #define MSR_AMD64_DR0_ADDRESS_MASK	0xc0011027
 #define MSR_AMD64_DR1_ADDRESS_MASK	0xc0011019

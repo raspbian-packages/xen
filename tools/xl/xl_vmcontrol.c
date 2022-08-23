@@ -321,7 +321,8 @@ static int domain_wait_event(uint32_t domid, libxl_event **event_r)
  */
 static bool freemem(uint32_t domid, libxl_domain_config *d_config)
 {
-    int rc, retries = 3;
+    int rc;
+    double credit = 30;
     uint64_t need_memkb, free_memkb;
 
     if (!autoballoon)
@@ -331,7 +332,9 @@ static bool freemem(uint32_t domid, libxl_domain_config *d_config)
     if (rc < 0)
         return false;
 
-    do {
+    for (;;) {
+        time_t start;
+
         rc = libxl_get_free_memory(ctx, &free_memkb);
         if (rc < 0)
             return false;
@@ -339,20 +342,22 @@ static bool freemem(uint32_t domid, libxl_domain_config *d_config)
         if (free_memkb >= need_memkb)
             return true;
 
+        if (credit <= 0)
+            return false;
+
         rc = libxl_set_memory_target(ctx, 0, free_memkb - need_memkb, 1, 0);
         if (rc < 0)
             return false;
 
         /* wait until dom0 reaches its target, as long as we are making
          * progress */
+        start = time(NULL);
         rc = libxl_wait_for_memory_target(ctx, 0, 10);
         if (rc < 0)
             return false;
 
-        retries--;
-    } while (retries > 0);
-
-    return false;
+        credit -= difftime(time(NULL), start);
+    }
 }
 
 static void reload_domain_config(uint32_t domid,
