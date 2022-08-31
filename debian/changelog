@@ -1,4 +1,4 @@
-xen (4.16.1-1+rpi1) bookworm-staging; urgency=medium
+xen (4.16.2-1+rpi1) bookworm-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,7 +9,38 @@ xen (4.16.1-1+rpi1) bookworm-staging; urgency=medium
   [changes introduced in 4.11.1+26-g87f51bf366-3+rpi1 by Peter Michael Green]
   * Do not fail on files that are not installed.
 
- -- Raspbian forward porter <root@raspbian.org>  Thu, 19 May 2022 09:11:27 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Wed, 31 Aug 2022 05:49:28 +0000
+
+xen (4.16.2-1) unstable; urgency=medium
+
+  * Update to new upstream version 4.16.2, which also contains
+    security fixes for the following issues:
+    - x86 pv: Race condition in typeref acquisition
+      XSA-401 CVE-2022-26362
+    - x86 pv: Insufficient care with non-coherent mappings
+      XSA-402 CVE-2022-26363 CVE-2022-26364
+    - Linux disk/nic frontends data leaks
+      XSA-403 CVE-2022-26365 CVE-2022-33740 CVE-2022-33741 CVE-2022-33742
+      Note that this XSA also contains patches that have to be applied to the
+      Linux kernel to make use of the new mitigations.
+    - x86: MMIO Stale Data vulnerabilities
+      XSA-404 CVE-2022-21123 CVE-2022-21125 CVE-2022-21166
+    - Retbleed - arbitrary speculative code execution with return instructions
+      XSA-407 CVE-2022-23816 CVE-2022-23825 CVE-2022-29900
+    - insufficient TLB flush for x86 PV guests in shadow mode
+      XSA-408 CVE-2022-33745
+  * Note that the following XSA are not listed, because...
+    - XSA-405 and XSA-406 have patches for the Linux kernel.
+  * d/.../grub.d/xen.cfg: Redirect output when running grub-mkconfig so that
+    we do not wrongly cause text to end up being part of the generated grub
+    configuration. (Closes: #1016547)
+  * Clean up lintian overrides that are reported as unused.
+  * Move comments about lintian overrides above the override line itself,
+    instead of being below, as instructed by the lintian documentation.
+  * Deal with formatting changes in lintian output, which invalidate
+    overrides we have. Also see Debian bug #1007002 for more information.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Tue, 23 Aug 2022 13:25:38 +0200
 
 xen (4.16.1-1) unstable; urgency=medium
 

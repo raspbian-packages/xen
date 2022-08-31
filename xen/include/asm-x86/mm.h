@@ -53,8 +53,12 @@
 #define _PGT_partial      PG_shift(8)
 #define PGT_partial       PG_mask(1, 8)
 
+/* Has this page been mapped writeable with a non-coherent memory type? */
+#define _PGT_non_coherent PG_shift(9)
+#define PGT_non_coherent  PG_mask(1, 9)
+
  /* Count of uses of this frame as its current type. */
-#define PGT_count_width   PG_shift(8)
+#define PGT_count_width   PG_shift(9)
 #define PGT_count_mask    ((1UL<<PGT_count_width)-1)
 
 /* Are the 'type mask' bits identical? */
@@ -69,25 +73,22 @@
  /* Set when is using a page as a page table */
 #define _PGC_page_table   PG_shift(3)
 #define PGC_page_table    PG_mask(1, 3)
- /* 3-bit PAT/PCD/PWT cache-attribute hint. */
-#define PGC_cacheattr_base PG_shift(6)
-#define PGC_cacheattr_mask PG_mask(7, 6)
  /* Page is broken? */
-#define _PGC_broken       PG_shift(7)
-#define PGC_broken        PG_mask(1, 7)
+#define _PGC_broken       PG_shift(4)
+#define PGC_broken        PG_mask(1, 4)
  /* Mutually-exclusive page states: { inuse, offlining, offlined, free }. */
-#define PGC_state         PG_mask(3, 9)
-#define PGC_state_inuse   PG_mask(0, 9)
-#define PGC_state_offlining PG_mask(1, 9)
-#define PGC_state_offlined PG_mask(2, 9)
-#define PGC_state_free    PG_mask(3, 9)
+#define PGC_state           PG_mask(3, 6)
+#define PGC_state_inuse     PG_mask(0, 6)
+#define PGC_state_offlining PG_mask(1, 6)
+#define PGC_state_offlined  PG_mask(2, 6)
+#define PGC_state_free      PG_mask(3, 6)
 #define page_state_is(pg, st) (((pg)->count_info&PGC_state) == PGC_state_##st)
 /* Page is not reference counted (see below for caveats) */
-#define _PGC_extra        PG_shift(10)
-#define PGC_extra         PG_mask(1, 10)
+#define _PGC_extra        PG_shift(7)
+#define PGC_extra         PG_mask(1, 7)
 
 /* Count of references to this frame. */
-#define PGC_count_width   PG_shift(10)
+#define PGC_count_width   PG_shift(7)
 #define PGC_count_mask    ((1UL<<PGC_count_width)-1)
 
 /*
@@ -308,8 +309,8 @@ struct page_info
 #define is_xen_heap_mfn(mfn) \
     (mfn_valid(mfn) && is_xen_heap_page(mfn_to_page(mfn)))
 #define is_xen_fixed_mfn(mfn)                     \
-    (((mfn_to_maddr(mfn)) >= __pa(_stext)) &&     \
-     ((mfn_to_maddr(mfn)) <= __pa(__2M_rwdata_end - 1)))
+    (((mfn_to_maddr(mfn)) >= virt_to_maddr((unsigned long)_stext)) && \
+     ((mfn_to_maddr(mfn)) <= virt_to_maddr((unsigned long)__2M_rwdata_end - 1)))
 
 #define PRtype_info "016lx"/* should only be used for printk's */
 

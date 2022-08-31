@@ -22,10 +22,10 @@ Maximilian Engelhardt <maxi@daemonizer.de>
  6 files changed, 32 insertions(+), 32 deletions(-)
 
 diff --git a/xen/Makefile b/xen/Makefile
-index 8abc71c..503104f 100644
+index 76d0a3f..6752b68 100644
 --- a/xen/Makefile
 +++ b/xen/Makefile
-@@ -430,7 +430,7 @@ endef
+@@ -434,7 +434,7 @@ endef
  targets += .banner
  
  # compile.h contains dynamic build info. Rebuilt on every 'make' invocation.
@@ -34,7 +34,7 @@ index 8abc71c..503104f 100644
  	@sed -e 's/@@date@@/$(XEN_BUILD_DATE)/g' \
  	    -e 's/@@time@@/$(XEN_BUILD_TIME)/g' \
  	    -e 's/@@whoami@@/$(XEN_WHOAMI)/g' \
-@@ -441,9 +441,11 @@ include/xen/compile.h: include/xen/compile.h.in .banner
+@@ -445,9 +445,11 @@ include/xen/compile.h: include/xen/compile.h.in .banner
  	    -e 's/@@subversion@@/$(XEN_SUBVERSION)/g' \
  	    -e 's/@@extraversion@@/$(XEN_EXTRAVERSION)/g' \
  	    -e 's!@@changeset@@!$(shell tools/scmversion $(XEN_ROOT) || echo "unavailable")!g' \
@@ -49,10 +49,10 @@ index 8abc71c..503104f 100644
  
  asm-offsets.s: arch/$(TARGET_ARCH)/$(TARGET_SUBARCH)/asm-offsets.c
 diff --git a/xen/common/kernel.c b/xen/common/kernel.c
-index e119e54..a31e617 100644
+index 7ed9652..b9c0767 100644
 --- a/xen/common/kernel.c
 +++ b/xen/common/kernel.c
-@@ -402,9 +402,9 @@ static int __init buildinfo_init(void)
+@@ -414,9 +414,9 @@ static int __init buildinfo_init(void)
  
      hypfs_add_dir(&buildinfo, &compileinfo, true);
      hypfs_string_set_reference(&compiler, xen_compiler());
@@ -64,7 +64,7 @@ index e119e54..a31e617 100644
      hypfs_add_leaf(&compileinfo, &compiler, true);
      hypfs_add_leaf(&compileinfo, &compile_by, true);
      hypfs_add_leaf(&compileinfo, &compile_date, true);
-@@ -485,8 +485,8 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
+@@ -497,8 +497,8 @@ DO(xen_version)(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
  
          memset(&info, 0, sizeof(info));
          safe_strcpy(info.compiler,       deny ? xen_deny() : xen_compiler());

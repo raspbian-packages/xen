@@ -304,7 +304,6 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         if ( op->domain == DOMID_INVALID )
         {
     case XEN_DOMCTL_createdomain:
-    case XEN_DOMCTL_gdbsx_guestmemio:
             d = NULL;
             break;
         }
@@ -869,6 +868,13 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         ret = monitor_domctl(d, &op->u.monitor_op);
         if ( !ret )
             copyback = 1;
+        break;
+
+    case XEN_DOMCTL_assign_device:
+    case XEN_DOMCTL_test_assign_device:
+    case XEN_DOMCTL_deassign_device:
+    case XEN_DOMCTL_get_device_group:
+        ret = iommu_do_domctl(op, d, u_domctl);
         break;
 
     default:
