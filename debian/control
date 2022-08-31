@@ -30,6 +30,7 @@ Build-Depends:
    pkg-config,
    uuid-dev,
    zlib1g-dev,
+   libzstd-dev,
    pandoc,
    markdown,
    ocaml-native-compilers | ocaml-nox,
