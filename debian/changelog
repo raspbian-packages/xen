@@ -1,3 +1,9 @@
+xen (4.14.5+86-g1c354767d5-1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.14.5+86-g1c354767d5.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Fri, 04 Nov 2022 20:25:46 +0100
+
 xen (4.14.5+24-g87d90d511c-1) bullseye-security; urgency=medium
 
   * Update to new upstream version 4.14.5+24-g87d90d511c, which also contains
