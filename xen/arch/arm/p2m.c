@@ -49,6 +49,140 @@ static uint64_t generate_vttbr(uint16_t vmid, mfn_t root_mfn)
     return (mfn_to_maddr(root_mfn) | ((uint64_t)vmid << 48));
 }
 
+static struct page_info *p2m_alloc_page(struct domain *d)
+{
+    struct page_info *pg;
+
+    spin_lock(&d->arch.paging.lock);
+    /*
+     * For hardware domain, there should be no limit in the number of pages that
+     * can be allocated, so that the kernel may take advantage of the extended
+     * regions. Hence, allocate p2m pages for hardware domains from heap.
+     */
+    if ( is_hardware_domain(d) )
+    {
+        pg = alloc_domheap_page(NULL, 0);
+        if ( pg == NULL )
+        {
+            printk(XENLOG_G_ERR "Failed to allocate P2M pages for hwdom.\n");
+            spin_unlock(&d->arch.paging.lock);
+            return NULL;
+        }
+    }
+    else
+    {
+        pg = page_list_remove_head(&d->arch.paging.p2m_freelist);
+        if ( unlikely(!pg) )
+        {
+            spin_unlock(&d->arch.paging.lock);
+            return NULL;
+        }
+        d->arch.paging.p2m_total_pages--;
+    }
+    spin_unlock(&d->arch.paging.lock);
+
+    return pg;
+}
+
+static void p2m_free_page(struct domain *d, struct page_info *pg)
+{
+    spin_lock(&d->arch.paging.lock);
+    if ( is_hardware_domain(d) )
+        free_domheap_page(pg);
+    else
+    {
+        d->arch.paging.p2m_total_pages++;
+        page_list_add_tail(pg, &d->arch.paging.p2m_freelist);
+    }
+    spin_unlock(&d->arch.paging.lock);
+}
+
+/* Return the size of the pool, rounded up to the nearest MB */
+unsigned int p2m_get_allocation(struct domain *d)
+{
+    unsigned long nr_pages = ACCESS_ONCE(d->arch.paging.p2m_total_pages);
+
+    return ROUNDUP(nr_pages, 1 << (20 - PAGE_SHIFT)) >> (20 - PAGE_SHIFT);
+}
+
+/*
+ * Set the pool of pages to the required number of pages.
+ * Returns 0 for success, non-zero for failure.
+ * Call with d->arch.paging.lock held.
+ */
+int p2m_set_allocation(struct domain *d, unsigned long pages, bool *preempted)
+{
+    struct page_info *pg;
+
+    ASSERT(spin_is_locked(&d->arch.paging.lock));
+
+    for ( ; ; )
+    {
+        if ( d->arch.paging.p2m_total_pages < pages )
+        {
+            /* Need to allocate more memory from domheap */
+            pg = alloc_domheap_page(NULL, 0);
+            if ( pg == NULL )
+            {
+                printk(XENLOG_ERR "Failed to allocate P2M pages.\n");
+                return -ENOMEM;
+            }
+            ACCESS_ONCE(d->arch.paging.p2m_total_pages) =
+                d->arch.paging.p2m_total_pages + 1;
+            page_list_add_tail(pg, &d->arch.paging.p2m_freelist);
+        }
+        else if ( d->arch.paging.p2m_total_pages > pages )
+        {
+            /* Need to return memory to domheap */
+            pg = page_list_remove_head(&d->arch.paging.p2m_freelist);
+            if( pg )
+            {
+                ACCESS_ONCE(d->arch.paging.p2m_total_pages) =
+                    d->arch.paging.p2m_total_pages - 1;
+                free_domheap_page(pg);
+            }
+            else
+            {
+                printk(XENLOG_ERR
+                       "Failed to free P2M pages, P2M freelist is empty.\n");
+                return -ENOMEM;
+            }
+        }
+        else
+            break;
+
+        /* Check to see if we need to yield and try again */
+        if ( preempted && general_preempt_check() )
+        {
+            *preempted = true;
+            return -ERESTART;
+        }
+    }
+
+    return 0;
+}
+
+int p2m_teardown_allocation(struct domain *d)
+{
+    int ret = 0;
+    bool preempted = false;
+
+    spin_lock(&d->arch.paging.lock);
+    if ( d->arch.paging.p2m_total_pages != 0 )
+    {
+        ret = p2m_set_allocation(d, 0, &preempted);
+        if ( preempted )
+        {
+            spin_unlock(&d->arch.paging.lock);
+            return -ERESTART;
+        }
+        ASSERT(d->arch.paging.p2m_total_pages == 0);
+    }
+    spin_unlock(&d->arch.paging.lock);
+
+    return ret;
+}
+
 /* Unlock the flush and do a P2M TLB flush if necessary */
 void p2m_write_unlock(struct p2m_domain *p2m)
 {
@@ -664,7 +798,7 @@ static int p2m_create_table(struct p2m_domain *p2m, lpae_t *entry)
 
     ASSERT(!p2m_is_valid(*entry));
 
-    page = alloc_domheap_page(NULL, 0);
+    page = p2m_alloc_page(p2m->domain);
     if ( page == NULL )
         return -ENOMEM;
 
@@ -784,7 +918,7 @@ static void p2m_free_entry(struct p2m_domain *p2m,
     pg = mfn_to_page(mfn);
 
     page_list_del(pg, &p2m->pages);
-    free_domheap_page(pg);
+    p2m_free_page(p2m->domain, pg);
 }
 
 static bool p2m_split_superpage(struct p2m_domain *p2m, lpae_t *entry,
@@ -808,7 +942,7 @@ static bool p2m_split_superpage(struct p2m_domain *p2m, lpae_t *entry,
     ASSERT(level < target);
     ASSERT(p2m_is_superpage(*entry, level));
 
-    page = alloc_domheap_page(NULL, 0);
+    page = p2m_alloc_page(p2m->domain);
     if ( !page )
         return false;
 
@@ -1084,6 +1218,15 @@ int p2m_set_entry(struct p2m_domain *p2m,
                   p2m_access_t a)
 {
     int rc = 0;
+
+    /*
+     * Any reference taken by the P2M mappings (e.g. foreign mapping) will
+     * be dropped in relinquish_p2m_mapping(). As the P2M will still
+     * be accessible after, we need to prevent mapping to be added when the
+     * domain is dying.
+     */
+    if ( unlikely(p2m->domain->is_dying) )
+        return -ENOMEM;
 
     while ( nr )
     {
@@ -1487,17 +1630,75 @@ static void p2m_free_vmid(struct domain *d)
     spin_unlock(&vmid_alloc_lock);
 }
 
-void p2m_teardown(struct domain *d)
+int p2m_teardown(struct domain *d, bool allow_preemption)
 {
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
+    unsigned long count = 0;
     struct page_info *pg;
+    unsigned int i;
+    int rc = 0;
+
+    if ( page_list_empty(&p2m->pages) )
+        return 0;
+
+    p2m_write_lock(p2m);
+
+    /*
+     * We are about to free the intermediate page-tables, so clear the
+     * root to prevent any walk to use them.
+     */
+    for ( i = 0; i < P2M_ROOT_PAGES; i++ )
+        clear_and_clean_page(p2m->root + i);
+
+    /*
+     * The domain will not be scheduled anymore, so in theory we should
+     * not need to flush the TLBs. Do it for safety purpose.
+     *
+     * Note that all the devices have already been de-assigned. So we don't
+     * need to flush the IOMMU TLB here.
+     */
+    p2m_force_tlb_flush_sync(p2m);
+
+    while ( (pg = page_list_remove_head(&p2m->pages)) )
+    {
+        p2m_free_page(p2m->domain, pg);
+        count++;
+        /* Arbitrarily preempt every 512 iterations */
+        if ( allow_preemption && !(count % 512) && hypercall_preempt_check() )
+        {
+            rc = -ERESTART;
+            break;
+        }
+    }
+
+    p2m_write_unlock(p2m);
+
+    return rc;
+}
+
+void p2m_final_teardown(struct domain *d)
+{
+    struct p2m_domain *p2m = p2m_get_hostp2m(d);
 
     /* p2m not actually initialized */
     if ( !p2m->domain )
         return;
 
-    while ( (pg = page_list_remove_head(&p2m->pages)) )
-        free_domheap_page(pg);
+    /*
+     * No need to call relinquish_p2m_mapping() here because
+     * p2m_final_teardown() is called either after domain_relinquish_resources()
+     * where relinquish_p2m_mapping() has been called, or from failure path of
+     * domain_create()/arch_domain_create() where mappings that require
+     * p2m_put_l3_page() should never be created. For the latter case, also see
+     * comment on top of the p2m_set_entry() for more info.
+     */
+
+    BUG_ON(p2m_teardown(d, false));
+    ASSERT(page_list_empty(&p2m->pages));
+
+    while ( p2m_teardown_allocation(d) == -ERESTART )
+        continue; /* No preemption support here */
+    ASSERT(page_list_empty(&d->arch.paging.p2m_freelist));
 
     if ( p2m->root )
         free_domheap_pages(p2m->root, P2M_ROOT_ORDER);
@@ -1514,18 +1715,15 @@ void p2m_teardown(struct domain *d)
 int p2m_init(struct domain *d)
 {
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
-    int rc = 0;
+    int rc;
     unsigned int cpu;
 
     rwlock_init(&p2m->lock);
+    spin_lock_init(&d->arch.paging.lock);
     INIT_PAGE_LIST_HEAD(&p2m->pages);
+    INIT_PAGE_LIST_HEAD(&d->arch.paging.p2m_freelist);
 
     p2m->vmid = INVALID_VMID;
-
-    rc = p2m_alloc_vmid(d);
-    if ( rc != 0 )
-        return rc;
-
     p2m->max_mapped_gfn = _gfn(0);
     p2m->lowest_mapped_gfn = _gfn(ULONG_MAX);
 
@@ -1541,8 +1739,6 @@ int p2m_init(struct domain *d)
     p2m->clean_pte = is_iommu_enabled(d) &&
         !iommu_has_feature(d, IOMMU_FEAT_COHERENT_WALK);
 
-    rc = p2m_alloc_table(d);
-
     /*
      * Make sure that the type chosen to is able to store the an vCPU ID
      * between 0 and the maximum of virtual CPUS supported as long as
@@ -1555,13 +1751,34 @@ int p2m_init(struct domain *d)
        p2m->last_vcpu_ran[cpu] = INVALID_VCPU_ID;
 
     /*
-     * Besides getting a domain when we only have the p2m in hand,
-     * the back pointer to domain is also used in p2m_teardown()
-     * as an end-of-initialization indicator.
+     * "Trivial" initialisation is now complete.  Set the backpointer so
+     * p2m_teardown() and friends know to do something.
      */
     p2m->domain = d;
 
-    return rc;
+    rc = p2m_alloc_vmid(d);
+    if ( rc )
+        return rc;
+
+    rc = p2m_alloc_table(d);
+    if ( rc )
+        return rc;
+
+    /*
+     * Hardware using GICv2 needs to create a P2M mapping of 8KB GICv2 area
+     * when the domain is created. Considering the worst case for page
+     * tables and keep a buffer, populate 16 pages to the P2M pages pool here.
+     * For GICv3, the above-mentioned P2M mapping is not necessary, but since
+     * the allocated 16 pages here would not be lost, hence populate these
+     * pages unconditionally.
+     */
+    spin_lock(&d->arch.paging.lock);
+    rc = p2m_set_allocation(d, 16, NULL);
+    spin_unlock(&d->arch.paging.lock);
+    if ( rc )
+        return rc;
+
+    return 0;
 }
 
 /*
@@ -1579,6 +1796,8 @@ int relinquish_p2m_mapping(struct domain *d)
     unsigned int order;
     gfn_t start, end;
 
+    BUG_ON(!d->is_dying);
+    /* No mappings can be added in the P2M after the P2M lock is released. */
     p2m_write_lock(p2m);
 
     start = p2m->lowest_mapped_gfn;

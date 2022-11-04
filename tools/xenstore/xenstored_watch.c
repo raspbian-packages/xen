@@ -29,8 +29,7 @@
 #include "xenstore_lib.h"
 #include "utils.h"
 #include "xenstored_domain.h"
-
-extern int quota_nb_watch_per_domain;
+#include "xenstored_transaction.h"
 
 struct watch
 {
@@ -72,37 +71,17 @@ static bool is_child(const char *child, const char *parent)
 	return child[len] == '/' || child[len] == '\0';
 }
 
-/*
- * Send a watch event.
- * Temporary memory allocations are done with ctx.
- */
-static void add_event(struct connection *conn,
-		      const void *ctx,
-		      struct watch *watch,
-		      const char *name)
+static const char *get_watch_path(const struct watch *watch, const char *name)
 {
-	/* Data to send (node\0token\0). */
-	unsigned int len;
-	char *data;
+	const char *path = name;
 
 	if (watch->relative_path) {
-		name += strlen(watch->relative_path);
-		if (*name == '/') /* Could be "" */
-			name++;
+		path += strlen(watch->relative_path);
+		if (*path == '/') /* Could be "" */
+			path++;
 	}
 
-	len = strlen(name) + 1 + strlen(watch->token) + 1;
-	/* Don't try to send over-long events. */
-	if (len > XENSTORE_PAYLOAD_MAX)
-		return;
-
-	data = talloc_array(ctx, char, len);
-	if (!data)
-		return;
-	strcpy(data, name);
-	strcpy(data + strlen(name) + 1, watch->token);
-	send_reply(conn, XS_WATCH_EVENT, data, len);
-	talloc_free(data);
+	return path;
 }
 
 /*
@@ -161,11 +140,16 @@ void fire_watches(struct connection *conn, const void *ctx, const char *name,
 		  struct node *node, bool exact, struct node_perms *perms)
 {
 	struct connection *i;
+	struct buffered_data *req;
 	struct watch *watch;
 
-	/* During transactions, don't fire watches. */
-	if (conn && conn->transaction)
+	/* During transactions, don't fire watches, but queue them. */
+	if (conn && conn->transaction) {
+		queue_watches(conn, name, exact);
 		return;
+	}
+
+	req = domain_is_unprivileged(conn) ? conn->in : NULL;
 
 	/* Create an event for each watch. */
 	list_for_each_entry(i, &connections, list) {
@@ -181,10 +165,14 @@ void fire_watches(struct connection *conn, const void *ctx, const char *name,
 		list_for_each_entry(watch, &i->watches, list) {
 			if (exact) {
 				if (streq(name, watch->node))
-					add_event(i, ctx, watch, name);
+					send_event(req, i,
+						   get_watch_path(watch, name),
+						   watch->token);
 			} else {
 				if (is_child(name, watch->node))
-					add_event(i, ctx, watch, name);
+					send_event(req, i,
+						   get_watch_path(watch, name),
+						   watch->token);
 			}
 		}
 	}
@@ -196,7 +184,7 @@ static int destroy_watch(void *_watch)
 	return 0;
 }
 
-int do_watch(struct connection *conn, struct buffered_data *in)
+int do_watch(const void *ctx, struct connection *conn, struct buffered_data *in)
 {
 	struct watch *watch;
 	char *vec[2];
@@ -212,7 +200,7 @@ int do_watch(struct connection *conn, struct buffered_data *in)
 		/* check if valid event */
 	} else {
 		relative = !strstarts(vec[0], "/");
-		vec[0] = canonicalize(conn, in, vec[0]);
+		vec[0] = canonicalize(conn, ctx, vec[0]);
 		if (!vec[0])
 			return ENOMEM;
 		if (!is_valid_nodename(vec[0]))
@@ -234,7 +222,8 @@ int do_watch(struct connection *conn, struct buffered_data *in)
 		return ENOMEM;
 	watch->node = talloc_strdup(watch, vec[0]);
 	watch->token = talloc_strdup(watch, vec[1]);
-	if (!watch->node || !watch->token) {
+	if (!watch->node || !watch->token ||
+	    domain_memory_add_chk(conn->id, strlen(vec[0]) + strlen(vec[1]))) {
 		talloc_free(watch);
 		return ENOMEM;
 	}
@@ -251,13 +240,18 @@ int do_watch(struct connection *conn, struct buffered_data *in)
 	talloc_set_destructor(watch, destroy_watch);
 	send_ack(conn, XS_WATCH);
 
-	/* We fire once up front: simplifies clients and restart. */
-	add_event(conn, in, watch, watch->node);
+	/*
+	 * We fire once up front: simplifies clients and restart.
+	 * This event will not be linked to the XS_WATCH request.
+	 */
+	send_event(NULL, conn, get_watch_path(watch, watch->node),
+		   watch->token);
 
 	return 0;
 }
 
-int do_unwatch(struct connection *conn, struct buffered_data *in)
+int do_unwatch(const void *ctx, struct connection *conn,
+	       struct buffered_data *in)
 {
 	struct watch *watch;
 	char *node, *vec[2];
@@ -265,12 +259,14 @@ int do_unwatch(struct connection *conn, struct buffered_data *in)
 	if (get_strings(in, vec, ARRAY_SIZE(vec)) != ARRAY_SIZE(vec))
 		return EINVAL;
 
-	node = canonicalize(conn, in, vec[0]);
+	node = canonicalize(conn, ctx, vec[0]);
 	if (!node)
 		return ENOMEM;
 	list_for_each_entry(watch, &conn->watches, list) {
 		if (streq(watch->node, node) && streq(watch->token, vec[1])) {
 			list_del(&watch->list);
+			domain_memory_add_nochk(conn->id, -strlen(watch->node) -
+							  strlen(watch->token));
 			talloc_free(watch);
 			domain_watch_dec(conn);
 			send_ack(conn, XS_UNWATCH);
@@ -286,6 +282,8 @@ void conn_delete_all_watches(struct connection *conn)
 
 	while ((watch = list_top(&conn->watches, struct watch, list))) {
 		list_del(&watch->list);
+		domain_memory_add_nochk(conn->id, -strlen(watch->node) -
+						  strlen(watch->token));
 		talloc_free(watch);
 		domain_watch_dec(conn);
 	}
