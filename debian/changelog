@@ -8,7 +8,6 @@ xen (4.14.5+24-g87d90d511c-1) bullseye-security; urgency=medium
 
   * Update to new upstream version 4.14.5+24-g87d90d511c, which also contains
     security fixes for the following issues:
-    for the following issues:
     - x86 pv: Race condition in typeref acquisition
       XSA-401 CVE-2022-26362
     - x86 pv: Insufficient care with non-coherent mappings
