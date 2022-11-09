@@ -30,7 +30,7 @@ Acked-by: Jan Beulich <jbeulich@suse.com>
  14 files changed, 14 insertions(+), 14 deletions(-)
 
 diff --git a/docs/man/xl.1.pod.in b/docs/man/xl.1.pod.in
-index 52a47a6..3480707 100644
+index 8c28a5d..23aaf66 100644
 --- a/docs/man/xl.1.pod.in
 +++ b/docs/man/xl.1.pod.in
 @@ -1578,7 +1578,7 @@ List vsnd devices for a domain.
@@ -43,10 +43,10 @@ index 52a47a6..3480707 100644
  =item B<vkb-detach> I<domain-id> I<devid>
  
 diff --git a/docs/man/xl.cfg.5.pod.in b/docs/man/xl.cfg.5.pod.in
-index 0532739..b4625f5 100644
+index 2224080b..bf3b240 100644
 --- a/docs/man/xl.cfg.5.pod.in
 +++ b/docs/man/xl.cfg.5.pod.in
-@@ -2385,7 +2385,7 @@ If B<videoram> is set less than 128MB, an error will be triggered.
+@@ -2390,7 +2390,7 @@ If B<videoram> is set less than 128MB, an error will be triggered.
  
  =item B<stdvga=BOOLEAN>
  

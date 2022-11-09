@@ -130,6 +130,18 @@ int libxl__arch_domain_save_config(libxl__gc *gc,
 int libxl__arch_domain_create(libxl__gc *gc, libxl_domain_config *d_config,
                               uint32_t domid)
 {
+    libxl_ctx *ctx = libxl__gc_owner(gc);
+    unsigned long shadow_mb = DIV_ROUNDUP(d_config->b_info.shadow_memkb, 1024);
+
+    int r = xc_shadow_control(ctx->xch, domid,
+                              XEN_DOMCTL_SHADOW_OP_SET_ALLOCATION,
+                              NULL, 0, &shadow_mb, 0, NULL);
+    if (r) {
+        LOGED(ERROR, domid,
+              "Failed to set %lu MiB shadow allocation", shadow_mb);
+        return ERROR_FAIL;
+    }
+
     return 0;
 }
 
@@ -151,6 +163,18 @@ int libxl__arch_extra_memory(libxl__gc *gc,
     *out = LIBXL_MAXMEM_CONSTANT + DIV_ROUNDUP(size, 1024);
 out:
     return rc;
+}
+
+unsigned long libxl__arch_get_required_paging_memory(unsigned long maxmem_kb,
+                                                     unsigned int smp_cpus)
+{
+    /*
+     * 256 pages (1MB) per vcpu,
+     * plus 1 page per MiB of RAM for the P2M map,
+     * This is higher than the minimum that Xen would allocate if no value
+     * were given (but the Xen minimum is for safety, not performance).
+     */
+    return 4 * (256 * smp_cpus + maxmem_kb / 1024);
 }
 
 static struct arch_info {
