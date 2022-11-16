@@ -1,3 +1,9 @@
+xen (4.16.2+90-g0d39a6d1ae-1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.16.2+90-g0d39a6d1ae.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Wed, 16 Nov 2022 12:50:33 +0100
+
 xen (4.16.2-2) unstable; urgency=medium
 
   * debian/control: Add libzstd-dev as Build-Depends
