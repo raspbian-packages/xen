@@ -38,7 +38,6 @@
 #include <xen/livepatch.h>
 #include <public/sysctl.h>
 #include <public/hvm/hvm_vcpu.h>
-#include <asm/altp2m.h>
 #include <asm/regs.h>
 #include <asm/mc146818rtc.h>
 #include <asm/system.h>
@@ -930,6 +929,7 @@ int arch_domain_soft_reset(struct domain *d)
     struct page_info *page = virt_to_page(d->shared_info), *new_page;
     int ret = 0;
     struct domain *owner;
+    struct vcpu *v;
     mfn_t mfn;
     gfn_t gfn;
     p2m_type_t p2mt;
@@ -1009,7 +1009,12 @@ int arch_domain_soft_reset(struct domain *d)
                "Failed to add a page to replace %pd's shared_info frame %"PRI_gfn"\n",
                d, gfn_x(gfn));
         free_domheap_page(new_page);
+        goto exit_put_gfn;
     }
+
+    for_each_vcpu ( d, v )
+        set_xen_guest_handle(v->arch.time_info_guest, NULL);
+
  exit_put_gfn:
     put_gfn(d, gfn_x(gfn));
  exit_put_page:
@@ -2087,7 +2092,7 @@ void context_switch(struct vcpu *prev, struct vcpu *next)
              */
             if ( *last_id != next_id )
             {
-                wrmsrl(MSR_PRED_CMD, PRED_CMD_IBPB);
+                spec_ctrl_new_guest_context();
                 *last_id = next_id;
             }
         }
@@ -2379,12 +2384,6 @@ int domain_relinquish_resources(struct domain *d)
                 return ret;
 
             vpmu_destroy(v);
-        }
-
-        if ( altp2m_active(d) )
-        {
-            for_each_vcpu ( d, v )
-                altp2m_vcpu_disable_ve(v);
         }
 
         if ( is_pv_domain(d) )
