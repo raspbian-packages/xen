@@ -655,8 +655,15 @@ static inline void get_knownalive_domain(struct domain *d)
     ASSERT(!(atomic_read(&d->refcnt) & DOMAIN_DESTROYED));
 }
 
+struct affinity_masks;
+
 int domain_set_node_affinity(struct domain *d, const nodemask_t *affinity);
-void domain_update_node_affinity(struct domain *d);
+void domain_update_node_aff(struct domain *d, struct affinity_masks *affinity);
+
+static inline void domain_update_node_affinity(struct domain *d)
+{
+    domain_update_node_aff(d, NULL);
+}
 
 /*
  * To be implemented by each architecture, sanity checking the configuration
@@ -992,7 +999,6 @@ void vcpu_set_periodic_timer(struct vcpu *v, s_time_t value);
 void sched_setup_dom0_vcpus(struct domain *d);
 int vcpu_temporary_affinity(struct vcpu *v, unsigned int cpu, uint8_t reason);
 int vcpu_set_hard_affinity(struct vcpu *v, const cpumask_t *affinity);
-void restore_vcpu_affinity(struct domain *d);
 int vcpu_affinity_domctl(struct domain *d, uint32_t cmd,
                          struct xen_domctl_vcpuaffinity *vcpuaff);
 

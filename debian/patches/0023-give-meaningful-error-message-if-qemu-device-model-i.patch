@@ -32,10 +32,10 @@ index 8856755..54ded26 100644
  
      if (b_info->blkdev_start == NULL)
 diff --git a/tools/libs/light/libxl_dm.c b/tools/libs/light/libxl_dm.c
-index 04bf5d8..69846c6 100644
+index fc264a3..2dca5d9 100644
 --- a/tools/libs/light/libxl_dm.c
 +++ b/tools/libs/light/libxl_dm.c
-@@ -2880,6 +2880,9 @@ void libxl__spawn_local_dm(libxl__egc *egc, libxl__dm_spawn_state *dmss)
+@@ -2897,6 +2897,9 @@ void libxl__spawn_local_dm(libxl__egc *egc, libxl__dm_spawn_state *dmss)
      }
      if (access(dm, X_OK) < 0) {
          LOGED(ERROR, domid, "device model %s is not executable", dm);
