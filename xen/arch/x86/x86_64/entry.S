@@ -646,6 +646,15 @@ ret_from_intr:
         jmp   restore_all_xen
 #endif
 
+        .section .init.text, "ax", @progbits
+ENTRY(early_page_fault)
+        ENDBR64
+        movl  $TRAP_page_fault, 4(%rsp)
+        SAVE_ALL
+        movq  %rsp, %rdi
+        call  do_early_page_fault
+        jmp   restore_all_xen
+
         .section .text.entry, "ax", @progbits
 
         ALIGN
@@ -776,14 +785,48 @@ handle_exception_saved:
         sti
 1:      movq  %rsp,%rdi
         movzbl UREGS_entry_vector(%rsp),%eax
-        leaq  exception_table(%rip),%rdx
 #ifdef CONFIG_PERF_COUNTERS
         lea   per_cpu__perfcounters(%rip), %rcx
         add   STACK_CPUINFO_FIELD(per_cpu_offset)(%r14), %rcx
         incl  ASM_PERFC_exceptions * 4(%rcx, %rax, 4)
 #endif
-        mov   (%rdx, %rax, 8), %rdx
-        INDIRECT_CALL %rdx
+
+        /*
+         * Dispatch to appropriate C handlers.
+         *
+         * The logic is implemented as an if/else chain.  DISPATCH() calls
+         * need be in frequency order for best performance.
+         */
+#define DISPATCH(vec, handler)         \
+        cmp   $vec, %al;               \
+        jne   .L_ ## vec ## _done;     \
+        call  handler;                 \
+        jmp   .L_exn_dispatch_done;    \
+.L_ ## vec ## _done:
+
+        DISPATCH(X86_EXC_PF, do_page_fault)
+        DISPATCH(X86_EXC_GP, do_general_protection)
+        DISPATCH(X86_EXC_UD, do_invalid_op)
+        DISPATCH(X86_EXC_NM, do_device_not_available)
+        DISPATCH(X86_EXC_BP, do_int3)
+
+        /* Logically "if ( (1 << vec) & MASK ) { do_trap(); }" */
+        mov   $(1 << X86_EXC_DE) | (1 << X86_EXC_OF) | (1 << X86_EXC_BR) |\
+               (1 << X86_EXC_NP) | (1 << X86_EXC_SS) | (1 << X86_EXC_MF) |\
+               (1 << X86_EXC_AC) | (1 << X86_EXC_XM), %edx
+        bt    %eax, %edx
+        jnc   .L_do_trap_done
+        call  do_trap
+        jmp   .L_exn_dispatch_done
+.L_do_trap_done:
+
+        DISPATCH(X86_EXC_CP, do_entry_CP)
+#undef DISPATCH
+
+        call  do_unhandled_trap
+        BUG   /* do_unhandled_trap() shouldn't return. */
+
+.L_exn_dispatch_done:
         mov   %r15, STACK_CPUINFO_FIELD(xen_cr3)(%r14)
         mov   %r13b, STACK_CPUINFO_FIELD(use_pv_cr3)(%r14)
 #ifdef CONFIG_PV
@@ -948,16 +991,6 @@ ENTRY(double_fault)
         call  do_double_fault
         BUG   /* do_double_fault() shouldn't return. */
 
-        .pushsection .init.text, "ax", @progbits
-ENTRY(early_page_fault)
-        ENDBR64
-        movl  $TRAP_page_fault,4(%rsp)
-        SAVE_ALL
-        movq  %rsp,%rdi
-        call  do_early_page_fault
-        jmp   restore_all_xen
-        .popsection
-
 ENTRY(nmi)
         ENDBR64
         pushq $0
@@ -1026,9 +1059,35 @@ handle_ist_exception:
 #endif
         movq  %rsp,%rdi
         movzbl UREGS_entry_vector(%rsp),%eax
-        leaq  exception_table(%rip),%rdx
-        mov   (%rdx, %rax, 8), %rdx
-        INDIRECT_CALL %rdx
+
+#ifdef CONFIG_PERF_COUNTERS
+        lea   per_cpu__perfcounters(%rip), %rcx
+        add   STACK_CPUINFO_FIELD(per_cpu_offset)(%r14), %rcx
+        incl  ASM_PERFC_exceptions * 4(%rcx, %rax, 4)
+#endif
+
+        /*
+         * Dispatch to appropriate C handlers.
+         *
+         * The logic is implemented as an if/else chain.  DISPATCH() calls
+         * need be in frequency order for best performance.
+         */
+#define DISPATCH(vec, handler)         \
+        cmp   $vec, %al;               \
+        jne   .L_ ## vec ## _done;     \
+        call  handler;                 \
+        jmp   .L_ist_dispatch_done;    \
+.L_ ## vec ## _done:
+
+        DISPATCH(X86_EXC_NMI, do_nmi)
+        DISPATCH(X86_EXC_DB,  do_debug)
+        DISPATCH(X86_EXC_MC,  do_machine_check)
+#undef DISPATCH
+
+        call  do_unhandled_trap
+        BUG   /* do_unhandled_trap() shouldn't return. */
+
+.L_ist_dispatch_done:
         mov   %r15, STACK_CPUINFO_FIELD(xen_cr3)(%r14)
         mov   %bl, STACK_CPUINFO_FIELD(use_pv_cr3)(%r14)
         cmpb  $TRAP_nmi,UREGS_entry_vector(%rsp)
@@ -1106,7 +1165,7 @@ autogen_stubs: /* Automatically generated stubs. */
 
         entrypoint 1b
 
-        /* Reserved exceptions, heading towards do_reserved_trap(). */
+        /* Reserved exceptions, heading towards do_unhandled_trap(). */
         .elseif vec == X86_EXC_CSO || vec == X86_EXC_SPV || \
                 vec == X86_EXC_VE  || (vec > X86_EXC_CP && vec < TRAP_nr)
 

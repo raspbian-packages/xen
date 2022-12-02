@@ -375,7 +375,7 @@ shadow_size(unsigned int shadow_type)
 mfn_t shadow_hash_lookup(struct domain *d, unsigned long n, unsigned int t);
 void  shadow_hash_insert(struct domain *d,
                          unsigned long n, unsigned int t, mfn_t smfn);
-void  shadow_hash_delete(struct domain *d,
+bool  shadow_hash_delete(struct domain *d,
                          unsigned long n, unsigned int t, mfn_t smfn);
 
 /* shadow promotion */
@@ -421,15 +421,15 @@ static inline int sh_remove_write_access(struct domain *d, mfn_t readonly_mfn,
 #endif
 
 /* Functions that atomically write PV guest PT entries */
-void sh_write_guest_entry(struct vcpu *v, intpte_t *p, intpte_t new,
-                          mfn_t gmfn);
-intpte_t sh_cmpxchg_guest_entry(struct vcpu *v, intpte_t *p, intpte_t old,
-                                intpte_t new, mfn_t gmfn);
+void cf_check sh_write_guest_entry(
+    struct vcpu *v, intpte_t *p, intpte_t new, mfn_t gmfn);
+intpte_t cf_check sh_cmpxchg_guest_entry(
+    struct vcpu *v, intpte_t *p, intpte_t old, intpte_t new, mfn_t gmfn);
 
 /* Update all the things that are derived from the guest's CR0/CR3/CR4.
  * Called to initialize paging structures if the paging mode
  * has changed, and when bringing up a VCPU for the first time. */
-void shadow_update_paging_modes(struct vcpu *v);
+void cf_check shadow_update_paging_modes(struct vcpu *v);
 
 /* Unhook the non-Xen mappings in this top-level shadow mfn.
  * With user_only == 1, unhooks only the user-mode mappings. */
@@ -774,18 +774,19 @@ static inline void
 set_shadow_status(struct domain *d, mfn_t gmfn, u32 shadow_type, mfn_t smfn)
 /* Put a shadow into the hash table */
 {
-    int res;
-
     SHADOW_PRINTK("d%d gmfn=%lx, type=%08x, smfn=%lx\n",
                   d->domain_id, mfn_x(gmfn), shadow_type, mfn_x(smfn));
 
     ASSERT(mfn_to_page(smfn)->u.sh.head);
 
     /* 32-bit PV guests don't own their l4 pages so can't get_page them */
-    if ( !is_pv_32bit_domain(d) || shadow_type != SH_type_l4_64_shadow )
+    if ( (shadow_type != SH_type_l4_64_shadow || !is_pv_32bit_domain(d)) &&
+         !get_page(mfn_to_page(gmfn), d) )
     {
-        res = get_page(mfn_to_page(gmfn), d);
-        ASSERT(res == 1);
+        printk(XENLOG_G_ERR "%pd: cannot get page for MFN %" PRI_mfn "\n",
+               d, mfn_x(gmfn));
+        domain_crash(d);
+        return;
     }
 
     shadow_hash_insert(d, mfn_x(gmfn), shadow_type, smfn);
@@ -798,9 +799,9 @@ delete_shadow_status(struct domain *d, mfn_t gmfn, u32 shadow_type, mfn_t smfn)
     SHADOW_PRINTK("d%d gmfn=%"PRI_mfn", type=%08x, smfn=%"PRI_mfn"\n",
                   d->domain_id, mfn_x(gmfn), shadow_type, mfn_x(smfn));
     ASSERT(mfn_to_page(smfn)->u.sh.head);
-    shadow_hash_delete(d, mfn_x(gmfn), shadow_type, smfn);
-    /* 32-bit PV guests don't own their l4 pages; see set_shadow_status */
-    if ( !is_pv_32bit_domain(d) || shadow_type != SH_type_l4_64_shadow )
+    if ( shadow_hash_delete(d, mfn_x(gmfn), shadow_type, smfn) &&
+         /* 32-bit PV guests don't own their l4 pages; see set_shadow_status */
+         (shadow_type != SH_type_l4_64_shadow || !is_pv_32bit_domain(d)) )
         put_page(mfn_to_page(gmfn));
 }
 
@@ -923,8 +924,7 @@ static inline int sh_check_page_has_no_refs(struct page_info *page)
 }
 
 /* Flush the TLB of the selected vCPUs. */
-bool shadow_flush_tlb(bool (*flush_vcpu)(void *ctxt, struct vcpu *v),
-                      void *ctxt);
+bool cf_check shadow_flush_tlb(const unsigned long *vcpu_bitmap);
 
 #endif /* _XEN_SHADOW_PRIVATE_H */
 

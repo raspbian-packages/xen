@@ -68,13 +68,8 @@
 #define cap_num_fault_regs(c)  ((((c) >> 40) & 0xff) + 1)
 #define cap_pgsel_inv(c)       (((c) >> 39) & 1)
 
-#define cap_super_page_val(c)  (((c) >> 34) & 0xf)
-#define cap_super_offset(c)    (((find_first_bit(&cap_super_page_val(c), 4)) \
-                                 * OFFSET_STRIDE) + 21)
-#define cap_sps_2mb(c)         ((c >> 34) & 1)
-#define cap_sps_1gb(c)         ((c >> 35) & 1)
-#define cap_sps_512gb(c)       ((c >> 36) & 1)
-#define cap_sps_1tb(c)         ((c >> 37) & 1)
+#define cap_sps_2mb(c)         (((c) >> 34) & 1)
+#define cap_sps_1gb(c)         (((c) >> 35) & 1)
 
 #define cap_fault_reg_offset(c)    ((((c) >> 24) & 0x3ff) * 16)
 
@@ -87,7 +82,7 @@
 #define cap_plmr(c)        (((c) >> 5) & 1)
 #define cap_rwbf(c)        (((c) >> 4) & 1)
 #define cap_afl(c)        (((c) >> 3) & 1)
-#define cap_ndoms(c)        (1 << (4 + 2 * ((c) & 0x7)))
+#define cap_ndoms(c)        (1U << (4 + 2 * ((c) & 0x7)))
 
 /*
  * Extended Capability Register
@@ -95,14 +90,14 @@
 
 #define ecap_niotlb_iunits(e)    ((((e) >> 24) & 0xff) + 1)
 #define ecap_iotlb_offset(e)     ((((e) >> 8) & 0x3ff) * 16)
-#define ecap_coherent(e)         ((e >> 0) & 0x1)
-#define ecap_queued_inval(e)     ((e >> 1) & 0x1)
-#define ecap_dev_iotlb(e)        ((e >> 2) & 0x1)
-#define ecap_intr_remap(e)       ((e >> 3) & 0x1)
-#define ecap_eim(e)              ((e >> 4) & 0x1)
-#define ecap_cache_hints(e)      ((e >> 5) & 0x1)
-#define ecap_pass_thru(e)        ((e >> 6) & 0x1)
-#define ecap_snp_ctl(e)          ((e >> 7) & 0x1)
+#define ecap_coherent(e)         (((e) >> 0) & 1)
+#define ecap_queued_inval(e)     (((e) >> 1) & 1)
+#define ecap_dev_iotlb(e)        (((e) >> 2) & 1)
+#define ecap_intr_remap(e)       (((e) >> 3) & 1)
+#define ecap_eim(e)              (((e) >> 4) & 1)
+#define ecap_cache_hints(e)      (((e) >> 5) & 1)
+#define ecap_pass_thru(e)        (((e) >> 6) & 1)
+#define ecap_snp_ctl(e)          (((e) >> 7) & 1)
 
 /* IOTLB_REG */
 #define DMA_TLB_FLUSH_GRANU_OFFSET  60
@@ -111,14 +106,14 @@
 #define DMA_TLB_PSI_FLUSH (((u64)3) << 60)
 #define DMA_TLB_IIRG(x) (((x) >> 60) & 7) 
 #define DMA_TLB_IAIG(val) (((val) >> 57) & 7)
-#define DMA_TLB_DID(x) (((u64)(x & 0xffff)) << 32)
+#define DMA_TLB_DID(x) (((uint64_t)((x) & 0xffff)) << 32)
 
 #define DMA_TLB_READ_DRAIN (((u64)1) << 49)
 #define DMA_TLB_WRITE_DRAIN (((u64)1) << 48)
 #define DMA_TLB_IVT (((u64)1) << 63)
 
-#define DMA_TLB_IVA_ADDR(x) ((((u64)x) >> 12) << 12)
-#define DMA_TLB_IVA_HINT(x) ((((u64)x) & 1) << 6)
+#define DMA_TLB_IVA_ADDR(x) (((uint64_t)(x) >> 12) << 12)
+#define DMA_TLB_IVA_HINT(x) (((uint64_t)(x) & 1) << 6)
 
 /* GCMD_REG */
 #define DMA_GCMD_TE     (1u << 31)
@@ -149,11 +144,11 @@
 /* CCMD_REG */
 #define DMA_CCMD_INVL_GRANU_OFFSET  61
 #define DMA_CCMD_ICC   (((u64)1) << 63)
-#define DMA_CCMD_GLOBAL_INVL (((u64)1) << 61)
-#define DMA_CCMD_DOMAIN_INVL (((u64)2) << 61)
-#define DMA_CCMD_DEVICE_INVL (((u64)3) << 61)
+#define DMA_CCMD_GLOBAL_INVL ((uint64_t)1 << DMA_CCMD_INVL_GRANU_OFFSET)
+#define DMA_CCMD_DOMAIN_INVL ((uint64_t)2 << DMA_CCMD_INVL_GRANU_OFFSET)
+#define DMA_CCMD_DEVICE_INVL ((uint64_t)3 << DMA_CCMD_INVL_GRANU_OFFSET)
+#define DMA_CCMD_CIRG(x) (((uint64_t)3 << DMA_CCMD_INVL_GRANU_OFFSET) & (x))
 #define DMA_CCMD_FM(m) (((u64)((m) & 0x3)) << 32)
-#define DMA_CCMD_CIRG(x) ((((u64)3) << 61) & x)
 #define DMA_CCMD_MASK_NOBIT 0
 #define DMA_CCMD_MASK_1BIT 1
 #define DMA_CCMD_MASK_2BIT 2
@@ -161,7 +156,7 @@
 #define DMA_CCMD_SID(s) (((u64)((s) & 0xffff)) << 16)
 #define DMA_CCMD_DID(d) ((u64)((d) & 0xffff))
 
-#define DMA_CCMD_CAIG_MASK(x) (((u64)x) & ((u64) 0x3 << 59))
+#define DMA_CCMD_CAIG_MASK(x) ((uint64_t)(x) & ((uint64_t)3 << 59))
 
 /* FECTL_REG */
 #define DMA_FECTL_IM (1u << 31)
@@ -180,10 +175,10 @@
 
 /* FRCD_REG, 32 bits access */
 #define DMA_FRCD_F (1u << 31)
-#define dma_frcd_type(d) ((d >> 30) & 1)
-#define dma_frcd_fault_reason(c) (c & 0xff)
-#define dma_frcd_source_id(c) (c & 0xffff)
-#define dma_frcd_page_addr(d) (d & (((u64)-1) << 12)) /* low 64 bit */
+#define dma_frcd_type(d) (((d) >> 30) & 1)
+#define dma_frcd_fault_reason(c) ((c) & 0xff)
+#define dma_frcd_source_id(c) ((c) & 0xffff)
+#define dma_frcd_page_addr(d) ((d) & ((uint64_t)-1 << 12)) /* low 64 bit */
 
 /*
  * 0: Present
@@ -209,7 +204,6 @@ struct context_entry {
         __uint128_t full;
     };
 };
-#define ROOT_ENTRY_NR (PAGE_SIZE_4K/sizeof(struct root_entry))
 #define context_present(c) ((c).lo & 1)
 #define context_fault_disable(c) (((c).lo >> 1) & 1)
 #define context_translation_type(c) (((c).lo >> 2) & 3)
@@ -238,20 +232,20 @@ struct context_entry {
 
 /* page table handling */
 #define LEVEL_STRIDE       (9)
-#define LEVEL_MASK         ((1 << LEVEL_STRIDE) - 1)
+#define LEVEL_MASK         (PTE_NUM - 1UL)
 #define PTE_NUM            (1 << LEVEL_STRIDE)
 #define level_to_agaw(val) ((val) - 2)
 #define agaw_to_level(val) ((val) + 2)
-#define agaw_to_width(val) (30 + val * LEVEL_STRIDE)
-#define width_to_agaw(w)   ((w - 30)/LEVEL_STRIDE)
-#define level_to_offset_bits(l) (12 + (l - 1) * LEVEL_STRIDE)
+#define agaw_to_width(val) (30 + (val) * LEVEL_STRIDE)
+#define width_to_agaw(w)   (((w) - 30)/LEVEL_STRIDE)
+#define level_to_offset_bits(l) (12 + ((l) - 1) * LEVEL_STRIDE)
 #define address_level_offset(addr, level) \
-            ((addr >> level_to_offset_bits(level)) & LEVEL_MASK)
+            (((addr) >> level_to_offset_bits(level)) & LEVEL_MASK)
 #define offset_level_address(offset, level) \
             ((u64)(offset) << level_to_offset_bits(level))
 #define level_mask(l) (((u64)(-1)) << level_to_offset_bits(l))
 #define level_size(l) (1 << level_to_offset_bits(l))
-#define align_to_level(addr, l) ((addr + level_size(l) - 1) & level_mask(l))
+#define align_to_level(addr, l) (((addr) + level_size(l) - 1) & level_mask(l))
 
 /*
  * 0: readable
@@ -259,7 +253,10 @@ struct context_entry {
  * 2-6: reserved
  * 7: super page
  * 8-11: available
- * 12-63: Host physcial address
+ * 12-51: Host physcial address
+ * 52-61: available (52-55 used for DMA_PTE_CONTIG_MASK)
+ * 62: reserved
+ * 63: available
  */
 struct dma_pte {
     u64 val;
@@ -269,6 +266,7 @@ struct dma_pte {
 #define DMA_PTE_PROT (DMA_PTE_READ | DMA_PTE_WRITE)
 #define DMA_PTE_SP   (1 << 7)
 #define DMA_PTE_SNP  (1 << 11)
+#define DMA_PTE_CONTIG_MASK  (0xfull << PADDR_BITS)
 #define dma_clear_pte(p)    do {(p).val = 0;} while(0)
 #define dma_set_pte_readable(p) do {(p).val |= DMA_PTE_READ;} while(0)
 #define dma_set_pte_writable(p) do {(p).val |= DMA_PTE_WRITE;} while(0)
@@ -282,7 +280,7 @@ struct dma_pte {
 #define dma_pte_write(p) (dma_pte_prot(p) & DMA_PTE_WRITE)
 #define dma_pte_addr(p) ((p).val & PADDR_MASK & PAGE_MASK_4K)
 #define dma_set_pte_addr(p, addr) do {\
-            (p).val |= ((addr) & PAGE_MASK_4K); } while (0)
+            (p).val |= ((addr) & PADDR_MASK & PAGE_MASK_4K); } while (0)
 #define dma_pte_present(p) (((p).val & DMA_PTE_PROT) != 0)
 #define dma_pte_superpage(p) (((p).val & DMA_PTE_SP) != 0)
 
@@ -510,7 +508,7 @@ struct vtd_iommu {
     struct list_head ats_devices;
     unsigned long *pseudo_domid_map; /* "pseudo" domain id bitmap */
     unsigned long *domid_bitmap;  /* domain id bitmap */
-    u16 *domid_map;               /* domain id mapping array */
+    domid_t *domid_map;           /* domain id mapping array */
     uint32_t version;
 };
 

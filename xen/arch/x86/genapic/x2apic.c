@@ -27,7 +27,6 @@
 #include <asm/msr.h>
 #include <asm/processor.h>
 #include <xen/smp.h>
-#include <asm/mach-default/mach_mpparse.h>
 
 static DEFINE_PER_CPU_READ_MOSTLY(u32, cpu_2_logical_apicid);
 static DEFINE_PER_CPU_READ_MOSTLY(cpumask_t *, cluster_cpus);
@@ -39,7 +38,7 @@ static inline u32 x2apic_cluster(unsigned int cpu)
     return per_cpu(cpu_2_logical_apicid, cpu) >> 16;
 }
 
-static void init_apic_ldr_x2apic_cluster(void)
+static void cf_check init_apic_ldr_x2apic_cluster(void)
 {
     unsigned int cpu, this_cpu = smp_processor_id();
 
@@ -75,16 +74,14 @@ static void init_apic_ldr_x2apic_cluster(void)
     cpumask_set_cpu(this_cpu, per_cpu(cluster_cpus, this_cpu));
 }
 
-static void __init clustered_apic_check_x2apic(void)
-{
-}
-
-static const cpumask_t *vector_allocation_cpumask_x2apic_cluster(int cpu)
+static const cpumask_t *cf_check vector_allocation_cpumask_x2apic_cluster(
+    int cpu)
 {
     return per_cpu(cluster_cpus, cpu);
 }
 
-static unsigned int cpu_mask_to_apicid_x2apic_cluster(const cpumask_t *cpumask)
+static unsigned int cf_check cpu_mask_to_apicid_x2apic_cluster(
+    const cpumask_t *cpumask)
 {
     unsigned int cpu = cpumask_any(cpumask);
     unsigned int dest = per_cpu(cpu_2_logical_apicid, cpu);
@@ -97,12 +94,13 @@ static unsigned int cpu_mask_to_apicid_x2apic_cluster(const cpumask_t *cpumask)
     return dest;
 }
 
-static void send_IPI_self_x2apic(uint8_t vector)
+static void cf_check send_IPI_self_x2apic(uint8_t vector)
 {
     apic_wrmsr(APIC_SELF_IPI, vector);
 }
 
-static void send_IPI_mask_x2apic_phys(const cpumask_t *cpumask, int vector)
+static void cf_check send_IPI_mask_x2apic_phys(
+    const cpumask_t *cpumask, int vector)
 {
     unsigned int cpu;
     unsigned long flags;
@@ -135,7 +133,8 @@ static void send_IPI_mask_x2apic_phys(const cpumask_t *cpumask, int vector)
     local_irq_restore(flags);
 }
 
-static void send_IPI_mask_x2apic_cluster(const cpumask_t *cpumask, int vector)
+static void cf_check send_IPI_mask_x2apic_cluster(
+    const cpumask_t *cpumask, int vector)
 {
     unsigned int cpu = smp_processor_id();
     cpumask_t *ipimask = per_cpu(scratch_mask, cpu);
@@ -175,7 +174,6 @@ static const struct genapic __initconstrel apic_x2apic_phys = {
     .int_delivery_mode = dest_Fixed,
     .int_dest_mode = 0 /* physical delivery */,
     .init_apic_ldr = init_apic_ldr_phys,
-    .clustered_apic_check = clustered_apic_check_x2apic,
     .vector_allocation_cpumask = vector_allocation_cpumask_phys,
     .cpu_mask_to_apicid = cpu_mask_to_apicid_phys,
     .send_IPI_mask = send_IPI_mask_x2apic_phys,
@@ -187,14 +185,13 @@ static const struct genapic __initconstrel apic_x2apic_cluster = {
     .int_delivery_mode = dest_LowestPrio,
     .int_dest_mode = 1 /* logical delivery */,
     .init_apic_ldr = init_apic_ldr_x2apic_cluster,
-    .clustered_apic_check = clustered_apic_check_x2apic,
     .vector_allocation_cpumask = vector_allocation_cpumask_x2apic_cluster,
     .cpu_mask_to_apicid = cpu_mask_to_apicid_x2apic_cluster,
     .send_IPI_mask = send_IPI_mask_x2apic_cluster,
     .send_IPI_self = send_IPI_self_x2apic
 };
 
-static int update_clusterinfo(
+static int cf_check update_clusterinfo(
     struct notifier_block *nfb, unsigned long action, void *hcpu)
 {
     unsigned int cpu = (unsigned long)hcpu;
@@ -231,7 +228,7 @@ static struct notifier_block x2apic_cpu_nfb = {
    .notifier_call = update_clusterinfo
 };
 
-static s8 __initdata x2apic_phys = -1; /* By default we use logical cluster mode. */
+static int8_t __initdata x2apic_phys = -1;
 boolean_param("x2apic_phys", x2apic_phys);
 
 const struct genapic *__init apic_x2apic_probe(void)
@@ -244,7 +241,9 @@ const struct genapic *__init apic_x2apic_probe(void)
          * the usage of the high 16 bits to hold the cluster ID.
          */
         x2apic_phys = !iommu_intremap ||
-                      (acpi_gbl_FADT.flags & ACPI_FADT_APIC_PHYSICAL);
+                      (acpi_gbl_FADT.flags & ACPI_FADT_APIC_PHYSICAL) ||
+                      (IS_ENABLED(CONFIG_X2APIC_PHYSICAL) &&
+                       !(acpi_gbl_FADT.flags & ACPI_FADT_APIC_CLUSTER));
     }
     else if ( !x2apic_phys )
         switch ( iommu_intremap )

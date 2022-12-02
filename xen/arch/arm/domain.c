@@ -63,7 +63,7 @@ static void do_idle(void)
     rcu_idle_exit(cpu);
 }
 
-void idle_loop(void)
+static void noreturn idle_loop(void)
 {
     unsigned int cpu = smp_processor_id();
 
@@ -330,6 +330,9 @@ static void schedule_tail(struct vcpu *prev)
     /* Ensure that the vcpu has an up-to-date time base. */
     update_vcpu_system_time(current);
 }
+
+extern void noreturn return_to_new_vcpu32(void);
+extern void noreturn return_to_new_vcpu64(void);
 
 static void continue_new_vcpu(struct vcpu *prev)
 {
@@ -692,7 +695,8 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config)
 }
 
 int arch_domain_create(struct domain *d,
-                       struct xen_domctl_createdomain *config)
+                       struct xen_domctl_createdomain *config,
+                       unsigned int flags)
 {
     int rc, count = 0;
 
@@ -738,6 +742,8 @@ int arch_domain_create(struct domain *d,
 
     if ( (rc = domain_vgic_register(d, &count)) != 0 )
         goto fail;
+
+    count += domain_vpci_get_num_mmio_handlers(d);
 
     if ( (rc = domain_io_init(d, count + MAX_IO_HANDLER)) != 0 )
         goto fail;
@@ -877,9 +883,8 @@ static int is_guest_pv64_psr(uint64_t psr)
 #endif
 
 /*
- * Initialise VCPU state. The context can be supplied by either the
- * toolstack (XEN_DOMCTL_setvcpucontext) or the guest
- * (VCPUOP_initialise) and therefore must be properly validated.
+ * Initialise vCPU state. The context may be supplied by an external entity, so
+ * we need to validate it.
  */
 int arch_set_info_guest(
     struct vcpu *v, vcpu_guest_context_u c)
@@ -1086,21 +1091,22 @@ void arch_dump_domain_info(struct domain *d)
 }
 
 
-long do_arm_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) arg)
+long do_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
+    struct domain *d = current->domain;
+    struct vcpu *v;
+
+    if ( (v = domain_vcpu(d, vcpuid)) == NULL )
+        return -ENOENT;
+
     switch ( cmd )
     {
         case VCPUOP_register_vcpu_info:
         case VCPUOP_register_runstate_memory_area:
-            return do_vcpu_op(cmd, vcpuid, arg);
+            return common_vcpu_op(cmd, v, arg);
         default:
             return -EINVAL;
     }
-}
-
-long arch_do_vcpu_op(int cmd, struct vcpu *v, XEN_GUEST_HANDLE_PARAM(void) arg)
-{
-    return -ENOSYS;
 }
 
 void arch_dump_vcpu_info(struct vcpu *v)

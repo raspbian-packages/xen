@@ -75,6 +75,7 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
                                         libxl_domain_build_info *b_info)
 {
     int i, rc;
+    libxl_physinfo info;
 
     if (b_info->type != LIBXL_DOMAIN_TYPE_HVM &&
         b_info->type != LIBXL_DOMAIN_TYPE_PV &&
@@ -264,7 +265,18 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
     if (!b_info->event_channels)
         b_info->event_channels = 1023;
 
-    libxl__arch_domain_build_info_setdefault(gc, b_info);
+    rc = libxl_get_physinfo(CTX, &info);
+    if (rc) {
+        LOG(ERROR, "failed to get hypervisor info");
+        return rc;
+    }
+
+    rc = libxl__arch_domain_build_info_setdefault(gc, b_info, &info);
+    if (rc) {
+        LOG(ERROR, "unable to set domain arch build info defaults");
+        return rc;
+    }
+
     libxl_defbool_setdefault(&b_info->dm_restrict, false);
 
     if (b_info->iommu_memkb == LIBXL_MEMKB_DEFAULT)
@@ -457,14 +469,6 @@ int libxl__domain_build_info_setdefault(libxl__gc *gc,
     }
 
     if (b_info->max_grant_version == LIBXL_MAX_GRANT_DEFAULT) {
-        libxl_physinfo info;
-
-        rc = libxl_get_physinfo(CTX, &info);
-        if (rc) {
-            LOG(ERROR, "failed to get hypervisor info");
-            return rc;
-        }
-
         if (info.cap_gnttab_v2)
             b_info->max_grant_version = 2;
         else if (info.cap_gnttab_v1)
@@ -633,6 +637,7 @@ int libxl__domain_make(libxl__gc *gc, libxl_domain_config *d_config,
             .max_maptrack_frames = b_info->max_maptrack_frames,
             .grant_opts = XEN_DOMCTL_GRANT_version(b_info->max_grant_version),
             .vmtrace_size = ROUNDUP(b_info->vmtrace_buf_kb << 10, XC_PAGE_SHIFT),
+            .cpupool_id = info->poolid,
         };
 
         if (info->type != LIBXL_DOMAIN_TYPE_PV) {
@@ -756,13 +761,6 @@ int libxl__domain_make(libxl__gc *gc, libxl_domain_config *d_config,
      * valid.
      */
     assert(libxl_domid_valid_guest(*domid));
-
-    ret = xc_cpupool_movedomain(ctx->xch, info->poolid, *domid);
-    if (ret < 0) {
-        LOGED(ERROR, *domid, "domain move fail");
-        rc = ERROR_FAIL;
-        goto out;
-    }
 
     dom_path = libxl__xs_get_dompath(gc, *domid);
     if (!dom_path) {
@@ -1027,6 +1025,29 @@ static bool ok_to_default_memkb_in_create(libxl__gc *gc)
      */
 }
 
+unsigned long libxl__get_required_paging_memory(unsigned long maxmem_kb,
+                                                unsigned int smp_cpus,
+                                                libxl_domain_type type,
+                                                bool hap)
+{
+    /*
+     * 256 pages (1MB) per vcpu,
+     * plus 1 page per MiB of RAM for the P2M map (for non-PV guests),
+     * plus 1 page per MiB of RAM to shadow the resident processes (for shadow
+     * mode guests).
+     * plus 1 page per MiB of RAM for the architecture specific
+     * EXTRA_DEFAULT_PAGING_MEM_MB. On x86, this value is zero. On Arm, this
+     * value is 128 MiB to cover domain extended regions (enough for domains
+     * that are not running backend).
+     * This is higher than the minimum that Xen would allocate if no value
+     * were given (but the Xen minimum is for safety, not performance).
+     */
+    return 4 * (256 * smp_cpus +
+                ((type != LIBXL_DOMAIN_TYPE_PV) + !hap) *
+                (maxmem_kb / 1024) +
+                EXTRA_DEFAULT_PAGING_MEM_MB);
+}
+
 static unsigned long libxl__get_required_iommu_memory(unsigned long maxmem_kb)
 {
     unsigned long iommu_pages = 0, mem_pages = maxmem_kb / 4;
@@ -1194,10 +1215,16 @@ int libxl__domain_config_setdefault(libxl__gc *gc,
     }
 
     if (d_config->b_info.shadow_memkb == LIBXL_MEMKB_DEFAULT
-        && ok_to_default_memkb_in_create(gc))
+        && ok_to_default_memkb_in_create(gc)) {
+        bool hap = d_config->c_info.type != LIBXL_DOMAIN_TYPE_PV &&
+                   libxl_defbool_val(d_config->c_info.hap);
+
         d_config->b_info.shadow_memkb =
-            libxl_get_required_shadow_memory(d_config->b_info.max_memkb,
-                                             d_config->b_info.max_vcpus);
+            libxl__get_required_paging_memory(d_config->b_info.max_memkb,
+                                              d_config->b_info.max_vcpus,
+                                              d_config->c_info.type,
+                                              hap);
+    }
 
     /* No IOMMU reservation is needed if passthrough mode is not 'sync_pt' */
     if (d_config->b_info.iommu_memkb == LIBXL_MEMKB_DEFAULT

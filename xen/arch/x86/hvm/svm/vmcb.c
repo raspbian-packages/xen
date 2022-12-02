@@ -235,7 +235,7 @@ void svm_destroy_vmcb(struct vcpu *v)
     svm->vmcb = NULL;
 }
 
-static void vmcb_dump(unsigned char ch)
+static void cf_check vmcb_dump(unsigned char ch)
 {
     struct domain *d;
     struct vcpu *v;
@@ -251,6 +251,11 @@ static void vmcb_dump(unsigned char ch)
         printk("\n>>> Domain %d <<<\n", d->domain_id);
         for_each_vcpu ( d, v )
         {
+            if ( !v->is_initialised )
+            {
+                printk("\tVCPU %u: not initialized\n", v->vcpu_id);
+                continue;
+            }
             printk("\tVCPU %d\n", v->vcpu_id);
             svm_vmcb_dump("key_handler", v->arch.hvm.svm.vmcb);
         }

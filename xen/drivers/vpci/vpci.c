@@ -19,6 +19,7 @@
 
 #include <xen/sched.h>
 #include <xen/vpci.h>
+#include <xen/vmap.h>
 
 /* Internal struct to store the emulated PCI registers. */
 struct vpci_register {
@@ -112,25 +113,25 @@ static int vpci_register_cmp(const struct vpci_register *r1,
 }
 
 /* Dummy hooks, writes are ignored, reads return 1's */
-static uint32_t vpci_ignored_read(const struct pci_dev *pdev, unsigned int reg,
-                                  void *data)
+static uint32_t cf_check vpci_ignored_read(
+    const struct pci_dev *pdev, unsigned int reg, void *data)
 {
     return ~(uint32_t)0;
 }
 
-static void vpci_ignored_write(const struct pci_dev *pdev, unsigned int reg,
-                               uint32_t val, void *data)
+static void cf_check vpci_ignored_write(
+    const struct pci_dev *pdev, unsigned int reg, uint32_t val, void *data)
 {
 }
 
-uint32_t vpci_hw_read16(const struct pci_dev *pdev, unsigned int reg,
-                        void *data)
+uint32_t cf_check vpci_hw_read16(
+    const struct pci_dev *pdev, unsigned int reg, void *data)
 {
     return pci_conf_read16(pdev->sbdf, reg);
 }
 
-uint32_t vpci_hw_read32(const struct pci_dev *pdev, unsigned int reg,
-                        void *data)
+uint32_t cf_check vpci_hw_read32(
+    const struct pci_dev *pdev, unsigned int reg, void *data)
 {
     return pci_conf_read32(pdev->sbdf, reg);
 }
@@ -329,7 +330,7 @@ uint32_t vpci_read(pci_sbdf_t sbdf, unsigned int reg, unsigned int size)
     }
 
     /* Find the PCI dev matching the address. */
-    pdev = pci_get_pdev_by_domain(d, sbdf.seg, sbdf.bus, sbdf.devfn);
+    pdev = pci_get_pdev(d, sbdf);
     if ( !pdev || !pdev->vpci )
         return vpci_read_hw(sbdf, reg, size);
 
@@ -376,6 +377,7 @@ uint32_t vpci_read(pci_sbdf_t sbdf, unsigned int reg, unsigned int size)
             break;
         ASSERT(data_offset < size);
     }
+    spin_unlock(&pdev->vpci->lock);
 
     if ( data_offset < size )
     {
@@ -385,7 +387,6 @@ uint32_t vpci_read(pci_sbdf_t sbdf, unsigned int reg, unsigned int size)
 
         data = merge_result(data, tmp_data, size - data_offset, data_offset);
     }
-    spin_unlock(&pdev->vpci->lock);
 
     return data & (0xffffffff >> (32 - 8 * size));
 }
@@ -439,7 +440,7 @@ void vpci_write(pci_sbdf_t sbdf, unsigned int reg, unsigned int size,
      * Find the PCI dev matching the address.
      * Passthrough everything that's not trapped.
      */
-    pdev = pci_get_pdev_by_domain(d, sbdf.seg, sbdf.bus, sbdf.devfn);
+    pdev = pci_get_pdev(d, sbdf);
     if ( !pdev || !pdev->vpci )
     {
         vpci_write_hw(sbdf, reg, size, data);
@@ -481,13 +482,12 @@ void vpci_write(pci_sbdf_t sbdf, unsigned int reg, unsigned int size,
             break;
         ASSERT(data_offset < size);
     }
+    spin_unlock(&pdev->vpci->lock);
 
     if ( data_offset < size )
         /* Tailing gap, write the remaining. */
         vpci_write_hw(sbdf, reg + data_offset, size - data_offset,
                       data >> (data_offset * 8));
-
-    spin_unlock(&pdev->vpci->lock);
 }
 
 /* Helper function to check an access size and alignment on vpci space. */

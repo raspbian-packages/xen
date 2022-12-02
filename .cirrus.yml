@@ -16,11 +16,17 @@ freebsd_template: &FREEBSD_TEMPLATE
 task:
   name: 'FreeBSD 12'
   freebsd_instance:
-    image_family: freebsd-12-2
+    image_family: freebsd-12-3
   << : *FREEBSD_TEMPLATE
 
 task:
   name: 'FreeBSD 13'
   freebsd_instance:
     image_family: freebsd-13-0
+  << : *FREEBSD_TEMPLATE
+
+task:
+  name: 'FreeBSD 14'
+  freebsd_instance:
+    image_family: freebsd-14-0-snap
   << : *FREEBSD_TEMPLATE

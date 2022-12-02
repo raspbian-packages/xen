@@ -33,7 +33,6 @@
 #include <xen/xenoprof.h>
 #include <xen/irq.h>
 #include <xen/argo.h>
-#include <asm/debugger.h>
 #include <asm/p2m.h>
 #include <asm/processor.h>
 #include <public/sched.h>
@@ -354,7 +353,7 @@ static int late_hwdom_init(struct domain *d)
 static unsigned int __read_mostly extra_hwdom_irqs;
 static unsigned int __read_mostly extra_domU_irqs = 32;
 
-static int __init parse_extra_guest_irqs(const char *s)
+static int __init cf_check parse_extra_guest_irqs(const char *s)
 {
     if ( isdigit(*s) )
         extra_domU_irqs = simple_strtoul(s, &s, 0);
@@ -552,7 +551,7 @@ static int sanitise_domain_config(struct xen_domctl_createdomain *config)
 
 struct domain *domain_create(domid_t domid,
                              struct xen_domctl_createdomain *config,
-                             bool is_priv)
+                             unsigned int flags)
 {
     struct domain *d, **pd, *old_hwdom = NULL;
     enum { INIT_watchdog = 1u<<1,
@@ -568,6 +567,9 @@ struct domain *domain_create(domid_t domid,
     /* Sort out our idea of is_system_domain(). */
     d->domain_id = domid;
 
+    /* Holding CDF_* internal flags. */
+    d->cdf = flags;
+
     /* Debug sanity. */
     ASSERT(is_system_domain(d) ? config == NULL : config != NULL);
 
@@ -578,7 +580,7 @@ struct domain *domain_create(domid_t domid,
     }
 
     /* Sort out our idea of is_control_domain(). */
-    d->is_privileged = is_priv;
+    d->is_privileged = flags & CDF_privileged;
 
     /* Sort out our idea of is_hardware_domain(). */
     if ( domid == 0 || domid == hardware_domid )
@@ -602,6 +604,10 @@ struct domain *domain_create(domid_t domid,
     INIT_PAGE_LIST_HEAD(&d->page_list);
     INIT_PAGE_LIST_HEAD(&d->extra_page_list);
     INIT_PAGE_LIST_HEAD(&d->xenpage_list);
+#ifdef CONFIG_STATIC_MEMORY
+    INIT_PAGE_LIST_HEAD(&d->resv_page_list);
+#endif
+
 
     spin_lock_init(&d->node_affinity_lock);
     d->node_affinity = NODE_MASK_ALL;
@@ -659,7 +665,7 @@ struct domain *domain_create(domid_t domid,
         radix_tree_init(&d->pirq_tree);
     }
 
-    if ( (err = arch_domain_create(d, config)) != 0 )
+    if ( (err = arch_domain_create(d, config, flags)) != 0 )
         goto fail;
     init_status |= INIT_arch;
 
@@ -698,7 +704,7 @@ struct domain *domain_create(domid_t domid,
         if ( !d->pbuf )
             goto fail;
 
-        if ( (err = sched_init_domain(d, 0)) != 0 )
+        if ( (err = sched_init_domain(d, config->cpupool_id)) != 0 )
             goto fail;
 
         if ( (err = late_hwdom_init(d)) != 0 )
@@ -772,7 +778,7 @@ void __init setup_system_domains(void)
      * Hidden PCI devices will also be associated with this domain
      * (but be [partly] controlled by Dom0 nevertheless).
      */
-    dom_xen = domain_create(DOMID_XEN, NULL, false);
+    dom_xen = domain_create(DOMID_XEN, NULL, 0);
     if ( IS_ERR(dom_xen) )
         panic("Failed to create d[XEN]: %ld\n", PTR_ERR(dom_xen));
 
@@ -781,8 +787,11 @@ void __init setup_system_domains(void)
      * This domain owns I/O pages that are within the range of the page_info
      * array. Mappings occur at the priv of the caller.
      * Quarantined PCI devices will be associated with this domain.
+     *
+     * DOMID_IO is also the default owner of memory pre-shared among multiple
+     * domains at boot time.
      */
-    dom_io = domain_create(DOMID_IO, NULL, false);
+    dom_io = domain_create(DOMID_IO, NULL, 0);
     if ( IS_ERR(dom_io) )
         panic("Failed to create d[IO]: %ld\n", PTR_ERR(dom_io));
 
@@ -791,7 +800,7 @@ void __init setup_system_domains(void)
      * Initialise our COW domain.
      * This domain owns sharable pages.
      */
-    dom_cow = domain_create(DOMID_COW, NULL, false);
+    dom_cow = domain_create(DOMID_COW, NULL, 0);
     if ( IS_ERR(dom_cow) )
         panic("Failed to create d[COW]: %ld\n", PTR_ERR(dom_cow));
 #endif
@@ -917,21 +926,13 @@ int domain_kill(struct domain *d)
     if ( d == current->domain )
         return -EINVAL;
 
-    /* Protected by d->domain_lock. */
+    /* Protected by domctl_lock. */
     switch ( d->is_dying )
     {
     case DOMDYING_alive:
-        domain_unlock(d);
         domain_pause(d);
-        domain_lock(d);
-        /*
-         * With the domain lock dropped, d->is_dying may have changed. Call
-         * ourselves recursively if so, which is safe as then we won't come
-         * back here.
-         */
-        if ( d->is_dying != DOMDYING_alive )
-            return domain_kill(d);
         d->is_dying = DOMDYING_dying;
+        spin_barrier(&d->domain_lock);
         argo_destroy(d);
         vnuma_destroy(d->vnuma);
         domain_set_outstanding_pages(d, 0);
@@ -1083,7 +1084,7 @@ void vcpu_end_shutdown_deferral(struct vcpu *v)
 }
 
 /* Complete domain destroy after RCU readers are not holding old references. */
-static void complete_domain_destroy(struct rcu_head *head)
+static void cf_check complete_domain_destroy(struct rcu_head *head)
 {
     struct domain *d = container_of(head, struct domain, rcu);
     struct vcpu *v;
@@ -1234,15 +1235,18 @@ int vcpu_unpause_by_systemcontroller(struct vcpu *v)
     return 0;
 }
 
-static void do_domain_pause(struct domain *d,
-                            void (*sleep_fn)(struct vcpu *v))
+static void _domain_pause(struct domain *d, bool sync)
 {
     struct vcpu *v;
 
     atomic_inc(&d->pause_count);
 
-    for_each_vcpu( d, v )
-        sleep_fn(v);
+    if ( sync )
+        for_each_vcpu ( d, v )
+            vcpu_sleep_sync(v);
+    else
+        for_each_vcpu ( d, v )
+            vcpu_sleep_nosync(v);
 
     arch_domain_pause(d);
 }
@@ -1250,12 +1254,12 @@ static void do_domain_pause(struct domain *d,
 void domain_pause(struct domain *d)
 {
     ASSERT(d != current->domain);
-    do_domain_pause(d, vcpu_sleep_sync);
+    _domain_pause(d, true /* sync */);
 }
 
 void domain_pause_nosync(struct domain *d)
 {
-    do_domain_pause(d, vcpu_sleep_nosync);
+    _domain_pause(d, false /* nosync */);
 }
 
 void domain_unpause(struct domain *d)
@@ -1269,8 +1273,7 @@ void domain_unpause(struct domain *d)
             vcpu_wake(v);
 }
 
-int __domain_pause_by_systemcontroller(struct domain *d,
-                                       void (*pause_fn)(struct domain *d))
+static int _domain_pause_by_systemcontroller(struct domain *d, bool sync)
 {
     int old, new, prev = d->controller_pause_count;
 
@@ -1289,9 +1292,19 @@ int __domain_pause_by_systemcontroller(struct domain *d,
         prev = cmpxchg(&d->controller_pause_count, old, new);
     } while ( prev != old );
 
-    pause_fn(d);
+    _domain_pause(d, sync);
 
     return 0;
+}
+
+int domain_pause_by_systemcontroller(struct domain *d)
+{
+    return _domain_pause_by_systemcontroller(d, true /* sync */);
+}
+
+int domain_pause_by_systemcontroller_nosync(struct domain *d)
+{
+    return _domain_pause_by_systemcontroller(d, false /* nosync */);
 }
 
 int domain_unpause_by_systemcontroller(struct domain *d)
@@ -1443,7 +1456,7 @@ int vcpu_reset(struct vcpu *v)
  * of memory, and it sets a pending event to make sure that a pending
  * event doesn't get missed.
  */
-int map_vcpu_info(struct vcpu *v, unsigned long gfn, unsigned offset)
+int map_vcpu_info(struct vcpu *v, unsigned long gfn, unsigned int offset)
 {
     struct domain *d = v->domain;
     void *mapping;
@@ -1566,14 +1579,11 @@ int default_initialise_vcpu(struct vcpu *v, XEN_GUEST_HANDLE_PARAM(void) arg)
     return rc;
 }
 
-long do_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) arg)
+long common_vcpu_op(int cmd, struct vcpu *v, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
-    struct domain *d = current->domain;
-    struct vcpu *v;
     long rc = 0;
-
-    if ( (v = domain_vcpu(d, vcpuid)) == NULL )
-        return -ENOENT;
+    struct domain *d = v->domain;
+    unsigned int vcpuid = v->vcpu_id;
 
     switch ( cmd )
     {
@@ -1745,7 +1755,7 @@ long do_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) arg)
     }
 
     default:
-        rc = arch_do_vcpu_op(cmd, v, arg);
+        rc = -ENOSYS;
         break;
     }
 
@@ -1793,12 +1803,12 @@ struct pirq *pirq_get_info(struct domain *d, int pirq)
     return info;
 }
 
-static void _free_pirq_struct(struct rcu_head *head)
+static void cf_check _free_pirq_struct(struct rcu_head *head)
 {
     xfree(container_of(head, struct pirq, rcu_head));
 }
 
-void free_pirq_struct(void *ptr)
+void cf_check free_pirq_struct(void *ptr)
 {
     struct pirq *pirq = ptr;
 
@@ -1815,7 +1825,7 @@ struct migrate_info {
 
 static DEFINE_PER_CPU(struct migrate_info *, continue_info);
 
-static void continue_hypercall_tasklet_handler(void *data)
+static void cf_check continue_hypercall_tasklet_handler(void *data)
 {
     struct migrate_info *info = data;
     struct vcpu *v = info->vcpu;

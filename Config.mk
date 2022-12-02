@@ -167,15 +167,6 @@ define buildmakevars2file-closure
 	$(call move-if-changed,$(1).tmp,$(1))
 endef
 
-buildmakevars2header = $(eval $(call buildmakevars2header-closure,$(1)))
-define buildmakevars2header-closure
-    $(1): .phony
-	rm -f $(1).tmp; \
-	$(foreach var, $(BUILD_MAKE_VARS), \
-	          echo "#define $(var) \"$($(var))\"" >>$(1).tmp;) \
-	$(call move-if-changed,$(1).tmp,$(1))
-endef
-
 CFLAGS += -fno-strict-aliasing
 
 CFLAGS += -std=gnu99
@@ -238,15 +229,15 @@ SEABIOS_UPSTREAM_URL ?= git://xenbits.xen.org/seabios.git
 MINIOS_UPSTREAM_URL ?= git://xenbits.xen.org/mini-os.git
 endif
 OVMF_UPSTREAM_REVISION ?= 7b4a99be8a39c12d3a7fc4b8db9f0eab4ac688d5
-QEMU_UPSTREAM_REVISION ?= qemu-xen-4.16.2
-MINIOS_UPSTREAM_REVISION ?= xen-RELEASE-4.16.2
+QEMU_UPSTREAM_REVISION ?= qemu-xen-4.17.0-rc4
+MINIOS_UPSTREAM_REVISION ?= xen-4.17.0-rc4
 
-SEABIOS_UPSTREAM_REVISION ?= rel-1.14.0
+SEABIOS_UPSTREAM_REVISION ?= rel-1.16.0
 
 ETHERBOOT_NICS ?= rtl8139 8086100e
 
 
-QEMU_TRADITIONAL_REVISION ?= xen-4.16.2
+QEMU_TRADITIONAL_REVISION ?= xen-4.17.0-rc4
 
 # Specify which qemu-dm to use. This may be `ioemu' to use the old
 # Mercurial in-tree version, or a local directory, or a git URL.

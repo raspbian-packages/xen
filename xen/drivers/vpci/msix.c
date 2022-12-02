@@ -27,8 +27,8 @@
     ((addr) >= vmsix_table_addr(vpci, nr) &&                              \
      (addr) < vmsix_table_addr(vpci, nr) + vmsix_table_size(vpci, nr))
 
-static uint32_t control_read(const struct pci_dev *pdev, unsigned int reg,
-                             void *data)
+static uint32_t cf_check control_read(
+    const struct pci_dev *pdev, unsigned int reg, void *data)
 {
     const struct vpci_msix *msix = data;
 
@@ -65,8 +65,8 @@ static void update_entry(struct vpci_msix_entry *entry,
     entry->updated = false;
 }
 
-static void control_write(const struct pci_dev *pdev, unsigned int reg,
-                          uint32_t val, void *data)
+static void cf_check control_write(
+    const struct pci_dev *pdev, unsigned int reg, uint32_t val, void *data)
 {
     struct vpci_msix *msix = data;
     bool new_masked = val & PCI_MSIX_FLAGS_MASKALL;
@@ -156,7 +156,7 @@ static struct vpci_msix *msix_find(const struct domain *d, unsigned long addr)
     return NULL;
 }
 
-static int msix_accept(struct vcpu *v, unsigned long addr)
+static int cf_check msix_accept(struct vcpu *v, unsigned long addr)
 {
     return !!msix_find(v->domain, addr);
 }
@@ -214,8 +214,8 @@ static void __iomem *get_pba(struct vpci *vpci)
     return read_atomic(&msix->pba);
 }
 
-static int msix_read(struct vcpu *v, unsigned long addr, unsigned int len,
-                     unsigned long *data)
+static int cf_check msix_read(
+    struct vcpu *v, unsigned long addr, unsigned int len, unsigned long *data)
 {
     const struct domain *d = v->domain;
     struct vpci_msix *msix = msix_find(d, addr);
@@ -303,8 +303,8 @@ static int msix_read(struct vcpu *v, unsigned long addr, unsigned int len,
     return X86EMUL_OKAY;
 }
 
-static int msix_write(struct vcpu *v, unsigned long addr, unsigned int len,
-                      unsigned long data)
+static int cf_check msix_write(
+    struct vcpu *v, unsigned long addr, unsigned int len, unsigned long data)
 {
     const struct domain *d = v->domain;
     struct vpci_msix *msix = msix_find(d, addr);
@@ -319,36 +319,36 @@ static int msix_write(struct vcpu *v, unsigned long addr, unsigned int len,
 
     if ( VMSIX_ADDR_IN_RANGE(addr, msix->pdev->vpci, VPCI_MSIX_PBA) )
     {
-        /* Ignore writes to PBA for DomUs, it's behavior is undefined. */
-        if ( is_hardware_domain(d) )
+        struct vpci *vpci = msix->pdev->vpci;
+        unsigned int idx = addr - vmsix_table_addr(vpci, VPCI_MSIX_PBA);
+        const void __iomem *pba = get_pba(vpci);
+
+        if ( !is_hardware_domain(d) )
+            /* Ignore writes to PBA for DomUs, it's behavior is undefined. */
+            return X86EMUL_OKAY;
+
+        if ( !pba )
         {
-            struct vpci *vpci = msix->pdev->vpci;
-            unsigned int idx = addr - vmsix_table_addr(vpci, VPCI_MSIX_PBA);
-            const void __iomem *pba = get_pba(vpci);
+            /* Unable to map the PBA, ignore write. */
+            gprintk(XENLOG_WARNING,
+                    "%pp: unable to map MSI-X PBA, write ignored\n",
+                    &msix->pdev->sbdf);
+            return X86EMUL_OKAY;
+        }
 
-            if ( !pba )
-            {
-                /* Unable to map the PBA, ignore write. */
-                gprintk(XENLOG_WARNING,
-                        "%pp: unable to map MSI-X PBA, write ignored\n",
-                        &msix->pdev->sbdf);
-                return X86EMUL_OKAY;
-            }
+        switch ( len )
+        {
+        case 4:
+            writel(data, pba + idx);
+            break;
 
-            switch ( len )
-            {
-            case 4:
-                writel(data, pba + idx);
-                break;
+        case 8:
+            writeq(data, pba + idx);
+            break;
 
-            case 8:
-                writeq(data, pba + idx);
-                break;
-
-            default:
-                ASSERT_UNREACHABLE();
-                break;
-            }
+        default:
+            ASSERT_UNREACHABLE();
+            break;
         }
 
         return X86EMUL_OKAY;
@@ -466,7 +466,7 @@ int vpci_make_msix_hole(const struct pci_dev *pdev)
             case p2m_mmio_direct:
                 if ( mfn_x(mfn) == start )
                 {
-                    clear_identity_p2m_entry(d, start);
+                    p2m_remove_identity_entry(d, start);
                     break;
                 }
                 /* fallthrough. */
@@ -485,7 +485,7 @@ int vpci_make_msix_hole(const struct pci_dev *pdev)
     return 0;
 }
 
-static int init_msix(struct pci_dev *pdev)
+static int cf_check init_msix(struct pci_dev *pdev)
 {
     struct domain *d = pdev->domain;
     uint8_t slot = PCI_SLOT(pdev->devfn), func = PCI_FUNC(pdev->devfn);

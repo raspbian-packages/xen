@@ -71,19 +71,17 @@ static void hvmtrace_io_assist(const ioreq_t *p)
     trace_var(event, 0/*!cycles*/, size, buffer);
 }
 
-static int null_read(const struct hvm_io_handler *io_handler,
-                     uint64_t addr,
-                     uint32_t size,
-                     uint64_t *data)
+static int cf_check null_read(
+    const struct hvm_io_handler *io_handler, uint64_t addr, uint32_t size,
+    uint64_t *data)
 {
     *data = ~0ul;
     return X86EMUL_OKAY;
 }
 
-static int null_write(const struct hvm_io_handler *handler,
-                      uint64_t addr,
-                      uint32_t size,
-                      uint64_t data)
+static int cf_check null_write(
+    const struct hvm_io_handler *handler, uint64_t addr, uint32_t size,
+    uint64_t data)
 {
     return X86EMUL_OKAY;
 }
@@ -114,10 +112,9 @@ static const struct hvm_io_handler null_handler = {
     .ops = &null_ops
 };
 
-static int ioreq_server_read(const struct hvm_io_handler *io_handler,
-                    uint64_t addr,
-                    uint32_t size,
-                    uint64_t *data)
+static int cf_check ioreq_server_read(
+    const struct hvm_io_handler *io_handler, uint64_t addr, uint32_t size,
+    uint64_t *data)
 {
     if ( hvm_copy_from_guest_phys(data, addr, size) != HVMTRANS_okay )
         return X86EMUL_UNHANDLEABLE;
@@ -1276,7 +1273,7 @@ static int __hvmemul_read(
     return linear_read(addr, bytes, p_data, pfec, hvmemul_ctxt);
 }
 
-static int hvmemul_read(
+static int cf_check hvmemul_read(
     enum x86_segment seg,
     unsigned long offset,
     void *p_data,
@@ -1294,8 +1291,7 @@ static int hvmemul_read(
         container_of(ctxt, struct hvm_emulate_ctxt, ctxt));
 }
 
-int hvmemul_insn_fetch(
-    enum x86_segment seg,
+int cf_check hvmemul_insn_fetch(
     unsigned long offset,
     void *p_data,
     unsigned int bytes,
@@ -1313,7 +1309,7 @@ int hvmemul_insn_fetch(
     if ( !bytes ||
          unlikely((insn_off + bytes) > hvmemul_ctxt->insn_buf_bytes) )
     {
-        int rc = __hvmemul_read(seg, offset, p_data, bytes,
+        int rc = __hvmemul_read(x86_seg_cs, offset, p_data, bytes,
                                 hvm_access_insn_fetch, hvmemul_ctxt);
 
         if ( rc == X86EMUL_OKAY && bytes )
@@ -1341,7 +1337,7 @@ int hvmemul_insn_fetch(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_write(
+static int cf_check hvmemul_write(
     enum x86_segment seg,
     unsigned long offset,
     void *p_data,
@@ -1389,7 +1385,7 @@ static int hvmemul_write(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_rmw(
+static int cf_check hvmemul_rmw(
     enum x86_segment seg,
     unsigned long offset,
     unsigned int bytes,
@@ -1442,7 +1438,7 @@ static int hvmemul_rmw(
     return rc;
 }
 
-static int hvmemul_blk(
+static int cf_check hvmemul_blk(
     enum x86_segment seg,
     unsigned long offset,
     void *p_data,
@@ -1483,7 +1479,7 @@ static int hvmemul_blk(
     return rc;
 }
 
-static int hvmemul_write_discard(
+static int cf_check hvmemul_write_discard(
     enum x86_segment seg,
     unsigned long offset,
     void *p_data,
@@ -1494,7 +1490,7 @@ static int hvmemul_write_discard(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_rep_ins_discard(
+static int cf_check hvmemul_rep_ins_discard(
     uint16_t src_port,
     enum x86_segment dst_seg,
     unsigned long dst_offset,
@@ -1505,7 +1501,7 @@ static int hvmemul_rep_ins_discard(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_rep_movs_discard(
+static int cf_check hvmemul_rep_movs_discard(
    enum x86_segment src_seg,
    unsigned long src_offset,
    enum x86_segment dst_seg,
@@ -1517,7 +1513,7 @@ static int hvmemul_rep_movs_discard(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_rep_stos_discard(
+static int cf_check hvmemul_rep_stos_discard(
     void *p_data,
     enum x86_segment seg,
     unsigned long offset,
@@ -1528,7 +1524,7 @@ static int hvmemul_rep_stos_discard(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_rep_outs_discard(
+static int cf_check hvmemul_rep_outs_discard(
     enum x86_segment src_seg,
     unsigned long src_offset,
     uint16_t dst_port,
@@ -1539,7 +1535,7 @@ static int hvmemul_rep_outs_discard(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_cmpxchg_discard(
+static int cf_check hvmemul_cmpxchg_discard(
     enum x86_segment seg,
     unsigned long offset,
     void *p_old,
@@ -1551,7 +1547,7 @@ static int hvmemul_cmpxchg_discard(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_read_io_discard(
+static int cf_check hvmemul_read_io_discard(
     unsigned int port,
     unsigned int bytes,
     unsigned long *val,
@@ -1560,7 +1556,7 @@ static int hvmemul_read_io_discard(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_write_io_discard(
+static int cf_check hvmemul_write_io_discard(
     unsigned int port,
     unsigned int bytes,
     unsigned long val,
@@ -1569,7 +1565,7 @@ static int hvmemul_write_io_discard(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_write_msr_discard(
+static int cf_check hvmemul_write_msr_discard(
     unsigned int reg,
     uint64_t val,
     struct x86_emulate_ctxt *ctxt)
@@ -1577,7 +1573,7 @@ static int hvmemul_write_msr_discard(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_cache_op_discard(
+static int cf_check hvmemul_cache_op_discard(
     enum x86emul_cache_op op,
     enum x86_segment seg,
     unsigned long offset,
@@ -1586,7 +1582,7 @@ static int hvmemul_cache_op_discard(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_cmpxchg(
+static int cf_check hvmemul_cmpxchg(
     enum x86_segment seg,
     unsigned long offset,
     void *p_old,
@@ -1680,7 +1676,7 @@ static int hvmemul_cmpxchg(
     return rc;
 }
 
-static int hvmemul_validate(
+static int cf_check hvmemul_validate(
     const struct x86_emulate_state *state,
     struct x86_emulate_ctxt *ctxt)
 {
@@ -1693,7 +1689,7 @@ static int hvmemul_validate(
            ? X86EMUL_OKAY : X86EMUL_UNHANDLEABLE;
 }
 
-static int hvmemul_rep_ins(
+static int cf_check hvmemul_rep_ins(
     uint16_t src_port,
     enum x86_segment dst_seg,
     unsigned long dst_offset,
@@ -1771,7 +1767,7 @@ static int hvmemul_rep_outs_set_context(
     return rc;
 }
 
-static int hvmemul_rep_outs(
+static int cf_check hvmemul_rep_outs(
     enum x86_segment src_seg,
     unsigned long src_offset,
     uint16_t dst_port,
@@ -1812,7 +1808,7 @@ static int hvmemul_rep_outs(
                                !!(ctxt->regs->eflags & X86_EFLAGS_DF), gpa);
 }
 
-static int hvmemul_rep_movs(
+static int cf_check hvmemul_rep_movs(
    enum x86_segment src_seg,
    unsigned long src_offset,
    enum x86_segment dst_seg,
@@ -1982,7 +1978,7 @@ static int hvmemul_rep_movs(
     return X86EMUL_UNHANDLEABLE;
 }
 
-static int hvmemul_rep_stos(
+static int cf_check hvmemul_rep_stos(
     void *p_data,
     enum x86_segment seg,
     unsigned long offset,
@@ -2110,7 +2106,7 @@ static int hvmemul_rep_stos(
     }
 }
 
-static int hvmemul_read_segment(
+static int cf_check hvmemul_read_segment(
     enum x86_segment seg,
     struct segment_register *reg,
     struct x86_emulate_ctxt *ctxt)
@@ -2127,7 +2123,7 @@ static int hvmemul_read_segment(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_write_segment(
+static int cf_check hvmemul_write_segment(
     enum x86_segment seg,
     const struct segment_register *reg,
     struct x86_emulate_ctxt *ctxt)
@@ -2146,7 +2142,7 @@ static int hvmemul_write_segment(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_read_io(
+static int cf_check hvmemul_read_io(
     unsigned int port,
     unsigned int bytes,
     unsigned long *val,
@@ -2163,7 +2159,7 @@ static int hvmemul_read_io(
     return hvmemul_do_pio_buffer(port, bytes, IOREQ_READ, val);
 }
 
-static int hvmemul_write_io(
+static int cf_check hvmemul_write_io(
     unsigned int port,
     unsigned int bytes,
     unsigned long val,
@@ -2172,7 +2168,7 @@ static int hvmemul_write_io(
     return hvmemul_do_pio_buffer(port, bytes, IOREQ_WRITE, &val);
 }
 
-static int hvmemul_read_cr(
+static int cf_check hvmemul_read_cr(
     unsigned int reg,
     unsigned long *val,
     struct x86_emulate_ctxt *ctxt)
@@ -2193,7 +2189,7 @@ static int hvmemul_read_cr(
     return X86EMUL_UNHANDLEABLE;
 }
 
-static int hvmemul_write_cr(
+static int cf_check hvmemul_write_cr(
     unsigned int reg,
     unsigned long val,
     struct x86_emulate_ctxt *ctxt)
@@ -2237,7 +2233,7 @@ static int hvmemul_write_cr(
     return rc;
 }
 
-static int hvmemul_read_xcr(
+static int cf_check hvmemul_read_xcr(
     unsigned int reg,
     uint64_t *val,
     struct x86_emulate_ctxt *ctxt)
@@ -2250,7 +2246,7 @@ static int hvmemul_read_xcr(
     return rc;
 }
 
-static int hvmemul_write_xcr(
+static int cf_check hvmemul_write_xcr(
     unsigned int reg,
     uint64_t val,
     struct x86_emulate_ctxt *ctxt)
@@ -2260,7 +2256,7 @@ static int hvmemul_write_xcr(
     return x86emul_write_xcr(reg, val, ctxt);
 }
 
-static int hvmemul_read_msr(
+static int cf_check hvmemul_read_msr(
     unsigned int reg,
     uint64_t *val,
     struct x86_emulate_ctxt *ctxt)
@@ -2273,7 +2269,7 @@ static int hvmemul_read_msr(
     return rc;
 }
 
-static int hvmemul_write_msr(
+static int cf_check hvmemul_write_msr(
     unsigned int reg,
     uint64_t val,
     struct x86_emulate_ctxt *ctxt)
@@ -2286,7 +2282,7 @@ static int hvmemul_write_msr(
     return rc;
 }
 
-static int hvmemul_cache_op(
+static int cf_check hvmemul_cache_op(
     enum x86emul_cache_op op,
     enum x86_segment seg,
     unsigned long offset,
@@ -2358,7 +2354,7 @@ static int hvmemul_cache_op(
     return X86EMUL_OKAY;
 }
 
-static int hvmemul_get_fpu(
+static int cf_check hvmemul_get_fpu(
     enum x86_emulate_fpu_type type,
     struct x86_emulate_ctxt *ctxt)
 {
@@ -2400,7 +2396,7 @@ static int hvmemul_get_fpu(
     return X86EMUL_OKAY;
 }
 
-static void hvmemul_put_fpu(
+static void cf_check hvmemul_put_fpu(
     struct x86_emulate_ctxt *ctxt,
     enum x86_emulate_fpu_type backout,
     const struct x86_emul_fpu_aux *aux)
@@ -2487,7 +2483,7 @@ static void hvmemul_put_fpu(
     }
 }
 
-static int hvmemul_tlb_op(
+static int cf_check hvmemul_tlb_op(
     enum x86emul_tlb_op op,
     unsigned long addr,
     unsigned long aux,
@@ -2544,14 +2540,14 @@ static int hvmemul_tlb_op(
     return rc;
 }
 
-static int hvmemul_vmfunc(
+static int cf_check hvmemul_vmfunc(
     struct x86_emulate_ctxt *ctxt)
 {
     int rc;
 
     if ( !hvm_funcs.altp2m_vcpu_emulate_vmfunc )
         return X86EMUL_UNHANDLEABLE;
-    rc = hvm_funcs.altp2m_vcpu_emulate_vmfunc(ctxt->regs);
+    rc = alternative_call(hvm_funcs.altp2m_vcpu_emulate_vmfunc, ctxt->regs);
     if ( rc == X86EMUL_EXCEPTION )
         x86_emul_hw_exception(TRAP_invalid_op, X86_EVENT_NO_EC, ctxt);
 

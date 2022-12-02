@@ -109,8 +109,12 @@ void getdomaininfo(struct domain *d, struct xen_domctl_getdomaininfo *info)
     info->tot_pages         = domain_tot_pages(d);
     info->max_pages         = d->max_pages;
     info->outstanding_pages = d->outstanding_pages;
+#ifdef CONFIG_MEM_SHARING
     info->shr_pages         = atomic_read(&d->shr_pages);
+#endif
+#ifdef CONFIG_MEM_PAGING
     info->paged_pages       = atomic_read(&d->paged_pages);
+#endif
     info->shared_info_frame =
         gfn_x(mfn_to_gfn(d, _mfn(virt_to_mfn(d->shared_info))));
     BUG_ON(SHARED_M2P(info->shared_info_frame));
@@ -496,14 +500,11 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         break;
 
     case XEN_DOMCTL_destroydomain:
-        domctl_lock_release();
-        domain_lock(d);
         ret = domain_kill(d);
-        domain_unlock(d);
         if ( ret == -ERESTART )
             ret = hypercall_create_continuation(
                 __HYPERVISOR_domctl, "h", u_domctl);
-        goto domctl_out_unlock_domonly;
+        break;
 
     case XEN_DOMCTL_setnodeaffinity:
     {
@@ -715,8 +716,6 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
             ret = iomem_permit_access(d, mfn, mfn + nr_mfns - 1);
         else
             ret = iomem_deny_access(d, mfn, mfn + nr_mfns - 1);
-        if ( !ret )
-            memory_type_changed(d);
         break;
     }
 
@@ -777,8 +776,6 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
                        "memory_map: error %ld removing dom%d access to [%lx,%lx]\n",
                        ret, d->domain_id, mfn, mfn_end);
         }
-        /* Do this unconditionally to cover errors on above failure paths. */
-        memory_type_changed(d);
         break;
     }
 
@@ -875,6 +872,20 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
     case XEN_DOMCTL_deassign_device:
     case XEN_DOMCTL_get_device_group:
         ret = iommu_do_domctl(op, d, u_domctl);
+        break;
+
+    case XEN_DOMCTL_get_paging_mempool_size:
+        ret = arch_get_paging_mempool_size(d, &op->u.paging_mempool.size);
+        if ( !ret )
+            copyback = 1;
+        break;
+
+    case XEN_DOMCTL_set_paging_mempool_size:
+        ret = arch_set_paging_mempool_size(d, op->u.paging_mempool.size);
+
+        if ( ret == -ERESTART )
+            ret = hypercall_create_continuation(
+                __HYPERVISOR_domctl, "h", u_domctl);
         break;
 
     default:

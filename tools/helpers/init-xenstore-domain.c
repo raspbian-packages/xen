@@ -16,7 +16,6 @@
 #include <xen/io/xenbus.h>
 
 #include "init-dom-json.h"
-#include "_paths.h"
 
 #define LAPIC_BASE_ADDRESS  0xfee00000UL
 #define MB(x)               ((uint64_t)x << 20)
@@ -30,7 +29,7 @@ static char *param;
 static char *name = "Xenstore";
 static int memory;
 static int maxmem;
-static xen_pfn_t console_mfn;
+static xen_pfn_t console_gfn;
 static xc_evtchn_port_or_error_t console_evtchn;
 
 static struct option options[] = {
@@ -287,7 +286,9 @@ static int build(xc_interface *xch)
     }
 
     rv = 0;
-    console_mfn = xc_dom_p2m(dom, dom->console_pfn);
+    console_gfn = (dom->container_type == XC_DOM_PV_CONTAINER)
+                  ? xc_dom_p2m(dom, dom->console_pfn)
+                  : dom->console_pfn;
 
 err:
     if ( dom )
@@ -532,7 +533,7 @@ int main(int argc, char** argv)
     do_xs_write_dir_node(xsh, fe_path, "tty", "");
     snprintf(buf, 16, "%d", console_evtchn);
     do_xs_write_dir_node(xsh, fe_path, "port", buf);
-    snprintf(buf, 16, "%ld", console_mfn);
+    snprintf(buf, 16, "%ld", console_gfn);
     do_xs_write_dir_node(xsh, fe_path, "ring-ref", buf);
     xs_close(xsh);
 

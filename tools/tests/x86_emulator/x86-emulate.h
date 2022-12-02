@@ -54,6 +54,8 @@
 #define likely(x)   __builtin_expect(!!(x), true)
 #define unlikely(x) __builtin_expect(!!(x), false)
 
+#define cf_check /* No Control Flow Integriy checking */
+
 #define container_of(ptr, type, member) ({             \
     typeof(((type *)0)->member) *mptr__ = (ptr);       \
     (type *)((char *)mptr__ - offsetof(type, member)); \
@@ -105,8 +107,7 @@ WRAP(puts);
 void evex_disp8_test(void *instr, struct x86_emulate_ctxt *ctxt,
                      const struct x86_emulate_ops *ops);
 void predicates_test(void *instr, struct x86_emulate_ctxt *ctxt,
-                     int (*fetch)(enum x86_segment seg,
-                                  unsigned long offset,
+                     int (*fetch)(unsigned long offset,
                                   void *p_data,
                                   unsigned int bytes,
                                   struct x86_emulate_ctxt *ctxt));

@@ -22,6 +22,7 @@
 #include <xen/param.h>
 #include <xen/warning.h>
 
+#include <asm/amd.h>
 #include <asm/hvm/svm/svm.h>
 #include <asm/microcode.h>
 #include <asm/msr.h>
@@ -36,12 +37,12 @@ static bool __initdata opt_msr_sc_pv = true;
 static bool __initdata opt_msr_sc_hvm = true;
 static int8_t __initdata opt_rsb_pv = -1;
 static bool __initdata opt_rsb_hvm = true;
-static int8_t __read_mostly opt_md_clear_pv = -1;
-static int8_t __read_mostly opt_md_clear_hvm = -1;
+static int8_t __ro_after_init opt_md_clear_pv = -1;
+static int8_t __ro_after_init opt_md_clear_hvm = -1;
 
-static int8_t __read_mostly opt_ibpb_entry_pv = -1;
-static int8_t __read_mostly opt_ibpb_entry_hvm = -1;
-static bool __read_mostly opt_ibpb_entry_dom0;
+static int8_t __ro_after_init opt_ibpb_entry_pv = -1;
+static int8_t __ro_after_init opt_ibpb_entry_hvm = -1;
+static bool __ro_after_init opt_ibpb_entry_dom0;
 
 /* Cmdline controls for Xen's speculative settings. */
 static enum ind_thunk {
@@ -55,10 +56,10 @@ static enum ind_thunk {
 
 static int8_t __initdata opt_ibrs = -1;
 int8_t __initdata opt_stibp = -1;
-bool __read_mostly opt_ssbd;
+bool __ro_after_init opt_ssbd;
 int8_t __initdata opt_psfd = -1;
 
-int8_t __read_mostly opt_ibpb_ctxt_switch = -1;
+int8_t __ro_after_init opt_ibpb_ctxt_switch = -1;
 int8_t __read_mostly opt_eager_fpu = -1;
 int8_t __read_mostly opt_l1d_flush = -1;
 static bool __initdata opt_branch_harden = true;
@@ -76,9 +77,9 @@ static bool __initdata cpu_has_bug_mds; /* Any other M{LP,SB,FB}DS combination. 
 
 static int8_t __initdata opt_srb_lock = -1;
 static bool __initdata opt_unpriv_mmio;
-static bool __read_mostly opt_fb_clear_mmio;
+static bool __ro_after_init opt_fb_clear_mmio;
 
-static int __init parse_spec_ctrl(const char *s)
+static int __init cf_check parse_spec_ctrl(const char *s)
 {
     const char *ss;
     int val, rc = 0;
@@ -314,7 +315,7 @@ static __init void xpti_init_default(uint64_t caps)
     }
 }
 
-static __init int parse_xpti(const char *s)
+static int __init cf_check parse_xpti(const char *s)
 {
     const char *ss;
     int val, rc = 0;
@@ -360,7 +361,7 @@ custom_param("xpti", parse_xpti);
 int8_t __read_mostly opt_pv_l1tf_hwdom = -1;
 int8_t __read_mostly opt_pv_l1tf_domu = -1;
 
-static __init int parse_pv_l1tf(const char *s)
+static int __init cf_check parse_pv_l1tf(const char *s)
 {
     const char *ss;
     int val, rc = 0;
@@ -510,12 +511,15 @@ static void __init print_details(enum ind_thunk thunk, uint64_t caps)
      * mitigation support for guests.
      */
 #ifdef CONFIG_HVM
-    printk("  Support for HVM VMs:%s%s%s%s%s%s\n",
+    printk("  Support for HVM VMs:%s%s%s%s%s%s%s\n",
            (boot_cpu_has(X86_FEATURE_SC_MSR_HVM) ||
             boot_cpu_has(X86_FEATURE_SC_RSB_HVM) ||
             boot_cpu_has(X86_FEATURE_IBPB_ENTRY_HVM) ||
+            amd_virt_spec_ctrl ||
             opt_eager_fpu || opt_md_clear_hvm)       ? ""               : " None",
            boot_cpu_has(X86_FEATURE_SC_MSR_HVM)      ? " MSR_SPEC_CTRL" : "",
+           (boot_cpu_has(X86_FEATURE_SC_MSR_HVM) ||
+            amd_virt_spec_ctrl)                      ? " MSR_VIRT_SPEC_CTRL" : "",
            boot_cpu_has(X86_FEATURE_SC_RSB_HVM)      ? " RSB"           : "",
            opt_eager_fpu                             ? " EAGER_FPU"     : "",
            opt_md_clear_hvm                          ? " MD_CLEAR"      : "",
@@ -568,7 +572,8 @@ static bool __init check_smt_enabled(void)
      * At the time of writing, it is almost completely undocumented, so isn't
      * virtualised reliably.
      */
-    if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL && !cpu_has_hypervisor &&
+    if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL &&
+         boot_cpu_data.x86 != 0xf && !cpu_has_hypervisor &&
          !rdmsr_safe(MSR_INTEL_CORE_THREAD_COUNT, val) )
         return (MASK_EXTR(val, MSR_CTC_CORE_MASK) !=
                 MASK_EXTR(val, MSR_CTC_THREAD_MASK));
@@ -1246,6 +1251,11 @@ void __init init_speculation_mitigations(void)
              (cpuid_edx(0x8000000a) & (1u << SVM_FEATURE_SPEC_CTRL)) )
             setup_force_cpu_cap(X86_FEATURE_SC_MSR_HVM);
     }
+
+    /* Support VIRT_SPEC_CTRL.SSBD if AMD_SSBD is not available. */
+    if ( opt_msr_sc_hvm && !cpu_has_amd_ssbd &&
+         (cpu_has_virt_ssbd || (amd_legacy_ssbd && amd_setup_legacy_ssbd())) )
+        amd_virt_spec_ctrl = true;
 
     /* Figure out default_xen_spec_ctrl. */
     if ( has_spec_ctrl && ibrs )

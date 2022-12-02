@@ -241,7 +241,7 @@ static int write_msi_msg(struct msi_desc *entry, struct msi_msg *msg)
     return 0;
 }
 
-void set_msi_affinity(struct irq_desc *desc, const cpumask_t *mask)
+void cf_check set_msi_affinity(struct irq_desc *desc, const cpumask_t *mask)
 {
     struct msi_msg msg;
     unsigned int dest;
@@ -416,14 +416,14 @@ static int msi_get_mask_bit(const struct msi_desc *entry)
     return -1;
 }
 
-void mask_msi_irq(struct irq_desc *desc)
+void cf_check mask_msi_irq(struct irq_desc *desc)
 {
     if ( unlikely(!msi_set_mask_bit(desc, 1,
                                     desc->msi_desc->msi_attrib.guest_masked)) )
         BUG_ON(!(desc->status & IRQ_DISABLED));
 }
 
-void unmask_msi_irq(struct irq_desc *desc)
+void cf_check unmask_msi_irq(struct irq_desc *desc)
 {
     if ( unlikely(!msi_set_mask_bit(desc, 0,
                                     desc->msi_desc->msi_attrib.guest_masked)) )
@@ -435,26 +435,26 @@ void guest_mask_msi_irq(struct irq_desc *desc, bool mask)
     msi_set_mask_bit(desc, desc->msi_desc->msi_attrib.host_masked, mask);
 }
 
-static unsigned int startup_msi_irq(struct irq_desc *desc)
+static unsigned int cf_check startup_msi_irq(struct irq_desc *desc)
 {
     if ( unlikely(!msi_set_mask_bit(desc, 0, !!(desc->status & IRQ_GUEST))) )
         WARN();
     return 0;
 }
 
-static void shutdown_msi_irq(struct irq_desc *desc)
+static void cf_check shutdown_msi_irq(struct irq_desc *desc)
 {
     if ( unlikely(!msi_set_mask_bit(desc, 1, 1)) )
         BUG_ON(!(desc->status & IRQ_DISABLED));
 }
 
-void ack_nonmaskable_msi_irq(struct irq_desc *desc)
+void cf_check ack_nonmaskable_msi_irq(struct irq_desc *desc)
 {
     irq_complete_move(desc);
     move_native_irq(desc);
 }
 
-static void ack_maskable_msi_irq(struct irq_desc *desc)
+static void cf_check ack_maskable_msi_irq(struct irq_desc *desc)
 {
     ack_nonmaskable_msi_irq(desc);
     ack_APIC_irq(); /* ACKTYPE_NONE */
@@ -683,7 +683,8 @@ static u64 read_pci_mem_bar(u16 seg, u8 bus, u8 slot, u8 func, u8 bir, int vf)
 
     if ( vf >= 0 )
     {
-        struct pci_dev *pdev = pci_get_pdev(seg, bus, PCI_DEVFN(slot, func));
+        struct pci_dev *pdev = pci_get_pdev(NULL,
+                                            PCI_SBDF(seg, bus, slot, func));
         unsigned int pos = pci_find_ext_capability(seg, bus,
                                                    PCI_DEVFN(slot, func),
                                                    PCI_EXT_CAP_ID_SRIOV);
@@ -839,7 +840,7 @@ static int msix_capability_init(struct pci_dev *dev,
             pbus = dev->info.physfn.bus;
             pslot = PCI_SLOT(dev->info.physfn.devfn);
             pfunc = PCI_FUNC(dev->info.physfn.devfn);
-            vf = PCI_BDF2(dev->bus, dev->devfn);
+            vf = dev->sbdf.bdf;
         }
 
         table_paddr = read_pci_mem_bar(seg, pbus, pslot, pfunc, bir, vf);
@@ -1000,7 +1001,7 @@ static int __pci_enable_msi(struct msi_info *msi, struct msi_desc **desc)
     struct msi_desc *old_desc;
 
     ASSERT(pcidevs_locked());
-    pdev = pci_get_pdev(msi->seg, msi->bus, msi->devfn);
+    pdev = pci_get_pdev(NULL, msi->sbdf);
     if ( !pdev )
         return -ENODEV;
 
@@ -1055,7 +1056,7 @@ static int __pci_enable_msix(struct msi_info *msi, struct msi_desc **desc)
     struct msi_desc *old_desc;
 
     ASSERT(pcidevs_locked());
-    pdev = pci_get_pdev(msi->seg, msi->bus, msi->devfn);
+    pdev = pci_get_pdev(NULL, msi->sbdf);
     if ( !pdev || !pdev->msix )
         return -ENODEV;
 
@@ -1146,7 +1147,7 @@ int pci_prepare_msix(u16 seg, u8 bus, u8 devfn, bool off)
         return 0;
 
     pcidevs_lock();
-    pdev = pci_get_pdev(seg, bus, devfn);
+    pdev = pci_get_pdev(NULL, PCI_SBDF(seg, bus, devfn));
     if ( !pdev )
         rc = -ENODEV;
     else if ( pdev->msix->used_entries != !!off )
@@ -1411,7 +1412,7 @@ void __init early_msi_init(void)
         return;
 }
 
-static void dump_msi(unsigned char key)
+static void cf_check dump_msi(unsigned char key)
 {
     unsigned int irq;
 
@@ -1485,7 +1486,7 @@ static void dump_msi(unsigned char key)
     vpci_dump_msi();
 }
 
-static int __init msi_setup_keyhandler(void)
+static int __init cf_check msi_setup_keyhandler(void)
 {
     register_keyhandler('M', dump_msi, "dump MSI state", 1);
     return 0;

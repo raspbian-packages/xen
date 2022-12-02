@@ -29,6 +29,7 @@ obj-y += notifier.o
 obj-y += page_alloc.o
 obj-$(CONFIG_HAS_PDX) += pdx.o
 obj-$(CONFIG_PERF_COUNTERS) += perfc.o
+obj-bin-$(CONFIG_HAS_PMAP) += pmap.init.o
 obj-y += preempt.o
 obj-y += random.o
 obj-y += rangeset.o
@@ -74,15 +75,14 @@ obj-$(CONFIG_UBSAN) += ubsan/
 obj-$(CONFIG_NEEDS_LIBELF) += libelf/
 obj-$(CONFIG_HAS_DEVICE_TREE) += libfdt/
 
-CONF_FILE := $(if $(patsubst /%,,$(KCONFIG_CONFIG)),$(BASEDIR)/)$(KCONFIG_CONFIG)
-config.gz: $(CONF_FILE)
+CONF_FILE := $(if $(patsubst /%,,$(KCONFIG_CONFIG)),$(objtree)/)$(KCONFIG_CONFIG)
+$(obj)/config.gz: $(CONF_FILE)
 	gzip -n -c $< >$@
 
-config_data.o: config.gz
+$(obj)/config_data.o: $(obj)/config.gz
 
-config_data.S: $(BASEDIR)/tools/binfile FORCE
-	$(call if_changed,binfile,config.gz xen_config_data)
+$(obj)/config_data.S: $(srctree)/tools/binfile FORCE
+	$(call if_changed,binfile,$(obj)/config.gz xen_config_data)
 targets += config_data.S
 
-clean::
-	rm -f config_data.S config.gz 2>/dev/null
+clean-files := config.gz

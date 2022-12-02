@@ -124,8 +124,8 @@ int pv_set_gdt(struct vcpu *v, const unsigned long frames[],
     return -EINVAL;
 }
 
-long do_set_gdt(XEN_GUEST_HANDLE_PARAM(xen_ulong_t) frame_list,
-                unsigned int entries)
+long do_set_gdt(
+    XEN_GUEST_HANDLE_PARAM(xen_ulong_t) frame_list, unsigned int entries)
 {
     unsigned int nr_frames = DIV_ROUND_UP(entries, 512);
     unsigned long frames[16];
@@ -151,8 +151,8 @@ long do_set_gdt(XEN_GUEST_HANDLE_PARAM(xen_ulong_t) frame_list,
 
 #ifdef CONFIG_PV32
 
-int compat_set_gdt(XEN_GUEST_HANDLE_PARAM(uint) frame_list,
-                   unsigned int entries)
+int compat_set_gdt(
+    XEN_GUEST_HANDLE_PARAM(uint) frame_list, unsigned int entries)
 {
     struct vcpu *curr = current;
     unsigned int i, nr_frames = DIV_ROUND_UP(entries, 512);
@@ -187,8 +187,8 @@ int compat_set_gdt(XEN_GUEST_HANDLE_PARAM(uint) frame_list,
     return ret;
 }
 
-int compat_update_descriptor(uint32_t pa_lo, uint32_t pa_hi,
-                             uint32_t desc_lo, uint32_t desc_hi)
+int compat_update_descriptor(
+    uint32_t pa_lo, uint32_t pa_hi, uint32_t desc_lo, uint32_t desc_hi)
 {
     seg_desc_t d;
 

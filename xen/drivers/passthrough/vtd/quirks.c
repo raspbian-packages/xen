@@ -115,7 +115,7 @@ bool is_azalia_tlb_enabled(const struct acpi_drhd_unit *drhd)
         return true;
 
     /* Check for the specific device. */
-    sbdf = PCI_SBDF2(drhd->segment, drhd->scope.devices[0]);
+    sbdf = PCI_SBDF(drhd->segment, drhd->scope.devices[0]);
     if ( pci_conf_read16(sbdf, PCI_VENDOR_ID) != PCI_VENDOR_ID_INTEL ||
          pci_conf_read16(sbdf, PCI_DEVICE_ID) != 0x3a3e )
         return true;
@@ -308,7 +308,7 @@ void vtd_ops_postamble_quirk(struct vtd_iommu *iommu)
     }
 }
 
-static int __init parse_snb_timeout(const char *s)
+static int __init cf_check parse_snb_timeout(const char *s)
 {
     int t;
     const char *q = NULL;
@@ -417,7 +417,7 @@ static int __must_check map_me_phantom_function(struct domain *domain,
     int rc;
 
     /* find ME VT-d engine base on a real ME device */
-    pdev = pci_get_pdev(0, 0, PCI_DEVFN(dev, 0));
+    pdev = pci_get_pdev(NULL, PCI_SBDF(0, 0, dev, 0));
     drhd = acpi_find_matched_drhd_unit(pdev);
 
     /* map or unmap ME phantom function */
@@ -446,7 +446,7 @@ int me_wifi_quirk(struct domain *domain, uint8_t bus, uint8_t devfn,
             return 0;
 
         /* if device is WLAN device, map ME phantom device 0:3.7 */
-        id = pci_conf_read32(PCI_SBDF3(0, bus, devfn), 0);
+        id = pci_conf_read32(PCI_SBDF(0, bus, devfn), 0);
         switch (id)
         {
             case 0x42328086:
@@ -470,7 +470,7 @@ int me_wifi_quirk(struct domain *domain, uint8_t bus, uint8_t devfn,
             return 0;
 
         /* if device is WLAN device, map ME phantom device 0:22.7 */
-        id = pci_conf_read32(PCI_SBDF3(0, bus, devfn), 0);
+        id = pci_conf_read32(PCI_SBDF(0, bus, devfn), 0);
         switch (id)
         {
             case 0x00878086:        /* Kilmer Peak */

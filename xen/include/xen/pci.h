@@ -29,16 +29,21 @@
 #define PCI_BUS(bdf)    (((bdf) >> 8) & 0xff)
 #define PCI_SLOT(bdf)   (((bdf) >> 3) & 0x1f)
 #define PCI_FUNC(bdf)   ((bdf) & 0x07)
-#define PCI_DEVFN(d,f)  ((((d) & 0x1f) << 3) | ((f) & 0x07))
-#define PCI_DEVFN2(bdf) ((bdf) & 0xff)
-#define PCI_BDF(b,d,f)  ((((b) & 0xff) << 8) | PCI_DEVFN(d,f))
-#define PCI_BDF2(b,df)  ((((b) & 0xff) << 8) | ((df) & 0xff))
-#define PCI_SBDF(s,b,d,f) \
-    ((pci_sbdf_t){ .sbdf = (((s) & 0xffff) << 16) | PCI_BDF(b, d, f) })
-#define PCI_SBDF2(s,bdf) \
+
+#define PCI_DEVFN1_(df)   ((df) & 0xff)
+#define PCI_DEVFN2_(d, f) ((((d) & 0x1f) << 3) | ((f) & 7))
+#define PCI_SBDF4_(s, b, d, f...) \
+    ((pci_sbdf_t){ .sbdf = (((s) & 0xffff) << 16) | PCI_BDF(b, d, ##f) })
+#define PCI_SBDF3_ PCI_SBDF4_
+#define PCI_SBDF2_(s, bdf) \
     ((pci_sbdf_t){ .sbdf = (((s) & 0xffff) << 16) | ((bdf) & 0xffff) })
-#define PCI_SBDF3(s,b,df) \
-    ((pci_sbdf_t){ .sbdf = (((s) & 0xffff) << 16) | PCI_BDF2(b, df) })
+
+#define PCI__(what, nr) PCI_##what##nr##_
+#define PCI_(what, nr)  PCI__(what, nr)
+
+#define PCI_DEVFN(d, f...)   PCI_(DEVFN, count_args(d, ##f))(d, ##f)
+#define PCI_BDF(b, d, f...)  ((((b) & 0xff) << 8) | PCI_DEVFN(d, ##f))
+#define PCI_SBDF(s, b, d...) PCI_(SBDF, count_args(s, b, ##d))(s, b, ##d)
 
 #define ECAM_REG_OFFSET(addr)  ((addr) & 0x00000fff)
 
@@ -108,6 +113,9 @@ struct pci_dev {
     /* Device with errata, ignore the BARs. */
     bool ignore_bars;
 
+    /* Device misbehaving, prevent assigning it to guests. */
+    bool broken;
+
     enum pdev_type {
         DEV_TYPE_PCI_UNKNOWN,
         DEV_TYPE_PCIe_ENDPOINT,
@@ -169,10 +177,8 @@ int pci_add_device(u16 seg, u8 bus, u8 devfn,
 int pci_remove_device(u16 seg, u8 bus, u8 devfn);
 int pci_ro_device(int seg, int bus, int devfn);
 int pci_hide_device(unsigned int seg, unsigned int bus, unsigned int devfn);
-struct pci_dev *pci_get_pdev(uint16_t seg, uint8_t bus, uint8_t devfn);
-struct pci_dev *pci_get_real_pdev(int seg, int bus, int devfn);
-struct pci_dev *pci_get_pdev_by_domain(const struct domain *, uint16_t seg,
-                                       uint8_t bus, uint8_t devfn);
+struct pci_dev *pci_get_pdev(const struct domain *d, pci_sbdf_t sbdf);
+struct pci_dev *pci_get_real_pdev(pci_sbdf_t sbdf);
 void pci_check_disable_device(u16 seg, u8 bus, u8 devfn);
 
 uint8_t pci_conf_read8(pci_sbdf_t sbdf, unsigned int reg);

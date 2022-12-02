@@ -20,7 +20,7 @@
 int8_t __read_mostly opt_pv32 = -1;
 #endif
 
-static __init int parse_pv(const char *s)
+static int __init cf_check parse_pv(const char *s)
 {
     const char *ss;
     int val, rc = 0;
@@ -63,16 +63,16 @@ static const char opt_pcid_2_string[][7] = {
     [PCID_NOXPTI] = "noxpti",
 };
 
-static void __init opt_pcid_init(struct param_hypfs *par)
+static void __init cf_check opt_pcid_init(struct param_hypfs *par)
 {
     custom_runtime_set_var(par, opt_pcid_2_string[opt_pcid]);
 }
 #endif
 
-static int parse_pcid(const char *s);
+static int cf_check parse_pcid(const char *s);
 custom_runtime_param("pcid", parse_pcid, opt_pcid_init);
 
-static int parse_pcid(const char *s)
+static int cf_check parse_pcid(const char *s)
 {
     int rc = 0;
 
@@ -167,7 +167,7 @@ unsigned long pv_fixup_guest_cr4(const struct vcpu *v, unsigned long cr4)
 static int8_t __read_mostly opt_global_pages = -1;
 boolean_runtime_param("global-pages", opt_global_pages);
 
-static int __init pge_init(void)
+static int __init cf_check pge_init(void)
 {
     if ( opt_global_pages == -1 )
         opt_global_pages = !cpu_has_hypervisor ||
@@ -351,7 +351,7 @@ void pv_domain_destroy(struct domain *d)
     FREE_XENHEAP_PAGE(d->arch.pv.gdt_ldt_l1tab);
 }
 
-void noreturn continue_pv_domain(void);
+void noreturn cf_check continue_pv_domain(void);
 
 int pv_domain_initialise(struct domain *d)
 {

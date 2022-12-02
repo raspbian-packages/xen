@@ -15,22 +15,20 @@
 XEN_ROOT=$(CURDIR)/../../..
 include $(XEN_ROOT)/tools/Rules.mk
 
-CFLAGS += $(CFLAGS_libxenctrl) $(CFLAGS_libxenstore) $(CFLAGS_xeninclude) -include $(XEN_ROOT)/tools/config.h
+CFLAGS += -include $(XEN_ROOT)/tools/config.h
 
-SRCS-y += xenstat.c
-SRCS-y += xenstat_qmp.c
-SRCS-$(CONFIG_Linux) += xenstat_linux.c
-SRCS-$(CONFIG_SunOS) += xenstat_solaris.c
-SRCS-$(CONFIG_NetBSD) += xenstat_netbsd.c
-SRCS-$(CONFIG_FreeBSD) += xenstat_freebsd.c
+OBJS-y += xenstat.o
+OBJS-y += xenstat_qmp.o
+OBJS-$(CONFIG_Linux) += xenstat_linux.o
+OBJS-$(CONFIG_SunOS) += xenstat_solaris.o
+OBJS-$(CONFIG_NetBSD) += xenstat_netbsd.o
+OBJS-$(CONFIG_FreeBSD) += xenstat_freebsd.o
 
 LDLIBS-y += -lyajl
 LDLIBS-$(CONFIG_SunOS) += -lkstat
-APPEND_LDFLAGS += $(LDLIBS-y)
+LDLIBS += $(LDLIBS-y)
 
 include $(XEN_ROOT)/tools/libs/libs.mk
-
-$(LIB_OBJS) $(PIC_OBJS): _paths.h
 
 PYLIB=bindings/swig/python/_xenstat.so
 PYMOD=bindings/swig/python/xenstat.py
@@ -51,23 +49,34 @@ install-bindings: install-perl-bindings install-python-bindings
 .PHONY: uninstall-bindings
 uninstall-bindings: uninstall-perl-bindings uninstall-python-bindings
 
-$(BINDINGS): $(SHLIB) $(SHLIB_LINKS) include/xenstat.h
+$(BINDINGS): libxenstat.so
 
-SWIG_FLAGS=-module xenstat -Iinclude -I.
+SWIG_FLAGS = -module xenstat -I$(XEN_INCLUDE)
+SWIG_FLAGS += -MMD -MP -MF .$(if $(filter-out .,$(@D)),$(subst /,@,$(@D))@)$(@F).d
 
 # Python bindings
-PYTHON_VERSION=$(PYTHON:python%=%)
-PYTHON_FLAGS=-I/usr/include/python$(PYTHON_VERSION) -lpython$(PYTHON_VERSION)
 $(PYMOD): $(PYSRC)
 $(PYSRC): bindings/swig/xenstat.i
-	swig -python $(SWIG_FLAGS) -outdir $(@D) -o $(PYSRC) $<
+	mkdir -p $(@D)
+	swig -python $(SWIG_FLAGS) -outdir $(@D) -o $@ $<
 
+$(PYLIB): CFLAGS += $(shell $(PYTHON)-config --includes)
+$(PYLIB): CFLAGS += -fPIC
+$(PYLIB): CFLAGS += -Wno-missing-prototypes
+$(PYLIB): LDFLAGS += $(SHLIB_LDFLAGS)
+$(PYLIB): LDLIBS := $(shell $(PYTHON)-config --libs)
+$(PYLIB): LDLIBS += $(LDLIBS_libxenstat)
 $(PYLIB): $(PYSRC)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(PYTHON_FLAGS) $(SHLIB_LDFLAGS) -lxenstat -o $@ $< $(APPEND_LDFLAGS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS) $(APPEND_LDFLAGS)
 
+.PHONY: python-bindings
 python-bindings: $(PYLIB) $(PYMOD)
 
-pythonlibdir=$(prefix)/lib/python$(PYTHON_VERSION)/site-packages
+pythonlibdir = $(shell $(PYTHON) -c \
+	       'import distutils.sysconfig as cfg; \
+	        print(cfg.get_python_lib(False, False, prefix="$(prefix)"))')
+
+.PHONY: install-python-bindings
 install-python-bindings: $(PYLIB) $(PYMOD)
 	$(INSTALL_PROG) $(PYLIB) $(DESTDIR)$(pythonlibdir)/_xenstat.so
 	$(INSTALL_PROG) $(PYMOD) $(DESTDIR)$(pythonlibdir)/xenstat.py
@@ -80,18 +89,25 @@ uninstall-python-bindings:
 ifeq ($(XENSTAT_PYTHON_BINDINGS),y)
 .PHONY: all
 all: python-bindings
-install: install-python-bindings
-uninstall: uninstall-python-bindings
+install:: install-python-bindings
+uninstall:: uninstall-python-bindings
 endif
 
 # Perl bindings
-PERL_FLAGS=`perl -MConfig -e 'print "$$Config{ccflags} -I$$Config{archlib}/CORE";'`
+PERL_FLAGS = $(shell $(PERL) -MConfig -e 'print "$$Config{ccflags} -I$$Config{archlib}/CORE";')
 $(PERLMOD): $(PERLSRC)
 $(PERLSRC): bindings/swig/xenstat.i
-	swig -perl $(SWIG_FLAGS) -outdir $(@D) -o $(PERLSRC) $<
+	mkdir -p $(@D)
+	swig -perl $(SWIG_FLAGS) -outdir $(@D) -o $@ $<
 
+$(PERLLIB): CFLAGS += -fPIC
+$(PERLLIB): CFLAGS += -Wno-strict-prototypes
+$(PERLLIB): CFLAGS += -Wno-missing-prototypes
+$(PERLLIB): LDFLAGS += $(PERL_FLAGS)
+$(PERLLIB): LDFLAGS += $(SHLIB_LDFLAGS)
+$(PERLLIB): LDLIBS := $(LDLIBS_libxenstat)
 $(PERLLIB): $(PERLSRC)
-	$(CC) $(CFLAGS) $(LDFLAGS) $(PERL_FLAGS) $(SHLIB_LDFLAGS) -lxenstat -o $@ $< $(APPEND_LDFLAGS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $< $(LDLIBS) $(APPEND_LDFLAGS)
 
 .PHONY: perl-bindings
 perl-bindings: $(PERLLIB) $(PERLMOD)
@@ -113,16 +129,9 @@ ifeq ($(XENSTAT_PERL_BINDINGS),y)
 all: perl-bindings
 
 .PHONY: install
-install: install-perl-bindings
-uninstall: uninstall-perl-bindings
+install:: install-perl-bindings
+uninstall:: uninstall-perl-bindings
 endif
 
-clean: cleanlocal
-
-.PHONY: cleanlocal
-cleanlocal:
-	rm -f $(BINDINGS) $(BINDINGSRC) $(DEPS_RM) _paths.h
-	rm -f libxenstat.map
-
-genpath-target = $(call buildmakevars2header,_paths.h)
-$(eval $(genpath-target))
+clean::
+	$(RM) libxenstat.map $(BINDINGS) $(BINDINGSRC)

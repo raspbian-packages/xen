@@ -23,7 +23,7 @@ static inline unsigned long ex_cont(const struct exception_table_entry *x)
 	return EX_FIELD(x, cont);
 }
 
-static int init_or_livepatch cmp_ex(const void *a, const void *b)
+static int init_or_livepatch cf_check cmp_ex(const void *a, const void *b)
 {
 	const struct exception_table_entry *l = a, *r = b;
 	unsigned long lip = ex_addr(l);
@@ -37,7 +37,7 @@ static int init_or_livepatch cmp_ex(const void *a, const void *b)
 	return 0;
 }
 
-static void init_or_livepatch swap_ex(void *a, void *b, size_t size)
+static void init_or_livepatch cf_check swap_ex(void *a, void *b, size_t size)
 {
 	struct exception_table_entry *l = a, *r = b, tmp;
 	long delta = b - a;
@@ -124,7 +124,9 @@ search_exception_table(const struct cpu_user_regs *regs)
 }
 
 #ifndef NDEBUG
-static int __init stub_selftest(void)
+#include <asm/traps.h>
+
+static int __init cf_check stub_selftest(void)
 {
     static const struct {
         uint8_t opc[8];
@@ -174,10 +176,10 @@ static int __init stub_selftest(void)
         if ( res.raw != tests[i].res.raw )
         {
             printk("Selftest %u failed: Opc %*ph "
-                   "expected %u[%04x], got %u[%04x]\n",
+                   "expected %s[%04x], got %s[%04x]\n",
                    i, (int)ARRAY_SIZE(tests[i].opc), tests[i].opc,
-                   tests[i].res.fields.trapnr, tests[i].res.fields.ec,
-                   res.fields.trapnr, res.fields.ec);
+                   vector_name(tests[i].res.fields.trapnr), tests[i].res.fields.ec,
+                   vector_name(res.fields.trapnr), res.fields.ec);
 
             fail = true;
         }

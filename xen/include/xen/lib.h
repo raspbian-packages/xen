@@ -3,6 +3,8 @@
 
 #define ROUNDUP(x, a) (((x) + (a) - 1) & ~((a) - 1))
 
+#define IS_ALIGNED(val, align) (!((val) & ((align) - 1)))
+
 #define DIV_ROUND(n, d) (((n) + (d) / 2) / (d))
 #define DIV_ROUND_UP(n, d) (((n) + (d) - 1) / (d))
 
@@ -12,6 +14,13 @@
 #define count_args_(dot, a1, a2, a3, a4, a5, a6, a7, a8, x, ...) x
 #define count_args(args...) \
     count_args_(., ## args, 8, 7, 6, 5, 4, 3, 2, 1, 0)
+
+/* Indirect macros required for expanded argument pasting. */
+#define PASTE_(a, b) a ## b
+#define PASTE(a, b) PASTE_(a, b)
+
+#define __STR(...) #__VA_ARGS__
+#define STR(...) __STR(__VA_ARGS__)
 
 #ifndef __ASSEMBLY__
 
@@ -159,9 +168,9 @@ extern int scnprintf(char * buf, size_t size, const char * fmt, ...)
     __attribute__ ((format (printf, 3, 4)));
 extern int vscnprintf(char *buf, size_t size, const char *fmt, va_list args)
     __attribute__ ((format (printf, 3, 0)));
-extern int asprintf(char ** bufp, const char * fmt, ...)
+extern int xasprintf(char **bufp, const char *fmt, ...)
     __attribute__ ((format (printf, 2, 3)));
-extern int vasprintf(char ** bufp, const char * fmt, va_list args)
+extern int xvasprintf(char **bufp, const char *fmt, va_list args)
     __attribute__ ((format (printf, 2, 0)));
 
 long simple_strtol(
@@ -200,7 +209,7 @@ extern char *print_tainted(char *str);
 extern void add_taint(unsigned int taint);
 
 struct cpu_user_regs;
-void dump_execstate(struct cpu_user_regs *);
+void cf_check dump_execstate(struct cpu_user_regs *);
 
 void init_constructors(void);
 

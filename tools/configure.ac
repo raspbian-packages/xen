@@ -7,6 +7,7 @@ AC_INIT([Xen Hypervisor Tools], m4_esyscmd([../version.sh ../xen/Makefile]),
 AC_CONFIG_SRCDIR([libs/light/libxl.c])
 AC_CONFIG_FILES([
 ../config/Tools.mk
+hotplug/common/hotplugpath.sh
 hotplug/FreeBSD/rc.d/xencommons
 hotplug/FreeBSD/rc.d/xendriverdomain
 hotplug/Linux/init.d/sysconfig.xencommons
@@ -21,6 +22,8 @@ hotplug/Linux/xen-hotplug-common.sh
 hotplug/Linux/xendomains
 hotplug/NetBSD/rc.d/xencommons
 hotplug/NetBSD/rc.d/xendriverdomain
+ocaml/libs/xs/paths.ml
+ocaml/xenstored/paths.ml
 ocaml/xenstored/oxenstored.conf
 ])
 AC_CONFIG_HEADERS([config.h])
@@ -79,6 +82,7 @@ m4_include([../m4/header.m4])
 AX_XEN_EXPAND_CONFIG()
 
 # Enable/disable options
+AX_ARG_DEFAULT_ENABLE([werror], [Build tools without -Werror])
 AX_ARG_DEFAULT_DISABLE([rpath], [Build tools with -Wl,-rpath,LIBDIR])
 AX_ARG_DEFAULT_DISABLE([githttp], [Download GIT repositories via HTTP])
 AX_ARG_DEFAULT_ENABLE([monitors], [Disable xenstat and xentop monitoring tools])
@@ -215,7 +219,7 @@ AC_SUBST(qemu_xen_path)
 AC_SUBST(qemu_xen_systemd)
 
 AC_ARG_WITH([stubdom-qmp-proxy],
-    AC_HELP_STRING([--stubdom-qmp-proxy@<:@=PATH@:>@],
+    AS_HELP_STRING([--stubdom-qmp-proxy@<:@=PATH@:>@],
         [Use supplied binary PATH as a QMP proxy into stubdomain]),[
     stubdom_qmp_proxy="$withval"
 ],[
@@ -391,18 +395,26 @@ AX_CHECK_FETCHER
 
 # Checks for libraries.
 AC_CHECK_HEADER([bzlib.h], [
-AC_CHECK_LIB([bz2], [BZ2_bzDecompressInit], [zlib="$zlib -DHAVE_BZLIB -lbz2"])
+    AC_CHECK_LIB([bz2], [BZ2_bzDecompressInit],
+        [ZLIB_CFLAGS="$ZLIB_CFLAGS -DHAVE_BZLIB"
+         ZLIB_LIBS="$ZLIB_LIBS -lbz2"])
 ])
 AC_CHECK_HEADER([lzma.h], [
-AC_CHECK_LIB([lzma], [lzma_stream_decoder], [zlib="$zlib -DHAVE_LZMA -llzma"])
+    AC_CHECK_LIB([lzma], [lzma_stream_decoder],
+        [ZLIB_CFLAGS="$ZLIB_CFLAGS -DHAVE_LZMA"
+         ZLIB_LIBS="$ZLIB_LIBS -llzma"])
 ])
 AC_CHECK_HEADER([lzo/lzo1x.h], [
-AC_CHECK_LIB([lzo2], [lzo1x_decompress], [zlib="$zlib -DHAVE_LZO1X -llzo2"])
+    AC_CHECK_LIB([lzo2], [lzo1x_decompress],
+        [ZLIB_CFLAGS="$ZLIB_CFLAGS -DHAVE_LZO1X"
+         ZLIB_LIBS="$ZLIB_LIBS -llzo2"])
 ])
 PKG_CHECK_MODULES([libzstd], [libzstd],
-    [zlib="$zlib -DHAVE_ZSTD $libzstd_CFLAGS $libzstd_LIBS"], [true])
-AC_SUBST(zlib)
-AC_SUBST(system_aio)
+    [ZLIB_CFLAGS="$ZLIB_CFLAGS -DHAVE_ZSTD $libzstd_CFLAGS"
+     ZLIB_LIBS="$ZLIB_LIBS $libzstd_LIBS"],
+    [true])
+AC_SUBST([ZLIB_CFLAGS])
+AC_SUBST([ZLIB_LIBS])
 AX_CHECK_EXTFS
 AX_CHECK_PTHREAD
 AX_CHECK_PTYFUNCS
@@ -470,7 +482,6 @@ AX_AVAILABLE_SYSTEMD()
 AS_IF([test "x$systemd" = "xy"], [
     AC_CONFIG_FILES([
     hotplug/Linux/systemd/proc-xen.mount
-    hotplug/Linux/systemd/var-lib-xenstored.mount
     hotplug/Linux/systemd/xen-init-dom0.service
     hotplug/Linux/systemd/xen-qemu-dom0-disk-backend.service
     hotplug/Linux/systemd/xen-watchdog.service

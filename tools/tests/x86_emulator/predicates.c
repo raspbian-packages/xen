@@ -1712,8 +1712,8 @@ static const struct evex {
     { { 0x7a }, 2, T, R, pfx_f3, Wn, Ln }, /* vcvtu{d,q}2pd */
     { { 0x7a }, 2, T, R, pfx_f2, Wn, Ln }, /* vcvtu{d,q}2ps */
     { { 0x7b }, 2, T, R, pfx_66, Wn, Ln }, /* vcvtp{s,d}2qq */
-    { { 0x7b }, 2, T, R, pfx_f3, Wn, LIG }, /* vcvtusi2s */
-    { { 0x7b }, 2, T, R, pfx_f2, Wn, LIG }, /* vcvtusi2s */
+    { { 0x7b }, 2, T, R, pfx_f3, Wn, LIG }, /* vcvtusi2ss */
+    { { 0x7b }, 2, T, R, pfx_f2, Wn, LIG }, /* vcvtusi2sd */
     { { 0x7e }, 2, T, W, pfx_66, Wn, L0 }, /* vmov{d,q} */
     { { 0x7e }, 2, T, R, pfx_f3, W1, L0 }, /* vmovq */
     { { 0x7f }, 2, T, W, pfx_66, Wn, Ln }, /* vmovdqa{32,64} */
@@ -1822,8 +1822,8 @@ static const struct evex {
     { { 0x2a }, 2, F, R, pfx_66, W0, Ln }, /* vmovntdqa */
     { { 0x2a, 0xc0 }, 2, F, N, pfx_f3, W1, Ln }, /* vpbroadcastmb2q */
     { { 0x2b }, 2, T, R, pfx_66, W0, Ln }, /* vpackusdw */
-    { { 0x2c }, 2, F, R, pfx_66, Wn, Ln }, /* vscalefp{s,d} */
-    { { 0x2d }, 2, F, R, pfx_66, Wn, LIG }, /* vscalefs{s,d} */
+    { { 0x2c }, 2, T, R, pfx_66, Wn, Ln }, /* vscalefp{s,d} */
+    { { 0x2d }, 2, T, R, pfx_66, Wn, LIG }, /* vscalefs{s,d} */
     { { 0x30 }, 2, T, R, pfx_66, WIG, Ln }, /* vpmovzxbw */
     { { 0x30 }, 2, T, W, pfx_f3, W0, Ln }, /* vpmovwb */
     { { 0x31 }, 2, T, R, pfx_66, WIG, Ln }, /* vpmovzxbd */
@@ -1974,8 +1974,8 @@ static const struct evex {
     { { 0x05 }, 3, T, R, pfx_66, W1, Ln }, /* vpermilpd */
     { { 0x08 }, 3, T, R, pfx_66, W0, Ln }, /* vrndscaleps */
     { { 0x09 }, 3, T, R, pfx_66, W1, Ln }, /* vrndscalepd */
-    { { 0x0a }, 3, T, R, pfx_66, WIG, LIG }, /* vrndscaless */
-    { { 0x0b }, 3, T, R, pfx_66, WIG, LIG }, /* vrndscalesd */
+    { { 0x0a }, 3, T, R, pfx_66, W0, LIG }, /* vrndscaless */
+    { { 0x0b }, 3, T, R, pfx_66, W1, LIG }, /* vrndscalesd */
     { { 0x0f }, 3, T, R, pfx_66, WIG, Ln }, /* vpalignr */
     { { 0x14 }, 3, T, W, pfx_66, WIG, L0 }, /* vpextrb */
     { { 0x15 }, 3, T, W, pfx_66, WIG, L0 }, /* vpextrw */
@@ -2049,8 +2049,7 @@ static void print_insn(const uint8_t *instr, unsigned int len)
 
 void do_test(uint8_t *instr, unsigned int len, unsigned int modrm,
              enum mem_access mem, struct x86_emulate_ctxt *ctxt,
-             int (*fetch)(enum x86_segment seg,
-                          unsigned long offset,
+             int (*fetch)(unsigned long offset,
                           void *p_data,
                           unsigned int bytes,
                           struct x86_emulate_ctxt *ctxt))
@@ -2110,8 +2109,7 @@ void do_test(uint8_t *instr, unsigned int len, unsigned int modrm,
 }
 
 void predicates_test(void *instr, struct x86_emulate_ctxt *ctxt,
-                     int (*fetch)(enum x86_segment seg,
-                                  unsigned long offset,
+                     int (*fetch)(unsigned long offset,
                                   void *p_data,
                                   unsigned int bytes,
                                   struct x86_emulate_ctxt *ctxt))

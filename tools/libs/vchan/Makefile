@@ -5,15 +5,12 @@ CFLAGS += $(CFLAGS_libxenctrl)
 
 LIBHEADER := libxenvchan.h
 
-SRCS-y += init.c
-SRCS-y += io.c
+OBJS-y += init.o
+OBJS-y += io.o
 
 NO_HEADERS_CHK := y
 
 include $(XEN_ROOT)/tools/libs/libs.mk
 
-clean: cleanlocal
-
-.PHONY: cleanlocal
-cleanlocal:
+clean::
 	rm -f libxenvchan.map

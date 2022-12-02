@@ -176,7 +176,7 @@ static void __init probe_masking_msrs(void)
  * parameter of NULL is used to context switch to the default host state (by
  * the cpu bringup-code, crash path, etc).
  */
-static void intel_ctxt_switch_masking(const struct vcpu *next)
+static void cf_check intel_ctxt_switch_masking(const struct vcpu *next)
 {
 	struct cpuidmasks *these_masks = &this_cpu(cpuidmasks);
 	const struct domain *nextd = next ? next->domain : NULL;
@@ -286,7 +286,7 @@ static void __init noinline intel_init_levelling(void)
 		ctxt_switch_masking = intel_ctxt_switch_masking;
 }
 
-static void early_init_intel(struct cpuinfo_x86 *c)
+static void cf_check early_init_intel(struct cpuinfo_x86 *c)
 {
 	u64 misc_enable, disable;
 
@@ -412,9 +412,9 @@ static int num_cpu_cores(struct cpuinfo_x86 *c)
 
 static void intel_log_freq(const struct cpuinfo_x86 *c)
 {
-    unsigned int eax, ebx, ecx, edx;
+    unsigned int eax, ebx, ecx, edx, factor;
     uint64_t msrval;
-    uint8_t max_ratio;
+    uint8_t max_ratio, min_ratio;
 
     if ( c->cpuid_level >= 0x15 )
     {
@@ -424,9 +424,8 @@ static void intel_log_freq(const struct cpuinfo_x86 *c)
             unsigned long long val = ecx;
 
             val *= ebx;
-            do_div(val, eax);
             printk("CPU%u: TSC: %u Hz * %u / %u = %Lu Hz\n",
-                   smp_processor_id(), ecx, ebx, eax, val);
+                   smp_processor_id(), ecx, ebx, eax, val / eax);
         }
         else if ( ecx | eax | ebx )
         {
@@ -455,32 +454,71 @@ static void intel_log_freq(const struct cpuinfo_x86 *c)
         }
     }
 
-    if ( rdmsr_safe(MSR_INTEL_PLATFORM_INFO, msrval) )
-        return;
-    max_ratio = msrval >> 8;
-
-    if ( max_ratio )
+    switch ( c->x86 )
     {
-        unsigned int factor = 10000;
-        uint8_t min_ratio = msrval >> 40;
+        static const unsigned short core_factors[] =
+            { 26667, 13333, 20000, 16667, 33333, 10000, 40000 };
 
-        if ( c->x86 == 6 )
-            switch ( c->x86_model )
-            {
-            case 0x1a: case 0x1e: case 0x1f: case 0x2e: /* Nehalem */
-            case 0x25: case 0x2c: case 0x2f: /* Westmere */
-                factor = 13333;
-                break;
-            }
+    case 6:
+        if ( rdmsr_safe(MSR_INTEL_PLATFORM_INFO, msrval) )
+            return;
+        max_ratio = msrval >> 8;
+        min_ratio = msrval >> 40;
+        if ( !max_ratio )
+            return;
 
-        printk("CPU%u: ", smp_processor_id());
-        if ( min_ratio )
-            printk("%u ... ", (factor * min_ratio + 50) / 100);
-        printk("%u MHz\n", (factor * max_ratio + 50) / 100);
+        switch ( c->x86_model )
+        {
+        case 0x0e: /* Core */
+        case 0x0f: case 0x16: case 0x17: case 0x1d: /* Core2 */
+            /*
+             * PLATFORM_INFO, while not documented for these, appears to exist
+             * in at least some cases, but what it holds doesn't match the
+             * scheme used by newer CPUs.  At a guess, the min and max fields
+             * look to be reversed, while the scaling factor is encoded in
+             * FSB_FREQ.
+             */
+            if ( min_ratio > max_ratio )
+                SWAP(min_ratio, max_ratio);
+            if ( rdmsr_safe(MSR_FSB_FREQ, msrval) ||
+                 (msrval &= 7) >= ARRAY_SIZE(core_factors) )
+                return;
+            factor = core_factors[msrval];
+            break;
+
+        case 0x1a: case 0x1e: case 0x1f: case 0x2e: /* Nehalem */
+        case 0x25: case 0x2c: case 0x2f: /* Westmere */
+            factor = 13333;
+            break;
+
+        default:
+            factor = 10000;
+            break;
+        }
+        break;
+
+    case 0xf:
+        if ( rdmsr_safe(MSR_IA32_EBC_FREQUENCY_ID, msrval) )
+            return;
+        max_ratio = msrval >> 24;
+        min_ratio = 0;
+        msrval >>= 16;
+        if ( (msrval &= 7) > 4 )
+            return;
+        factor = core_factors[msrval];
+        break;
+
+    default:
+        return;
     }
+
+    printk("CPU%u: ", smp_processor_id());
+    if ( min_ratio )
+        printk("%u ... ", (factor * min_ratio + 50) / 100);
+    printk("%u MHz\n", (factor * max_ratio + 50) / 100);
 }
 
-static void init_intel(struct cpuinfo_x86 *c)
+static void cf_check init_intel(struct cpuinfo_x86 *c)
 {
 	/* Detect the extended topology information if available */
 	detect_extended_topology(c);

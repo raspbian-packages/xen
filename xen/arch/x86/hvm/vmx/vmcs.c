@@ -71,7 +71,7 @@ static bool __read_mostly opt_ept_pml = true;
 static s8 __read_mostly opt_ept_ad = -1;
 int8_t __read_mostly opt_ept_exec_sp = -1;
 
-static int __init parse_ept_param(const char *s)
+static int __init cf_check parse_ept_param(const char *s)
 {
     const char *ss;
     int val, rc = 0;
@@ -107,16 +107,16 @@ static void update_ept_param(void)
                  opt_ept_exec_sp);
 }
 
-static void __init init_ept_param(struct param_hypfs *par)
+static void __init cf_check init_ept_param(struct param_hypfs *par)
 {
     update_ept_param();
     custom_runtime_set_var(par, opt_ept_setting);
 }
 
-static int parse_ept_param_runtime(const char *s);
+static int cf_check parse_ept_param_runtime(const char *s);
 custom_runtime_only_param("ept", parse_ept_param_runtime, init_ept_param);
 
-static int parse_ept_param_runtime(const char *s)
+static int cf_check parse_ept_param_runtime(const char *s)
 {
     struct domain *d;
     int val;
@@ -589,7 +589,7 @@ static void vmx_free_vmcs(paddr_t pa)
     free_domheap_page(maddr_to_page(pa));
 }
 
-static void __vmx_clear_vmcs(void *info)
+static void cf_check __vmx_clear_vmcs(void *info)
 {
     struct vcpu *v = info;
     struct vmx_vcpu *vmx = &v->arch.hvm.vmx;
@@ -655,7 +655,7 @@ void vmx_vmcs_reload(struct vcpu *v)
     vmx_load_vmcs(v);
 }
 
-int vmx_cpu_up_prepare(unsigned int cpu)
+int cf_check vmx_cpu_up_prepare(unsigned int cpu)
 {
     /*
      * If nvmx_cpu_up_prepare() failed, do not return failure and just fallback
@@ -676,7 +676,7 @@ int vmx_cpu_up_prepare(unsigned int cpu)
     return -ENOMEM;
 }
 
-void vmx_cpu_dead(unsigned int cpu)
+void cf_check vmx_cpu_dead(unsigned int cpu)
 {
     vmx_free_vmcs(per_cpu(vmxon_region, cpu));
     per_cpu(vmxon_region, cpu) = 0;
@@ -774,12 +774,12 @@ static int _vmx_cpu_up(bool bsp)
     return 0;
 }
 
-int vmx_cpu_up()
+int cf_check vmx_cpu_up()
 {
     return _vmx_cpu_up(false);
 }
 
-void vmx_cpu_down(void)
+void cf_check vmx_cpu_down(void)
 {
     struct list_head *active_vmcs_list = &this_cpu(active_vmcs_list);
     unsigned long flags;
@@ -1122,20 +1122,6 @@ static int construct_vmcs(struct vcpu *v)
 
     /* Do not enable Monitor Trap Flag unless start single step debug */
     v->arch.hvm.vmx.exec_control &= ~CPU_BASED_MONITOR_TRAP_FLAG;
-
-    if ( !has_vlapic(d) )
-    {
-        /* Disable virtual apics, TPR */
-        v->arch.hvm.vmx.secondary_exec_control &=
-            ~(SECONDARY_EXEC_VIRTUALIZE_APIC_ACCESSES
-              | SECONDARY_EXEC_APIC_REGISTER_VIRT
-              | SECONDARY_EXEC_VIRTUAL_INTR_DELIVERY);
-        v->arch.hvm.vmx.exec_control &= ~CPU_BASED_TPR_SHADOW;
-
-        /* In turn, disable posted interrupts. */
-        __vmwrite(PIN_BASED_VM_EXEC_CONTROL,
-                  vmx_pin_based_exec_control & ~PIN_BASED_POSTED_INTERRUPT);
-    }
 
     vmx_update_cpu_exec_control(v);
 
@@ -1869,7 +1855,7 @@ void vmx_vmentry_failure(void)
 
 void noreturn vmx_asm_do_vmentry(void);
 
-void vmx_do_resume(void)
+void cf_check vmx_do_resume(void)
 {
     struct vcpu *v = current;
     bool_t debug_state;
@@ -2121,7 +2107,7 @@ void vmcs_dump_vcpu(struct vcpu *v)
     vmx_vmcs_exit(v);
 }
 
-static void vmcs_dump(unsigned char ch)
+static void cf_check vmcs_dump(unsigned char ch)
 {
     struct domain *d;
     struct vcpu *v;
@@ -2137,6 +2123,11 @@ static void vmcs_dump(unsigned char ch)
         printk("\n>>> Domain %d <<<\n", d->domain_id);
         for_each_vcpu ( d, v )
         {
+            if ( !v->is_initialised )
+            {
+                printk("\tVCPU %u: not initialized\n", v->vcpu_id);
+                continue;
+            }
             printk("\tVCPU %d\n", v->vcpu_id);
             vmcs_dump_vcpu(v);
         }

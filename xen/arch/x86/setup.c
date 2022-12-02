@@ -15,7 +15,6 @@
 #include <xen/multiboot.h>
 #include <xen/domain_page.h>
 #include <xen/version.h>
-#include <xen/gdbstub.h>
 #include <xen/hypercall.h>
 #include <xen/keyhandler.h>
 #include <xen/numa.h>
@@ -81,8 +80,6 @@ unsigned long __read_mostly cr4_pv32_mask;
 /* "acpi=ht":     Limit ACPI just to boot-time to enable HT.        */
 /* "acpi=noirq":  Disables ACPI interrupt routing.                  */
 /* "acpi=verbose": Enables more verbose ACPI boot time logging.     */
-static int parse_acpi_param(const char *s);
-custom_param("acpi", parse_acpi_param);
 
 /* **** Linux config option: propagated to domain0. */
 /* noapic: Disable IOAPIC setup. */
@@ -110,7 +107,7 @@ static bool __initdata opt_xen_ibt = true;
 #define opt_xen_ibt false
 #endif
 
-static int __init parse_cet(const char *s)
+static int __init cf_check parse_cet(const char *s)
 {
     const char *ss;
     int val, rc = 0;
@@ -150,10 +147,14 @@ cpumask_t __read_mostly cpu_present_map;
 
 unsigned long __read_mostly xen_phys_start;
 
-unsigned long __read_mostly xen_virt_end;
-
 char __section(".init.bss.stack_aligned") __aligned(STACK_SIZE)
     cpu0_stack[STACK_SIZE];
+
+/* Used by the BSP/AP paths to find the higher half stack mapping to use. */
+void *stack_start = cpu0_stack + STACK_SIZE - sizeof(struct cpu_info);
+
+/* Used by the boot asm to stash the relocated multiboot info pointer. */
+unsigned int __initdata multiboot_ptr;
 
 struct cpuinfo_x86 __read_mostly boot_cpu_data = { 0, 0, 0, 0, -1 };
 
@@ -169,7 +170,7 @@ static s8 __initdata opt_smep = -1;
  */
 static struct domain *__initdata dom0;
 
-static int __init parse_smep_param(const char *s)
+static int __init cf_check parse_smep_param(const char *s)
 {
     if ( !*s )
     {
@@ -200,7 +201,7 @@ custom_param("smep", parse_smep_param);
 #define SMAP_HVM_ONLY (-2)
 static s8 __initdata opt_smap = -1;
 
-static int __init parse_smap_param(const char *s)
+static int __init cf_check parse_smap_param(const char *s)
 {
     if ( !*s )
     {
@@ -231,7 +232,7 @@ bool __read_mostly acpi_disabled;
 bool __initdata acpi_force;
 static char __initdata acpi_param[10] = "";
 
-static int __init parse_acpi_param(const char *s)
+static int __init cf_check parse_acpi_param(const char *s)
 {
     /* Interpret the parameter for use within Xen. */
     if ( !parse_bool(s, NULL) )
@@ -267,6 +268,7 @@ static int __init parse_acpi_param(const char *s)
 
     return 0;
 }
+custom_param("acpi", parse_acpi_param);
 
 static const module_t *__initdata initial_images;
 static unsigned int __initdata nr_initial_images;
@@ -529,35 +531,7 @@ static void __init setup_max_pdx(unsigned long top_page)
 static struct e820map __initdata boot_e820;
 
 #ifdef CONFIG_VIDEO
-struct boot_video_info {
-    u8  orig_x;             /* 0x00 */
-    u8  orig_y;             /* 0x01 */
-    u8  orig_video_mode;    /* 0x02 */
-    u8  orig_video_cols;    /* 0x03 */
-    u8  orig_video_lines;   /* 0x04 */
-    u8  orig_video_isVGA;   /* 0x05 */
-    u16 orig_video_points;  /* 0x06 */
-
-    /* VESA graphic mode -- linear frame buffer */
-    u32 capabilities;       /* 0x08 */
-    u16 lfb_linelength;     /* 0x0c */
-    u16 lfb_width;          /* 0x0e */
-    u16 lfb_height;         /* 0x10 */
-    u16 lfb_depth;          /* 0x12 */
-    u32 lfb_base;           /* 0x14 */
-    u32 lfb_size;           /* 0x18 */
-    u8  red_size;           /* 0x1c */
-    u8  red_pos;            /* 0x1d */
-    u8  green_size;         /* 0x1e */
-    u8  green_pos;          /* 0x1f */
-    u8  blue_size;          /* 0x20 */
-    u8  blue_pos;           /* 0x21 */
-    u8  rsvd_size;          /* 0x22 */
-    u8  rsvd_pos;           /* 0x23 */
-    u16 vesapm_seg;         /* 0x24 */
-    u16 vesapm_off;         /* 0x26 */
-    u16 vesa_attrib;        /* 0x28 */
-};
+# include "boot/video.h"
 extern struct boot_video_info boot_vid_info;
 #endif
 
@@ -645,6 +619,10 @@ static void noreturn init_done(void)
 {
     void *va;
     unsigned long start, end;
+    int err;
+
+    if ( (err = xsm_set_system_active()) != 0 )
+        panic("xsm: unable to switch to SYSTEM_ACTIVE privilege: %d\n", err);
 
     system_state = SYS_STATE_active;
 
@@ -672,6 +650,11 @@ static void noreturn init_done(void)
     destroy_xen_mappings(start, end);
     init_xenheap_pages(__pa(start), __pa(end));
     printk("Freed %lukB init memory\n", (end - start) >> 10);
+
+    /* Mark .rodata/ro_after_init as RO.  Maybe reform the superpage. */
+    modify_xen_mappings((unsigned long)&__2M_rodata_start,
+                        (unsigned long)&__2M_rodata_end,
+                        PAGE_HYPERVISOR_RO);
 
     startup_cpu_idle_loop();
 }
@@ -791,6 +774,7 @@ static struct domain *__init create_dom0(const module_t *image,
     };
     struct domain *d;
     char *cmdline;
+    domid_t domid;
 
     if ( opt_dom0_pvh )
     {
@@ -805,10 +789,16 @@ static struct domain *__init create_dom0(const module_t *image,
     if ( iommu_enabled )
         dom0_cfg.flags |= XEN_DOMCTL_CDF_iommu;
 
-    /* Create initial domain 0. */
-    d = domain_create(get_initial_domain_id(), &dom0_cfg, !pv_shim);
-    if ( IS_ERR(d) || (alloc_dom0_vcpu0(d) == NULL) )
-        panic("Error creating domain 0\n");
+    /* Create initial domain.  Not d0 for pvshim. */
+    domid = get_initial_domain_id();
+    d = domain_create(domid, &dom0_cfg, pv_shim ? 0 : CDF_privileged);
+    if ( IS_ERR(d) )
+        panic("Error creating d%u: %ld\n", domid, PTR_ERR(d));
+
+    init_dom0_cpuid_policy(d);
+
+    if ( alloc_dom0_vcpu0(d) == NULL )
+        panic("Error creating d%uv0\n", domid);
 
     /* Grab the DOM0 command line. */
     cmdline = image->string ? __va(image->string) : NULL;
@@ -960,6 +950,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     ns16550.irq     = 3;
     ns16550_init(1, &ns16550);
     ehci_dbgp_init();
+    xhci_dbc_uart_init();
     console_init_preirq();
 
     if ( pvh_boot )
@@ -1297,7 +1288,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
             barrier();
             move_memory(e, XEN_IMG_OFFSET, _end - _start, 1);
 
-            /* Walk initial pagetables, relocating page directory entries. */
+            /* Walk idle_pg_table, relocating non-leaf entries. */
             pl4e = __va(__pa(idle_pg_table));
             for ( i = 0 ; i < L4_PAGETABLE_ENTRIES; i++, pl4e++ )
             {
@@ -1329,59 +1320,16 @@ void __init noreturn __start_xen(unsigned long mbi_p)
                 }
             }
 
-            /* The only data mappings to be relocated are in the Xen area. */
+            /* Walk l2_xenmap[], relocating 2M superpage leaves. */
             pl2e = __va(__pa(l2_xenmap));
-            /*
-             * Undo the temporary-hooking of the l1_directmap.  __2M_text_start
-             * is contained in this PTE.
-             */
-            BUG_ON(using_2M_mapping() &&
-                   l2_table_offset((unsigned long)_erodata) ==
-                   l2_table_offset((unsigned long)_stext));
-            *pl2e++ = l2e_from_pfn(xen_phys_start >> PAGE_SHIFT,
-                                   PAGE_HYPERVISOR_RX | _PAGE_PSE);
-            for ( i = 1; i < L2_PAGETABLE_ENTRIES; i++, pl2e++ )
+            for ( i = 0; i < L2_PAGETABLE_ENTRIES; i++, pl2e++ )
             {
-                unsigned int flags;
-
                 if ( !(l2e_get_flags(*pl2e) & _PAGE_PRESENT) ||
+                     !(l2e_get_flags(*pl2e) & _PAGE_PSE) ||
                      (l2e_get_pfn(*pl2e) >= pte_update_limit) )
                     continue;
 
-                if ( !using_2M_mapping() )
-                {
-                    *pl2e = l2e_from_intpte(l2e_get_intpte(*pl2e) +
-                                            xen_phys_start);
-                    continue;
-                }
-
-                if ( i < l2_table_offset((unsigned long)&__2M_text_end) )
-                {
-                    flags = PAGE_HYPERVISOR_RX | _PAGE_PSE;
-                }
-                else if ( i >= l2_table_offset((unsigned long)&__2M_rodata_start) &&
-                          i <  l2_table_offset((unsigned long)&__2M_rodata_end) )
-                {
-                    flags = PAGE_HYPERVISOR_RO | _PAGE_PSE;
-                }
-                else if ( i >= l2_table_offset((unsigned long)&__2M_init_start) &&
-                          i <  l2_table_offset((unsigned long)&__2M_init_end) )
-                {
-                    flags = PAGE_HYPERVISOR_RWX | _PAGE_PSE;
-                }
-                else if ( (i >= l2_table_offset((unsigned long)&__2M_rwdata_start) &&
-                           i <  l2_table_offset((unsigned long)&__2M_rwdata_end)) )
-                {
-                    flags = PAGE_HYPERVISOR_RW | _PAGE_PSE;
-                }
-                else
-                {
-                    *pl2e = l2e_empty();
-                    continue;
-                }
-
-                *pl2e = l2e_from_paddr(
-                    l2e_get_paddr(*pl2e) + xen_phys_start, flags);
+                *pl2e = l2e_from_intpte(l2e_get_intpte(*pl2e) + xen_phys_start);
             }
 
             /* Re-sync the stack and then switch to relocated pagetables. */
@@ -1623,36 +1571,34 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     }
 #endif
 
-    xen_virt_end = ((unsigned long)_end + (1UL << L2_PAGETABLE_SHIFT) - 1) &
-                   ~((1UL << L2_PAGETABLE_SHIFT) - 1);
-    destroy_xen_mappings(xen_virt_end, XEN_VIRT_START + BOOTSTRAP_MAP_BASE);
-
     /*
-     * If not using 2M mappings to gain suitable pagetable permissions
-     * directly from the relocation above, remap the code/data
-     * sections with decreased permissions.
+     * All Xen mappings are currently RWX 2M superpages.  Restrict to:
+     *   text          - RX
+     *   ro_after_init - RW for now, RO later
+     *   rodata        - RO
+     *   init          - keep RWX, discarded entirely later
+     *   data/bss      - RW
      */
+    modify_xen_mappings((unsigned long)&_start,
+                        (unsigned long)&__2M_text_end,
+                        PAGE_HYPERVISOR_RX);
+
+    modify_xen_mappings((unsigned long)&__ro_after_init_start,
+                        (unsigned long)&__ro_after_init_end,
+                        PAGE_HYPERVISOR_RW);
+
+    modify_xen_mappings((unsigned long)&__ro_after_init_end,
+                        (unsigned long)&__2M_rodata_end,
+                        PAGE_HYPERVISOR_RO);
+
+    modify_xen_mappings((unsigned long)&__2M_rwdata_start,
+                        (unsigned long)&__2M_rwdata_end,
+                        PAGE_HYPERVISOR_RW);
+
     if ( !using_2M_mapping() )
-    {
-        /* Mark .text as RX (avoiding the first 2M superpage). */
-        modify_xen_mappings(XEN_VIRT_START + MB(2),
-                            (unsigned long)&__2M_text_end,
-                            PAGE_HYPERVISOR_RX);
-
-        /* Mark .rodata as RO. */
-        modify_xen_mappings((unsigned long)&__2M_rodata_start,
-                            (unsigned long)&__2M_rodata_end,
-                            PAGE_HYPERVISOR_RO);
-
-        /* Mark .data and .bss as RW. */
-        modify_xen_mappings((unsigned long)&__2M_rwdata_start,
-                            (unsigned long)&__2M_rwdata_end,
-                            PAGE_HYPERVISOR_RW);
-
         /* Drop the remaining mappings in the shattered superpage. */
         destroy_xen_mappings((unsigned long)&__2M_rwdata_end,
                              ROUNDUP((unsigned long)&__2M_rwdata_end, MB(2)));
-    }
 
     nr_pages = 0;
     for ( i = 0; i < e820.nr_map; i++ )
@@ -1756,14 +1702,29 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     dmi_scan_machine();
 
-    generic_apic_probe();
-
     mmio_ro_ranges = rangeset_new(NULL, "r/o mmio ranges",
                                   RANGESETF_prettyprint_hex);
 
     xsm_multiboot_init(module_map, mbi);
 
+    /*
+     * IOMMU-related ACPI table parsing may require some of the system domains
+     * to be usable, e.g. for pci_hide_device()'s use of dom_xen.
+     */
     setup_system_domains();
+
+    /*
+     * IOMMU-related ACPI table parsing has to happen before APIC probing, for
+     * check_x2apic_preenabled() to be able to observe respective findings, in
+     * particular iommu_intremap having got turned off.
+     */
+    acpi_iommu_init();
+
+    /*
+     * APIC probing needs to happen before general ACPI table parsing, as e.g.
+     * generic_bigsmp_probe() may occur only afterwards.
+     */
+    generic_apic_probe();
 
     acpi_boot_init();
 
@@ -1877,8 +1838,6 @@ void __init noreturn __start_xen(unsigned long mbi_p)
     alternative_instructions();
 
     local_irq_enable();
-
-    vesa_mtrr_init();
 
     early_msi_init();
 
@@ -2091,8 +2050,8 @@ int __hwdom_init xen_in_range(unsigned long mfn)
     return 0;
 }
 
-static int __hwdom_init io_bitmap_cb(unsigned long s, unsigned long e,
-                                     void *ctx)
+static int __hwdom_init cf_check io_bitmap_cb(
+    unsigned long s, unsigned long e, void *ctx)
 {
     struct domain *d = ctx;
     unsigned int i;

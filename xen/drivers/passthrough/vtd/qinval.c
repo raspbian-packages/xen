@@ -227,12 +227,9 @@ static int __must_check dev_invalidate_sync(struct vtd_iommu *iommu,
 
     ASSERT(iommu->qinval_maddr);
     rc = queue_invalidate_wait(iommu, 0, 1, 1, 1);
-    if ( rc == -ETIMEDOUT )
+    if ( rc == -ETIMEDOUT && !pdev->broken )
     {
-        struct domain *d = NULL;
-
-        if ( test_bit(did, iommu->domid_bitmap) )
-            d = rcu_lock_domain_by_id(iommu->domid_map[did]);
+        struct domain *d = rcu_lock_domain_by_id(did_to_domain_id(iommu, did));
 
         /*
          * In case the domain has been freed or the IOMMU domid bitmap is
@@ -244,6 +241,12 @@ static int __must_check dev_invalidate_sync(struct vtd_iommu *iommu,
         iommu_dev_iotlb_flush_timeout(d, pdev);
         rcu_unlock_domain(d);
     }
+    else if ( rc == -ETIMEDOUT )
+        /*
+         * The device is already marked as broken, ignore the error in order to
+         * allow {de,}assign to succeed.
+         */
+        rc = 0;
 
     return rc;
 }
@@ -264,7 +267,7 @@ int qinval_device_iotlb_sync(struct vtd_iommu *iommu, struct pci_dev *pdev,
     qinval_entry->q.dev_iotlb_inv_dsc.lo.res_1 = 0;
     qinval_entry->q.dev_iotlb_inv_dsc.lo.max_invs_pend = pdev->ats.queue_depth;
     qinval_entry->q.dev_iotlb_inv_dsc.lo.res_2 = 0;
-    qinval_entry->q.dev_iotlb_inv_dsc.lo.sid = PCI_BDF2(pdev->bus, pdev->devfn);
+    qinval_entry->q.dev_iotlb_inv_dsc.lo.sid = pdev->sbdf.bdf;
     qinval_entry->q.dev_iotlb_inv_dsc.lo.res_3 = 0;
 
     qinval_entry->q.dev_iotlb_inv_dsc.hi.size = size;
@@ -325,9 +328,9 @@ int iommu_flush_iec_index(struct vtd_iommu *iommu, u8 im, u16 iidx)
     return queue_invalidate_iec_sync(iommu, IEC_INDEX_INVL, im, iidx);
 }
 
-static int __must_check flush_context_qi(struct vtd_iommu *iommu, u16 did,
-                                         u16 sid, u8 fm, u64 type,
-                                         bool flush_non_present_entry)
+static int __must_check cf_check flush_context_qi(
+    struct vtd_iommu *iommu, u16 did, u16 sid, u8 fm, u64 type,
+    bool flush_non_present_entry)
 {
     ASSERT(iommu->qinval_maddr);
 
@@ -349,11 +352,9 @@ static int __must_check flush_context_qi(struct vtd_iommu *iommu, u16 did,
                                          type >> DMA_CCMD_INVL_GRANU_OFFSET);
 }
 
-static int __must_check flush_iotlb_qi(struct vtd_iommu *iommu, u16 did,
-                                       u64 addr,
-                                       unsigned int size_order, u64 type,
-                                       bool flush_non_present_entry,
-                                       bool flush_dev_iotlb)
+static int __must_check cf_check flush_iotlb_qi(
+    struct vtd_iommu *iommu, u16 did, u64 addr, unsigned int size_order,
+    u64 type, bool flush_non_present_entry, bool flush_dev_iotlb)
 {
     u8 dr = 0, dw = 0;
     int ret = 0, rc;
@@ -464,18 +465,18 @@ int enable_qinval(struct vtd_iommu *iommu)
     return 0;
 }
 
-static int vtd_flush_context_noop(struct vtd_iommu *iommu, uint16_t did,
-                                  uint16_t source_id, uint8_t function_mask,
-                                  uint64_t type, bool flush_non_present_entry)
+static int cf_check vtd_flush_context_noop(
+    struct vtd_iommu *iommu, uint16_t did, uint16_t source_id,
+    uint8_t function_mask, uint64_t type, bool flush_non_present_entry)
 {
     WARN();
     return -EIO;
 }
 
-static int vtd_flush_iotlb_noop(struct vtd_iommu *iommu, uint16_t did,
-                                uint64_t addr, unsigned int size_order,
-                                uint64_t type, bool flush_non_present_entry,
-                                bool flush_dev_iotlb)
+static int cf_check vtd_flush_iotlb_noop(
+    struct vtd_iommu *iommu, uint16_t did, uint64_t addr,
+    unsigned int size_order, uint64_t type, bool flush_non_present_entry,
+    bool flush_dev_iotlb)
 {
     WARN();
     return -EIO;

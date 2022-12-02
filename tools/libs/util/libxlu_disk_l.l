@@ -122,7 +122,15 @@ static void setbackendtype(DiskParseContext *dpc, const char *str) {
     if (     !strcmp(str,"phy"))   DSET(dpc,backend,BACKEND,str,PHY);
     else if (!strcmp(str,"tap"))   DSET(dpc,backend,BACKEND,str,TAP);
     else if (!strcmp(str,"qdisk")) DSET(dpc,backend,BACKEND,str,QDISK);
+    else if (!strcmp(str,"standalone")) DSET(dpc,backend,BACKEND,str,STANDALONE);
     else xlu__disk_err(dpc,str,"unknown value for backendtype");
+}
+
+/* Sets ->specification from the string.  IDL should provide something for this. */
+static void setspecification(DiskParseContext *dpc, const char *str) {
+    if      (!strcmp(str,"xen"))    DSET(dpc,specification,SPECIFICATION,str,XEN);
+    else if (!strcmp(str,"virtio")) DSET(dpc,specification,SPECIFICATION,str,VIRTIO);
+    else xlu__disk_err(dpc,str,"unknown value for specification");
 }
 
 /* Sets ->colo-port from the string.  COLO need this. */
@@ -192,6 +200,7 @@ devtype=[^,]*,?	{ xlu__disk_err(DPC,yytext,"unknown value for type"); }
 access=[^,]*,?	{ STRIP(','); setaccess(DPC, FROMEQUALS); }
 backend=[^,]*,? { STRIP(','); SAVESTRING("backend", backend_domname, FROMEQUALS); }
 backendtype=[^,]*,? { STRIP(','); setbackendtype(DPC,FROMEQUALS); }
+specification=[^,]*,? { STRIP(','); setspecification(DPC,FROMEQUALS); }
 
 vdev=[^,]*,?	{ STRIP(','); SAVESTRING("vdev", vdev, FROMEQUALS); }
 script=[^,]*,?	{ STRIP(','); SAVESTRING("script", script, FROMEQUALS); }
@@ -207,6 +216,9 @@ colo-port=[^,]*,?	{ STRIP(','); setcoloport(DPC, FROMEQUALS); }
 colo-export=[^,]*,?	{ STRIP(','); SAVESTRING("colo-export", colo_export, FROMEQUALS); }
 active-disk=[^,]*,?	{ STRIP(','); SAVESTRING("active-disk", active_disk, FROMEQUALS); }
 hidden-disk=[^,]*,?	{ STRIP(','); SAVESTRING("hidden-disk", hidden_disk, FROMEQUALS); }
+
+trusted,?		{ libxl_defbool_set(&DPC->disk->trusted, true); }
+untrusted,?		{ libxl_defbool_set(&DPC->disk->trusted, false); }
 
  /* the target magic parameter, eats the rest of the string */
 

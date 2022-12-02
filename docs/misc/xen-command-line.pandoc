@@ -409,7 +409,7 @@ The following are examples of correct specifications:
 Specify the size of the console ring buffer.
 
 ### console
-> `= List of [ vga | com1[H,L] | com2[H,L] | pv | dbgp | none ]`
+> `= List of [ vga | com1[H,L] | com2[H,L] | pv | dbgp | ehci | xhci | none ]`
 
 > Default: `console=com1,vga`
 
@@ -428,7 +428,9 @@ cleared.  This allows a single port to be shared by two subsystems
 `pv` indicates that Xen should use Xen's PV console. This option is
 only available when used together with `pv-in-pvh`.
 
-`dbgp` indicates that Xen should use a USB debug port.
+`dbgp` or `ehci` indicates that Xen should use a USB2 debug port.
+
+`xhci` indicates that Xen should use a USB3 debug port.
 
 `none` indicates that Xen should not use a console.  This option only
 makes sense on its own.
@@ -721,9 +723,26 @@ Available alternatives, with their meaning, are:
 
 ### dbgp
 > `= ehci[ <integer> | @pci<bus>:<slot>.<func> ]`
+> `= xhci[ <integer> | @pci<bus>:<slot>.<func> ][,share=<bool>|hwdom]`
 
 Specify the USB controller to use, either by instance number (when going
 over the PCI busses sequentially) or by PCI device (must be on segment 0).
+
+Use `ehci` for EHCI debug port, use `xhci` for XHCI debug capability.
+XHCI driver will wait indefinitely for the debug host to connect - make sure
+the cable is connected.
+The `share` option for xhci controls who else can use the controller:
+* `no`: use the controller exclusively for console, even hardware domain
+  (dom0) cannot use it
+* `hwdom`: hardware domain may use the controller too, ports not used for debug
+  console will be available for normal devices; this is the default
+* `yes`: the controller can be assigned to any domain; it is not safe to assign
+  the controller to untrusted domain
+
+Choosing `share=hwdom` (the default) or `share=yes` allows a domain to reset the
+controller, which may cause small portion of the console output to be lost.
+
+The `share=yes` configuration is not security supported.
 
 ### debug_stack_lines
 > `= <integer>`
@@ -808,6 +827,22 @@ Controls for how dom0 is constructed on x86 systems.
     `dom0=msr-relaxed`.
 
     If using this option is necessary to fix an issue, please report a bug.
+
+### dom0-cpuid
+    = List of comma separated booleans
+
+    Applicability: x86
+
+This option allows for fine tuning of the facilities dom0 will use, after
+accounting for hardware capabilities and Xen settings as enumerated via CPUID.
+
+Options are accepted in positive and negative form, to enable or disable
+specific features.  All selections via this mechanism are subject to normal
+CPU Policy safety and dependency logic.
+
+This option is intended for developers to opt dom0 into non-default features,
+and is not intended for use in production circumstances.  If using this option
+is necessary to fix an issue, please report a bug.
 
 ### dom0-iommu
     = List of [ passthrough=<bool>, strict=<bool>, map-inclusive=<bool>,
@@ -1094,11 +1129,12 @@ to use the default.
 
 > Default : `true`
 
-Flag to enable or disable support for extended regions for Dom0.
+Flag to enable or disable support for extended regions for Dom0 and
+Dom0less DomUs.
 
-Extended regions are ranges of unused address space exposed to Dom0 as
-"safe to use" for special memory mappings. Disable if your board device
-tree is incomplete.
+Extended regions are ranges of unused address space exposed to the guest
+as "safe to use" for special memory mappings. Disable if your board
+device tree is incomplete.
 
 ### flask
 > `= permissive | enforcing | late | disabled`
@@ -1159,9 +1195,11 @@ does not provide `VM_ENTRY_LOAD_GUEST_PAT`.
 Specify which console gdbstub should use. See **console**.
 
 ### gnttab
-> `= List of [ max-ver:<integer>, transitive=<bool> ]`
+> `= List of [ max-ver:<integer>, transitive=<bool>, transfer=<bool> ]`
 
-> Default: `gnttab=max-ver:2,transitive`
+> Default (Arm): `gnttab=max-ver:1`
+> Default (x86,PV): `gnttab=max-ver:2,transitive,transfer`
+> Default (x86,HVM): `gnttab=max-ver:2,transitive`
 
 Control various aspects of the grant table behaviour available to guests.
 
@@ -1170,6 +1208,10 @@ version are 1 and 2.
 * `transitive` Permit or disallow the use of transitive grants.  Note that the
 use of grant table v2 without transitive grants is an ABI breakage from the
 guests point of view.
+* `transfer` Permit or disallow the GNTTABOP_transfer operation of the
+grant table hypercall.  Note that disallowing GNTTABOP_transfer is an ABI
+breakage from the guests point of view.  This option is only available on
+hypervisors configured to support PV guests.
 
 The usage of gnttab v2 is not security supported on ARM platforms.
 
@@ -1196,8 +1238,6 @@ Dom0 is using this value for sizing its grant table.
 Specify the maximum number of frames to use as part of a domains
 maptrack array. This value is an upper boundary of the per-domain
 value settable via Xen tools.
-
-Dom0 is using this value for sizing its maptrack table.
 
 ### global-pages
     = <boolean>
@@ -1384,7 +1424,7 @@ detection of systems known to misbehave upon accesses to that port.
 
 ### iommu
     = List of [ <bool>, verbose, debug, force, required, quarantine[=scratch-page],
-                sharept, intremap, intpost, crash-disable,
+                sharept, superpages, intremap, intpost, crash-disable,
                 snoop, qinval, igfx, amd-iommu-perdev-intremap,
                 dom0-{passthrough,strict} ]
 
@@ -1459,6 +1499,12 @@ boolean (e.g. `iommu=no`) can override this and leave the IOMMUs disabled.
     systems.
 
     This option is ignored on ARM, and the pagetables are always shared.
+
+*   The `superpages` boolean controls whether superpage mappings may be used
+    in IOMMU page tables.  If using this option is necessary to fix an issue,
+    please report a bug.
+
+    This option is only valid on x86.
 
 *   The `intremap` boolean controls the Interrupt Remapping sub-feature, and
     is active by default on compatible hardware.  On x86 systems, the first
@@ -1631,12 +1677,15 @@ with **crashinfo_maxaddr**.
 Specify the threshold below which Xen will inform dom0 that the quantity of
 free memory is getting low.  Specifying `0` will disable this notification.
 
-### maxcpus (x86)
+### maxcpus
 > `= <integer>`
 
 Specify the maximum number of CPUs that should be brought up.
 
 This option is ignored in **pv-shim** mode.
+
+**WARNING: On Arm big.LITTLE systems, when `hmp-unsafe` option is enabled, this command line
+option does not guarantee on which CPU types will be used.**
 
 ### max_cstate (x86)
 > `= <integer>[,<integer>]`
@@ -1661,10 +1710,23 @@ one pending bit to be allocated.
 Defaults to 20 bits (to cover at most 1048576 interrupts).
 
 ### mce (x86)
-> `= <integer>`
+> `= <boolean>`
+
+> Default: `true`
+
+Allows to disable the use of Machine Check Exceptions.  Note that doing
+so may result in silent shutdown of the system in case an event occurs
+which would have resulted in raising a Machine Check Exception.  Silent
+here is as far as Xen is concerned; firmware may offer to retrieve some
+collected data.
 
 ### mce_fb (Intel)
-> `= <integer>`
+> `= <boolean>`
+
+> Default: `false`
+
+Force broadcasting of Machine Check Exceptions, suppressing the use of
+Local MCE functionality available in newer Intel hardware.
 
 ### mce_verbosity (x86)
 > `= verbose`
@@ -1863,6 +1925,12 @@ paging controls access to usermode addresses.
 
 ### ple_window (Intel)
 > `= <integer>`
+
+### preferred-cstates (x86)
+> `= ( <integer> | List of ( C1 | C1E | C2 | ... )`
+
+This is a mask of C-states which are to be used preferably.  This option is
+applicable only on hardware were certain C-states are exclusive of one another.
 
 ### psr (Intel)
 > `= List of ( cmt:<boolean> | rmid_max:<integer> | cat:<boolean> | cos_max:<integer> | cdp:<boolean> )`
@@ -2304,10 +2372,12 @@ By default, Xen will use STIBP when IBRS is in use (IBRS implies STIBP), and
 when hardware hints recommend using it as a blanket setting.
 
 On hardware supporting SSBD (Speculative Store Bypass Disable), the `ssbd=`
-option can be used to force or prevent Xen using the feature itself.  On AMD
-hardware, this is a global option applied at boot, and not virtualised for
-guest use.  On Intel hardware, the feature is virtualised for guests,
-independently of Xen's choice of setting.
+option can be used to force or prevent Xen using the feature itself.  The
+feature is virtualised for guests, independently of Xen's choice of setting.
+On AMD hardware, disabling Xen SSBD usage on the command line (`ssbd=0` which
+is the default value) can lead to Xen running with the guest SSBD selection
+depending on hardware support, on the same hardware setting `ssbd=1` will
+result in SSBD always being enabled, regardless of guest choice.
 
 On hardware supporting PSFD (Predictive Store Forwarding Disable), the `psfd=`
 option can be used to force or prevent Xen using the feature itself.  By
@@ -2507,14 +2577,13 @@ PCPUs when using the credit1 scheduler. This prevents rapid fluttering
 of a VCPU between CPUs, and reduces the implicit overheads such as
 cache-warming. 1ms (1000) has been measured as a good value.
 
-### vesa-map
-> `= <integer>`
-
-### vesa-mtrr
-> `= <integer>`
-
 ### vesa-ram
 > `= <integer>`
+
+> Default: `0`
+
+This allows to override the amount of video RAM, in MiB, determined to be
+present.
 
 ### vga
 > `= ( ask | current | text-80x<rows> | gfx-<width>x<height>x<depth> | mode-<mode> )[,keep]`

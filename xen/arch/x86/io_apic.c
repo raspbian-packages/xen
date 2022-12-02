@@ -235,11 +235,19 @@ union entry_union {
 struct IO_APIC_route_entry __ioapic_read_entry(
     unsigned int apic, unsigned int pin, bool raw)
 {
-    unsigned int (*read)(unsigned int, unsigned int)
-        = raw ? __io_apic_read : io_apic_read;
     union entry_union eu;
-    eu.w1 = (*read)(apic, 0x10 + 2 * pin);
-    eu.w2 = (*read)(apic, 0x11 + 2 * pin);
+
+    if ( raw )
+    {
+        eu.w1 = __io_apic_read(apic, 0x10 + 2 * pin);
+        eu.w2 = __io_apic_read(apic, 0x11 + 2 * pin);
+    }
+    else
+    {
+        eu.w1 = io_apic_read(apic, 0x10 + 2 * pin);
+        eu.w2 = io_apic_read(apic, 0x11 + 2 * pin);
+    }
+
     return eu.entry;
 }
 
@@ -259,12 +267,18 @@ void __ioapic_write_entry(
     unsigned int apic, unsigned int pin, bool raw,
     struct IO_APIC_route_entry e)
 {
-    void (*write)(unsigned int, unsigned int, unsigned int)
-        = raw ? __io_apic_write : io_apic_write;
     union entry_union eu = { .entry = e };
 
-    (*write)(apic, 0x11 + 2*pin, eu.w2);
-    (*write)(apic, 0x10 + 2*pin, eu.w1);
+    if ( raw )
+    {
+        __io_apic_write(apic, 0x11 + 2 * pin, eu.w2);
+        __io_apic_write(apic, 0x10 + 2 * pin, eu.w1);
+    }
+    else
+    {
+        io_apic_write(apic, 0x11 + 2 * pin, eu.w2);
+        io_apic_write(apic, 0x10 + 2 * pin, eu.w1);
+    }
 }
 
 static void ioapic_write_entry(
@@ -459,7 +473,7 @@ static void __level_IO_APIC_irq (unsigned int irq)
     modify_IO_APIC_irq(irq, IO_APIC_REDIR_LEVEL_TRIGGER, 0);
 }
 
-static void mask_IO_APIC_irq(struct irq_desc *desc)
+static void cf_check mask_IO_APIC_irq(struct irq_desc *desc)
 {
     unsigned long flags;
 
@@ -468,7 +482,7 @@ static void mask_IO_APIC_irq(struct irq_desc *desc)
     spin_unlock_irqrestore(&ioapic_lock, flags);
 }
 
-static void unmask_IO_APIC_irq(struct irq_desc *desc)
+static void cf_check unmask_IO_APIC_irq(struct irq_desc *desc)
 {
     unsigned long flags;
 
@@ -553,7 +567,7 @@ static void clear_IO_APIC (void)
     }
 }
 
-static void
+static void cf_check
 set_ioapic_affinity_irq(struct irq_desc *desc, const cpumask_t *mask)
 {
     unsigned int dest;
@@ -1254,7 +1268,7 @@ static void __init print_IO_APIC(void)
         __print_IO_APIC(1);
 }
 
-static void _print_IO_APIC_keyhandler(unsigned char key)
+static void cf_check _print_IO_APIC_keyhandler(unsigned char key)
 {
     __print_IO_APIC(0);
 }
@@ -1533,7 +1547,7 @@ static int __init timer_irq_works(void)
  * This is not complete - we should be able to fake
  * an edge even if it isn't on the 8259A...
  */
-static unsigned int startup_edge_ioapic_irq(struct irq_desc *desc)
+static unsigned int cf_check startup_edge_ioapic_irq(struct irq_desc *desc)
 {
     int was_pending = 0;
     unsigned long flags;
@@ -1555,7 +1569,7 @@ static unsigned int startup_edge_ioapic_irq(struct irq_desc *desc)
  * interrupt for real. This prevents IRQ storms from unhandled
  * devices.
  */
-static void ack_edge_ioapic_irq(struct irq_desc *desc)
+static void cf_check ack_edge_ioapic_irq(struct irq_desc *desc)
 {
     irq_complete_move(desc);
     move_native_irq(desc);
@@ -1580,14 +1594,14 @@ static void ack_edge_ioapic_irq(struct irq_desc *desc)
  * generic IRQ layer and by the fact that an unacked local
  * APIC does not accept IRQs.
  */
-static unsigned int startup_level_ioapic_irq(struct irq_desc *desc)
+static unsigned int cf_check startup_level_ioapic_irq(struct irq_desc *desc)
 {
     unmask_IO_APIC_irq(desc);
 
     return 0; /* don't check for pending */
 }
 
-static int __init setup_ioapic_ack(const char *s)
+static int __init cf_check setup_ioapic_ack(const char *s)
 {
     if ( !strcmp(s, "old") )
     {
@@ -1638,7 +1652,7 @@ static bool io_apic_level_ack_pending(unsigned int irq)
     return 0;
 }
 
-static void mask_and_ack_level_ioapic_irq(struct irq_desc *desc)
+static void cf_check mask_and_ack_level_ioapic_irq(struct irq_desc *desc)
 {
     unsigned long v;
     int i;
@@ -1688,7 +1702,7 @@ static void mask_and_ack_level_ioapic_irq(struct irq_desc *desc)
     }
 }
 
-static void end_level_ioapic_irq_old(struct irq_desc *desc, u8 vector)
+static void cf_check end_level_ioapic_irq_old(struct irq_desc *desc, u8 vector)
 {
     if ( directed_eoi_enabled )
     {
@@ -1709,7 +1723,7 @@ static void end_level_ioapic_irq_old(struct irq_desc *desc, u8 vector)
         unmask_IO_APIC_irq(desc);
 }
 
-static void end_level_ioapic_irq_new(struct irq_desc *desc, u8 vector)
+static void cf_check end_level_ioapic_irq_new(struct irq_desc *desc, u8 vector)
 {
 /*
  * It appears there is an erratum which affects at least version 0x11
@@ -1793,7 +1807,7 @@ static inline void init_IO_APIC_traps(void)
             make_8259A_irq(irq);
 }
 
-static void enable_lapic_irq(struct irq_desc *desc)
+static void cf_check enable_lapic_irq(struct irq_desc *desc)
 {
     unsigned long v;
 
@@ -1801,7 +1815,7 @@ static void enable_lapic_irq(struct irq_desc *desc)
     apic_write(APIC_LVT0, v & ~APIC_LVT_MASKED);
 }
 
-static void disable_lapic_irq(struct irq_desc *desc)
+static void cf_check disable_lapic_irq(struct irq_desc *desc)
 {
     unsigned long v;
 
@@ -1809,7 +1823,7 @@ static void disable_lapic_irq(struct irq_desc *desc)
     apic_write(APIC_LVT0, v | APIC_LVT_MASKED);
 }
 
-static void ack_lapic_irq(struct irq_desc *desc)
+static void cf_check ack_lapic_irq(struct irq_desc *desc)
 {
     ack_APIC_irq();
 }
@@ -2443,10 +2457,10 @@ int ioapic_guest_write(unsigned long physbase, unsigned int reg, u32 val)
     }
     if ( pirq >= 0 )
     {
-        spin_lock(&hardware_domain->event_lock);
+        write_lock(&hardware_domain->event_lock);
         ret = map_domain_pirq(hardware_domain, pirq, irq,
                               MAP_PIRQ_TYPE_GSI, NULL);
-        spin_unlock(&hardware_domain->event_lock);
+        write_unlock(&hardware_domain->event_lock);
         if ( ret < 0 )
             return ret;
     }

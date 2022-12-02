@@ -75,7 +75,7 @@ static DEFINE_SPINLOCK(shr_audit_lock);
 static DEFINE_RCU_READ_LOCK(shr_audit_read_lock);
 
 /* RCU delayed free of audit list entry */
-static void _free_pg_shared_info(struct rcu_head *head)
+static void cf_check _free_pg_shared_info(struct rcu_head *head)
 {
     xfree(container_of(head, struct page_sharing_info, rcu_head));
 }
@@ -478,12 +478,12 @@ do {                                                    \
 #undef assign_pointers
 
     /* Now do the gets. */
-    *first_mfn  = __get_gfn_type_access(p2m_get_hostp2m(rval->first_domain),
-                                        gfn_x(rval->first_gfn), first_t,
-                                        first_a, q, NULL, lock);
-    *second_mfn = __get_gfn_type_access(p2m_get_hostp2m(rval->second_domain),
-                                        gfn_x(rval->second_gfn), second_t,
-                                        second_a, q, NULL, lock);
+    *first_mfn  = p2m_get_gfn_type_access(p2m_get_hostp2m(rval->first_domain),
+                                          rval->first_gfn, first_t,
+                                          first_a, q, NULL, lock);
+    *second_mfn = p2m_get_gfn_type_access(p2m_get_hostp2m(rval->second_domain),
+                                          rval->second_gfn, second_t,
+                                          second_a, q, NULL, lock);
 }
 
 static void put_two_gfns(const struct two_gfns *arg)
@@ -936,8 +936,8 @@ static int nominate_page(struct domain *d, gfn_t gfn,
             if ( !ap2m )
                 continue;
 
-            amfn = __get_gfn_type_access(ap2m, gfn_x(gfn), &ap2mt, &ap2ma,
-                                         0, NULL, false);
+            amfn = p2m_get_gfn_type_access(ap2m, gfn, &ap2mt, &ap2ma,
+                                           0, NULL, false);
             if ( mfn_valid(amfn) && (!mfn_eq(amfn, mfn) || ap2ma != p2ma) )
             {
                 altp2m_list_unlock(d);
@@ -1213,6 +1213,7 @@ int add_to_physmap(struct domain *sd, unsigned long sgfn, shr_handle_t sh,
     }
     else
     {
+#ifdef CONFIG_MEM_PAGING
         /*
          * There is a chance we're plugging a hole where a paged out
          * page was.
@@ -1238,6 +1239,7 @@ int add_to_physmap(struct domain *sd, unsigned long sgfn, shr_handle_t sh,
                 put_page(cpage);
             }
         }
+#endif
     }
 
     atomic_inc(&nr_saved_mfns);
@@ -1643,6 +1645,57 @@ static int bring_up_vcpus(struct domain *cd, struct domain *d)
     return 0;
 }
 
+static void copy_vcpu_nonreg_state(struct vcpu *d_vcpu, struct vcpu *cd_vcpu)
+{
+    struct hvm_vcpu_nonreg_state nrs = {};
+
+    hvm_get_nonreg_state(d_vcpu, &nrs);
+    hvm_set_nonreg_state(cd_vcpu, &nrs);
+}
+
+static int copy_vpmu(struct vcpu *d_vcpu, struct vcpu *cd_vcpu)
+{
+    struct vpmu_struct *d_vpmu = vcpu_vpmu(d_vcpu);
+    struct vpmu_struct *cd_vpmu = vcpu_vpmu(cd_vcpu);
+    int ret;
+
+    if ( !vpmu_are_all_set(d_vpmu, VPMU_INITIALIZED | VPMU_CONTEXT_ALLOCATED) )
+        return 0;
+    if ( (ret = vpmu_allocate_context(cd_vcpu)) )
+        return ret;
+
+    /*
+     * The VPMU subsystem only saves the context when the CPU does a context
+     * switch. Otherwise, the relevant MSRs are not saved on vmexit.
+     * We force a save here in case the parent CPU context is still loaded.
+     */
+    if ( vpmu_is_set(d_vpmu, VPMU_CONTEXT_LOADED) )
+    {
+        unsigned int pcpu = smp_processor_id();
+
+        if ( d_vpmu->last_pcpu != pcpu )
+        {
+            on_selected_cpus(cpumask_of(d_vpmu->last_pcpu),
+                             vpmu_save_force, d_vcpu, 1);
+            vpmu_reset(d_vpmu, VPMU_CONTEXT_LOADED);
+        }
+        else
+            vpmu_save(d_vcpu);
+    }
+
+    if ( vpmu_is_set(d_vpmu, VPMU_RUNNING) )
+        vpmu_set(cd_vpmu, VPMU_RUNNING);
+
+    /* Make sure context gets (re-)loaded when scheduled next */
+    vpmu_reset(cd_vpmu, VPMU_CONTEXT_LOADED);
+
+    memcpy(cd_vpmu->context, d_vpmu->context, d_vpmu->context_size);
+    memcpy(cd_vpmu->priv_context, d_vpmu->priv_context,
+           d_vpmu->priv_context_size);
+
+    return 0;
+}
+
 static int copy_vcpu_settings(struct domain *cd, const struct domain *d)
 {
     unsigned int i;
@@ -1651,7 +1704,7 @@ static int copy_vcpu_settings(struct domain *cd, const struct domain *d)
 
     for ( i = 0; i < cd->max_vcpus; i++ )
     {
-        const struct vcpu *d_vcpu = d->vcpu[i];
+        struct vcpu *d_vcpu = d->vcpu[i];
         struct vcpu *cd_vcpu = cd->vcpu[i];
         mfn_t vcpu_info_mfn;
 
@@ -1692,7 +1745,13 @@ static int copy_vcpu_settings(struct domain *cd, const struct domain *d)
             copy_domain_page(new_vcpu_info_mfn, vcpu_info_mfn);
         }
 
+        ret = copy_vpmu(d_vcpu, cd_vcpu);
+        if ( ret )
+            return ret;
+
         hvm_vmtrace_reset(cd_vcpu);
+
+        copy_vcpu_nonreg_state(d_vcpu, cd_vcpu);
 
         /*
          * TODO: to support VMs with PV interfaces copy additional
@@ -1879,14 +1938,20 @@ static int fork(struct domain *cd, struct domain *d)
  * footprints the hypercall continuation should be implemented (or if this
  * feature needs to be become "stable").
  */
-static int mem_sharing_fork_reset(struct domain *d)
+int mem_sharing_fork_reset(struct domain *d, bool reset_state,
+                           bool reset_memory)
 {
-    int rc;
+    int rc = 0;
     struct domain *pd = d->parent;
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
     struct page_info *page, *tmp;
 
+    ASSERT(reset_state || reset_memory);
+
     domain_pause(d);
+
+    if ( !reset_memory )
+        goto state;
 
     /* need recursive lock because we will free pages */
     spin_lock_recursive(&d->page_alloc_lock);
@@ -1920,7 +1985,9 @@ static int mem_sharing_fork_reset(struct domain *d)
     }
     spin_unlock_recursive(&d->page_alloc_lock);
 
-    rc = copy_settings(d, pd);
+ state:
+    if ( reset_state )
+        rc = copy_settings(d, pd);
 
     domain_unpause(d);
 
@@ -2227,15 +2294,21 @@ int mem_sharing_memop(XEN_GUEST_HANDLE_PARAM(xen_mem_sharing_op_t) arg)
 
     case XENMEM_sharing_op_fork_reset:
     {
+        bool reset_state = mso.u.fork.flags & XENMEM_FORK_RESET_STATE;
+        bool reset_memory = mso.u.fork.flags & XENMEM_FORK_RESET_MEMORY;
+
         rc = -EINVAL;
-        if ( mso.u.fork.pad || mso.u.fork.flags )
+        if ( mso.u.fork.pad || (!reset_state && !reset_memory) )
+            goto out;
+        if ( mso.u.fork.flags &
+             ~(XENMEM_FORK_RESET_STATE | XENMEM_FORK_RESET_MEMORY) )
             goto out;
 
         rc = -ENOSYS;
         if ( !d->parent )
             goto out;
 
-        rc = mem_sharing_fork_reset(d);
+        rc = mem_sharing_fork_reset(d, reset_state, reset_memory);
         break;
     }
 

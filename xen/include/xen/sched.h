@@ -165,6 +165,8 @@ struct vcpu_io {
      */
     bool                 suspended;
     ioreq_t              req;
+    /* Arch specific info pertaining to the io request */
+    struct arch_vcpu_io  info;
 };
 
 struct vcpu
@@ -379,6 +381,9 @@ struct domain
     struct page_list_head page_list;  /* linked list */
     struct page_list_head extra_page_list; /* linked list (size extra_pages) */
     struct page_list_head xenpage_list; /* linked list (size xenheap_pages) */
+#ifdef CONFIG_STATIC_MEMORY
+    struct page_list_head resv_page_list; /* linked list */
+#endif
 
     /*
      * This field should only be directly accessed by domain_adjust_tot_pages()
@@ -390,8 +395,14 @@ struct domain
     unsigned int     outstanding_pages; /* pages claimed but not possessed */
     unsigned int     max_pages;         /* maximum value for domain_tot_pages() */
     unsigned int     extra_pages;       /* pages not included in domain_tot_pages() */
+
+#ifdef CONFIG_MEM_SHARING
     atomic_t         shr_pages;         /* shared pages */
+#endif
+
+#ifdef CONFIG_MEM_PAGING
     atomic_t         paged_pages;       /* paged-out pages */
+#endif
 
     /* Scheduling. */
     void            *sched_priv;    /* scheduler-specific data */
@@ -421,7 +432,7 @@ struct domain
     unsigned int     xen_evtchns;
     /* Port to resume from in evtchn_reset(), when in a continuation. */
     unsigned int     next_evtchn;
-    spinlock_t       event_lock;
+    rwlock_t         event_lock;
     const struct evtchn_port_ops *evtchn_port_ops;
     struct evtchn_fifo_domain *evtchn_fifo;
 
@@ -511,7 +522,7 @@ struct domain
     /* hvm_print_line() and guest_console_write() logging. */
 #define DOMAIN_PBUF_SIZE 200
     char       *pbuf;
-    unsigned    pbuf_idx;
+    unsigned int pbuf_idx;
     spinlock_t  pbuf_lock;
 
     /* OProfile support. */
@@ -588,6 +599,9 @@ struct domain
         struct ioreq_server     *server[MAX_NR_IOREQ_SERVERS];
     } ioreq_server;
 #endif
+
+    /* Holding CDF_* constant. Internal flags for domain creation. */
+    unsigned int cdf;
 };
 
 static inline struct page_list_head *page_to_list(
@@ -677,7 +691,7 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config);
  */
 struct domain *domain_create(domid_t domid,
                              struct xen_domctl_createdomain *config,
-                             bool is_priv);
+                             unsigned int flags);
 
 /*
  * rcu_lock_domain_by_id() is more efficient than get_domain_by_id().
@@ -768,6 +782,17 @@ void sched_destroy_domain(struct domain *d);
 long sched_adjust(struct domain *, struct xen_domctl_scheduler_op *);
 long sched_adjust_global(struct xen_sysctl_scheduler_op *);
 int  sched_id(void);
+
+/*
+ * sched_get_id_by_name - retrieves a scheduler id given a scheduler name
+ * @sched_name: scheduler name as a string
+ *
+ * returns:
+ *     positive value being the scheduler id, on success
+ *     negative value if the scheduler name is not found.
+ */
+int sched_get_id_by_name(const char *sched_name);
+
 void vcpu_wake(struct vcpu *v);
 long vcpu_yield(void);
 void vcpu_sleep_nosync(struct vcpu *v);
@@ -932,26 +957,21 @@ static inline bool vcpu_cpu_dirty(const struct vcpu *v)
 
 void vcpu_block(void);
 void vcpu_unblock(struct vcpu *v);
+
 void vcpu_pause(struct vcpu *v);
 void vcpu_pause_nosync(struct vcpu *v);
 void vcpu_unpause(struct vcpu *v);
+
 int vcpu_pause_by_systemcontroller(struct vcpu *v);
 int vcpu_unpause_by_systemcontroller(struct vcpu *v);
 
 void domain_pause(struct domain *d);
 void domain_pause_nosync(struct domain *d);
 void domain_unpause(struct domain *d);
+
+int domain_pause_by_systemcontroller(struct domain *d);
+int domain_pause_by_systemcontroller_nosync(struct domain *d);
 int domain_unpause_by_systemcontroller(struct domain *d);
-int __domain_pause_by_systemcontroller(struct domain *d,
-                                       void (*pause_fn)(struct domain *d));
-static inline int domain_pause_by_systemcontroller(struct domain *d)
-{
-    return __domain_pause_by_systemcontroller(d, domain_pause);
-}
-static inline int domain_pause_by_systemcontroller_nosync(struct domain *d)
-{
-    return __domain_pause_by_systemcontroller(d, domain_pause_nosync);
-}
 
 /* domain_pause() but safe against trying to pause current. */
 int __must_check domain_pause_except_self(struct domain *d);
@@ -1161,9 +1181,51 @@ int cpupool_move_domain(struct domain *d, struct cpupool *c);
 int cpupool_do_sysctl(struct xen_sysctl_cpupool_op *op);
 unsigned int cpupool_get_id(const struct domain *d);
 const cpumask_t *cpupool_valid_cpus(const struct cpupool *pool);
-extern void dump_runq(unsigned char key);
+
+/*
+ * cpupool_create_pool - Creates a cpupool
+ * @pool_id: id of the pool to be created
+ * @sched_id: id of the scheduler to be used for the pool
+ *
+ * Creates a cpupool with pool_id id.
+ * The sched_id parameter identifies the scheduler to be used, if it is
+ * negative, the default scheduler of Xen will be used.
+ *
+ * returns:
+ *     pointer to the struct cpupool just created, or Xen will panic in case of
+ *     error
+ */
+struct cpupool *cpupool_create_pool(unsigned int pool_id, int sched_id);
+
+extern void cf_check dump_runq(unsigned char key);
 
 void arch_do_physinfo(struct xen_sysctl_physinfo *pi);
+
+#ifdef CONFIG_BOOT_TIME_CPUPOOLS
+void btcpupools_allocate_pools(void);
+unsigned int btcpupools_get_cpupool_id(unsigned int cpu);
+void btcpupools_dtb_parse(void);
+int btcpupools_get_domain_pool_id(const struct dt_device_node *node);
+
+#else /* !CONFIG_BOOT_TIME_CPUPOOLS */
+static inline void btcpupools_allocate_pools(void)
+{
+    cpupool0 = cpupool_create_pool(0, -1);
+}
+static inline void btcpupools_dtb_parse(void) {}
+static inline unsigned int btcpupools_get_cpupool_id(unsigned int cpu)
+{
+    return 0;
+}
+#ifdef CONFIG_HAS_DEVICE_TREE
+static inline int
+btcpupools_get_domain_pool_id(const struct dt_device_node *node)
+{
+    return 0;
+}
+#endif
+
+#endif
 
 #endif /* __SCHED_H__ */
 

@@ -11,6 +11,7 @@
 #include <xen/sched.h>
 #include <xen/smp.h>
 #include <xen/softirq.h>
+#include <asm/cache.h>
 #include <asm/flushtlb.h>
 #include <asm/invpcid.h>
 #include <asm/nops.h>

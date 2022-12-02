@@ -6,7 +6,9 @@ config X86
 	def_bool y
 	select ACPI
 	select ACPI_LEGACY_TABLES_LOOKUP
+	select ACPI_NUMA
 	select ALTERNATIVE_CALL
+	select ARCH_MAP_DOMAIN_PAGE
 	select ARCH_SUPPORTS_INT128
 	select CORE_PARKING
 	select HAS_ALTERNATIVE
@@ -26,7 +28,6 @@ config X86
 	select HAS_UBSAN
 	select HAS_VPCI if HVM
 	select NEEDS_LIBELF
-	select NUMA
 
 config ARCH_DEFCONFIG
 	string
@@ -43,7 +44,7 @@ config HAS_AS_CET_SS
 config HAS_CC_CET_IBT
 	# GCC >= 9 and binutils >= 2.29
 	# Retpoline check to work around https://gcc.gnu.org/bugzilla/show_bug.cgi?id=93654
-	def_bool $(cc-option,-fcf-protection=branch -mindirect-branch=thunk-extern) && $(as-instr,endbr64)
+	def_bool $(cc-option,-fcf-protection=branch -mmanual-endbr -mindirect-branch=thunk-extern) && $(as-instr,endbr64)
 
 menu "Architecture Features"
 
@@ -193,14 +194,15 @@ config HVM_FEP
 	  If unsure, say N.
 
 config TBOOT
-	bool "Xen tboot support (UNSUPPORTED)" if UNSUPPORTED
-	default y if !PV_SHIM_EXCLUSIVE
+	bool "Xen tboot support (UNSUPPORTED)"
+	depends on UNSUPPORTED
+	default !PV_SHIM_EXCLUSIVE
 	select CRYPTO
 	---help---
 	  Allows support for Trusted Boot using the Intel(R) Trusted Execution
 	  Technology (TXT)
 
-	  If unsure, say Y.
+	  If unsure, stay with the default.
 
 choice
 	prompt "Alignment of Xen image"
@@ -224,6 +226,24 @@ config XEN_ALIGN_2M
 	bool "2M alignment"
 
 endchoice
+
+config X2APIC_PHYSICAL
+	bool "x2APIC Physical Destination mode"
+	help
+	  Use x2APIC Physical Destination mode by default when available.
+
+	  When using this mode APICs are addressed using the Physical
+	  Destination mode, which allows using all dynamic vectors on each
+	  CPU independently.
+
+	  Physical Destination has the benefit of having more vectors available
+	  for external interrupts, but it also makes the delivery of multi
+	  destination inter processor interrupts (IPIs) slightly slower than
+	  Logical Destination mode.
+
+	  The mode when this option is not selected is Logical Destination.
+
+	  If unsure, say N.
 
 config GUEST
 	bool

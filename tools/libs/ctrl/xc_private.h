@@ -29,8 +29,6 @@
 #include <limits.h>
 #include <sys/ioctl.h>
 
-#include "_paths.h"
-
 #define XC_WANT_COMPAT_MAP_FOREIGN_API
 #define XC_INTERNAL_COMPAT_MAP_FOREIGN_API
 #include "xenctrl.h"
@@ -122,28 +120,18 @@ void xc_report_progress_step(xc_interface *xch,
 
 /* anamorphic macros:  struct xc_interface *xch  must be in scope */
 
-#define IPRINTF(_f, _a...)  do { int IPRINTF_errno = errno; \
-        xc_report(xch, xch->error_handler, XTL_INFO,0, _f , ## _a); \
-        errno = IPRINTF_errno; \
-        } while (0)
-#define DPRINTF(_f, _a...) do { int DPRINTF_errno = errno; \
-        xc_report(xch, xch->error_handler, XTL_DETAIL,0, _f , ## _a); \
-        errno = DPRINTF_errno; \
-        } while (0)
-#define DBGPRINTF(_f, _a...)  do { int DBGPRINTF_errno = errno; \
-        xc_report(xch, xch->error_handler, XTL_DEBUG,0, _f , ## _a); \
-        errno = DBGPRINTF_errno; \
-        } while (0)
+#define IPRINTF(_f, _a...) \
+        xc_report(xch, xch->error_handler, XTL_INFO, 0, _f, ## _a)
+#define DPRINTF(_f, _a...) \
+        xc_report(xch, xch->error_handler, XTL_DETAIL, 0, _f, ## _a)
+#define DBGPRINTF(_f, _a...) \
+        xc_report(xch, xch->error_handler, XTL_DEBUG, 0, _f, ## _a)
 
-#define ERROR(_m, _a...)  do { int ERROR_errno = errno; \
-        xc_report_error(xch,XC_INTERNAL_ERROR,_m , ## _a ); \
-        errno = ERROR_errno; \
-        } while (0)
-#define PERROR(_m, _a...) do { int PERROR_errno = errno; \
-        xc_report_error(xch,XC_INTERNAL_ERROR,_m " (%d = %s)", \
-        ## _a , errno, xc_strerror(xch, errno)); \
-        errno = PERROR_errno; \
-        } while (0)
+#define ERROR(_m, _a...) \
+        xc_report_error(xch, XC_INTERNAL_ERROR, _m, ## _a)
+#define PERROR(_m, _a...) \
+        xc_report_error(xch, XC_INTERNAL_ERROR, _m " (%d = %s)", \
+                        ## _a, errno, xc_strerror(xch, errno))
 
 /*
  * HYPERCALL ARGUMENT BUFFERS
@@ -378,8 +366,6 @@ static inline int do_multicall_op(xc_interface *xch,
 
     return ret;
 }
-
-long do_memory_op(xc_interface *xch, int cmd, void *arg, size_t len);
 
 void *xc_map_foreign_ranges(xc_interface *xch, uint32_t dom,
                             size_t size, int prot, size_t chunksize,

@@ -29,14 +29,14 @@
 #include <asm/time.h>
 #include <asm/vgic.h>
 #include <asm/vreg.h>
-#include <asm/regs.h>
+#include <asm/vtimer.h>
 
 /*
  * Check if regs is allowed access, user_gate is tail end of a
  * CNTKCTL_EL1_ bit name which gates user access
  */
 #define ACCESS_ALLOWED(regs, user_gate) \
-    ( !psr_mode_is_user(regs) || \
+    ( !regs_mode_is_user(regs) || \
       (READ_SYSREG(CNTKCTL_EL1) & CNTKCTL_EL1_##user_gate) )
 
 static void phys_timer_expired(void *data)

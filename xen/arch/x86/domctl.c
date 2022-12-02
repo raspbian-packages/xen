@@ -20,6 +20,8 @@
 #include <xen/console.h>
 #include <xen/iocap.h>
 #include <xen/paging.h>
+
+#include <asm/gdbsx.h>
 #include <asm/irq.h>
 #include <asm/hvm/emulate.h>
 #include <asm/hvm/hvm.h>
@@ -33,19 +35,8 @@
 #include <public/vm_event.h>
 #include <asm/mem_sharing.h>
 #include <asm/xstate.h>
-#include <asm/debugger.h>
 #include <asm/psr.h>
 #include <asm/cpuid.h>
-
-#ifdef CONFIG_GDBSX
-static int gdbsx_guest_mem_io(domid_t domid, struct xen_domctl_gdbsx_memio *iop)
-{
-    iop->remain = dbg_rw_mem(iop->gva, guest_handle_from_ptr(iop->uva, void),
-                             iop->len, domid, iop->gwr, iop->pgd3val);
-
-    return iop->remain ? -EFAULT : 0;
-}
-#endif
 
 static int update_domain_cpu_policy(struct domain *d,
                                     xen_domctl_cpu_policy_t *xdpc)
@@ -221,8 +212,8 @@ long arch_do_domctl(
     case XEN_DOMCTL_shadow_op:
         ret = paging_domctl(d, &domctl->u.shadow_op, u_domctl, 0);
         if ( ret == -ERESTART )
-            return hypercall_create_continuation(__HYPERVISOR_arch_1,
-                                                 "h", u_domctl);
+            return hypercall_create_continuation(
+                       __HYPERVISOR_paging_domctl_cont, "h", u_domctl);
         copyback = true;
         break;
 
@@ -241,8 +232,6 @@ long arch_do_domctl(
             ret = ioports_permit_access(d, fp, fp + np - 1);
         else
             ret = ioports_deny_access(d, fp, fp + np - 1);
-        if ( !ret )
-            memory_type_changed(d);
         break;
     }
 
@@ -675,8 +664,6 @@ long arch_do_domctl(
                        "ioport_map: error %ld denying dom%d access to [%x,%x]\n",
                        ret, d->domain_id, fmp, fmp + np - 1);
         }
-        if ( !ret )
-            memory_type_changed(d);
         break;
     }
 
@@ -827,8 +814,7 @@ long arch_do_domctl(
 
 #ifdef CONFIG_GDBSX
     case XEN_DOMCTL_gdbsx_guestmemio:
-        domctl->u.gdbsx_guest_memio.remain = domctl->u.gdbsx_guest_memio.len;
-        ret = gdbsx_guest_mem_io(domctl->domain, &domctl->u.gdbsx_guest_memio);
+        ret = gdbsx_guest_mem_io(d, &domctl->u.gdbsx_guest_memio);
         if ( !ret )
            copyback = true;
         break;
@@ -1447,6 +1433,7 @@ void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
     if ( is_hvm_domain(d) )
     {
         struct segment_register sreg;
+        unsigned long gs_shadow;
 
         c.nat->ctrlreg[0] = v->arch.hvm.guest_cr[0];
         c.nat->ctrlreg[2] = v->arch.hvm.guest_cr[2];
@@ -1465,15 +1452,18 @@ void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
         c.nat->fs_base = sreg.base;
         hvm_get_segment_register(v, x86_seg_gs, &sreg);
         c.nat->user_regs.gs = sreg.sel;
+
+        gs_shadow = hvm_get_reg(v, MSR_SHADOW_GS_BASE);
+
         if ( ring_0(&c.nat->user_regs) )
         {
             c.nat->gs_base_kernel = sreg.base;
-            c.nat->gs_base_user = hvm_get_shadow_gs_base(v);
+            c.nat->gs_base_user = gs_shadow;
         }
         else
         {
             c.nat->gs_base_user = sreg.base;
-            c.nat->gs_base_kernel = hvm_get_shadow_gs_base(v);
+            c.nat->gs_base_kernel = gs_shadow;
         }
     }
     else

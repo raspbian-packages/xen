@@ -46,10 +46,10 @@ void vpci_write(pci_sbdf_t sbdf, unsigned int reg, unsigned int size,
                 uint32_t data);
 
 /* Passthrough handlers. */
-uint32_t vpci_hw_read16(const struct pci_dev *pdev, unsigned int reg,
-                        void *data);
-uint32_t vpci_hw_read32(const struct pci_dev *pdev, unsigned int reg,
-                        void *data);
+uint32_t cf_check vpci_hw_read16(
+    const struct pci_dev *pdev, unsigned int reg, void *data);
+uint32_t cf_check vpci_hw_read32(
+    const struct pci_dev *pdev, unsigned int reg, void *data);
 
 /*
  * Check for pending vPCI operations on this vcpu. Returns true if the vcpu
@@ -80,8 +80,6 @@ struct vpci {
             bool prefetchable : 1;
             /* Store whether the BAR is mapped into guest p2m. */
             bool enabled      : 1;
-#define PCI_HEADER_NORMAL_NR_BARS        6
-#define PCI_HEADER_BRIDGE_NR_BARS        2
         } bars[PCI_HEADER_NORMAL_NR_BARS + 1];
         /* At most 6 BARS + 1 expansion ROM BAR. */
 
@@ -90,6 +88,12 @@ struct vpci {
          * is mapped into guest p2m) if there's a ROM BAR on the device.
          */
         bool rom_enabled      : 1;
+        /*
+         * Cache whether memory decoding is enabled from our PoV.
+         * Some devices have a sticky memory decoding so that can't be relied
+         * upon to know whether BARs are mapped into the guest p2m.
+         */
+        bool bars_mapped      : 1;
         /* FIXME: currently there's no support for SR-IOV. */
     } header;
 
@@ -249,7 +253,7 @@ static inline void vpci_write(pci_sbdf_t sbdf, unsigned int reg,
     ASSERT_UNREACHABLE();
 }
 
-static inline bool vpci_process_pending(struct vcpu *v)
+static inline bool __must_check vpci_process_pending(struct vcpu *v)
 {
     ASSERT_UNREACHABLE();
     return false;

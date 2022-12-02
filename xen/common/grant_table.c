@@ -33,6 +33,7 @@
 #include <xen/trace.h>
 #include <xen/grant_table.h>
 #include <xen/guest_access.h>
+#include <xen/hypercall.h>
 #include <xen/domain_page.h>
 #include <xen/iommu.h>
 #include <xen/paging.h>
@@ -43,6 +44,10 @@
 #include <xsm/xsm.h>
 #include <asm/flushtlb.h>
 #include <asm/guest_atomics.h>
+
+#ifdef CONFIG_PV_SHIM
+#include <asm/guest.h>
+#endif
 
 /* Per-domain grant information. */
 struct grant_table {
@@ -93,9 +98,7 @@ struct grant_table {
     struct radix_tree_root maptrack_tree;
 
     /* Domain to which this struct grant_table belongs. */
-    const struct domain *domain;
-
-    struct grant_table_arch arch;
+    struct domain *domain;
 };
 
 unsigned int __read_mostly opt_max_grant_frames = 64;
@@ -113,12 +116,12 @@ static void update_gnttab_par(unsigned int val, struct param_hypfs *par,
     custom_runtime_set_var_sz(par, parval, GRANT_CUSTOM_VAL_SZ);
 }
 
-static void __init gnttab_max_frames_init(struct param_hypfs *par)
+static void __init cf_check gnttab_max_frames_init(struct param_hypfs *par)
 {
     update_gnttab_par(opt_max_grant_frames, par, opt_max_grant_frames_val);
 }
 
-static void __init max_maptrack_frames_init(struct param_hypfs *par)
+static void __init cf_check max_maptrack_frames_init(struct param_hypfs *par)
 {
     update_gnttab_par(opt_max_maptrack_frames, par,
                       opt_max_maptrack_frames_val);
@@ -152,23 +155,23 @@ static int parse_gnttab_limit(const char *arg, unsigned int *valp,
     return 0;
 }
 
-static int parse_gnttab_max_frames(const char *arg);
+static int cf_check parse_gnttab_max_frames(const char *arg);
 custom_runtime_param("gnttab_max_frames", parse_gnttab_max_frames,
                      gnttab_max_frames_init);
 
-static int parse_gnttab_max_frames(const char *arg)
+static int cf_check parse_gnttab_max_frames(const char *arg)
 {
     return parse_gnttab_limit(arg, &opt_max_grant_frames,
                               param_2_parfs(parse_gnttab_max_frames),
                               opt_max_grant_frames_val);
 }
 
-static int parse_gnttab_max_maptrack_frames(const char *arg);
+static int cf_check parse_gnttab_max_maptrack_frames(const char *arg);
 custom_runtime_param("gnttab_max_maptrack_frames",
                      parse_gnttab_max_maptrack_frames,
                      max_maptrack_frames_init);
 
-static int parse_gnttab_max_maptrack_frames(const char *arg)
+static int cf_check parse_gnttab_max_maptrack_frames(const char *arg)
 {
     return parse_gnttab_limit(arg, &opt_max_maptrack_frames,
                               param_2_parfs(parse_gnttab_max_maptrack_frames),
@@ -181,8 +184,13 @@ static int parse_gnttab_max_maptrack_frames(const char *arg)
 
 unsigned int __read_mostly opt_gnttab_max_version = GNTTAB_MAX_VERSION;
 static bool __read_mostly opt_transitive_grants = true;
+#ifdef CONFIG_PV
+static bool __ro_after_init opt_grant_transfer = true;
+#else
+#define opt_grant_transfer false
+#endif
 
-static int __init parse_gnttab(const char *s)
+static int __init cf_check parse_gnttab(const char *s)
 {
     const char *ss, *e;
     int val, rc = 0;
@@ -204,6 +212,10 @@ static int __init parse_gnttab(const char *s)
         }
         else if ( (val = parse_boolean("transitive", s, ss)) >= 0 )
             opt_transitive_grants = val;
+#ifndef opt_grant_transfer
+        else if ( (val = parse_boolean("transfer", s, ss)) >= 0 )
+            opt_grant_transfer = val;
+#endif
         else
             rc = -EINVAL;
 
@@ -881,7 +893,7 @@ done:
 static int _set_status(const grant_entry_header_t *shah,
                        grant_status_t *status,
                        struct domain *rd,
-                       unsigned rgt_version,
+                       unsigned int rgt_version,
                        struct active_grant_entry *act,
                        int readonly,
                        int mapflag,
@@ -1749,8 +1761,8 @@ static int
 gnttab_populate_status_frames(struct domain *d, struct grant_table *gt,
                               unsigned int req_nr_frames)
 {
-    unsigned i;
-    unsigned req_status_frames;
+    unsigned int i;
+    unsigned int req_status_frames;
 
     req_status_frames = grant_to_status_frames(req_nr_frames);
 
@@ -1803,8 +1815,8 @@ gnttab_unpopulate_status_frames(struct domain *d, struct grant_table *gt)
         {
             int rc = gfn_eq(gfn, INVALID_GFN)
                      ? 0
-                     : guest_physmap_remove_page(d, gfn,
-                                                 page_to_mfn(pg), 0);
+                     : gnttab_set_frame_gfn(gt, true, i, INVALID_GFN,
+                                            page_to_mfn(pg));
 
             if ( rc )
             {
@@ -1814,7 +1826,6 @@ gnttab_unpopulate_status_frames(struct domain *d, struct grant_table *gt)
                 domain_crash(d);
                 return rc;
             }
-            gnttab_set_frame_gfn(gt, true, i, INVALID_GFN);
         }
 
         BUG_ON(page_get_owner(pg) != d);
@@ -2005,14 +2016,9 @@ int grant_table_init(struct domain *d, int max_grant_frames,
 
     grant_write_lock(gt);
 
-    ret = gnttab_init_arch(gt);
-    if ( ret )
-        goto unlock;
-
     /* gnttab_grow_table() allocates a min number of frames, so 0 is okay. */
     ret = gnttab_grow_table(d, 0);
 
- unlock:
     grant_write_unlock(gt);
 
  out:
@@ -2233,6 +2239,9 @@ gnttab_transfer(
     mfn_t mfn;
     unsigned int max_bitsize;
     struct active_grant_entry *act;
+
+    if ( !opt_grant_transfer )
+        return -EOPNOTSUPP;
 
     for ( i = 0; i < count; i++ )
     {
@@ -3556,12 +3565,16 @@ gnttab_cache_flush(XEN_GUEST_HANDLE_PARAM(gnttab_cache_flush_t) uop,
     return 0;
 }
 
-long
-do_grant_table_op(
+long do_grant_table_op(
     unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) uop, unsigned int count)
 {
     long rc;
     unsigned int opaque_in = cmd & GNTTABOP_ARG_MASK, opaque_out = 0;
+
+#ifdef CONFIG_PV_SHIM
+    if ( unlikely(pv_shim) )
+        return pv_shim_grant_table_op(cmd, uop, count);
+#endif
 
     if ( (int)count < 0 )
         return -EINVAL;
@@ -3932,8 +3945,6 @@ grant_table_destroy(
     if ( t == NULL )
         return;
 
-    gnttab_destroy_arch(t);
-
     for ( i = 0; i < nr_grant_frames(t); i++ )
         free_xenheap_page(t->shared_raw[i]);
     xfree(t->shared_raw);
@@ -4170,6 +4181,12 @@ int gnttab_map_frame(struct domain *d, unsigned long idx, gfn_t gfn, mfn_t *mfn)
     struct grant_table *gt = d->grant_table;
     bool status = false;
 
+    if ( gfn_eq(gfn, INVALID_GFN) )
+    {
+        ASSERT_UNREACHABLE();
+        return -EINVAL;
+    }
+
     grant_write_lock(gt);
 
     if ( evaluate_nospec(gt->gt_version == 2) && (idx & XENMAPIDX_grant_table_status) )
@@ -4182,24 +4199,18 @@ int gnttab_map_frame(struct domain *d, unsigned long idx, gfn_t gfn, mfn_t *mfn)
     else
         rc = gnttab_get_shared_frame_mfn(d, idx, mfn);
 
-    if ( !rc && paging_mode_translate(d) )
-    {
-        gfn_t gfn = gnttab_get_frame_gfn(gt, status, idx);
-
-        if ( !gfn_eq(gfn, INVALID_GFN) )
-            rc = guest_physmap_remove_page(d, gfn, *mfn, 0);
-    }
-
     if ( !rc )
     {
+        struct page_info *pg = mfn_to_page(*mfn);
+
         /*
          * Make sure gnttab_unpopulate_status_frames() won't (successfully)
          * free the page until our caller has completed its operation.
          */
-        if ( get_page(mfn_to_page(*mfn), d) )
-            gnttab_set_frame_gfn(gt, status, idx, gfn);
-        else
+        if ( !get_page(pg, d) )
             rc = -EBUSY;
+        else if ( (rc = gnttab_set_frame_gfn(gt, status, idx, gfn, *mfn)) )
+            put_page(pg);
     }
 
     grant_write_unlock(gt);
@@ -4268,7 +4279,7 @@ static void gnttab_usage_print(struct domain *rd)
         printk("no active grant table entries\n");
 }
 
-static void gnttab_usage_print_all(unsigned char key)
+static void cf_check gnttab_usage_print_all(unsigned char key)
 {
     struct domain *d;
 
@@ -4284,7 +4295,7 @@ static void gnttab_usage_print_all(unsigned char key)
     printk("%s ] done\n", __func__);
 }
 
-static int __init gnttab_usage_init(void)
+static int __init cf_check gnttab_usage_init(void)
 {
     register_keyhandler('g', gnttab_usage_print_all,
                         "print grant table usage", 1);

@@ -5,9 +5,9 @@
 XEN_ROOT = $(CURDIR)/../..
 include $(XEN_ROOT)/tools/Rules.mk
 
-CFLAGS += -Werror -Wno-format-zero-length -Wmissing-declarations \
+CFLAGS += -Wno-format-zero-length -Wmissing-declarations \
 	-Wno-declaration-after-statement -Wformat-nonliteral
-CFLAGS += -I. -fPIC
+CFLAGS += -fPIC
 
 CFLAGS += $(PTHREAD_CFLAGS)
 LDFLAGS += $(PTHREAD_LDFLAGS)
@@ -29,11 +29,6 @@ $(XL_OBJS): CFLAGS += $(CFLAGS_libxentoollog)
 $(XL_OBJS): CFLAGS += $(CFLAGS_XL)
 $(XL_OBJS): CFLAGS += -include $(XEN_ROOT)/tools/config.h # libxl_json.h needs it.
 
-genpath-target = $(call buildmakevars2header,_paths.h)
-$(eval $(genpath-target))
-
-$(XL_OBJS): _paths.h
-
 .PHONY: all
 all: xl
 
@@ -54,7 +49,7 @@ uninstall:
 
 .PHONY: clean
 clean:
-	$(RM) -f *.o xl _paths.h $(DEPS_RM)
+	$(RM) *.o xl $(DEPS_RM)
 
 distclean: clean
 

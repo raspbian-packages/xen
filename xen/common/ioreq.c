@@ -25,9 +25,7 @@
 #include <xen/lib.h>
 #include <xen/paging.h>
 #include <xen/sched.h>
-#include <xen/softirq.h>
 #include <xen/trace.h>
-#include <xen/vpci.h>
 
 #include <asm/guest_atomics.h>
 #include <asm/ioreq.h>
@@ -212,18 +210,11 @@ static bool wait_for_io(struct ioreq_vcpu *sv, ioreq_t *p)
 
 bool vcpu_ioreq_handle_completion(struct vcpu *v)
 {
-    struct domain *d = v->domain;
     struct vcpu_io *vio = &v->io;
     struct ioreq_server *s;
     struct ioreq_vcpu *sv;
     enum vio_completion completion;
     bool res = true;
-
-    if ( has_vpci(d) && vpci_process_pending(v) )
-    {
-        raise_softirq(SCHEDULE_SOFTIRQ);
-        return false;
-    }
 
     while ( (sv = get_pending_vcpu(v, &s)) != NULL )
         if ( !wait_for_io(sv, get_ioreq(s, v)) )
@@ -510,13 +501,17 @@ static int ioreq_server_alloc_rangesets(struct ioreq_server *s,
 
     for ( i = 0; i < NR_IO_RANGE_TYPES; i++ )
     {
-        char *name;
+        char *name, *type;
 
-        rc = asprintf(&name, "ioreq_server %d %s", id,
-                      (i == XEN_DMOP_IO_RANGE_PORT) ? "port" :
-                      (i == XEN_DMOP_IO_RANGE_MEMORY) ? "memory" :
-                      (i == XEN_DMOP_IO_RANGE_PCI) ? "pci" :
-                      "");
+        switch ( i )
+        {
+        case XEN_DMOP_IO_RANGE_PORT:   type = " port";   break;
+        case XEN_DMOP_IO_RANGE_MEMORY: type = " memory"; break;
+        case XEN_DMOP_IO_RANGE_PCI:    type = " pci";    break;
+        default:                       type = "";        break;
+        }
+
+        rc = xasprintf(&name, "ioreq_server %d%s", id, type);
         if ( rc )
             goto fail;
 

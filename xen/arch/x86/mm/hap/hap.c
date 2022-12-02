@@ -179,7 +179,7 @@ out:
  * NB: Domain that having device assigned should not set log_global. Because
  * there is no way to track the memory updating from device.
  */
-static int hap_enable_log_dirty(struct domain *d, bool_t log_global)
+static int cf_check hap_enable_log_dirty(struct domain *d, bool log_global)
 {
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
 
@@ -210,7 +210,7 @@ static int hap_enable_log_dirty(struct domain *d, bool_t log_global)
     return 0;
 }
 
-static int hap_disable_log_dirty(struct domain *d)
+static int cf_check hap_disable_log_dirty(struct domain *d)
 {
     paging_lock(d);
     d->arch.paging.mode &= ~PG_log_dirty;
@@ -227,7 +227,7 @@ static int hap_disable_log_dirty(struct domain *d)
     return 0;
 }
 
-static void hap_clean_dirty_bitmap(struct domain *d)
+static void cf_check hap_clean_dirty_bitmap(struct domain *d)
 {
     /*
      * Switch to log-dirty mode, either by setting l1e entries of P2M table to
@@ -282,7 +282,7 @@ static void hap_free(struct domain *d, mfn_t mfn)
     page_list_add_tail(pg, &d->arch.paging.hap.freelist);
 }
 
-static struct page_info *hap_alloc_p2m_page(struct domain *d)
+static struct page_info *cf_check hap_alloc_p2m_page(struct domain *d)
 {
     struct page_info *pg;
 
@@ -308,7 +308,7 @@ static struct page_info *hap_alloc_p2m_page(struct domain *d)
     return pg;
 }
 
-static void hap_free_p2m_page(struct domain *d, struct page_info *pg)
+static void cf_check hap_free_p2m_page(struct domain *d, struct page_info *pg)
 {
     struct domain *owner = page_get_owner(pg);
 
@@ -343,6 +343,17 @@ unsigned int hap_get_allocation(struct domain *d)
 
     return ((pg >> (20 - PAGE_SHIFT))
             + ((pg & ((1 << (20 - PAGE_SHIFT)) - 1)) ? 1 : 0));
+}
+
+int hap_get_allocation_bytes(struct domain *d, uint64_t *size)
+{
+    unsigned long pages = d->arch.paging.hap.total_pages;
+
+    pages += d->arch.paging.hap.p2m_pages;
+
+    *size = pages << PAGE_SHIFT;
+
+    return 0;
 }
 
 /* Set the pool of pages to the required number of pages.
@@ -700,8 +711,8 @@ void hap_vcpu_init(struct vcpu *v)
  * HAP guests can handle page faults (in the guest page tables) without
  * needing any action from Xen, so we should not be intercepting them.
  */
-static int hap_page_fault(struct vcpu *v, unsigned long va,
-                          struct cpu_user_regs *regs)
+static int cf_check hap_page_fault(
+    struct vcpu *v, unsigned long va, struct cpu_user_regs *regs)
 {
     struct domain *d = v->domain;
 
@@ -715,7 +726,7 @@ static int hap_page_fault(struct vcpu *v, unsigned long va,
  * should not be intercepting it.  However, we need to correctly handle
  * getting here from instruction emulation.
  */
-static bool_t hap_invlpg(struct vcpu *v, unsigned long linear)
+static bool cf_check hap_invlpg(struct vcpu *v, unsigned long linear)
 {
     /*
      * Emulate INVLPGA:
@@ -728,23 +739,20 @@ static bool_t hap_invlpg(struct vcpu *v, unsigned long linear)
     return 1;
 }
 
-static void hap_update_cr3(struct vcpu *v, int do_locking, bool noflush)
+static void cf_check hap_update_cr3(
+    struct vcpu *v, int do_locking, bool noflush)
 {
     v->arch.hvm.hw_cr[3] = v->arch.hvm.guest_cr[3];
     hvm_update_guest_cr3(v, noflush);
 }
 
-/*
- * Dummy function to use with on_selected_cpus in order to trigger a vmexit on
- * selected pCPUs. When the VM resumes execution it will get a new ASID/VPID
- * and thus a clean TLB.
- */
-static void dummy_flush(void *data)
+static bool flush_vcpu(const struct vcpu *v, const unsigned long *vcpu_bitmap)
 {
+    return !vcpu_bitmap || test_bit(v->vcpu_id, vcpu_bitmap);
 }
 
-static bool flush_tlb(bool (*flush_vcpu)(void *ctxt, struct vcpu *v),
-                      void *ctxt)
+/* Flush TLB of selected vCPUs.  NULL for all. */
+static bool cf_check flush_tlb(const unsigned long *vcpu_bitmap)
 {
     static DEFINE_PER_CPU(cpumask_t, flush_cpumask);
     cpumask_t *mask = &this_cpu(flush_cpumask);
@@ -759,7 +767,7 @@ static bool flush_tlb(bool (*flush_vcpu)(void *ctxt, struct vcpu *v),
     {
         unsigned int cpu;
 
-        if ( !flush_vcpu(ctxt, v) )
+        if ( !flush_vcpu(v, vcpu_bitmap) )
             continue;
 
         hvm_asid_flush_vcpu(v);
@@ -775,7 +783,7 @@ static bool flush_tlb(bool (*flush_vcpu)(void *ctxt, struct vcpu *v),
      * not currently running will already be flushed when scheduled because of
      * the ASID tickle done in the loop above.
      */
-    on_selected_cpus(mask, dummy_flush, NULL, 0);
+    on_selected_cpus(mask, NULL, NULL, 0);
 
     return true;
 }
@@ -789,7 +797,7 @@ hap_paging_get_mode(struct vcpu *v)
                                       &hap_paging_protected_mode);
 }
 
-static void hap_update_paging_modes(struct vcpu *v)
+static void cf_check hap_update_paging_modes(struct vcpu *v)
 {
     struct domain *d = v->domain;
     unsigned long cr3_gfn = v->arch.hvm.guest_cr[3] >> PAGE_SHIFT;
@@ -823,7 +831,7 @@ static void hap_update_paging_modes(struct vcpu *v)
     put_gfn(d, cr3_gfn);
 }
 
-static void
+static void cf_check
 hap_write_p2m_entry_post(struct p2m_domain *p2m, unsigned int oflags)
 {
     struct domain *d = p2m->domain;
@@ -837,13 +845,13 @@ void hap_p2m_init(struct p2m_domain *p2m)
     p2m->write_p2m_entry_post = hap_write_p2m_entry_post;
 }
 
-static unsigned long hap_gva_to_gfn_real_mode(
+static unsigned long cf_check hap_gva_to_gfn_real_mode(
     struct vcpu *v, struct p2m_domain *p2m, unsigned long gva, uint32_t *pfec)
 {
     return ((paddr_t)gva >> PAGE_SHIFT);
 }
 
-static unsigned long hap_p2m_ga_to_gfn_real_mode(
+static unsigned long cf_check hap_p2m_ga_to_gfn_real_mode(
     struct vcpu *v, struct p2m_domain *p2m, unsigned long cr3,
     paddr_t ga, uint32_t *pfec, unsigned int *page_order)
 {

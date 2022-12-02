@@ -17,6 +17,7 @@
 #include <xen/console.h>
 #include <xen/iocap.h>
 #include <xen/guest_access.h>
+#include <xen/hypercall.h>
 #include <xen/acpi.h>
 #include <xen/efi.h>
 #include <xen/cpu.h>
@@ -45,9 +46,9 @@ struct resource_access {
     xenpf_resource_entry_t *entries;
 };
 
-long cpu_frequency_change_helper(void *);
+long cf_check cpu_frequency_change_helper(void *);
 void check_resource_access(struct resource_access *);
-void resource_access(void *);
+void cf_check resource_access(void *);
 
 #ifndef COMPAT
 typedef long ret_t;
@@ -59,7 +60,7 @@ DEFINE_SPINLOCK(xenpf_lock);
 # undef guest_from_compat_handle
 # define guest_from_compat_handle(x,y) ((x)=(y))
 
-long cpu_frequency_change_helper(void *data)
+long cf_check cpu_frequency_change_helper(void *data)
 {
     return cpu_frequency_change((uint64_t)data);
 }
@@ -149,7 +150,7 @@ void check_resource_access(struct resource_access *ra)
     ra->nr_done = i;
 }
 
-void resource_access(void *info)
+void cf_check resource_access(void *info)
 {
     struct resource_access *ra = info;
     unsigned int i;
@@ -213,7 +214,8 @@ void resource_access(void *info)
 }
 #endif
 
-ret_t do_platform_op(XEN_GUEST_HANDLE_PARAM(xen_platform_op_t) u_xenpf_op)
+ret_t do_platform_op(
+    XEN_GUEST_HANDLE_PARAM(xen_platform_op_t) u_xenpf_op)
 {
     ret_t ret;
     struct xen_platform_op curop, *op = &curop;

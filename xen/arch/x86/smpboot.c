@@ -42,6 +42,7 @@
 #include <asm/microcode.h>
 #include <asm/msr.h>
 #include <asm/mtrr.h>
+#include <asm/setup.h>
 #include <asm/spec_ctrl.h>
 #include <asm/time.h>
 #include <asm/tboot.h>
@@ -422,8 +423,6 @@ void start_secondary(void *unused)
 
     startup_cpu_idle_loop();
 }
-
-extern void *stack_start;
 
 static int wakeup_secondary_cpu(int phys_apicid, unsigned long start_eip)
 {
@@ -1125,7 +1124,7 @@ static int cpu_smpboot_alloc(unsigned int cpu)
     return rc;
 }
 
-static int cpu_smpboot_callback(
+static int cf_check cpu_smpboot_callback(
     struct notifier_block *nfb, unsigned long action, void *hcpu)
 {
     unsigned int cpu = (unsigned long)hcpu;

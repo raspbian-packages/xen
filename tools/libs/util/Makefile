@@ -1,17 +1,17 @@
 XEN_ROOT = $(CURDIR)/../../..
 include $(XEN_ROOT)/tools/Rules.mk
 
-SRCS-y += libxlu_cfg_y.c
-SRCS-y += libxlu_cfg_l.c
-SRCS-y += libxlu_cfg.c
-SRCS-y += libxlu_disk_l.c
-SRCS-y += libxlu_disk.c
-SRCS-y += libxlu_vif.c
-SRCS-y += libxlu_pci.c
+OBJS-y += libxlu_cfg_y.o
+OBJS-y += libxlu_cfg_l.o
+OBJS-y += libxlu_cfg.o
+OBJS-y += libxlu_disk_l.o
+OBJS-y += libxlu_disk.o
+OBJS-y += libxlu_vif.o
+OBJS-y += libxlu_pci.o
 
 CFLAGS += -Wno-format-zero-length -Wmissing-declarations \
 	-Wno-declaration-after-statement -Wformat-nonliteral
-CFLAGS += -I. $(CFLAGS_libxenctrl)
+CFLAGS += $(CFLAGS_libxenctrl)
 
 CFLAGS += $(PTHREAD_CFLAGS)
 LDFLAGS += $(PTHREAD_LDFLAGS)
@@ -29,7 +29,6 @@ ifeq ($(BISON),)
 endif
 
 AUTOINCS = libxlu_cfg_y.h libxlu_cfg_l.h libxlu_disk_l.h
-AUTOSRCS = libxlu_cfg_y.c libxlu_cfg_l.c
 
 LIBHEADER := libxlutil.h
 PKG_CONFIG_NAME := Xlutil
@@ -39,7 +38,7 @@ NO_HEADERS_CHK := y
 
 include $(XEN_ROOT)/tools/libs/libs.mk
 
-$(LIB_OBJS) $(PIC_OBJS): $(AUTOINCS) _paths.h
+$(OBJS-y) $(PIC_OBJS): $(AUTOINCS)
 
 %.c %.h:: %.y
 	@rm -f $*.[ch]
@@ -49,12 +48,5 @@ $(LIB_OBJS) $(PIC_OBJS): $(AUTOINCS) _paths.h
 	@rm -f $*.[ch]
 	$(FLEX) --header-file=$*.h --outfile=$*.c $<
 
-genpath-target = $(call buildmakevars2header,_paths.h)
-$(eval $(genpath-target))
-
-clean: cleanlocal
-
-.PHONY: cleanlocal
-cleanlocal:
-	$(RM) -f _*.h
-	$(RM) -f libxlutil.map
+clean::
+	$(RM) libxenutil.map

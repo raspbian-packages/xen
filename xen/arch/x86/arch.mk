@@ -3,9 +3,8 @@
 
 export XEN_IMG_OFFSET := 0x200000
 
-CFLAGS += -I$(BASEDIR)/include
-CFLAGS += -I$(BASEDIR)/include/asm-x86/mach-generic
-CFLAGS += -I$(BASEDIR)/include/asm-x86/mach-default
+CFLAGS += -I$(srctree)/arch/x86/include/asm/mach-generic
+CFLAGS += -I$(srctree)/arch/x86/include/asm/mach-default
 CFLAGS += -DXEN_IMG_OFFSET=$(XEN_IMG_OFFSET)
 
 # Prevent floating-point variables from creeping into Xen.
@@ -55,7 +54,8 @@ ifdef CONFIG_XEN_IBT
 # Force -fno-jump-tables to work around
 #   https://gcc.gnu.org/bugzilla/show_bug.cgi?id=104816
 #   https://github.com/llvm/llvm-project/issues/54247
-CFLAGS += -fcf-protection=branch -fno-jump-tables
+CFLAGS += -fcf-protection=branch -mmanual-endbr -fno-jump-tables
+$(call cc-option-add,CFLAGS,CC,-fcf-check-attribute=no)
 else
 $(call cc-option-add,CFLAGS,CC,-fcf-protection=none)
 endif
@@ -73,5 +73,60 @@ ifeq ($(CONFIG_UBSAN),y)
 $(call cc-option-add,CFLAGS_UBSAN,CC,-fno-sanitize=alignment)
 endif
 
+ifeq ($(CONFIG_LD_IS_GNU),y)
+# While not much better than going by raw GNU ld version, utilize that the
+# feature we're after has appeared in the same release as the
+# --print-output-format command line option.
+AFLAGS-$(call ld-option,--print-output-format) += -DHAVE_LD_SORT_BY_INIT_PRIORITY
+else
+# Assume all versions of LLD support this.
+AFLAGS += -DHAVE_LD_SORT_BY_INIT_PRIORITY
+endif
+
+ifneq ($(CONFIG_PV_SHIM_EXCLUSIVE),y)
+
+efi-check := arch/x86/efi/check
+
+# Create the directory for out-of-tree build
+$(shell mkdir -p $(dir $(efi-check)))
+
+# Check if the compiler supports the MS ABI.
+XEN_BUILD_EFI := $(call if-success,$(CC) $(CFLAGS) -c $(srctree)/$(efi-check).c -o $(efi-check).o,y)
+
+# Check if the linker supports PE.
+EFI_LDFLAGS := $(patsubst -m%,-mi386pep,$(LDFLAGS)) --subsystem=10
+LD_PE_check_cmd = $(call ld-option,$(EFI_LDFLAGS) --image-base=0x100000000 -o $(efi-check).efi $(efi-check).o)
+XEN_BUILD_PE := $(LD_PE_check_cmd)
+
+# If the above failed, it may be merely because of the linker not dealing well
+# with debug info. Try again with stripping it.
+ifeq ($(CONFIG_DEBUG_INFO)-$(XEN_BUILD_PE),y-n)
+EFI_LDFLAGS += --strip-debug
+XEN_BUILD_PE := $(LD_PE_check_cmd)
+endif
+
+ifeq ($(XEN_BUILD_PE),y)
+
+# Check if the linker produces fixups in PE by default
+efi-nr-fixups := $(shell $(OBJDUMP) -p $(efi-check).efi | grep '^[[:blank:]]*reloc[[:blank:]]*[0-9][[:blank:]].*DIR64$$' | wc -l)
+
+ifeq ($(efi-nr-fixups),2)
+MKRELOC := :
+else
+MKRELOC := arch/x86/efi/mkreloc
+# If the linker produced fixups but not precisely two of them, we need to
+# disable it doing so.  But if it didn't produce any fixups, it also wouldn't
+# recognize the option.
+ifneq ($(efi-nr-fixups),0)
+EFI_LDFLAGS += --disable-reloc-section
+endif
+endif
+
+endif # $(XEN_BUILD_PE)
+
+export XEN_BUILD_EFI XEN_BUILD_PE
+export EFI_LDFLAGS
+endif
+
 # Set up the assembler include path properly for older toolchains.
-CFLAGS += -Wa,-I$(BASEDIR)/include
+CFLAGS += -Wa,-I$(objtree)/include -Wa,-I$(srctree)/include

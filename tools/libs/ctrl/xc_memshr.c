@@ -71,7 +71,7 @@ static int xc_memshr_memop(xc_interface *xch, uint32_t domid,
 {
     mso->domain = domid;
 
-    return do_memory_op(xch, XENMEM_sharing_op, mso, sizeof(*mso));
+    return xc_memory_op(xch, XENMEM_sharing_op, mso, sizeof(*mso));
 }
 
 int xc_memshr_nominate_gfn(xc_interface *xch,
@@ -257,12 +257,17 @@ int xc_memshr_fork(xc_interface *xch, uint32_t pdomid, uint32_t domid,
     return xc_memshr_memop(xch, domid, &mso);
 }
 
-int xc_memshr_fork_reset(xc_interface *xch, uint32_t domid)
+int xc_memshr_fork_reset(xc_interface *xch, uint32_t domid, bool reset_state,
+                         bool reset_memory)
 {
     xen_mem_sharing_op_t mso;
 
     memset(&mso, 0, sizeof(mso));
     mso.op = XENMEM_sharing_op_fork_reset;
+    if ( reset_state )
+        mso.u.fork.flags |= XENMEM_FORK_RESET_STATE;
+    if ( reset_memory )
+        mso.u.fork.flags |= XENMEM_FORK_RESET_MEMORY;
 
     return xc_memshr_memop(xch, domid, &mso);
 }
@@ -275,15 +280,15 @@ int xc_memshr_audit(xc_interface *xch)
 
     mso.op = XENMEM_sharing_op_audit;
 
-    return do_memory_op(xch, XENMEM_sharing_op, &mso, sizeof(mso));
+    return xc_memory_op(xch, XENMEM_sharing_op, &mso, sizeof(mso));
 }
 
 long xc_sharing_freed_pages(xc_interface *xch)
 {
-    return do_memory_op(xch, XENMEM_get_sharing_freed_pages, NULL, 0);
+    return xc_memory_op(xch, XENMEM_get_sharing_freed_pages, NULL, 0);
 }
 
 long xc_sharing_used_frames(xc_interface *xch)
 {
-    return do_memory_op(xch, XENMEM_get_sharing_shared_pages, NULL, 0);
+    return xc_memory_op(xch, XENMEM_get_sharing_shared_pages, NULL, 0);
 }

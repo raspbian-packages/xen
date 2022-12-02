@@ -574,13 +574,6 @@ static void vpmask_fill(struct hypercall_vpmask *vpmask)
     bitmap_fill(vpmask->mask, HVM_MAX_VCPUS);
 }
 
-static bool vpmask_test(const struct hypercall_vpmask *vpmask,
-                        unsigned int vp)
-{
-    ASSERT(vp < HVM_MAX_VCPUS);
-    return test_bit(vp, vpmask->mask);
-}
-
 static unsigned int vpmask_first(const struct hypercall_vpmask *vpmask)
 {
     return find_first_bit(vpmask->mask, HVM_MAX_VCPUS);
@@ -628,10 +621,14 @@ static unsigned int hv_vpset_nr_banks(struct hv_vpset *vpset)
     return hweight64(vpset->valid_bank_mask);
 }
 
-static int hv_vpset_to_vpmask(const struct hv_vpset *set,
+static int hv_vpset_to_vpmask(const struct hv_vpset *in, paddr_t bank_gpa,
                               struct hypercall_vpmask *vpmask)
 {
 #define NR_VPS_PER_BANK (HV_VPSET_BANK_SIZE * 8)
+    union hypercall_vpset *vpset = &this_cpu(hypercall_vpset);
+    struct hv_vpset *set = &vpset->set;
+
+    *set = *in;
 
     switch ( set->format )
     {
@@ -643,6 +640,18 @@ static int hv_vpset_to_vpmask(const struct hv_vpset *set,
     {
         uint64_t bank_mask;
         unsigned int vp, bank = 0;
+        size_t size = sizeof(*set->bank_contents) * hv_vpset_nr_banks(set);
+
+        if ( offsetof(typeof(*vpset), set.bank_contents[0]) + size >
+             sizeof(*vpset) )
+        {
+            ASSERT_UNREACHABLE();
+            return -EINVAL;
+        }
+
+        if ( hvm_copy_from_guest_phys(&set->bank_contents, bank_gpa,
+                                      size) != HVMTRANS_okay )
+            return -EINVAL;
 
         vpmask_empty(vpmask);
         for ( vp = 0, bank_mask = set->valid_bank_mask;
@@ -667,17 +676,6 @@ static int hv_vpset_to_vpmask(const struct hv_vpset *set,
     return -EINVAL;
 
 #undef NR_VPS_PER_BANK
-}
-
-/*
- * Windows should not issue the hypercalls requiring this callback in the
- * case where vcpu_id would exceed the size of the mask.
- */
-static bool need_flush(void *ctxt, struct vcpu *v)
-{
-    struct hypercall_vpmask *vpmask = ctxt;
-
-    return vpmask_test(vpmask, v->vcpu_id);
 }
 
 union hypercall_input {
@@ -714,6 +712,7 @@ static int hvcall_flush(const union hypercall_input *input,
         uint64_t flags;
         uint64_t vcpu_mask;
     } input_params;
+    unsigned long *vcpu_bitmap;
 
     /* These hypercalls should never use the fast-call convention. */
     if ( input->fast )
@@ -730,18 +729,19 @@ static int hvcall_flush(const union hypercall_input *input,
      * so err on the safe side.
      */
     if ( input_params.flags & HV_FLUSH_ALL_PROCESSORS )
-        vpmask_fill(vpmask);
+        vcpu_bitmap = NULL;
     else
     {
         vpmask_empty(vpmask);
         vpmask_set(vpmask, 0, input_params.vcpu_mask);
+        vcpu_bitmap = vpmask->mask;
     }
 
     /*
      * A false return means that another vcpu is currently trying
      * a similar operation, so back off.
      */
-    if ( !paging_flush_tlb(need_flush, vpmask) )
+    if ( !paging_flush_tlb(vcpu_bitmap) )
         return -ERESTART;
 
     output->rep_complete = input->rep_count;
@@ -760,6 +760,7 @@ static int hvcall_flush_ex(const union hypercall_input *input,
         uint64_t flags;
         struct hv_vpset set;
     } input_params;
+    unsigned long *vcpu_bitmap;
 
     /* These hypercalls should never use the fast-call convention. */
     if ( input->fast )
@@ -770,50 +771,29 @@ static int hvcall_flush_ex(const union hypercall_input *input,
                                   sizeof(input_params)) != HVMTRANS_okay )
         return -EINVAL;
 
-    if ( input_params.flags & HV_FLUSH_ALL_PROCESSORS )
-        vpmask_fill(vpmask);
+    if ( input_params.flags & HV_FLUSH_ALL_PROCESSORS ||
+         input_params.set.format == HV_GENERIC_SET_ALL )
+        vcpu_bitmap = NULL;
     else
     {
-        union hypercall_vpset *vpset = &this_cpu(hypercall_vpset);
-        struct hv_vpset *set = &vpset->set;
-        size_t size;
+        unsigned int bank_offset = offsetof(typeof(input_params),
+                                            set.bank_contents);
         int rc;
 
-        *set = input_params.set;
-        if ( set->format == HV_GENERIC_SET_SPARSE_4K )
-        {
-            unsigned long offset = offsetof(typeof(input_params),
-                                            set.bank_contents);
-
-            size = sizeof(*set->bank_contents) * hv_vpset_nr_banks(set);
-
-            if ( offsetof(typeof(*vpset), set.bank_contents[0]) + size >
-                 sizeof(*vpset) )
-            {
-                ASSERT_UNREACHABLE();
-                return -EINVAL;
-            }
-
-            if ( hvm_copy_from_guest_phys(&set->bank_contents[0],
-                                          input_params_gpa + offset,
-                                          size) != HVMTRANS_okay)
-                return -EINVAL;
-
-            size += sizeof(*set);
-        }
-        else
-            size = sizeof(*set);
-
-        rc = hv_vpset_to_vpmask(set, vpmask);
+        rc = hv_vpset_to_vpmask(&input_params.set,
+                                input_params_gpa + bank_offset,
+                                vpmask);
         if ( rc )
             return rc;
+
+        vcpu_bitmap = vpmask->mask;
     }
 
     /*
      * A false return means that another vcpu is currently trying
      * a similar operation, so back off.
      */
-    if ( !paging_flush_tlb(need_flush, vpmask) )
+    if ( !paging_flush_tlb(vcpu_bitmap) )
         return -ERESTART;
 
     output->rep_complete = input->rep_count;
@@ -901,9 +881,8 @@ static int hvcall_ipi_ex(const union hypercall_input *input,
         uint8_t reserved_zero[3];
         struct hv_vpset set;
     } input_params;
-    union hypercall_vpset *vpset = &this_cpu(hypercall_vpset);
-    struct hv_vpset *set = &vpset->set;
-    size_t size;
+    unsigned int bank_offset = offsetof(typeof(input_params),
+                                        set.bank_contents);
     int rc;
 
     /* These hypercalls should never use the fast-call convention. */
@@ -924,32 +903,8 @@ static int hvcall_ipi_ex(const union hypercall_input *input,
     if ( input_params.vector < 0x10 || input_params.vector > 0xff )
         return -EINVAL;
 
-    *set = input_params.set;
-    if ( set->format == HV_GENERIC_SET_SPARSE_4K )
-    {
-        unsigned long offset = offsetof(typeof(input_params),
-                                        set.bank_contents);
-
-        size = sizeof(*set->bank_contents) * hv_vpset_nr_banks(set);
-
-        if ( offsetof(typeof(*vpset), set.bank_contents[0]) + size >
-             sizeof(*vpset) )
-        {
-            ASSERT_UNREACHABLE();
-            return -EINVAL;
-        }
-
-        if ( hvm_copy_from_guest_phys(&set->bank_contents,
-                                      input_params_gpa + offset,
-                                      size) != HVMTRANS_okay)
-            return -EINVAL;
-
-        size += sizeof(*set);
-    }
-    else
-        size = sizeof(*set);
-
-    rc = hv_vpset_to_vpmask(set, vpmask);
+    rc = hv_vpset_to_vpmask(&input_params.set, input_params_gpa + bank_offset,
+                            vpmask);
     if ( rc )
         return rc;
 
@@ -1149,8 +1104,8 @@ void viridian_unmap_guest_page(struct viridian_page *vp)
     put_page_and_type(page);
 }
 
-static int viridian_save_domain_ctxt(struct vcpu *v,
-                                     hvm_domain_context_t *h)
+static int cf_check viridian_save_domain_ctxt(
+    struct vcpu *v, hvm_domain_context_t *h)
 {
     const struct domain *d = v->domain;
     const struct viridian_domain *vd = d->arch.hvm.viridian;
@@ -1168,8 +1123,8 @@ static int viridian_save_domain_ctxt(struct vcpu *v,
     return (hvm_save_entry(VIRIDIAN_DOMAIN, 0, h, &ctxt) != 0);
 }
 
-static int viridian_load_domain_ctxt(struct domain *d,
-                                     hvm_domain_context_t *h)
+static int cf_check viridian_load_domain_ctxt(
+    struct domain *d, hvm_domain_context_t *h)
 {
     struct viridian_domain *vd = d->arch.hvm.viridian;
     struct hvm_viridian_domain_context ctxt;
@@ -1189,7 +1144,8 @@ static int viridian_load_domain_ctxt(struct domain *d,
 HVM_REGISTER_SAVE_RESTORE(VIRIDIAN_DOMAIN, viridian_save_domain_ctxt,
                           viridian_load_domain_ctxt, 1, HVMSR_PER_DOM);
 
-static int viridian_save_vcpu_ctxt(struct vcpu *v, hvm_domain_context_t *h)
+static int cf_check viridian_save_vcpu_ctxt(
+    struct vcpu *v, hvm_domain_context_t *h)
 {
     struct hvm_viridian_vcpu_context ctxt = {};
 
@@ -1202,8 +1158,8 @@ static int viridian_save_vcpu_ctxt(struct vcpu *v, hvm_domain_context_t *h)
     return hvm_save_entry(VIRIDIAN_VCPU, v->vcpu_id, h, &ctxt);
 }
 
-static int viridian_load_vcpu_ctxt(struct domain *d,
-                                   hvm_domain_context_t *h)
+static int cf_check viridian_load_vcpu_ctxt(
+    struct domain *d, hvm_domain_context_t *h)
 {
     unsigned int vcpuid = hvm_load_instance(h);
     struct vcpu *v;
@@ -1231,7 +1187,7 @@ static int viridian_load_vcpu_ctxt(struct domain *d,
 HVM_REGISTER_SAVE_RESTORE(VIRIDIAN_VCPU, viridian_save_vcpu_ctxt,
                           viridian_load_vcpu_ctxt, 1, HVMSR_PER_VCPU);
 
-static int __init parse_viridian_version(const char *arg)
+static int __init cf_check parse_viridian_version(const char *arg)
 {
     const char *t;
     unsigned int n[3];
