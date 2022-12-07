@@ -1,8 +1,14 @@
-xen (4.17.0~rc4-1~exp1) UNRELEASED; urgency=medium
+xen (4.17.0~rc4-1~exp1) experimental; urgency=medium
 
+  Significant changes:
   * Update to new upstream version 4.17.0~rc4.
 
- -- Maximilian Engelhardt <maxi@daemonizer.de>  Fri, 02 Dec 2022 20:22:48 +0100
+  Changes related to upgrading to Xen 4.17:
+  * debian/control: adjust to 4.17
+  * Drop "libxl: Fix unneededly rebuilding build.o(pic)", no longer needed
+  * Refresh remaining patches if needed
+
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Wed, 07 Dec 2022 21:01:04 +0100
 
 xen (4.16.2+90-g0d39a6d1ae-1) unstable; urgency=medium
 
