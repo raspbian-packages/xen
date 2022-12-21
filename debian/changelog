@@ -1,3 +1,9 @@
+xen (4.17.0-1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.17.0.
+
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Wed, 21 Dec 2022 22:03:43 +0100
+
 xen (4.17.0~rc4-1~exp1) experimental; urgency=medium
 
   Significant changes:
