@@ -31,7 +31,11 @@ variables:
   # We do not provide packages for i386
   SALSA_CI_DISABLE_BUILD_PACKAGE_I386: 1
 
-  # cross building xen currently fails due to Debian bug #982406 in markdown.
+  # cross building xen currently fails for the following reason:
+  #  The following packages have unmet dependencies:
+  #  ocaml:arm64 : Depends: gcc:arm64 but it is not installable
+  #                Depends: binutils:arm64 but it is not installable
+  #
   # It can be tried again when there are better chances of it building
   # successfully.
   SALSA_CI_DISABLE_CROSSBUILD_ARM64: 1
