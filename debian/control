@@ -33,7 +33,7 @@ Build-Depends:
    libzstd-dev,
    pandoc,
    markdown,
-   ocaml-native-compilers | ocaml-nox,
+   ocaml,
    ocaml-findlib,
 Homepage: https://xenproject.org/
 Vcs-Browser: https://salsa.debian.org/xen-team/debian-xen
