@@ -32,7 +32,6 @@ Build-Depends:
    zlib1g-dev,
    libzstd-dev,
    pandoc,
-   markdown,
    ocaml,
    ocaml-findlib,
 Homepage: https://xenproject.org/
