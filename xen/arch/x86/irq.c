@@ -28,8 +28,6 @@
 #include <irq_vectors.h>
 #include <public/physdev.h>
 
-static int parse_irq_vector_map_param(const char *s);
-
 /* opt_noirqbalance: If true, software IRQ balancing/affinity is disabled. */
 bool __read_mostly opt_noirqbalance;
 boolean_param("noirqbalance", opt_noirqbalance);
@@ -40,7 +38,6 @@ integer_param("nr_irqs", nr_irqs);
 
 /* This default may be changed by the AMD IOMMU code */
 int __read_mostly opt_irq_vector_map = OPT_IRQ_VECTOR_MAP_DEFAULT;
-custom_param("irq_vector_map", parse_irq_vector_map_param);
 
 /* Max number of guests IRQ could be shared with */
 static unsigned char __read_mostly irq_max_guests;
@@ -66,7 +63,7 @@ static struct timer irq_ratelimit_timer;
 static unsigned int __read_mostly irq_ratelimit_threshold = 10000;
 integer_param("irq_ratelimit", irq_ratelimit_threshold);
 
-static int __init parse_irq_vector_map_param(const char *s)
+static int __init cf_check parse_irq_vector_map_param(const char *s)
 {
     const char *ss;
     int rc = 0;
@@ -90,6 +87,7 @@ static int __init parse_irq_vector_map_param(const char *s)
 
     return rc;
 }
+custom_param("irq_vector_map", parse_irq_vector_map_param);
 
 /* Must be called when irq disabled */
 void lock_vector_lock(void)
@@ -470,7 +468,7 @@ int __init init_irq_data(void)
     return 0;
 }
 
-static void ack_none(struct irq_desc *desc)
+static void cf_check ack_none(struct irq_desc *desc)
 {
     ack_bad_irq(desc->irq);
 }
@@ -746,7 +744,7 @@ void move_native_irq(struct irq_desc *desc)
     desc->handler->enable(desc);
 }
 
-void irq_move_cleanup_interrupt(struct cpu_user_regs *regs)
+void cf_check irq_move_cleanup_interrupt(struct cpu_user_regs *regs)
 {
     unsigned vector, me;
 
@@ -834,7 +832,7 @@ static void send_cleanup_vector(struct irq_desc *desc)
     desc->arch.move_in_progress = 0;
 }
 
-void irq_complete_move(struct irq_desc *desc)
+void cf_check irq_complete_move(struct irq_desc *desc)
 {
     unsigned vector, me;
 
@@ -937,7 +935,7 @@ void alloc_direct_apic_vector(
     spin_unlock(&lock);
 }
 
-static void irq_ratelimit_timer_fn(void *data)
+static void cf_check irq_ratelimit_timer_fn(void *data)
 {
     struct irq_desc *desc, *tmp;
     unsigned long flags;
@@ -956,7 +954,7 @@ static void irq_ratelimit_timer_fn(void *data)
     spin_unlock_irqrestore(&irq_ratelimit_lock, flags);
 }
 
-static int __init irq_ratelimit_init(void)
+static int __init cf_check irq_ratelimit_init(void)
 {
     if ( irq_ratelimit_threshold )
         init_timer(&irq_ratelimit_timer, irq_ratelimit_timer_fn, NULL, 0);
@@ -1088,7 +1086,7 @@ bool cpu_has_pending_apic_eoi(void)
     return pending_eoi_sp(this_cpu(pending_eoi)) != 0;
 }
 
-void end_nonmaskable_irq(struct irq_desc *desc, uint8_t vector)
+void cf_check end_nonmaskable_irq(struct irq_desc *desc, uint8_t vector)
 {
     struct pending_eoi *peoi = this_cpu(pending_eoi);
     unsigned int sp = pending_eoi_sp(peoi);
@@ -1129,9 +1127,9 @@ static inline void clear_pirq_eoi(struct domain *d, unsigned int irq)
     }
 }
 
-static void set_eoi_ready(void *data);
+static void cf_check set_eoi_ready(void *data);
 
-static void irq_guest_eoi_timer_fn(void *data)
+static void cf_check irq_guest_eoi_timer_fn(void *data)
 {
     struct irq_desc *desc = data;
     unsigned int i, irq = desc - irq_desc;
@@ -1400,7 +1398,7 @@ static void __set_eoi_ready(const struct irq_desc *desc)
 }
 
 /* Mark specified IRQ as ready-for-EOI (if it really is) and attempt to EOI. */
-static void set_eoi_ready(void *data)
+static void cf_check set_eoi_ready(void *data)
 {
     struct irq_desc *desc = data;
 
@@ -1552,7 +1550,7 @@ int pirq_guest_bind(struct vcpu *v, struct pirq *pirq, int will_share)
     unsigned int        max_nr_guests = will_share ? irq_max_guests : 1;
     int                 rc = 0;
 
-    WARN_ON(!spin_is_locked(&v->domain->event_lock));
+    WARN_ON(!rw_is_write_locked(&v->domain->event_lock));
     BUG_ON(!local_irq_is_enabled());
 
  retry:
@@ -1766,7 +1764,7 @@ void pirq_guest_unbind(struct domain *d, struct pirq *pirq)
     struct irq_desc *desc;
     int irq = 0;
 
-    WARN_ON(!spin_is_locked(&d->event_lock));
+    WARN_ON(!rw_is_write_locked(&d->event_lock));
 
     BUG_ON(!local_irq_is_enabled());
     desc = pirq_spin_lock_irq_desc(pirq, NULL);
@@ -1803,7 +1801,7 @@ static bool pirq_guest_force_unbind(struct domain *d, struct pirq *pirq)
     unsigned int i;
     bool bound = false;
 
-    WARN_ON(!spin_is_locked(&d->event_lock));
+    WARN_ON(!rw_is_write_locked(&d->event_lock));
 
     BUG_ON(!local_irq_is_enabled());
     desc = pirq_spin_lock_irq_desc(pirq, NULL);
@@ -2045,7 +2043,7 @@ int get_free_pirq(struct domain *d, int type)
 {
     int i;
 
-    ASSERT(spin_is_locked(&d->event_lock));
+    ASSERT(rw_is_write_locked(&d->event_lock));
 
     if ( type == MAP_PIRQ_TYPE_GSI )
     {
@@ -2070,7 +2068,7 @@ int get_free_pirqs(struct domain *d, unsigned int nr)
 {
     unsigned int i, found = 0;
 
-    ASSERT(spin_is_locked(&d->event_lock));
+    ASSERT(rw_is_write_locked(&d->event_lock));
 
     for ( i = d->nr_pirqs - 1; i >= nr_irqs_gsi; --i )
         if ( is_free_pirq(d, pirq_info(d, i)) )
@@ -2098,7 +2096,7 @@ int map_domain_pirq(
     DECLARE_BITMAP(prepared, MAX_MSI_IRQS) = {};
     DECLARE_BITMAP(granted, MAX_MSI_IRQS) = {};
 
-    ASSERT(spin_is_locked(&d->event_lock));
+    ASSERT(rw_is_write_locked(&d->event_lock));
 
     if ( !irq_access_permitted(current->domain, irq))
         return -EPERM;
@@ -2164,7 +2162,7 @@ int map_domain_pirq(
         if ( !cpu_has_apic )
             goto done;
 
-        pdev = pci_get_pdev_by_domain(d, msi->seg, msi->bus, msi->devfn);
+        pdev = pci_get_pdev(d, msi->sbdf);
         if ( !pdev )
             goto done;
 
@@ -2316,7 +2314,7 @@ int unmap_domain_pirq(struct domain *d, int pirq)
         return -EINVAL;
 
     ASSERT(pcidevs_locked());
-    ASSERT(spin_is_locked(&d->event_lock));
+    ASSERT(rw_is_write_locked(&d->event_lock));
 
     info = pirq_info(d, pirq);
     if ( !info || (irq = info->arch.irq) <= 0 )
@@ -2422,17 +2420,17 @@ void free_domain_pirqs(struct domain *d)
     int i;
 
     pcidevs_lock();
-    spin_lock(&d->event_lock);
+    write_lock(&d->event_lock);
 
     for ( i = 0; i < d->nr_pirqs; i++ )
         if ( domain_pirq_to_irq(d, i) > 0 )
             unmap_domain_pirq(d, i);
 
-    spin_unlock(&d->event_lock);
+    write_unlock(&d->event_lock);
     pcidevs_unlock();
 }
 
-static void dump_irqs(unsigned char key)
+static void cf_check dump_irqs(unsigned char key)
 {
     int i, irq, pirq;
     struct irq_desc *desc;
@@ -2512,7 +2510,7 @@ static void dump_irqs(unsigned char key)
     dump_ioapic_irq_info();
 }
 
-static int __init setup_dump_irqs(void)
+static int __init cf_check setup_dump_irqs(void)
 {
     /* In lieu of being able to live in init_irq_data(). */
     BUILD_BUG_ON(sizeof(irq_max_guests) >
@@ -2671,7 +2669,7 @@ int map_domain_emuirq_pirq(struct domain *d, int pirq, int emuirq)
     int old_emuirq = IRQ_UNBOUND, old_pirq = IRQ_UNBOUND;
     struct pirq *info;
 
-    ASSERT(spin_is_locked(&d->event_lock));
+    ASSERT(rw_is_write_locked(&d->event_lock));
 
     if ( !is_hvm_domain(d) )
         return -EINVAL;
@@ -2737,7 +2735,7 @@ int unmap_domain_pirq_emuirq(struct domain *d, int pirq)
     if ( (pirq < 0) || (pirq >= d->nr_pirqs) )
         return -EINVAL;
 
-    ASSERT(spin_is_locked(&d->event_lock));
+    ASSERT(rw_is_write_locked(&d->event_lock));
 
     emuirq = domain_pirq_to_emuirq(d, pirq);
     if ( emuirq == IRQ_UNBOUND )
@@ -2785,7 +2783,7 @@ static int allocate_pirq(struct domain *d, int index, int pirq, int irq,
 {
     int current_pirq;
 
-    ASSERT(spin_is_locked(&d->event_lock));
+    ASSERT(rw_is_write_locked(&d->event_lock));
     current_pirq = domain_irq_to_pirq(d, irq);
     if ( pirq < 0 )
     {
@@ -2857,7 +2855,7 @@ int allocate_and_map_gsi_pirq(struct domain *d, int index, int *pirq_p)
     }
 
     /* Verify or get pirq. */
-    spin_lock(&d->event_lock);
+    write_lock(&d->event_lock);
     pirq = allocate_pirq(d, index, *pirq_p, irq, MAP_PIRQ_TYPE_GSI, NULL);
     if ( pirq < 0 )
     {
@@ -2870,7 +2868,7 @@ int allocate_and_map_gsi_pirq(struct domain *d, int index, int *pirq_p)
         *pirq_p = pirq;
 
  done:
-    spin_unlock(&d->event_lock);
+    write_unlock(&d->event_lock);
 
     return ret;
 }
@@ -2911,7 +2909,7 @@ int allocate_and_map_msi_pirq(struct domain *d, int index, int *pirq_p,
 
     pcidevs_lock();
     /* Verify or get pirq. */
-    spin_lock(&d->event_lock);
+    write_lock(&d->event_lock);
     pirq = allocate_pirq(d, index, *pirq_p, irq, type, &msi->entry_nr);
     if ( pirq < 0 )
     {
@@ -2924,7 +2922,7 @@ int allocate_and_map_msi_pirq(struct domain *d, int index, int *pirq_p,
         *pirq_p = pirq;
 
  done:
-    spin_unlock(&d->event_lock);
+    write_unlock(&d->event_lock);
     pcidevs_unlock();
     if ( ret )
     {

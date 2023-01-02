@@ -3,7 +3,7 @@ from distutils.ccompiler import new_compiler
 import os
 import sys
 
-extra_compile_args  = [ "-fno-strict-aliasing", "-Werror" ]
+extra_compile_args  = [ "-fno-strict-aliasing" ]
 
 extra_link_args = []
 try: extra_link_args += [ "-Wl,-rpath," + os.environ['LIBEXEC_LIB'] ]

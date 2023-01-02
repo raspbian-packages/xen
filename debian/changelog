@@ -1,4 +1,4 @@
-xen (4.16.2+90-g0d39a6d1ae-1+rpi1) bookworm-staging; urgency=medium
+xen (4.17.0-1+rpi1) bookworm-staging; urgency=medium
 
   [changes brought forward from 4.4.1-9+rpi1 by Peter Michael Green <plugwash@raspbian.org> at Sun, 30 Aug 2015 15:43:16 +0000]
   * replace "dmb" with "mcr p15, #0, r0, c7, c10, #5" for armv6
@@ -9,7 +9,30 @@ xen (4.16.2+90-g0d39a6d1ae-1+rpi1) bookworm-staging; urgency=medium
   [changes introduced in 4.11.1+26-g87f51bf366-3+rpi1 by Peter Michael Green]
   * Do not fail on files that are not installed.
 
- -- Raspbian forward porter <root@raspbian.org>  Tue, 22 Nov 2022 09:16:06 +0000
+ -- Raspbian forward porter <root@raspbian.org>  Mon, 02 Jan 2023 05:43:22 +0000
+
+xen (4.17.0-1) unstable; urgency=medium
+
+  * Update to new upstream version 4.17.0.
+  * No new security fixes are included.
+  * Note that the following XSA are not listed, because...
+    - XSA-423 and XSA-424 have patches for the Linux kernel.
+  * debian/control: update Standards-Version to 4.6.2
+  * debian/control: update Build-Depends for ocaml
+
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Wed, 21 Dec 2022 22:34:51 +0100
+
+xen (4.17.0~rc4-1~exp1) experimental; urgency=medium
+
+  Significant changes:
+  * Update to new upstream version 4.17.0~rc4.
+
+  Changes related to upgrading to Xen 4.17:
+  * debian/control: adjust to 4.17
+  * Drop "libxl: Fix unneededly rebuilding build.o(pic)", no longer needed
+  * Refresh remaining patches if needed
+
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Wed, 07 Dec 2022 21:01:04 +0100
 
 xen (4.16.2+90-g0d39a6d1ae-1) unstable; urgency=medium
 

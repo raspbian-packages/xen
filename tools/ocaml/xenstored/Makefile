@@ -30,8 +30,6 @@ systemd_OBJS = systemd
 systemd_C_OBJS = systemd_stubs
 OCAML_LIBRARY += systemd
 
-$(foreach obj,$(systemd_C_OBJS),$(obj).o): _paths.h
-
 LIBS_systemd += $(LDFLAGS-y)
 
 OBJS = paths \
@@ -95,13 +93,3 @@ uninstall:
 	rm -f $(DESTDIR)$(sbindir)/oxenstored
 
 include $(OCAML_TOPLEVEL)/Makefile.rules
-
-genpath-target = $(call buildmakevars2module,paths.ml)
-$(eval $(genpath-target))
-
-GENERATED_FILES += paths.ml
-
-genpath-target = $(call buildmakevars2header,_paths.h)
-$(eval $(genpath-target))
-
-GENERATE_FILES += _paths.h

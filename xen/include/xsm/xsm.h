@@ -42,7 +42,17 @@ enum xsm_default {
 };
 typedef enum xsm_default xsm_default_t;
 
+/*
+ * !!! WARNING !!!
+ *
+ * For simplicity, xsm_fixup_ops() expects that this structure is made
+ * exclusively of function pointers to non-init functions.  Think carefully
+ * before deviating from the pattern.
+ *
+ * !!! WARNING !!!
+ */
 struct xsm_ops {
+    int (*set_system_active)(void);
     void (*security_domaininfo)(struct domain *d,
                                 struct xen_domctl_getdomaininfo *info);
     int (*domain_create)(struct domain *d, uint32_t ssidref);
@@ -138,7 +148,6 @@ struct xsm_ops {
 #endif
 
     int (*hvm_param)(struct domain *d, unsigned long op);
-    int (*hvm_control)(struct domain *d, unsigned long op);
     int (*hvm_param_altp2mhvm)(struct domain *d);
     int (*hvm_altp2mhvm_op)(struct domain *d, uint64_t mode, uint32_t op);
     int (*get_vnumainfo)(struct domain *d);
@@ -199,6 +208,11 @@ struct xsm_ops {
 extern struct xsm_ops xsm_ops;
 
 #ifndef XSM_NO_WRAPPERS
+
+static inline int xsm_set_system_active(void)
+{
+    return alternative_call(xsm_ops.set_system_active);
+}
 
 static inline void xsm_security_domaininfo(
     struct domain *d, struct xen_domctl_getdomaininfo *info)
@@ -332,13 +346,13 @@ static inline void xsm_free_security_domain(struct domain *d)
 }
 
 static inline int xsm_alloc_security_evtchns(
-    struct evtchn chn[], unsigned int nr)
+    struct evtchn *chn, unsigned int nr)
 {
     return alternative_call(xsm_ops.alloc_security_evtchns, chn, nr);
 }
 
 static inline void xsm_free_security_evtchns(
-    struct evtchn chn[], unsigned int nr)
+    struct evtchn *chn, unsigned int nr)
 {
     alternative_vcall(xsm_ops.free_security_evtchns, chn, nr);
 }
@@ -579,13 +593,13 @@ static inline int xsm_hypfs_op(xsm_default_t def)
 
 static inline long xsm_do_xsm_op(XEN_GUEST_HANDLE_PARAM(void) op)
 {
-    return xsm_ops.do_xsm_op(op);
+    return alternative_call(xsm_ops.do_xsm_op, op);
 }
 
 #ifdef CONFIG_COMPAT
 static inline int xsm_do_compat_op(XEN_GUEST_HANDLE_PARAM(void) op)
 {
-    return xsm_ops.do_compat_op(op);
+    return alternative_call(xsm_ops.do_compat_op, op);
 }
 #endif
 
@@ -593,12 +607,6 @@ static inline int xsm_hvm_param(
     xsm_default_t def, struct domain *d, unsigned long op)
 {
     return alternative_call(xsm_ops.hvm_param, d, op);
-}
-
-static inline int xsm_hvm_control(
-    xsm_default_t def, struct domain *d, unsigned long op)
-{
-    return alternative_call(xsm_ops.hvm_control, d, op);
 }
 
 static inline int xsm_hvm_param_altp2mhvm(xsm_default_t def, struct domain *d)
@@ -698,7 +706,7 @@ static inline int xsm_mmuext_op(
 static inline int xsm_update_va_mapping(
     xsm_default_t def, struct domain *d, struct domain *f, l1_pgentry_t pte)
 {
-    return xsm_ops.update_va_mapping(d, f, pte);
+    return alternative_call(xsm_ops.update_va_mapping, d, f, pte);
 }
 
 static inline int xsm_priv_mapping(
@@ -786,8 +794,6 @@ int xsm_dt_init(void);
 int xsm_dt_policy_init(void **policy_buffer, size_t *policy_size);
 bool has_xsm_magic(paddr_t);
 #endif
-
-extern struct xsm_ops dummy_xsm_ops;
 
 void xsm_fixup_ops(struct xsm_ops *ops);
 

@@ -26,7 +26,7 @@
 static int __initdata nr_amd_iommus;
 static bool __initdata pci_init;
 
-static void do_amd_iommu_irq(void *data);
+static void cf_check do_amd_iommu_irq(void *data);
 static DECLARE_SOFTIRQ_TASKLET(amd_iommu_irq_tasklet, do_amd_iommu_irq, NULL);
 
 unsigned int __read_mostly amd_iommu_acpi_info;
@@ -258,8 +258,8 @@ static void register_iommu_exclusion_range(struct amd_iommu *iommu)
     writel(entry, iommu->mmio_base+IOMMU_EXCLUSION_BASE_LOW_OFFSET);
 }
 
-static void set_iommu_event_log_control(struct amd_iommu *iommu,
-                                        bool enable)
+static void cf_check set_iommu_event_log_control(
+    struct amd_iommu *iommu, bool enable)
 {
     /* Reset head and tail pointer manually before enablement */
     if ( enable )
@@ -275,8 +275,8 @@ static void set_iommu_event_log_control(struct amd_iommu *iommu,
     writeq(iommu->ctrl.raw, iommu->mmio_base + IOMMU_CONTROL_MMIO_OFFSET);
 }
 
-static void set_iommu_ppr_log_control(struct amd_iommu *iommu,
-                                      bool enable)
+static void cf_check set_iommu_ppr_log_control(
+    struct amd_iommu *iommu, bool enable)
 {
     /* Reset head and tail pointer manually before enablement */
     if ( enable )
@@ -410,7 +410,7 @@ static void amd_iommu_msi_enable(struct amd_iommu *iommu, int flag)
                      PCI_FUNC(iommu->bdf), iommu->msi.msi_attrib.pos, flag);
 }
 
-static void iommu_msi_unmask(struct irq_desc *desc)
+static void cf_check iommu_msi_unmask(struct irq_desc *desc)
 {
     unsigned long flags;
     struct amd_iommu *iommu = desc->action->dev_id;
@@ -421,7 +421,7 @@ static void iommu_msi_unmask(struct irq_desc *desc)
     iommu->msi.msi_attrib.host_masked = 0;
 }
 
-static void iommu_msi_mask(struct irq_desc *desc)
+static void cf_check iommu_msi_mask(struct irq_desc *desc)
 {
     unsigned long flags;
     struct amd_iommu *iommu = desc->action->dev_id;
@@ -434,13 +434,13 @@ static void iommu_msi_mask(struct irq_desc *desc)
     iommu->msi.msi_attrib.host_masked = 1;
 }
 
-static unsigned int iommu_msi_startup(struct irq_desc *desc)
+static unsigned int cf_check iommu_msi_startup(struct irq_desc *desc)
 {
     iommu_msi_unmask(desc);
     return 0;
 }
 
-static void iommu_msi_end(struct irq_desc *desc, u8 vector)
+static void cf_check iommu_msi_end(struct irq_desc *desc, u8 vector)
 {
     iommu_msi_unmask(desc);
     end_nonmaskable_irq(desc, vector);
@@ -458,14 +458,14 @@ static hw_irq_controller iommu_msi_type = {
     .set_affinity = set_msi_affinity,
 };
 
-static unsigned int iommu_maskable_msi_startup(struct irq_desc *desc)
+static unsigned int cf_check iommu_maskable_msi_startup(struct irq_desc *desc)
 {
     iommu_msi_unmask(desc);
     unmask_msi_irq(desc);
     return 0;
 }
 
-static void iommu_maskable_msi_shutdown(struct irq_desc *desc)
+static void cf_check iommu_maskable_msi_shutdown(struct irq_desc *desc)
 {
     mask_msi_irq(desc);
     iommu_msi_mask(desc);
@@ -489,7 +489,8 @@ static hw_irq_controller iommu_maskable_msi_type = {
     .set_affinity = set_msi_affinity,
 };
 
-static void set_x2apic_affinity(struct irq_desc *desc, const cpumask_t *mask)
+static void cf_check set_x2apic_affinity(
+    struct irq_desc *desc, const cpumask_t *mask)
 {
     struct amd_iommu *iommu = desc->action->dev_id;
     unsigned int dest = set_desc_affinity(desc, mask);
@@ -527,7 +528,7 @@ static hw_irq_controller iommu_x2apic_type = {
     .set_affinity = set_x2apic_affinity,
 };
 
-static void parse_event_log_entry(struct amd_iommu *iommu, u32 entry[])
+static void cf_check parse_event_log_entry(struct amd_iommu *iommu, u32 entry[])
 {
     u32 code;
     static const char *const event_str[] = {
@@ -561,7 +562,7 @@ static void parse_event_log_entry(struct amd_iommu *iommu, u32 entry[])
 
         printk(XENLOG_ERR "AMD-Vi: %s: %pp d%u addr %016"PRIx64
                " flags %#x%s%s%s%s%s%s%s%s%s%s\n",
-               code_str, &PCI_SBDF2(iommu->seg, device_id),
+               code_str, &PCI_SBDF(iommu->seg, device_id),
                domain_id, addr, flags,
                (flags & 0xe00) ? " ??" : "",
                (flags & 0x100) ? " TR" : "",
@@ -574,10 +575,13 @@ static void parse_event_log_entry(struct amd_iommu *iommu, u32 entry[])
                (flags & 0x002) ? " NX" : "",
                (flags & 0x001) ? " GN" : "");
 
+        if ( iommu_verbose )
+            amd_iommu_print_entries(iommu, device_id, daddr_to_dfn(addr));
+
         for ( bdf = 0; bdf < ivrs_bdf_entries; bdf++ )
             if ( get_dma_requestor_id(iommu->seg, bdf) == device_id )
                 pci_check_disable_device(iommu->seg, PCI_BUS(bdf),
-                                         PCI_DEVFN2(bdf));
+                                         PCI_DEVFN(bdf));
     }
     else
         printk(XENLOG_ERR "%s %08x %08x %08x %08x\n",
@@ -628,20 +632,14 @@ static void iommu_check_event_log(struct amd_iommu *iommu)
     spin_unlock_irqrestore(&iommu->lock, flags);
 }
 
-void parse_ppr_log_entry(struct amd_iommu *iommu, u32 entry[])
+static void cf_check parse_ppr_log_entry(struct amd_iommu *iommu, u32 entry[])
 {
-
-    u16 device_id;
-    u8 bus, devfn;
+    /* here device_id is physical value */
+    uint16_t device_id = iommu_get_devid_from_cmd(entry[0]);
     struct pci_dev *pdev;
 
-    /* here device_id is physical value */
-    device_id = iommu_get_devid_from_cmd(entry[0]);
-    bus = PCI_BUS(device_id);
-    devfn = PCI_DEVFN2(device_id);
-
     pcidevs_lock();
-    pdev = pci_get_real_pdev(iommu->seg, bus, devfn);
+    pdev = pci_get_real_pdev(PCI_SBDF(iommu->seg, device_id));
     pcidevs_unlock();
 
     if ( pdev )
@@ -692,7 +690,7 @@ static void iommu_check_ppr_log(struct amd_iommu *iommu)
     spin_unlock_irqrestore(&iommu->lock, flags);
 }
 
-static void do_amd_iommu_irq(void *unused)
+static void cf_check do_amd_iommu_irq(void *unused)
 {
     struct amd_iommu *iommu;
 
@@ -715,8 +713,8 @@ static void do_amd_iommu_irq(void *unused)
     }
 }
 
-static void iommu_interrupt_handler(int irq, void *dev_id,
-                                    struct cpu_user_regs *regs)
+static void cf_check iommu_interrupt_handler(
+    int irq, void *dev_id, struct cpu_user_regs *regs)
 {
     unsigned long flags;
     struct amd_iommu *iommu = dev_id;
@@ -749,13 +747,12 @@ static bool_t __init set_iommu_interrupt_handler(struct amd_iommu *iommu)
     }
 
     pcidevs_lock();
-    iommu->msi.dev = pci_get_pdev(iommu->seg, PCI_BUS(iommu->bdf),
-                                  PCI_DEVFN2(iommu->bdf));
+    iommu->msi.dev = pci_get_pdev(NULL, PCI_SBDF(iommu->seg, iommu->bdf));
     pcidevs_unlock();
     if ( !iommu->msi.dev )
     {
         AMD_IOMMU_WARN("no pdev for %pp\n",
-                       &PCI_SBDF2(iommu->seg, iommu->bdf));
+                       &PCI_SBDF(iommu->seg, iommu->bdf));
         return 0;
     }
 
@@ -777,7 +774,7 @@ static bool_t __init set_iommu_interrupt_handler(struct amd_iommu *iommu)
         hw_irq_controller *handler;
         u16 control;
 
-        control = pci_conf_read16(PCI_SBDF2(iommu->seg, iommu->bdf),
+        control = pci_conf_read16(PCI_SBDF(iommu->seg, iommu->bdf),
                                   iommu->msi.msi_attrib.pos + PCI_MSI_FLAGS);
 
         iommu->msi.msi.nvec = 1;
@@ -808,12 +805,9 @@ static bool_t __init set_iommu_interrupt_handler(struct amd_iommu *iommu)
     return 1;
 }
 
-int iov_adjust_irq_affinities(void)
+void cf_check iov_adjust_irq_affinities(void)
 {
     const struct amd_iommu *iommu;
-
-    if ( !iommu_enabled )
-        return 0;
 
     for_each_amd_iommu ( iommu )
     {
@@ -827,10 +821,7 @@ int iov_adjust_irq_affinities(void)
             set_msi_affinity(desc, NULL);
         spin_unlock_irqrestore(&desc->lock, flags);
     }
-
-    return 0;
 }
-__initcall(iov_adjust_irq_affinities);
 
 /*
  * Family15h Model 10h-1fh erratum 746 (IOMMU Logging May Stall Translations)
@@ -847,22 +838,22 @@ static void amd_iommu_erratum_746_workaround(struct amd_iommu *iommu)
          (boot_cpu_data.x86_model > 0x1f) )
         return;
 
-    pci_conf_write32(PCI_SBDF2(iommu->seg, iommu->bdf), 0xf0, 0x90);
-    value = pci_conf_read32(PCI_SBDF2(iommu->seg, iommu->bdf), 0xf4);
+    pci_conf_write32(PCI_SBDF(iommu->seg, iommu->bdf), 0xf0, 0x90);
+    value = pci_conf_read32(PCI_SBDF(iommu->seg, iommu->bdf), 0xf4);
 
     if ( value & (1 << 2) )
         return;
 
     /* Select NB indirect register 0x90 and enable writing */
-    pci_conf_write32(PCI_SBDF2(iommu->seg, iommu->bdf), 0xf0, 0x90 | (1 << 8));
+    pci_conf_write32(PCI_SBDF(iommu->seg, iommu->bdf), 0xf0, 0x90 | (1 << 8));
 
-    pci_conf_write32(PCI_SBDF2(iommu->seg, iommu->bdf), 0xf4, value | (1 << 2));
+    pci_conf_write32(PCI_SBDF(iommu->seg, iommu->bdf), 0xf4, value | (1 << 2));
     printk(XENLOG_INFO
            "AMD-Vi: Applying erratum 746 workaround for IOMMU at %pp\n",
-           &PCI_SBDF2(iommu->seg, iommu->bdf));
+           &PCI_SBDF(iommu->seg, iommu->bdf));
 
     /* Clear the enable writing bit */
-    pci_conf_write32(PCI_SBDF2(iommu->seg, iommu->bdf), 0xf0, 0x90);
+    pci_conf_write32(PCI_SBDF(iommu->seg, iommu->bdf), 0xf0, 0x90);
 }
 
 static void enable_iommu(struct amd_iommu *iommu)
@@ -1073,7 +1064,7 @@ static void * __init allocate_ppr_log(struct amd_iommu *iommu)
 #define IVRS_MAPPINGS_DEVTAB(m) (m)[ivrs_bdf_entries].intremap_table
 
 /* Gets passed to radix_tree_destroy(), so its param needs to be void *. */
-static void __init free_ivrs_mapping_callback(void *ptr)
+static void __init cf_check free_ivrs_mapping_callback(void *ptr)
 {
     const struct ivrs_mappings *ivrs_mappings = ptr;
 
@@ -1243,7 +1234,7 @@ static int __init alloc_ivrs_mappings(u16 seg)
     return 0;
 }
 
-static int __init amd_iommu_setup_device_table(
+static int __init cf_check amd_iommu_setup_device_table(
     u16 seg, struct ivrs_mappings *ivrs_mappings)
 {
     struct amd_iommu_dte *dt = IVRS_MAPPINGS_DEVTAB(ivrs_mappings);
@@ -1293,7 +1284,7 @@ static int __init amd_iommu_setup_device_table(
                 if ( !pci_init )
                     continue;
                 pcidevs_lock();
-                pdev = pci_get_pdev(seg, PCI_BUS(bdf), PCI_DEVFN2(bdf));
+                pdev = pci_get_pdev(NULL, PCI_SBDF(seg, bdf));
                 pcidevs_unlock();
             }
 
@@ -1543,7 +1534,7 @@ static void invalidate_all_domain_pages(void)
         amd_iommu_flush_all_pages(d);
 }
 
-static int _invalidate_all_devices(
+static int cf_check _invalidate_all_devices(
     u16 seg, struct ivrs_mappings *ivrs_mappings)
 {
     unsigned int bdf; 
@@ -1569,14 +1560,14 @@ static void invalidate_all_devices(void)
     iterate_ivrs_mappings(_invalidate_all_devices);
 }
 
-int amd_iommu_suspend(void)
+int cf_check amd_iommu_suspend(void)
 {
     amd_iommu_crash_shutdown();
 
     return 0;
 }
 
-void amd_iommu_crash_shutdown(void)
+void cf_check amd_iommu_crash_shutdown(void)
 {
     struct amd_iommu *iommu;
 
@@ -1584,7 +1575,7 @@ void amd_iommu_crash_shutdown(void)
         disable_iommu(iommu);
 }
 
-void amd_iommu_resume(void)
+void cf_check amd_iommu_resume(void)
 {
     struct amd_iommu *iommu;
 

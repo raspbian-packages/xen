@@ -18,6 +18,7 @@
 #include <asm/fixmap.h>
 #include <asm/nmi.h>
 #include <asm/livepatch.h>
+#include <asm/setup.h>
 
 static bool has_active_waitqueue(const struct vm_event_domain *ved)
 {
@@ -27,7 +28,7 @@ static bool has_active_waitqueue(const struct vm_event_domain *ved)
 }
 
 /*
- * x86's implementation of waitqueue violates the livepatching safey principle
+ * x86's implementation of waitqueue violates the livepatching safety principle
  * of having unwound every CPUs stack before modifying live content.
  *
  * Search through every domain and check that no vCPUs have an active
@@ -118,11 +119,11 @@ int arch_livepatch_verify_func(const struct livepatch_func *func)
     {
         /*
          * Space needed now depends on whether the target function
-         * starts with an ENDBR64 instruction.
+         * start{s,ed} with an ENDBR64 instruction.
          */
         uint8_t needed = ARCH_PATCH_INSN_SIZE;
 
-        if ( is_endbr64(func->old_addr) )
+        if ( is_endbr64(func->old_addr) || is_endbr64_poison(func->old_addr) )
             needed += ENDBR64_LEN;
 
         if ( func->old_size < needed )
@@ -153,7 +154,7 @@ void noinline arch_livepatch_apply(struct livepatch_func *func)
      * loaded hotpatch (to avoid racing against other fixups adding/removing
      * ENDBR64 or similar instructions).
      */
-    if ( is_endbr64(old_ptr) )
+    if ( is_endbr64(old_ptr) || is_endbr64_poison(func->old_addr) )
         func->patch_offset += ENDBR64_LEN;
 
     /* This call must be done with ->patch_offset already set. */
@@ -203,7 +204,7 @@ static nmi_callback_t *saved_nmi_callback;
  * Note that because of this NOP code the do_nmi is not safely patchable.
  * Also if we do receive 'real' NMIs we have lost them.
  */
-static int mask_nmi_callback(const struct cpu_user_regs *regs, int cpu)
+static int cf_check mask_nmi_callback(const struct cpu_user_regs *regs, int cpu)
 {
     /* TODO: Handle missing NMI/MCE.*/
     return 1;
@@ -379,7 +380,7 @@ void __init arch_livepatch_init(void)
 {
     void *start, *end;
 
-    start = (void *)xen_virt_end;
+    start = (void *)__2M_rwdata_end;
     end = (void *)(XEN_VIRT_END - FIXADDR_X_SIZE - NR_CPUS * PAGE_SIZE);
 
     BUG_ON(end <= start);

@@ -28,6 +28,11 @@
 #include <asm/p2m.h>
 #include <asm/monitor.h>
 #include <asm/vm_event.h>
+
+#ifdef CONFIG_MEM_SHARING
+#include <asm/mem_sharing.h>
+#endif
+
 #include <xsm/xsm.h>
 #include <public/hvm/params.h>
 
@@ -168,7 +173,7 @@ static void vm_event_wake_queued(struct domain *d, struct vm_event_domain *ved)
  * call vm_event_wake() again, ensuring that any blocked vCPUs will get
  * unpaused once all the queued vCPUs have made it through.
  */
-void vm_event_wake(struct domain *d, struct vm_event_domain *ved)
+static void vm_event_wake(struct domain *d, struct vm_event_domain *ved)
 {
     if ( !list_empty(&ved->wq.list) )
         vm_event_wake_queued(d, ved);
@@ -394,6 +399,17 @@ static int vm_event_resume(struct domain *d, struct vm_event_domain *ved)
             if ( rsp.reason == VM_EVENT_REASON_MEM_PAGING )
                 p2m_mem_paging_resume(d, &rsp);
 #endif
+#ifdef CONFIG_MEM_SHARING
+            if ( mem_sharing_is_fork(d) )
+            {
+                bool reset_state = rsp.flags & VM_EVENT_FLAG_RESET_FORK_STATE;
+                bool reset_mem = rsp.flags & VM_EVENT_FLAG_RESET_FORK_MEMORY;
+
+                if ( (reset_state || reset_mem) &&
+                     mem_sharing_fork_reset(d, reset_state, reset_mem) )
+                    ASSERT_UNREACHABLE();
+            }
+#endif
 
             /*
              * Check emulation flags in the arch-specific handler only, as it
@@ -523,21 +539,21 @@ int __vm_event_claim_slot(struct domain *d, struct vm_event_domain *ved,
 
 #ifdef CONFIG_MEM_PAGING
 /* Registered with Xen-bound event channel for incoming notifications. */
-static void mem_paging_notification(struct vcpu *v, unsigned int port)
+static void cf_check mem_paging_notification(struct vcpu *v, unsigned int port)
 {
     vm_event_resume(v->domain, v->domain->vm_event_paging);
 }
 #endif
 
 /* Registered with Xen-bound event channel for incoming notifications. */
-static void monitor_notification(struct vcpu *v, unsigned int port)
+static void cf_check monitor_notification(struct vcpu *v, unsigned int port)
 {
     vm_event_resume(v->domain, v->domain->vm_event_monitor);
 }
 
 #ifdef CONFIG_MEM_SHARING
 /* Registered with Xen-bound event channel for incoming notifications. */
-static void mem_sharing_notification(struct vcpu *v, unsigned int port)
+static void cf_check mem_sharing_notification(struct vcpu *v, unsigned int port)
 {
     vm_event_resume(v->domain, v->domain->vm_event_share);
 }

@@ -37,12 +37,12 @@ index 37b2146..17bdd2d 100644
  		--record $(INSTALL_LOG) $(PYTHON_PREFIX_ARG) \
  		 --root="$(DESTDIR)" --install-scripts=$(LIBEXEC_BIN) --force
 diff --git a/tools/pygrub/setup.py b/tools/pygrub/setup.py
-index b8f1dc4..91019e9 100644
+index 0e4e3d0..964c3ea 100644
 --- a/tools/pygrub/setup.py
 +++ b/tools/pygrub/setup.py
 @@ -5,10 +5,15 @@ import sys
  
- extra_compile_args  = [ "-fno-strict-aliasing", "-Werror" ]
+ extra_compile_args  = [ "-fno-strict-aliasing" ]
  
 +extra_link_args = []
 +try: extra_link_args += [ "-Wl,-rpath," + os.environ['LIBEXEC_LIB'] ]

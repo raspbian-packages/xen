@@ -153,10 +153,6 @@ static void trace_io(const struct connection *conn,
 	time_t now;
 	struct tm *tm;
 
-#ifdef HAVE_DTRACE
-	dtrace_io(conn, data, out);
-#endif
-
 	if (tracefd < 0)
 		return;
 
@@ -2005,29 +2001,6 @@ static struct {
 	[XS_DIRECTORY_PART]    = { "DIRECTORY_PART",    send_directory_part },
 };
 
-/*
- * Keep the connection alive but stop processing any new request or sending
- * reponse. This is to allow sending @releaseDomain watch event at the correct
- * moment and/or to allow the connection to restart (not yet implemented).
- *
- * All watches, transactions, buffers will be freed.
- */
-void ignore_connection(struct connection *conn)
-{
-	trace("CONN %p ignored\n", conn);
-
-	conn->is_ignored = true;
-	conn_delete_all_watches(conn);
-	conn_delete_all_transactions(conn);
-	conn_free_buffered_data(conn);
-
-	talloc_free(conn->in);
-	conn->in = NULL;
-	/* if this is a socket connection, drop it now */
-	if (conn->fd >= 0)
-		talloc_free(conn);
-}
-
 static const char *sockmsg_string(enum xsd_sockmsg_type type)
 {
 	if ((unsigned int)type < ARRAY_SIZE(wire_funcs) && wire_funcs[type].str)
@@ -2150,6 +2123,7 @@ static void handle_input(struct connection *conn)
 {
 	int bytes;
 	struct buffered_data *in;
+	unsigned int err;
 
 	if (!conn->in) {
 		conn->in = new_buffer(conn);
@@ -2165,8 +2139,10 @@ static void handle_input(struct connection *conn)
 		if (in->used != sizeof(in->hdr)) {
 			bytes = conn->funcs->read(conn, in->hdr.raw + in->used,
 						  sizeof(in->hdr) - in->used);
-			if (bytes < 0)
+			if (bytes < 0) {
+				err = XENSTORE_ERROR_RINGIDX;
 				goto bad_client;
+			}
 			in->used += bytes;
 			if (in->used != sizeof(in->hdr))
 				return;
@@ -2174,6 +2150,7 @@ static void handle_input(struct connection *conn)
 			if (in->hdr.msg.len > XENSTORE_PAYLOAD_MAX) {
 				syslog(LOG_ERR, "Client tried to feed us %i",
 				       in->hdr.msg.len);
+				err = XENSTORE_ERROR_PROTO;
 				goto bad_client;
 			}
 		}
@@ -2191,8 +2168,10 @@ static void handle_input(struct connection *conn)
 
 	bytes = conn->funcs->read(conn, in->buffer + in->used,
 				  in->hdr.msg.len - in->used);
-	if (bytes < 0)
+	if (bytes < 0) {
+		err = XENSTORE_ERROR_RINGIDX;
 		goto bad_client;
+	}
 
 	in->used += bytes;
 	if (in->used != in->hdr.msg.len)
@@ -2202,14 +2181,14 @@ static void handle_input(struct connection *conn)
 	return;
 
 bad_client:
-	ignore_connection(conn);
+	ignore_connection(conn, err);
 }
 
 static void handle_output(struct connection *conn)
 {
 	/* Ignore the connection if an error occured */
 	if (!write_messages(conn))
-		ignore_connection(conn);
+		ignore_connection(conn, XENSTORE_ERROR_RINGIDX);
 }
 
 struct connection *new_connection(const struct interface_funcs *funcs)
@@ -2903,9 +2882,6 @@ int main(int argc, char *argv[])
 	/* Get ready to listen to the tools. */
 	initialize_fds(&sock_pollfd_idx, &timeout);
 
-	/* Tell the kernel we're up and running. */
-	xenbus_notify_running();
-
 #if defined(XEN_SYSTEMD_ENABLED)
 	if (!live_update) {
 		sd_notify(1, "READY=1");
@@ -2959,16 +2935,8 @@ int main(int argc, char *argv[])
 			}
 		}
 
-		next = list_entry(connections.next, typeof(*conn), list);
-		if (&next->list != &connections)
-			talloc_increase_ref_count(next);
-		while (&next->list != &connections) {
-			conn = next;
-
-			next = list_entry(conn->list.next,
-					  typeof(*conn), list);
-			if (&next->list != &connections)
-				talloc_increase_ref_count(next);
+		list_for_each_entry_safe(conn, next, &connections, list) {
+			talloc_increase_ref_count(conn);
 
 			if (conn_can_read(conn))
 				handle_input(conn);

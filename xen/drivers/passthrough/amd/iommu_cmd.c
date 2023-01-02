@@ -40,7 +40,7 @@ static void send_iommu_command(struct amd_iommu *iommu,
                      IOMMU_RING_BUFFER_PTR_MASK) )
     {
         printk_once(XENLOG_ERR "AMD IOMMU %pp: no cmd slot available\n",
-                    &PCI_SBDF2(iommu->seg, iommu->bdf));
+                    &PCI_SBDF(iommu->seg, iommu->bdf));
         cpu_relax();
     }
 
@@ -84,7 +84,7 @@ static void flush_command_buffer(struct amd_iommu *iommu,
             threshold |= threshold << 1;
             printk(XENLOG_WARNING
                    "AMD IOMMU %pp: %scompletion wait taking too long\n",
-                   &PCI_SBDF2(iommu->seg, iommu->bdf),
+                   &PCI_SBDF(iommu->seg, iommu->bdf),
                    timeout_base ? "iotlb " : "");
             timeout = 0;
         }
@@ -94,7 +94,7 @@ static void flush_command_buffer(struct amd_iommu *iommu,
     if ( !timeout )
         printk(XENLOG_WARNING
                "AMD IOMMU %pp: %scompletion wait took %lums\n",
-               &PCI_SBDF2(iommu->seg, iommu->bdf),
+               &PCI_SBDF(iommu->seg, iommu->bdf),
                timeout_base ? "iotlb " : "",
                (NOW() - start) / 10000000);
 }
@@ -287,18 +287,19 @@ void amd_iommu_flush_iotlb(u8 devfn, const struct pci_dev *pdev,
     if ( !pci_ats_enabled(pdev->seg, pdev->bus, pdev->devfn) )
         return;
 
-    iommu = find_iommu_for_device(pdev->seg, PCI_BDF2(pdev->bus, pdev->devfn));
+    iommu = find_iommu_for_device(pdev->seg, pdev->sbdf.bdf);
 
     if ( !iommu )
     {
-        AMD_IOMMU_WARN("can't find IOMMU for %pp\n", &pdev->sbdf);
+        AMD_IOMMU_WARN("can't find IOMMU for %pp\n",
+                       &PCI_SBDF(pdev->seg, pdev->bus, devfn));
         return;
     }
 
     if ( !iommu_has_cap(iommu, PCI_CAP_IOTLB_SHIFT) )
         return;
 
-    req_id = get_dma_requestor_id(iommu->seg, PCI_BDF2(pdev->bus, devfn));
+    req_id = get_dma_requestor_id(iommu->seg, PCI_BDF(pdev->bus, devfn));
     queueid = req_id;
     maxpend = pdev->ats.queue_depth & 0xff;
 

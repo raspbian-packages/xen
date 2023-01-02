@@ -21,9 +21,9 @@
  *
  */
 
-#include <xen/xenoprof.h>
+#include <xen/err.h>
 #include <xen/sched.h>
-#include <xen/irq.h>
+#include <xen/xenoprof.h>
 #include <asm/apic.h>
 #include <asm/vpmu.h>
 #include <asm/hvm/save.h>
@@ -186,7 +186,7 @@ static void amd_vpmu_unset_msr_bitmap(struct vcpu *v)
     msr_bitmap_off(vpmu);
 }
 
-static int amd_vpmu_do_interrupt(struct cpu_user_regs *regs)
+static int cf_check amd_vpmu_do_interrupt(struct cpu_user_regs *regs)
 {
     return 1;
 }
@@ -206,7 +206,7 @@ static inline void context_load(struct vcpu *v)
     }
 }
 
-static int amd_vpmu_load(struct vcpu *v, bool_t from_guest)
+static int cf_check amd_vpmu_load(struct vcpu *v, bool from_guest)
 {
     struct vpmu_struct *vpmu = vcpu_vpmu(v);
     struct xen_pmu_amd_ctxt *ctxt;
@@ -280,7 +280,7 @@ static inline void context_save(struct vcpu *v)
         rdmsrl(counters[i], counter_regs[i]);
 }
 
-static int amd_vpmu_save(struct vcpu *v,  bool_t to_guest)
+static int cf_check amd_vpmu_save(struct vcpu *v,  bool to_guest)
 {
     struct vpmu_struct *vpmu = vcpu_vpmu(v);
     unsigned int i;
@@ -348,15 +348,12 @@ static void context_update(unsigned int msr, u64 msr_content)
     }
 }
 
-static int amd_vpmu_do_wrmsr(unsigned int msr, uint64_t msr_content,
-                             uint64_t supported)
+static int cf_check amd_vpmu_do_wrmsr(unsigned int msr, uint64_t msr_content)
 {
     struct vcpu *v = current;
     struct vpmu_struct *vpmu = vcpu_vpmu(v);
     unsigned int idx = 0;
     int type = get_pmu_reg_type(msr, &idx);
-
-    ASSERT(!supported);
 
     if ( (type == MSR_TYPE_CTRL ) &&
          ((msr_content & CTRL_RSVD_MASK) != ctrl_rsvd[idx]) )
@@ -407,7 +404,7 @@ static int amd_vpmu_do_wrmsr(unsigned int msr, uint64_t msr_content,
     return 0;
 }
 
-static int amd_vpmu_do_rdmsr(unsigned int msr, uint64_t *msr_content)
+static int cf_check amd_vpmu_do_rdmsr(unsigned int msr, uint64_t *msr_content)
 {
     struct vcpu *v = current;
     struct vpmu_struct *vpmu = vcpu_vpmu(v);
@@ -425,7 +422,7 @@ static int amd_vpmu_do_rdmsr(unsigned int msr, uint64_t *msr_content)
     return 0;
 }
 
-static void amd_vpmu_destroy(struct vcpu *v)
+static void cf_check amd_vpmu_destroy(struct vcpu *v)
 {
     struct vpmu_struct *vpmu = vcpu_vpmu(v);
 
@@ -443,7 +440,7 @@ static void amd_vpmu_destroy(struct vcpu *v)
 }
 
 /* VPMU part of the 'q' keyhandler */
-static void amd_vpmu_dump(const struct vcpu *v)
+static void cf_check amd_vpmu_dump(const struct vcpu *v)
 {
     const struct vpmu_struct *vpmu = vcpu_vpmu(v);
     const struct xen_pmu_amd_ctxt *ctxt = vpmu->context;
@@ -483,23 +480,10 @@ static void amd_vpmu_dump(const struct vcpu *v)
     }
 }
 
-static const struct arch_vpmu_ops amd_vpmu_ops = {
-    .do_wrmsr = amd_vpmu_do_wrmsr,
-    .do_rdmsr = amd_vpmu_do_rdmsr,
-    .do_interrupt = amd_vpmu_do_interrupt,
-    .arch_vpmu_destroy = amd_vpmu_destroy,
-    .arch_vpmu_save = amd_vpmu_save,
-    .arch_vpmu_load = amd_vpmu_load,
-    .arch_vpmu_dump = amd_vpmu_dump
-};
-
-int svm_vpmu_initialise(struct vcpu *v)
+static int cf_check svm_vpmu_initialise(struct vcpu *v)
 {
     struct xen_pmu_amd_ctxt *ctxt;
     struct vpmu_struct *vpmu = vcpu_vpmu(v);
-
-    if ( vpmu_mode == XENPMU_MODE_OFF )
-        return 0;
 
     if ( !counters )
         return -EINVAL;
@@ -529,13 +513,35 @@ int svm_vpmu_initialise(struct vcpu *v)
                offsetof(struct xen_pmu_amd_ctxt, regs));
     }
 
-    vpmu->arch_vpmu_ops = &amd_vpmu_ops;
-
     vpmu_set(vpmu, VPMU_CONTEXT_ALLOCATED);
+
     return 0;
 }
 
-static int __init common_init(void)
+#ifdef CONFIG_MEM_SHARING
+static int cf_check amd_allocate_context(struct vcpu *v)
+{
+    ASSERT_UNREACHABLE();
+    return 0;
+}
+#endif
+
+static const struct arch_vpmu_ops __initconst_cf_clobber amd_vpmu_ops = {
+    .initialise = svm_vpmu_initialise,
+    .do_wrmsr = amd_vpmu_do_wrmsr,
+    .do_rdmsr = amd_vpmu_do_rdmsr,
+    .do_interrupt = amd_vpmu_do_interrupt,
+    .arch_vpmu_destroy = amd_vpmu_destroy,
+    .arch_vpmu_save = amd_vpmu_save,
+    .arch_vpmu_load = amd_vpmu_load,
+    .arch_vpmu_dump = amd_vpmu_dump,
+
+#ifdef CONFIG_MEM_SHARING
+    .allocate_context = amd_allocate_context,
+#endif
+};
+
+static const struct arch_vpmu_ops *__init common_init(void)
 {
     unsigned int i;
 
@@ -543,7 +549,7 @@ static int __init common_init(void)
     {
         printk(XENLOG_WARNING "VPMU: Unsupported CPU family %#x\n",
                current_cpu_data.x86);
-        return -EINVAL;
+        return ERR_PTR(-EINVAL);
     }
 
     if ( sizeof(struct xen_pmu_data) +
@@ -553,7 +559,7 @@ static int __init common_init(void)
                "VPMU: Register bank does not fit into VPMU shared page\n");
         counters = ctrls = NULL;
         num_counters = 0;
-        return -ENOSPC;
+        return ERR_PTR(-ENOSPC);
     }
 
     for ( i = 0; i < num_counters; i++ )
@@ -562,10 +568,10 @@ static int __init common_init(void)
         ctrl_rsvd[i] &= CTRL_RSVD_MASK;
     }
 
-    return 0;
+    return &amd_vpmu_ops;
 }
 
-int __init amd_vpmu_init(void)
+const struct arch_vpmu_ops *__init amd_vpmu_init(void)
 {
     switch ( current_cpu_data.x86 )
     {
@@ -592,7 +598,7 @@ int __init amd_vpmu_init(void)
     return common_init();
 }
 
-int __init hygon_vpmu_init(void)
+const struct arch_vpmu_ops *__init hygon_vpmu_init(void)
 {
     switch ( current_cpu_data.x86 )
     {

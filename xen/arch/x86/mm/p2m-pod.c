@@ -31,6 +31,7 @@
 #include <asm/p2m.h>
 
 #include "mm-locks.h"
+#include "p2m.h"
 
 #define superpage_aligned(_x)  (((_x)&(SUPERPAGE_PAGES-1))==0)
 
@@ -271,9 +272,6 @@ p2m_pod_set_cache_target(struct p2m_domain *p2m, unsigned long pod_target, int p
                 ret = -EINVAL;
                 goto out;
             }
-
-            if ( test_and_clear_bit(_PGT_pinned, &(page+i)->u.inuse.type_info) )
-                put_page_and_type(page + i);
 
             put_page_alloc_ref(page + i);
             put_page(page + i);
@@ -564,7 +562,7 @@ decrease_reservation(struct domain *d, gfn_t gfn, unsigned int order)
 
         p2m->get_entry(p2m, gfn_add(gfn, i), &t, &a, 0, &cur_order, NULL);
         n = 1UL << min(order, cur_order);
-        if ( t == p2m_populate_on_demand )
+        if ( p2m_is_pod(t) )
             pod += n;
         else if ( p2m_is_ram(t) )
             ram += n;
@@ -639,7 +637,7 @@ decrease_reservation(struct domain *d, gfn_t gfn, unsigned int order)
         if ( order < cur_order )
             cur_order = order;
         n = 1UL << cur_order;
-        if ( t == p2m_populate_on_demand )
+        if ( p2m_is_pod(t) )
         {
             /* This shouldn't be able to fail */
             if ( p2m_set_entry(p2m, gfn_add(gfn, i), INVALID_MFN, cur_order,
@@ -1186,6 +1184,12 @@ p2m_pod_demand_populate(struct p2m_domain *p2m, gfn_t gfn,
     mfn_t mfn;
     unsigned long i;
 
+    if ( !p2m_is_hostp2m(p2m) )
+    {
+        ASSERT_UNREACHABLE();
+        return false;
+    }
+
     ASSERT(gfn_locked_by_me(p2m, gfn));
     pod_lock(p2m);
 
@@ -1353,7 +1357,7 @@ mark_populate_on_demand(struct domain *d, unsigned long gfn_l,
 
         p2m->get_entry(p2m, gfn_add(gfn, i), &ot, &a, 0, &cur_order, NULL);
         n = 1UL << min(order, cur_order);
-        if ( ot == p2m_populate_on_demand )
+        if ( p2m_is_pod(ot) )
         {
             /* Count how many PoD entries we'll be replacing if successful */
             pod_count += n;

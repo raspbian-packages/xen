@@ -16,7 +16,7 @@ SUBDIRS-y += xentrace
 SUBDIRS-$(CONFIG_XCUTILS) += xcutils
 SUBDIRS-$(CONFIG_X86) += firmware
 SUBDIRS-y += console
-SUBDIRS-y += xentop
+SUBDIRS-$(XENSTAT_XENTOP) += xentop
 SUBDIRS-y += libfsimage
 SUBDIRS-$(CONFIG_Linux) += vchan
 
@@ -31,8 +31,7 @@ SUBDIRS-$(CONFIG_GOLANG) += golang
 SUBDIRS-y += xl
 SUBDIRS-y += helpers
 SUBDIRS-$(CONFIG_X86) += xenpaging
-SUBDIRS-$(CONFIG_X86) += debugger/gdbsx
-SUBDIRS-$(CONFIG_X86) += debugger/kdd
+SUBDIRS-$(CONFIG_X86) += debugger
 SUBDIRS-$(CONFIG_TESTS) += tests
 
 SUBDIRS-y += python
@@ -159,6 +158,7 @@ qemu-traditional-recurse = \
 	set -e; \
 		$(buildmakevars2shellvars); \
 		export CONFIG_BLKTAP1=n; \
+		export BUILDING_QEMU_TRAD=y; \
 		cd qemu-xen-traditional-dir; \
 		$(1)
 
@@ -270,33 +270,6 @@ subdir-clean-qemu-xen-dir:
 	fi
 
 subdir-uninstall-qemu-xen-dir: ;
-
-subdir-clean-debugger/gdbsx subdir-distclean-debugger/gdbsx: .phony
-	$(MAKE) -C debugger/gdbsx clean
-
-subdir-install-debugger/gdbsx: .phony
-	$(MAKE) -C debugger/gdbsx install
-
-subdir-all-debugger/gdbsx: .phony
-	$(MAKE) -C debugger/gdbsx all
-
-subdir-uninstall-debugger/gdbsx: .phony
-	$(MAKE) -C debugger/gdbsx uninstall
-
-subdir-clean-debugger/kdd subdir-distclean-debugger/kdd: .phony
-	$(MAKE) -C debugger/kdd clean
-
-subdir-install-debugger/kdd: .phony
-	$(MAKE) -C debugger/kdd install
-
-subdir-uninstall-debugger/kdd: .phony
-	$(MAKE) -C debugger/kdd uninstall
-
-subdir-all-debugger/kdd: .phony
-	$(MAKE) -C debugger/kdd all
-
-subdir-distclean-firmware: .phony
-	$(MAKE) -C firmware distclean
 
 subtree-force-update:
 ifeq ($(CONFIG_QEMU_XEN),y)

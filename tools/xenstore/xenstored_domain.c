@@ -328,7 +328,7 @@ static int destroy_domain(void *_domain)
 			unmap_interface(domain->interface);
 	}
 
-	fire_watches(NULL, domain, "@releaseDomain", NULL, false, NULL);
+	fire_watches(NULL, domain, "@releaseDomain", NULL, true, NULL);
 
 	wrl_domain_destroy(domain);
 
@@ -379,7 +379,7 @@ void check_domains(void)
 	}
 
 	if (notify)
-		fire_watches(NULL, NULL, "@releaseDomain", NULL, false, NULL);
+		fire_watches(NULL, NULL, "@releaseDomain", NULL, true, NULL);
 }
 
 /* We scan all domains rather than use the information given here. */
@@ -560,6 +560,32 @@ static void domain_conn_reset(struct domain *domain)
 	domain->interface->rsp_cons = domain->interface->rsp_prod = 0;
 }
 
+/*
+ * Keep the connection alive but stop processing any new request or sending
+ * reponse. This is to allow sending @releaseDomain watch event at the correct
+ * moment and/or to allow the connection to restart (not yet implemented).
+ *
+ * All watches, transactions, buffers will be freed.
+ */
+void ignore_connection(struct connection *conn, unsigned int err)
+{
+	trace("CONN %p ignored, reason %u\n", conn, err);
+
+	if (conn->domain && conn->domain->interface)
+		conn->domain->interface->error = err;
+
+	conn->is_ignored = true;
+	conn_delete_all_watches(conn);
+	conn_delete_all_transactions(conn);
+	conn_free_buffered_data(conn);
+
+	talloc_free(conn->in);
+	conn->in = NULL;
+	/* if this is a socket connection, drop it now */
+	if (conn->fd >= 0)
+		talloc_free(conn);
+}
+
 static struct domain *introduce_domain(const void *ctx,
 				       unsigned int domid,
 				       evtchn_port_t port, bool restore)
@@ -597,9 +623,15 @@ static struct domain *introduce_domain(const void *ctx,
 		/* Now domain belongs to its connection. */
 		talloc_steal(domain->conn, domain);
 
+		if (!restore) {
+			/* Notify the domain that xenstore is available */
+			interface->connection = XENSTORE_CONNECTED;
+			xenevtchn_notify(xce_handle, domain->port);
+		}
+
 		if (!is_master_domain && !restore)
 			fire_watches(NULL, ctx, "@introduceDomain", NULL,
-				     false, NULL);
+				     true, NULL);
 	} else {
 		/* Use XS_INTRODUCE for recreating the xenbus event-channel. */
 		if (domain->port)
@@ -1566,7 +1598,7 @@ void read_state_connection(const void *ctx, const void *state)
 		 * dead. So mark it as ignored.
 		 */
 		if (!domain->port || !domain->interface)
-			ignore_connection(conn);
+			ignore_connection(conn, XENSTORE_ERROR_COMM);
 
 		if (sc->spec.ring.tdomid != DOMID_INVALID) {
 			tdomain = find_or_alloc_domain(ctx,

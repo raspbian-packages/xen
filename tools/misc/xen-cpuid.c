@@ -8,6 +8,7 @@
 #include <inttypes.h>
 
 #include <xenctrl.h>
+#include <xenguest.h>
 
 #include <xen-tools/libs.h>
 
@@ -138,7 +139,8 @@ static const char *const str_7c0[32] =
 
 static const char *const str_e7d[32] =
 {
-    [ 8] = "itsc",
+    /* 6 */                    [ 7] = "hw-pstate",
+    [ 8] = "itsc",             [ 9] = "cpb",
     [10] = "efro",
 };
 
@@ -174,6 +176,7 @@ static const char *const str_7d0[32] =
     [16] = "tsxldtrk",
     [18] = "pconfig",
     [20] = "cet-ibt",
+    /* 22 */                [23] = "avx512-fp16",
 
     [26] = "ibrsb",         [27] = "stibp",
     [28] = "l1d-flush",     [29] = "arch-caps",
@@ -196,11 +199,14 @@ static const char *const str_e21a[32] =
 
 static const char *const str_7b1[32] =
 {
+    [ 0] = "ppin",
 };
 
 static const char *const str_7d2[32] =
 {
     [ 0] = "intel-psfd",
+
+    /* 4 */                 [ 5] = "mcdt-no",
 };
 
 static const struct {

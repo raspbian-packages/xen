@@ -1,25 +1,8 @@
+/* SPDX-License-Identifier: MIT */
 /******************************************************************************
  * domctl.h
  *
  * Domain management operations. For use by node control stack.
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy
- * of this software and associated documentation files (the "Software"), to
- * deal in the Software without restriction, including without limitation the
- * rights to use, copy, modify, merge, publish, distribute, sublicense, and/or
- * sell copies of the Software, and to permit persons to whom the Software is
- * furnished to do so, subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in
- * all copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
- * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
- * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
- * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
- * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
- * DEALINGS IN THE SOFTWARE.
  *
  * Copyright (c) 2002-2003, B Dragovic
  * Copyright (c) 2002-2006, K Fraser
@@ -38,7 +21,7 @@
 #include "hvm/save.h"
 #include "memory.h"
 
-#define XEN_DOMCTL_INTERFACE_VERSION 0x00000014
+#define XEN_DOMCTL_INTERFACE_VERSION 0x00000015
 
 /*
  * NB. xen_domctl.domain is an IN/OUT parameter for this operation.
@@ -105,6 +88,9 @@ struct xen_domctl_createdomain {
 
     /* Per-vCPU buffer size in bytes.  0 to disable. */
     uint32_t vmtrace_size;
+
+    /* CPU pool to use; specify 0 or a specific existing pool */
+    uint32_t cpupool_id;
 
     struct xen_arch_domainconfig arch;
 };
@@ -211,7 +197,10 @@ struct xen_domctl_getpageframeinfo3 {
  /* Return the bitmap but do not modify internal copy. */
 #define XEN_DOMCTL_SHADOW_OP_PEEK        12
 
-/* Memory allocation accessors. */
+/*
+ * Memory allocation accessors.  These APIs are broken and will be removed.
+ * Use XEN_DOMCTL_{get,set}_paging_mempool_size instead.
+ */
 #define XEN_DOMCTL_SHADOW_OP_GET_ALLOCATION   30
 #define XEN_DOMCTL_SHADOW_OP_SET_ALLOCATION   31
 
@@ -943,6 +932,22 @@ struct xen_domctl_cacheflush {
     xen_pfn_t start_pfn, nr_pfns;
 };
 
+/*
+ * XEN_DOMCTL_get_paging_mempool_size / XEN_DOMCTL_set_paging_mempool_size.
+ *
+ * Get or set the paging memory pool size.  The size is in bytes.
+ *
+ * This is a dedicated pool of memory for Xen to use while managing the guest,
+ * typically containing pagetables.  As such, there is an implementation
+ * specific minimum granularity.
+ *
+ * The set operation can fail mid-way through the request (e.g. Xen running
+ * out of memory, no free memory to reclaim from the pool, etc.).
+ */
+struct xen_domctl_paging_mempool {
+    uint64_aligned_t size; /* Size in bytes. */
+};
+
 #if defined(__i386__) || defined(__x86_64__)
 struct xen_domctl_vcpu_msr {
     uint32_t         index;
@@ -1057,6 +1062,7 @@ struct xen_domctl_psr_cmt_op {
 #define XEN_DOMCTL_MONITOR_EVENT_EMUL_UNIMPLEMENTED    10
 /* Enabled by default */
 #define XEN_DOMCTL_MONITOR_EVENT_INGUEST_PAGEFAULT     11
+#define XEN_DOMCTL_MONITOR_EVENT_VMEXIT                12
 
 struct xen_domctl_monitor_op {
     uint32_t op; /* XEN_DOMCTL_MONITOR_OP_* */
@@ -1107,6 +1113,11 @@ struct xen_domctl_monitor_op {
             /* Pause vCPU until response */
             uint8_t sync;
         } debug_exception;
+
+        struct {
+            /* Send event and don't process vmexit */
+            uint8_t sync;
+        } vmexit;
     } u;
 };
 
@@ -1265,6 +1276,8 @@ struct xen_domctl {
 #define XEN_DOMCTL_get_cpu_policy                82
 #define XEN_DOMCTL_set_cpu_policy                83
 #define XEN_DOMCTL_vmtrace_op                    84
+#define XEN_DOMCTL_get_paging_mempool_size       85
+#define XEN_DOMCTL_set_paging_mempool_size       86
 #define XEN_DOMCTL_gdbsx_guestmemio            1000
 #define XEN_DOMCTL_gdbsx_pausevcpu             1001
 #define XEN_DOMCTL_gdbsx_unpausevcpu           1002
@@ -1326,6 +1339,7 @@ struct xen_domctl {
         struct xen_domctl_psr_alloc         psr_alloc;
         struct xen_domctl_vuart_op          vuart_op;
         struct xen_domctl_vmtrace_op        vmtrace_op;
+        struct xen_domctl_paging_mempool    paging_mempool;
         uint8_t                             pad[128];
     } u;
 };

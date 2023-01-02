@@ -3,6 +3,7 @@
 #include <xen/param.h>
 #include <xen/sched.h>
 #include <xen/nospec.h>
+#include <asm/amd.h>
 #include <asm/cpuid.h>
 #include <asm/hvm/hvm.h>
 #include <asm/hvm/nestedhvm.h>
@@ -26,17 +27,26 @@ static const uint32_t __initconst hvm_hap_def_featuremask[] =
     INIT_HVM_HAP_DEF_FEATURES;
 static const uint32_t deep_features[] = INIT_DEEP_FEATURES;
 
-static int __init parse_xen_cpuid(const char *s)
+static const struct feature_name {
+    const char *name;
+    unsigned int bit;
+} feature_names[] __initconstrel = INIT_FEATURE_NAMES;
+
+/*
+ * Parse a list of cpuid feature names -> bool, calling the callback for any
+ * matches found.
+ *
+ * always_inline, because this is init code only and we really don't want a
+ * function pointer call in the middle of the loop.
+ */
+static int __init always_inline parse_cpuid(
+    const char *s, void (*callback)(unsigned int feat, bool val))
 {
     const char *ss;
     int val, rc = 0;
 
     do {
-        static const struct feature {
-            const char *name;
-            unsigned int bit;
-        } features[] __initconstrel = INIT_FEATURE_NAMES;
-        const struct feature *lhs, *rhs, *mid = NULL /* GCC... */;
+        const struct feature_name *lhs, *rhs, *mid = NULL /* GCC... */;
         const char *feat;
 
         ss = strchr(s, ',');
@@ -49,8 +59,8 @@ static int __init parse_xen_cpuid(const char *s)
             feat += 3;
 
         /* (Re)initalise lhs and rhs for binary search. */
-        lhs = features;
-        rhs = features + ARRAY_SIZE(features);
+        lhs = feature_names;
+        rhs = feature_names + ARRAY_SIZE(feature_names);
 
         while ( lhs < rhs )
         {
@@ -72,11 +82,7 @@ static int __init parse_xen_cpuid(const char *s)
 
             if ( (val = parse_boolean(mid->name, s, ss)) >= 0 )
             {
-                if ( !val )
-                    setup_clear_cpu_cap(mid->bit);
-                else if ( mid->bit == X86_FEATURE_RDRAND &&
-                          (cpuid_ecx(1) & cpufeat_mask(X86_FEATURE_RDRAND)) )
-                    setup_force_cpu_cap(X86_FEATURE_RDRAND);
+                callback(mid->bit, val);
                 mid = NULL;
             }
 
@@ -95,7 +101,39 @@ static int __init parse_xen_cpuid(const char *s)
 
     return rc;
 }
+
+static void __init cf_check _parse_xen_cpuid(unsigned int feat, bool val)
+{
+    if ( !val )
+        setup_clear_cpu_cap(feat);
+    else if ( feat == X86_FEATURE_RDRAND &&
+              (cpuid_ecx(1) & cpufeat_mask(X86_FEATURE_RDRAND)) )
+        setup_force_cpu_cap(X86_FEATURE_RDRAND);
+}
+
+static int __init cf_check parse_xen_cpuid(const char *s)
+{
+    return parse_cpuid(s, _parse_xen_cpuid);
+}
 custom_param("cpuid", parse_xen_cpuid);
+
+static bool __initdata dom0_cpuid_cmdline;
+static uint32_t __initdata dom0_enable_feat[FSCAPINTS];
+static uint32_t __initdata dom0_disable_feat[FSCAPINTS];
+
+static void __init cf_check _parse_dom0_cpuid(unsigned int feat, bool val)
+{
+    __set_bit  (feat, val ? dom0_enable_feat  : dom0_disable_feat);
+    __clear_bit(feat, val ? dom0_disable_feat : dom0_enable_feat );
+}
+
+static int __init cf_check parse_dom0_cpuid(const char *s)
+{
+    dom0_cpuid_cmdline = true;
+
+    return parse_cpuid(s, _parse_dom0_cpuid);
+}
+custom_param("dom0-cpuid", parse_dom0_cpuid);
 
 #define EMPTY_LEAF ((struct cpuid_leaf){})
 static void zero_leaves(struct cpuid_leaf *l,
@@ -505,6 +543,13 @@ static void __init calculate_hvm_max_policy(void)
         __set_bit(X86_FEATURE_SEP, hvm_featureset);
 
     /*
+     * VIRT_SSBD is exposed in the default policy as a result of
+     * amd_virt_spec_ctrl being set, it also needs exposing in the max policy.
+     */
+    if ( amd_virt_spec_ctrl )
+        __set_bit(X86_FEATURE_VIRT_SSBD, hvm_featureset);
+
+    /*
      * If Xen isn't virtualising MSR_SPEC_CTRL for HVM guests (functional
      * availability, or admin choice), hide the feature.
      */
@@ -513,6 +558,13 @@ static void __init calculate_hvm_max_policy(void)
         __clear_bit(X86_FEATURE_IBRSB, hvm_featureset);
         __clear_bit(X86_FEATURE_IBRS, hvm_featureset);
     }
+    else if ( boot_cpu_has(X86_FEATURE_AMD_SSBD) )
+        /*
+         * If SPEC_CTRL.SSBD is available VIRT_SPEC_CTRL.SSBD can be exposed
+         * and implemented using the former. Expose in the max policy only as
+         * the preference is for guests to use SPEC_CTRL.SSBD if available.
+         */
+        __set_bit(X86_FEATURE_VIRT_SSBD, hvm_featureset);
 
     /*
      * With VT-x, some features are only supported by Xen if dedicated
@@ -553,6 +605,13 @@ static void __init calculate_hvm_def_policy(void)
     guest_common_feature_adjustments(hvm_featureset);
     guest_common_default_feature_adjustments(hvm_featureset);
 
+    /*
+     * Only expose VIRT_SSBD if AMD_SSBD is not available, and thus
+     * amd_virt_spec_ctrl is set.
+     */
+    if ( amd_virt_spec_ctrl )
+        __set_bit(X86_FEATURE_VIRT_SSBD, hvm_featureset);
+
     sanitise_featureset(hvm_featureset);
     cpuid_featureset_to_policy(hvm_featureset, p);
     recalculate_xstate(p);
@@ -579,7 +638,7 @@ void __init init_guest_cpuid(void)
 bool recheck_cpu_features(unsigned int cpu)
 {
     bool okay = true;
-    struct cpuinfo_x86 c;
+    struct cpuinfo_x86 c = {0};
     const struct cpuinfo_x86 *bsp = &boot_cpu_data;
     unsigned int i;
 
@@ -742,23 +801,47 @@ int init_domain_cpuid_policy(struct domain *d)
     if ( !p )
         return -ENOMEM;
 
-    /* The hardware domain can't migrate.  Give it ITSC if available. */
-    if ( is_hardware_domain(d) )
-        p->extd.itsc = cpu_has_itsc;
+    d->arch.cpuid = p;
+
+    recalculate_cpuid_policy(d);
+
+    return 0;
+}
+
+void __init init_dom0_cpuid_policy(struct domain *d)
+{
+    struct cpuid_policy *p = d->arch.cpuid;
+
+    /* dom0 can't migrate.  Give it ITSC if available. */
+    if ( cpu_has_itsc )
+        p->extd.itsc = true;
 
     /*
      * Expose the "hardware speculation behaviour" bits of ARCH_CAPS to dom0,
      * so dom0 can turn off workarounds as appropriate.  Temporary, until the
      * domain policy logic gains a better understanding of MSRs.
      */
-    if ( is_hardware_domain(d) && cpu_has_arch_caps )
+    if ( cpu_has_arch_caps )
         p->feat.arch_caps = true;
 
-    d->arch.cpuid = p;
+    /* Apply dom0-cpuid= command line settings, if provided. */
+    if ( dom0_cpuid_cmdline )
+    {
+        uint32_t fs[FSCAPINTS];
+        unsigned int i;
 
-    recalculate_cpuid_policy(d);
+        cpuid_policy_to_featureset(p, fs);
 
-    return 0;
+        for ( i = 0; i < ARRAY_SIZE(fs); ++i )
+        {
+            fs[i] |=  dom0_enable_feat [i];
+            fs[i] &= ~dom0_disable_feat[i];
+        }
+
+        cpuid_featureset_to_policy(fs, p);
+
+        recalculate_cpuid_policy(d);
+    }
 }
 
 void guest_cpuid(const struct vcpu *v, uint32_t leaf,

@@ -30,7 +30,6 @@
 #include <asm/setup.h>
 
 #include <mach_apic.h>
-#include <mach_mpparse.h>
 #include <bios_ebda.h>
 
 /* Have we found an MP table */
@@ -331,8 +330,6 @@ static int __init smp_read_mpc(struct mp_config_table *mpc)
 	str[12]=0;
 	printk("Product ID: %s ",str);
 
-	mps_oem_check(mpc, oem, str);
-
 	printk("APIC at: %#x\n", mpc->mpc_lapic);
 
 	/* 
@@ -415,7 +412,6 @@ static int __init smp_read_mpc(struct mp_config_table *mpc)
 			}
 		}
 	}
-	clustered_apic_check();
 	if (!num_processors)
 		printk(KERN_ERR "SMP mptable: no processors registered!\n");
 	return num_processors;
@@ -520,7 +516,7 @@ static inline void __init construct_default_ISA_mptable(int mpc_default_type)
 				   (boot_cpu_data.x86_model << 4) |
 				   boot_cpu_data.x86_mask;
 	processor.mpc_featureflag =
-            boot_cpu_data.x86_capability[cpufeat_word(X86_FEATURE_FPU)];
+            boot_cpu_data.x86_capability[FEATURESET_1d];
 	processor.mpc_reserved[0] = 0;
 	processor.mpc_reserved[1] = 0;
 	for (i = 0; i < 2; i++) {

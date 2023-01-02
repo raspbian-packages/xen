@@ -41,7 +41,6 @@
 
 #include <xenstore.h>
 #include "xenctrl.h"
-#include "_paths.h"
 
 #define ESCAPE_CHARACTER 0x1d
 
@@ -103,7 +102,7 @@ static int get_pty_fd(struct xs_handle *xs, char *path, int seconds)
 	struct timeval tv;
 	fd_set watch_fdset;
 	int xs_fd = xs_fileno(xs), pty_fd = -1;
-	int start, now;
+	time_t start, now;
 	unsigned int len = 0;
 	char *pty_path, **watch_paths;
 

@@ -1086,10 +1086,9 @@ static void arm_smmu_init_context_bank(struct arm_smmu_domain *smmu_domain)
 	bool stage1;
 	struct arm_smmu_cfg *cfg = &smmu_domain->cfg;
 	struct arm_smmu_device *smmu = smmu_domain->smmu;
-	void __iomem *cb_base, *gr0_base, *gr1_base;
+	void __iomem *cb_base, *gr1_base;
 	paddr_t p2maddr;
 
-	gr0_base = ARM_SMMU_GR0(smmu);
 	gr1_base = ARM_SMMU_GR1(smmu);
 	stage1 = cfg->cbar != CBAR_TYPE_S2_TRANS;
 	cb_base = ARM_SMMU_CB_BASE(smmu) + ARM_SMMU_CB(smmu, cfg->cbndx);
@@ -1599,21 +1598,6 @@ out_err:
 	return ret;
 }
 
-static void arm_smmu_master_free_smes(struct arm_smmu_master_cfg *cfg)
-{
-    struct arm_smmu_device *smmu = cfg->smmu;
-	int i, idx;
-	struct iommu_fwspec *fwspec = arm_smmu_get_fwspec(cfg);
-
-	spin_lock(&smmu->stream_map_lock);
-	for_each_cfg_sme(cfg, i, idx, fwspec->num_ids) {
-		if (arm_smmu_free_sme(smmu, idx))
-			arm_smmu_write_sme(smmu, idx);
-		cfg->smendx[i] = INVALID_SMENDX;
-	}
-	spin_unlock(&smmu->stream_map_lock);
-}
-
 static int arm_smmu_domain_add_master(struct arm_smmu_domain *smmu_domain,
 				      struct arm_smmu_master_cfg *cfg)
 {
@@ -1634,6 +1618,21 @@ static int arm_smmu_domain_add_master(struct arm_smmu_domain *smmu_domain,
 		arm_smmu_write_s2cr(smmu, idx);
 	}
 	return 0;
+}
+
+static void arm_smmu_domain_remove_master(
+				const struct arm_smmu_domain *smmu_domain,
+				struct arm_smmu_master_cfg *cfg)
+{
+	uint32_t i, idx;
+	struct arm_smmu_device *smmu = smmu_domain->smmu;
+	struct arm_smmu_s2cr *s2cr = smmu->s2crs;
+	const struct iommu_fwspec *fwspec = arm_smmu_get_fwspec(cfg);
+
+	for_each_cfg_sme(cfg, i, idx, fwspec->num_ids) {
+		s2cr[idx] = s2cr_init_val;
+		arm_smmu_write_s2cr(smmu, idx);
+	}
 }
 
 static int arm_smmu_attach_dev(struct iommu_domain *domain, struct device *dev)
@@ -1685,10 +1684,11 @@ static int arm_smmu_attach_dev(struct iommu_domain *domain, struct device *dev)
 
 static void arm_smmu_detach_dev(struct iommu_domain *domain, struct device *dev)
 {
+	struct arm_smmu_domain *smmu_domain = domain->priv;
 	struct arm_smmu_master_cfg *cfg = find_smmu_master_cfg(dev);
 
 	if (cfg)
-		arm_smmu_master_free_smes(cfg);
+		arm_smmu_domain_remove_master(smmu_domain, cfg);
 
 }
 
@@ -2649,10 +2649,16 @@ static int force_stage = 2;
  */
 static u32 platform_features = ARM_SMMU_FEAT_COHERENT_WALK;
 
-static int __must_check arm_smmu_iotlb_flush_all(struct domain *d)
+static int __must_check arm_smmu_iotlb_flush(struct domain *d, dfn_t dfn,
+					     unsigned long page_count,
+					     unsigned int flush_flags)
 {
 	struct arm_smmu_xen_domain *smmu_domain = dom_iommu(d)->arch.priv;
 	struct iommu_domain *cfg;
+
+	ASSERT(flush_flags);
+
+	/* ARM SMMU v1 doesn't have flush by VMA and VMID */
 
 	spin_lock(&smmu_domain->lock);
 	list_for_each_entry(cfg, &smmu_domain->contexts, list) {
@@ -2668,16 +2674,6 @@ static int __must_check arm_smmu_iotlb_flush_all(struct domain *d)
 	spin_unlock(&smmu_domain->lock);
 
 	return 0;
-}
-
-static int __must_check arm_smmu_iotlb_flush(struct domain *d, dfn_t dfn,
-					     unsigned long page_count,
-					     unsigned int flush_flags)
-{
-	ASSERT(flush_flags);
-
-	/* ARM SMMU v1 doesn't have flush by VMA and VMID */
-	return arm_smmu_iotlb_flush_all(d);
 }
 
 static struct iommu_domain *arm_smmu_get_domain(struct domain *d,
@@ -2849,21 +2845,6 @@ static int arm_smmu_iommu_domain_init(struct domain *d)
 	return 0;
 }
 
-static void __hwdom_init arm_smmu_iommu_hwdom_init(struct domain *d)
-{
-	/* Set to false options not supported on ARM. */
-	if ( iommu_hwdom_inclusive )
-		printk(XENLOG_WARNING
-		"map-inclusive dom0-iommu option is not supported on ARM\n");
-	iommu_hwdom_inclusive = false;
-	if ( iommu_hwdom_reserved == 1 )
-		printk(XENLOG_WARNING
-		"map-reserved dom0-iommu option is not supported on ARM\n");
-	iommu_hwdom_reserved = 0;
-
-	arch_iommu_hwdom_init(d);
-}
-
 static void arm_smmu_iommu_domain_teardown(struct domain *d)
 {
 	struct arm_smmu_xen_domain *xen_domain = dom_iommu(d)->arch.priv;
@@ -2873,12 +2854,12 @@ static void arm_smmu_iommu_domain_teardown(struct domain *d)
 }
 
 static const struct iommu_ops arm_smmu_iommu_ops = {
+    .page_sizes = PAGE_SIZE_4K,
     .init = arm_smmu_iommu_domain_init,
-    .hwdom_init = arm_smmu_iommu_hwdom_init,
+    .hwdom_init = arch_iommu_hwdom_init,
     .add_device = arm_smmu_dt_add_device_generic,
     .teardown = arm_smmu_iommu_domain_teardown,
     .iotlb_flush = arm_smmu_iotlb_flush,
-    .iotlb_flush_all = arm_smmu_iotlb_flush_all,
     .assign_device = arm_smmu_assign_dev,
     .reassign_device = arm_smmu_reassign_dev,
     .map_page = arm_iommu_map_page,

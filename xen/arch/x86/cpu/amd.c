@@ -48,6 +48,8 @@ boolean_param("allow_unsafe", opt_allow_unsafe);
 
 /* Signal whether the ACPI C1E quirk is required. */
 bool __read_mostly amd_acpi_c1e_quirk;
+bool __ro_after_init amd_legacy_ssbd;
+bool __initdata amd_virt_spec_ctrl;
 
 static inline int rdmsr_amd_safe(unsigned int msr, unsigned int *lo,
 				 unsigned int *hi)
@@ -208,7 +210,7 @@ static void __init noinline probe_masking_msrs(void)
  * parameter of NULL is used to context switch to the default host state (by
  * the cpu bringup-code, crash path, etc).
  */
-static void amd_ctxt_switch_masking(const struct vcpu *next)
+static void cf_check amd_ctxt_switch_masking(const struct vcpu *next)
 {
 	struct cpuidmasks *these_masks = &this_cpu(cpuidmasks);
 	const struct domain *nextd = next ? next->domain : NULL;
@@ -430,7 +432,7 @@ static void disable_c1_ramping(void)
 	}
 }
 
-static void disable_c1e(void *unused)
+static void cf_check disable_c1e(void *unused)
 {
 	uint64_t msr_content;
 
@@ -634,7 +636,7 @@ void amd_log_freq(const struct cpuinfo_x86 *c)
 #undef FREQ
 }
 
-void early_init_amd(struct cpuinfo_x86 *c)
+void cf_check early_init_amd(struct cpuinfo_x86 *c)
 {
 	if (c == &boot_cpu_data)
 		amd_init_levelling();
@@ -685,22 +687,9 @@ void amd_init_lfence(struct cpuinfo_x86 *c)
  * Refer to the AMD Speculative Store Bypass whitepaper:
  * https://developer.amd.com/wp-content/resources/124441_AMD64_SpeculativeStoreBypassDisable_Whitepaper_final.pdf
  */
-void amd_init_ssbd(const struct cpuinfo_x86 *c)
+static bool set_legacy_ssbd(const struct cpuinfo_x86 *c, bool enable)
 {
 	int bit = -1;
-
-	if (cpu_has_ssb_no)
-		return;
-
-	if (cpu_has_amd_ssbd) {
-		/* Handled by common MSR_SPEC_CTRL logic */
-		return;
-	}
-
-	if (cpu_has_virt_ssbd) {
-		wrmsrl(MSR_VIRT_SPEC_CTRL, opt_ssbd ? SPEC_CTRL_SSBD : 0);
-		return;
-	}
 
 	switch (c->x86) {
 	case 0x15: bit = 54; break;
@@ -715,27 +704,131 @@ void amd_init_ssbd(const struct cpuinfo_x86 *c)
 		if (rdmsr_safe(MSR_AMD64_LS_CFG, val) ||
 		    ({
 			    val &= ~mask;
-			    if (opt_ssbd)
+			    if (enable)
 				    val |= mask;
 			    false;
 		    }) ||
 		    wrmsr_safe(MSR_AMD64_LS_CFG, val) ||
 		    ({
 			    rdmsrl(MSR_AMD64_LS_CFG, val);
-			    (val & mask) != (opt_ssbd * mask);
+			    (val & mask) != (enable * mask);
 		    }))
 			bit = -1;
 	}
 
-	if (bit < 0)
+	return bit >= 0;
+}
+
+void amd_init_ssbd(const struct cpuinfo_x86 *c)
+{
+	if (cpu_has_ssb_no)
+		return;
+
+	if (cpu_has_amd_ssbd) {
+		/* Handled by common MSR_SPEC_CTRL logic */
+		return;
+	}
+
+	if (cpu_has_virt_ssbd) {
+		wrmsrl(MSR_VIRT_SPEC_CTRL, opt_ssbd ? SPEC_CTRL_SSBD : 0);
+		return;
+	}
+
+	if (!set_legacy_ssbd(c, opt_ssbd)) {
 		printk_once(XENLOG_ERR "No SSBD controls available\n");
+		if (amd_legacy_ssbd)
+			panic("CPU feature mismatch: no legacy SSBD\n");
+	} else if (c == &boot_cpu_data)
+		amd_legacy_ssbd = true;
+}
+
+static struct ssbd_ls_cfg {
+    spinlock_t lock;
+    unsigned int count;
+} __cacheline_aligned *ssbd_ls_cfg;
+static unsigned int __ro_after_init ssbd_max_cores;
+#define AMD_FAM17H_MAX_SOCKETS 2
+
+bool __init amd_setup_legacy_ssbd(void)
+{
+	unsigned int i;
+
+	if ((boot_cpu_data.x86 != 0x17 && boot_cpu_data.x86 != 0x18) ||
+	    boot_cpu_data.x86_num_siblings <= 1 || opt_ssbd)
+		return true;
+
+	/*
+	 * One could be forgiven for thinking that c->x86_max_cores is the
+	 * correct value to use here.
+	 *
+	 * However, that value is derived from the current configuration, and
+	 * c->cpu_core_id is sparse on all but the top end CPUs.  Derive
+	 * max_cpus from ApicIdCoreIdSize which will cover any sparseness.
+	 */
+	if (boot_cpu_data.extended_cpuid_level >= 0x80000008) {
+		ssbd_max_cores = 1u << MASK_EXTR(cpuid_ecx(0x80000008), 0xf000);
+		ssbd_max_cores /= boot_cpu_data.x86_num_siblings;
+	}
+	if (!ssbd_max_cores)
+		return false;
+
+	ssbd_ls_cfg = xzalloc_array(struct ssbd_ls_cfg,
+	                            ssbd_max_cores * AMD_FAM17H_MAX_SOCKETS);
+	if (!ssbd_ls_cfg)
+		return false;
+
+	for (i = 0; i < ssbd_max_cores * AMD_FAM17H_MAX_SOCKETS; i++)
+		spin_lock_init(&ssbd_ls_cfg[i].lock);
+
+	return true;
+}
+
+static void core_set_legacy_ssbd(bool enable)
+{
+	const struct cpuinfo_x86 *c = &current_cpu_data;
+	struct ssbd_ls_cfg *status;
+	unsigned long flags;
+
+	if ((c->x86 != 0x17 && c->x86 != 0x18) || c->x86_num_siblings <= 1) {
+		BUG_ON(!set_legacy_ssbd(c, enable));
+		return;
+	}
+
+	BUG_ON(c->phys_proc_id >= AMD_FAM17H_MAX_SOCKETS);
+	BUG_ON(c->cpu_core_id >= ssbd_max_cores);
+	status = &ssbd_ls_cfg[c->phys_proc_id * ssbd_max_cores +
+	                      c->cpu_core_id];
+
+	spin_lock_irqsave(&status->lock, flags);
+	status->count += enable ? 1 : -1;
+	ASSERT(status->count <= c->x86_num_siblings);
+	if (enable ? status->count == 1 : !status->count)
+		BUG_ON(!set_legacy_ssbd(c, enable));
+	spin_unlock_irqrestore(&status->lock, flags);
+}
+
+void amd_set_legacy_ssbd(bool enable)
+{
+	if (opt_ssbd)
+		/*
+		 * Ignore attempts to turn off SSBD, it's hardcoded on the
+		 * command line.
+		 */
+		return;
+
+	if (cpu_has_virt_ssbd)
+		wrmsr(MSR_VIRT_SPEC_CTRL, enable ? SPEC_CTRL_SSBD : 0, 0);
+	else if (amd_legacy_ssbd)
+		core_set_legacy_ssbd(enable);
+	else
+		ASSERT_UNREACHABLE();
 }
 
 /*
  * On Zen2 we offer this chicken (bit) on the altar of Speculation.
  *
  * Refer to the AMD Branch Type Confusion whitepaper:
- * https://XXX
+ * https://www.amd.com/system/files/documents/technical-guidance-for-mitigating-branch-type-confusion.pdf
  *
  * Setting this unnamed bit supposedly causes prediction information on
  * non-branch instructions to be ignored.  It is to be set unilaterally in
@@ -761,7 +854,7 @@ void __init detect_zen2_null_seg_behaviour(void)
 	uint64_t base;
 
 	wrmsrl(MSR_FS_BASE, 1);
-	asm volatile ( "mov %0, %%fs" :: "rm" (0) );
+	asm volatile ( "mov %0, %%fs" :: "r" (0) );
 	rdmsrl(MSR_FS_BASE, base);
 
 	if (base == 0)
@@ -769,7 +862,7 @@ void __init detect_zen2_null_seg_behaviour(void)
 
 }
 
-static void init_amd(struct cpuinfo_x86 *c)
+static void cf_check init_amd(struct cpuinfo_x86 *c)
 {
 	u32 l, h;
 

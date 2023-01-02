@@ -129,7 +129,6 @@
 #include <asm/ldt.h>
 #include <asm/x86_emulate.h>
 #include <asm/e820.h>
-#include <asm/hypercall.h>
 #include <asm/shared.h>
 #include <asm/mem_sharing.h>
 #include <public/memory.h>
@@ -189,7 +188,7 @@ static uint32_t base_disallow_mask;
 
 static s8 __read_mostly opt_mmio_relax;
 
-static int __init parse_mmio_relax(const char *s)
+static int __init cf_check parse_mmio_relax(const char *s)
 {
     if ( !*s )
         opt_mmio_relax = 1;
@@ -481,8 +480,11 @@ unsigned int page_get_ram_type(mfn_t mfn)
 
 unsigned long domain_get_maximum_gpfn(struct domain *d)
 {
+#ifdef CONFIG_HVM
     if ( is_hvm_domain(d) )
         return p2m_get_hostp2m(d)->max_mapped_pfn;
+#endif
+
     /* NB. PV guests specify nr_pfns rather than max_pfn so we adjust here. */
     return (arch_get_max_pfn(d) ?: 1) - 1;
 }
@@ -783,13 +785,37 @@ bool is_iomem_page(mfn_t mfn)
     return (page_get_owner(page) == dom_io);
 }
 
+/* Input ranges are inclusive. */
+bool is_memory_hole(mfn_t start, mfn_t end)
+{
+    unsigned long s = mfn_x(start);
+    unsigned long e = mfn_x(end);
+    unsigned int i;
+
+    for ( i = 0; i < e820.nr_map; i++ )
+    {
+        const struct e820entry *entry = &e820.map[i];
+
+        if ( !entry->size )
+            continue;
+
+        /* Do not allow overlaps with any memory range. */
+        if ( s <= PFN_DOWN(entry->addr + entry->size - 1) &&
+             PFN_DOWN(entry->addr) <= e )
+            return false;
+    }
+
+    return true;
+}
+
 #ifndef NDEBUG
 struct mmio_emul_range_ctxt {
     const struct domain *d;
     unsigned long mfn;
 };
 
-static int print_mmio_emul_range(unsigned long s, unsigned long e, void *arg)
+static int cf_check print_mmio_emul_range(
+    unsigned long s, unsigned long e, void *arg)
 {
     const struct mmio_emul_range_ctxt *ctxt = arg;
 
@@ -838,7 +864,7 @@ get_page_from_l1e(
     uint32_t l1f = l1e_get_flags(l1e);
     struct vcpu *curr = current;
     struct domain *real_pg_owner;
-    bool write;
+    bool write, valid;
 
     if ( unlikely(!(l1f & _PAGE_PRESENT)) )
     {
@@ -853,13 +879,15 @@ get_page_from_l1e(
         return -EINVAL;
     }
 
-    if ( !mfn_valid(_mfn(mfn)) ||
+    valid = mfn_valid(_mfn(mfn));
+
+    if ( !valid ||
          (real_pg_owner = page_get_owner_and_reference(page)) == dom_io )
     {
         int flip = 0;
 
         /* Only needed the reference to confirm dom_io ownership. */
-        if ( mfn_valid(_mfn(mfn)) )
+        if ( valid )
             put_page(page);
 
         /* DOMID_IO reverts to caller for privilege checks. */
@@ -1201,10 +1229,10 @@ void put_page_from_l1e(l1_pgentry_t l1e, struct domain *l1e_owner)
     if ( (l1e_get_flags(l1e) & _PAGE_GNTTAB) &&
          !l1e_owner->is_shutting_down && !l1e_owner->is_dying )
     {
-        gdprintk(XENLOG_WARNING,
-                 "Attempt to implicitly unmap a granted PTE %" PRIpte "\n",
-                 l1e_get_intpte(l1e));
-        domain_crash(l1e_owner);
+        gprintk(XENLOG_WARNING,
+                "Attempt to implicitly unmap %pd's grant PTE %" PRIpte "\n",
+                l1e_owner, l1e_get_intpte(l1e));
+        pv_inject_hw_exception(TRAP_gp_fault, 0);
     }
 #endif
 
@@ -2442,12 +2470,7 @@ static int cleanup_page_mappings(struct page_info *page)
         struct domain *d = page_get_owner(page);
 
         if ( d && unlikely(need_iommu_pt_sync(d)) && is_pv_domain(d) )
-        {
-            int rc2 = iommu_legacy_unmap(d, _dfn(mfn), 1u << PAGE_ORDER_4K);
-
-            if ( !rc )
-                rc = rc2;
-        }
+            rc = iommu_legacy_unmap(d, _dfn(mfn), 1u << PAGE_ORDER_4K);
 
         if ( likely(!is_special_page(page)) )
         {
@@ -2979,14 +3002,28 @@ static int _get_page_type(struct page_info *page, unsigned long type,
      * fully validated (PGT_[type] | PGT_validated | >0).
      */
 
+    /* If the page is fully validated, we're done. */
+    if ( likely(nx & PGT_validated) )
+        return 0;
+
+    /*
+     * The page is in the "validate locked" state.  We have exclusive access,
+     * and any concurrent callers are waiting in the cmpxchg() loop above.
+     *
+     * Exclusive access ends when PGT_validated or PGT_partial get set.
+     */
+
     if ( unlikely((x & PGT_count_mask) == 0) )
     {
         struct domain *d = page_get_owner(page);
 
         if ( d && shadow_mode_enabled(d) )
-            shadow_prepare_page_type_change(d, page, type);
+            shadow_prepare_page_type_change(d, page);
 
-        if ( (x & PGT_type_mask) != type )
+        if ( (x & PGT_type_mask) != type &&
+             /* Shadow mode: track only writable pages. */
+             (!shadow_mode_enabled(d) ||
+              ((x & PGT_type_mask) == PGT_writable_page)) )
         {
             /*
              * On type change we check to flush stale TLB entries. It is
@@ -3001,10 +3038,7 @@ static int _get_page_type(struct page_info *page, unsigned long type,
             /* Don't flush if the timestamp is old enough */
             tlbflush_filter(mask, page->tlbflush_timestamp);
 
-            if ( unlikely(!cpumask_empty(mask)) &&
-                 /* Shadow mode: track only writable pages. */
-                 (!shadow_mode_enabled(d) ||
-                  ((x & PGT_type_mask) == PGT_writable_page)) )
+            if ( unlikely(!cpumask_empty(mask)) )
             {
                 perfc_incr(need_flush_tlb_flush);
                 /*
@@ -3016,7 +3050,7 @@ static int _get_page_type(struct page_info *page, unsigned long type,
                 flush_mask(mask,
                            (x & PGT_type_mask) &&
                            (x & PGT_type_mask) <= PGT_root_page_table
-                           ? FLUSH_TLB | FLUSH_FORCE_IPI
+                           ? FLUSH_TLB | FLUSH_NO_ASSIST
                            : FLUSH_TLB);
             }
         }
@@ -3048,43 +3082,40 @@ static int _get_page_type(struct page_info *page, unsigned long type,
         }
     }
 
-    if ( unlikely(!(nx & PGT_validated)) )
+    /*
+     * Flush the cache if there were previously non-coherent mappings of
+     * this page, and we're trying to use it as anything other than a
+     * writeable page.  This forces the page to be coherent before we
+     * validate its contents for safety.
+     */
+    if ( (nx & PGT_non_coherent) && type != PGT_writable_page )
     {
-        /*
-         * Flush the cache if there were previously non-coherent mappings of
-         * this page, and we're trying to use it as anything other than a
-         * writeable page.  This forces the page to be coherent before we
-         * validate its contents for safety.
-         */
-        if ( (nx & PGT_non_coherent) && type != PGT_writable_page )
+        void *addr = __map_domain_page(page);
+
+        cache_flush(addr, PAGE_SIZE);
+        unmap_domain_page(addr);
+
+        page->u.inuse.type_info &= ~PGT_non_coherent;
+    }
+
+    /*
+     * No special validation needed for writable or shared pages.  Page
+     * tables and GDT/LDT need to have their contents audited.
+     *
+     * per validate_page(), non-atomic updates are fine here.
+     */
+    if ( type == PGT_writable_page || type == PGT_shared_page )
+        page->u.inuse.type_info |= PGT_validated;
+    else
+    {
+        if ( !(x & PGT_partial) )
         {
-            void *addr = __map_domain_page(page);
-
-            cache_flush(addr, PAGE_SIZE);
-            unmap_domain_page(addr);
-
-            page->u.inuse.type_info &= ~PGT_non_coherent;
+            page->nr_validated_ptes = 0;
+            page->partial_flags = 0;
+            page->linear_pt_count = 0;
         }
 
-        /*
-         * No special validation needed for writable or shared pages.  Page
-         * tables and GDT/LDT need to have their contents audited.
-         *
-         * per validate_page(), non-atomic updates are fine here.
-         */
-        if ( type == PGT_writable_page || type == PGT_shared_page )
-            page->u.inuse.type_info |= PGT_validated;
-        else
-        {
-            if ( !(x & PGT_partial) )
-            {
-                page->nr_validated_ptes = 0;
-                page->partial_flags = 0;
-                page->linear_pt_count = 0;
-            }
-
-            rc = validate_page(page, type, preemptible);
-        }
+        rc = validate_page(page, type, preemptible);
     }
 
  out:
@@ -4514,8 +4545,8 @@ static int __do_update_va_mapping(
     return rc;
 }
 
-long do_update_va_mapping(unsigned long va, u64 val64,
-                          unsigned long flags)
+long do_update_va_mapping(
+    unsigned long va, u64 val64, unsigned long flags)
 {
     int rc = __do_update_va_mapping(va, val64, flags, current->domain);
 
@@ -4526,9 +4557,8 @@ long do_update_va_mapping(unsigned long va, u64 val64,
     return rc;
 }
 
-long do_update_va_mapping_otherdomain(unsigned long va, u64 val64,
-                                      unsigned long flags,
-                                      domid_t domid)
+long do_update_va_mapping_otherdomain(
+    unsigned long va, u64 val64, unsigned long flags, domid_t domid)
 {
     struct domain *pg_owner;
     int rc;
@@ -4550,8 +4580,8 @@ long do_update_va_mapping_otherdomain(unsigned long va, u64 val64,
 #endif /* CONFIG_PV */
 
 #ifdef CONFIG_PV32
-int compat_update_va_mapping(unsigned int va, uint32_t lo, uint32_t hi,
-                             unsigned int flags)
+int compat_update_va_mapping(
+    unsigned int va, uint32_t lo, uint32_t hi, unsigned int flags)
 {
     int rc = __do_update_va_mapping(va, ((uint64_t)hi << 32) | lo,
                                     flags, current->domain);
@@ -4563,9 +4593,9 @@ int compat_update_va_mapping(unsigned int va, uint32_t lo, uint32_t hi,
     return rc;
 }
 
-int compat_update_va_mapping_otherdomain(unsigned int va,
-                                         uint32_t lo, uint32_t hi,
-                                         unsigned int flags, domid_t domid)
+int compat_update_va_mapping_otherdomain(
+    unsigned int va, uint32_t lo, uint32_t hi, unsigned int flags,
+    domid_t domid)
 {
     struct domain *pg_owner;
     int rc;
@@ -4620,7 +4650,8 @@ static int _handle_iomem_range(unsigned long s, unsigned long e,
     return 0;
 }
 
-static int handle_iomem_range(unsigned long s, unsigned long e, void *p)
+static int cf_check handle_iomem_range(
+    unsigned long s, unsigned long e, void *p)
 {
     int err = 0;
 
@@ -4822,24 +4853,20 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         if ( d == NULL )
             return -ESRCH;
 
-        if ( cmd == XENMEM_set_pod_target )
+        if ( !is_hvm_domain(d) )
+            rc = -EINVAL;
+        else if ( cmd == XENMEM_set_pod_target )
+        {
             rc = xsm_set_pod_target(XSM_PRIV, d);
+            if ( rc )
+                ASSERT(rc < 0);
+            else if ( target.target_pages > d->max_pages )
+                rc = -EINVAL;
+            else
+                rc = p2m_pod_set_mem_target(d, target.target_pages);
+        }
         else
             rc = xsm_get_pod_target(XSM_PRIV, d);
-
-        if ( rc != 0 )
-            goto pod_target_out_unlock;
-
-        if ( cmd == XENMEM_set_pod_target )
-        {
-            if ( target.target_pages > d->max_pages )
-            {
-                rc = -EINVAL;
-                goto pod_target_out_unlock;
-            }
-
-            rc = p2m_pod_set_mem_target(d, target.target_pages);
-        }
 
         if ( rc == -ERESTART )
         {
@@ -4851,13 +4878,9 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             p2m_pod_get_mem_target(d, &target);
 
             if ( __copy_to_guest(arg, &target, 1) )
-            {
-                rc= -EFAULT;
-                goto pod_target_out_unlock;
-            }
+                rc = -EFAULT;
         }
 
-    pod_target_out_unlock:
         rcu_unlock_domain(d);
         return rc;
     }
@@ -4870,7 +4893,7 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     return 0;
 }
 
-int mmio_ro_emulated_write(
+int cf_check mmio_ro_emulated_write(
     enum x86_segment seg,
     unsigned long offset,
     void *p_data,
@@ -4891,7 +4914,7 @@ int mmio_ro_emulated_write(
     return X86EMUL_OKAY;
 }
 
-int mmcfg_intercept_write(
+int cf_check mmcfg_intercept_write(
     enum x86_segment seg,
     unsigned long offset,
     void *p_data,
@@ -4916,7 +4939,7 @@ int mmcfg_intercept_write(
     if ( pci_conf_write_intercept(mmio_ctxt->seg, mmio_ctxt->bdf,
                                   offset, bytes, p_data) >= 0 )
         pci_mmcfg_write(mmio_ctxt->seg, PCI_BUS(mmio_ctxt->bdf),
-                        PCI_DEVFN2(mmio_ctxt->bdf), offset, bytes,
+                        PCI_DEVFN(mmio_ctxt->bdf), offset, bytes,
                         *(uint32_t *)p_data);
 
     return X86EMUL_OKAY;
@@ -5908,6 +5931,20 @@ void __iomem *ioremap(paddr_t pa, size_t len)
     return (void __force __iomem *)va;
 }
 
+void __iomem *__init ioremap_wc(paddr_t pa, size_t len)
+{
+    mfn_t mfn = _mfn(PFN_DOWN(pa));
+    unsigned int offs = pa & (PAGE_SIZE - 1);
+    unsigned int nr = PFN_UP(offs + len);
+    void *va;
+
+    WARN_ON(page_is_ram_type(mfn_x(mfn), RAM_TYPE_CONVENTIONAL));
+
+    va = __vmap(&mfn, nr, 1, 1, PAGE_HYPERVISOR_WC, VMAP_DEFAULT);
+
+    return (void __force __iomem *)(va + offs);
+}
+
 int create_perdomain_mapping(struct domain *d, unsigned long va,
                              unsigned int nr, l1_pgentry_t **pl1tab,
                              struct page_info **ppg)
@@ -6134,36 +6171,6 @@ void free_perdomain_mappings(struct domain *d)
     free_domheap_page(d->arch.perdomain_l3_pg);
     d->arch.perdomain_l3_pg = NULL;
 }
-
-#ifdef MEMORY_GUARD
-
-static void __memguard_change_range(void *p, unsigned long l, int guard)
-{
-    unsigned long _p = (unsigned long)p;
-    unsigned long _l = (unsigned long)l;
-    unsigned int flags = __PAGE_HYPERVISOR_RW | MAP_SMALL_PAGES;
-
-    /* Ensure we are dealing with a page-aligned whole number of pages. */
-    ASSERT(IS_ALIGNED(_p, PAGE_SIZE));
-    ASSERT(IS_ALIGNED(_l, PAGE_SIZE));
-
-    if ( guard )
-        flags &= ~_PAGE_PRESENT;
-
-    map_pages_to_xen(_p, virt_to_mfn(p), PFN_DOWN(_l), flags);
-}
-
-void memguard_guard_range(void *p, unsigned long l)
-{
-    __memguard_change_range(p, l, 1);
-}
-
-void memguard_unguard_range(void *p, unsigned long l)
-{
-    __memguard_change_range(p, l, 0);
-}
-
-#endif
 
 static void write_sss_token(unsigned long *ptr)
 {

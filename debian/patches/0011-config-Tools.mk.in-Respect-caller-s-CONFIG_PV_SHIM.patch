@@ -15,10 +15,10 @@ Signed-off-by: Hans van Kranenburg <hans@knorrie.org>
  1 file changed, 1 insertion(+), 1 deletion(-)
 
 diff --git a/config/Tools.mk.in b/config/Tools.mk.in
-index 934d899..03313b3 100644
+index d0d460f..73a06d7 100644
 --- a/config/Tools.mk.in
 +++ b/config/Tools.mk.in
-@@ -75,4 +75,4 @@ ARGP_LDFLAGS        := @argp_ldflags@
+@@ -77,4 +77,4 @@ ARGP_LDFLAGS        := @argp_ldflags@
  
  FILE_OFFSET_BITS    := @FILE_OFFSET_BITS@
  

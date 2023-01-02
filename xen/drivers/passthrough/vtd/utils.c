@@ -96,7 +96,7 @@ void print_vtd_entries(struct vtd_iommu *iommu, int bus, int devfn, u64 gmfn)
     u32 l_index, level;
 
     printk("print_vtd_entries: iommu #%u dev %pp gmfn %"PRI_gfn"\n",
-           iommu->index, &PCI_SBDF3(iommu->drhd->segment, bus, devfn),
+           iommu->index, &PCI_SBDF(iommu->drhd->segment, bus, devfn),
            gmfn);
 
     if ( iommu->root_maddr == 0 )
@@ -154,7 +154,7 @@ void print_vtd_entries(struct vtd_iommu *iommu, int bus, int devfn, u64 gmfn)
     } while ( --level );
 }
 
-void vtd_dump_iommu_info(unsigned char key)
+void cf_check vtd_dump_iommu_info(unsigned char key)
 {
     struct acpi_drhd_unit *drhd;
     struct vtd_iommu *iommu;

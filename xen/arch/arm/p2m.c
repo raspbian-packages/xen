@@ -37,12 +37,6 @@ static unsigned int __read_mostly max_vmid = MAX_VMID_8_BIT;
  */
 unsigned int __read_mostly p2m_ipa_bits = PADDR_BITS;
 
-/* Helpers to lookup the properties of each level */
-static const paddr_t level_masks[] =
-    { ZEROETH_MASK, FIRST_MASK, SECOND_MASK, THIRD_MASK };
-static const uint8_t level_orders[] =
-    { ZEROETH_ORDER, FIRST_ORDER, SECOND_ORDER, THIRD_ORDER };
-
 static mfn_t __read_mostly empty_root_mfn;
 
 static uint64_t generate_vttbr(uint16_t vmid, mfn_t root_mfn)
@@ -78,7 +72,6 @@ static struct page_info *p2m_alloc_page(struct domain *d)
             spin_unlock(&d->arch.paging.lock);
             return NULL;
         }
-        d->arch.paging.p2m_total_pages--;
     }
     spin_unlock(&d->arch.paging.lock);
 
@@ -91,19 +84,15 @@ static void p2m_free_page(struct domain *d, struct page_info *pg)
     if ( is_hardware_domain(d) )
         free_domheap_page(pg);
     else
-    {
-        d->arch.paging.p2m_total_pages++;
         page_list_add_tail(pg, &d->arch.paging.p2m_freelist);
-    }
     spin_unlock(&d->arch.paging.lock);
 }
 
-/* Return the size of the pool, rounded up to the nearest MB */
-unsigned int p2m_get_allocation(struct domain *d)
+/* Return the size of the pool, in bytes. */
+int arch_get_paging_mempool_size(struct domain *d, uint64_t *size)
 {
-    unsigned long nr_pages = ACCESS_ONCE(d->arch.paging.p2m_total_pages);
-
-    return ROUNDUP(nr_pages, 1 << (20 - PAGE_SHIFT)) >> (20 - PAGE_SHIFT);
+    *size = (uint64_t)ACCESS_ONCE(d->arch.paging.p2m_total_pages) << PAGE_SHIFT;
+    return 0;
 }
 
 /*
@@ -161,6 +150,25 @@ int p2m_set_allocation(struct domain *d, unsigned long pages, bool *preempted)
     }
 
     return 0;
+}
+
+int arch_set_paging_mempool_size(struct domain *d, uint64_t size)
+{
+    unsigned long pages = size >> PAGE_SHIFT;
+    bool preempted = false;
+    int rc;
+
+    if ( (size & ~PAGE_MASK) ||          /* Non page-sized request? */
+         pages != (size >> PAGE_SHIFT) ) /* 32-bit overflow? */
+        return -EINVAL;
+
+    spin_lock(&d->arch.paging.lock);
+    rc = p2m_set_allocation(d, pages, &preempted);
+    spin_unlock(&d->arch.paging.lock);
+
+    ASSERT(preempted == (rc == -ERESTART));
+
+    return rc;
 }
 
 int p2m_teardown_allocation(struct domain *d)
@@ -367,7 +375,8 @@ static lpae_t *p2m_get_root_pointer(struct p2m_domain *p2m,
      * we can't use (P2M_ROOT_LEVEL - 1) because the root level might be
      * 0. Yet we still want to check if all the unused bits are zeroed.
      */
-    root_table = gfn_x(gfn) >> (level_orders[P2M_ROOT_LEVEL] + LPAE_SHIFT);
+    root_table = gfn_x(gfn) >> (XEN_PT_LEVEL_ORDER(P2M_ROOT_LEVEL) +
+                                XEN_PT_LPAE_SHIFT);
     if ( root_table >= P2M_ROOT_PAGES )
         return NULL;
 
@@ -513,7 +522,7 @@ mfn_t p2m_get_entry(struct p2m_domain *p2m, gfn_t gfn,
     if ( gfn_x(gfn) > gfn_x(p2m->max_mapped_gfn) )
     {
         for ( level = P2M_ROOT_LEVEL; level < 3; level++ )
-            if ( (gfn_x(gfn) & (level_masks[level] >> PAGE_SHIFT)) >
+            if ( (gfn_x(gfn) & (XEN_PT_LEVEL_MASK(level) >> PAGE_SHIFT)) >
                  gfn_x(p2m->max_mapped_gfn) )
                 break;
 
@@ -556,7 +565,8 @@ mfn_t p2m_get_entry(struct p2m_domain *p2m, gfn_t gfn,
          * The entry may point to a superpage. Find the MFN associated
          * to the GFN.
          */
-        mfn = mfn_add(mfn, gfn_x(gfn) & ((1UL << level_orders[level]) - 1));
+        mfn = mfn_add(mfn,
+                      gfn_x(gfn) & ((1UL << XEN_PT_LEVEL_ORDER(level)) - 1));
 
         if ( valid )
             *valid = lpae_is_valid(entry);
@@ -567,7 +577,7 @@ out_unmap:
 
 out:
     if ( page_order )
-        *page_order = level_orders[level];
+        *page_order = XEN_PT_LEVEL_ORDER(level);
 
     return mfn;
 }
@@ -854,6 +864,8 @@ static int p2m_mem_access_radix_set(struct p2m_domain *p2m, gfn_t gfn,
  */
 static void p2m_put_l3_page(const lpae_t pte)
 {
+    mfn_t mfn = lpae_get_mfn(pte);
+
     ASSERT(p2m_is_valid(pte));
 
     /*
@@ -865,11 +877,12 @@ static void p2m_put_l3_page(const lpae_t pte)
      */
     if ( p2m_is_foreign(pte.p2m.type) )
     {
-        mfn_t mfn = lpae_get_mfn(pte);
-
         ASSERT(mfn_valid(mfn));
         put_page(mfn_to_page(mfn));
     }
+    /* Detect the xenheap page and mark the stored GFN as invalid. */
+    else if ( p2m_is_ram(pte.p2m.type) && is_xen_heap_mfn(mfn) )
+        page_set_xenheap_gfn(mfn_to_page(mfn), INVALID_GFN);
 }
 
 /* Free lpae sub-tree behind an entry */
@@ -907,7 +920,7 @@ static void p2m_free_entry(struct p2m_domain *p2m,
     }
 
     table = map_domain_page(lpae_get_mfn(entry));
-    for ( i = 0; i < LPAE_ENTRIES; i++ )
+    for ( i = 0; i < XEN_PT_LPAE_ENTRIES; i++ )
         p2m_free_entry(p2m, *(table + i), level + 1);
 
     unmap_domain_page(table);
@@ -941,7 +954,7 @@ static bool p2m_split_superpage(struct p2m_domain *p2m, lpae_t *entry,
     /* Convenience aliases */
     mfn_t mfn = lpae_get_mfn(*entry);
     unsigned int next_level = level + 1;
-    unsigned int level_order = level_orders[next_level];
+    unsigned int level_order = XEN_PT_LEVEL_ORDER(next_level);
 
     /*
      * This should only be called with target != level and the entry is
@@ -961,7 +974,7 @@ static bool p2m_split_superpage(struct p2m_domain *p2m, lpae_t *entry,
      * We are either splitting a first level 1G page into 512 second level
      * 2M pages, or a second level 2M page into 512 third level 4K pages.
      */
-    for ( i = 0; i < LPAE_ENTRIES; i++ )
+    for ( i = 0; i < XEN_PT_LPAE_ENTRIES; i++ )
     {
         lpae_t *new_entry = table + i;
 
@@ -984,7 +997,7 @@ static bool p2m_split_superpage(struct p2m_domain *p2m, lpae_t *entry,
     /* Update stats */
     p2m->stats.shattered[level]++;
     p2m->stats.mappings[level]--;
-    p2m->stats.mappings[next_level] += LPAE_ENTRIES;
+    p2m->stats.mappings[next_level] += XEN_PT_LPAE_ENTRIES;
 
     /*
      * Shatter superpage in the page to the level we want to make the
@@ -1022,7 +1035,7 @@ static int __p2m_set_entry(struct p2m_domain *p2m,
                            p2m_access_t a)
 {
     unsigned int level = 0;
-    unsigned int target = 3 - (page_order / LPAE_SHIFT);
+    unsigned int target = 3 - (page_order / XEN_PT_LPAE_SHIFT);
     lpae_t *entry, *table, orig_pte;
     int rc;
     /* A mapping is removed if the MFN is invalid. */
@@ -1285,7 +1298,7 @@ static void p2m_invalidate_table(struct p2m_domain *p2m, mfn_t mfn)
 
     table = map_domain_page(mfn);
 
-    for ( i = 0; i < LPAE_ENTRIES; i++ )
+    for ( i = 0; i < XEN_PT_LPAE_ENTRIES; i++ )
     {
         lpae_t pte = table[i];
 
@@ -1455,11 +1468,39 @@ static inline int p2m_remove_mapping(struct domain *d,
                                      mfn_t mfn)
 {
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
+    unsigned long i;
     int rc;
 
     p2m_write_lock(p2m);
+    /*
+     * Before removing the GFN - MFN mapping for any RAM pages make sure
+     * that there is no difference between what is already mapped and what
+     * is requested to be unmapped.
+     * If they don't match bail out early. For instance, this could happen
+     * if two CPUs are requesting to unmap the same P2M entry concurrently.
+     */
+    for ( i = 0; i < nr; )
+    {
+        unsigned int cur_order;
+        p2m_type_t t;
+        mfn_t mfn_return = p2m_get_entry(p2m, gfn_add(start_gfn, i), &t, NULL,
+                                         &cur_order, NULL);
+
+        if ( p2m_is_any_ram(t) &&
+             (!mfn_valid(mfn) || !mfn_eq(mfn_add(mfn, i), mfn_return)) )
+        {
+            rc = -EILSEQ;
+            goto out;
+        }
+
+        i += (1UL << cur_order) -
+             ((gfn_x(start_gfn) + i) & ((1UL << cur_order) - 1));
+    }
+
     rc = p2m_set_entry(p2m, start_gfn, nr, INVALID_MFN,
                        p2m_invalid, p2m_access_rwx);
+
+out:
     p2m_write_unlock(p2m);
 
     return rc;
@@ -1498,21 +1539,18 @@ int unmap_mmio_regions(struct domain *d,
     return p2m_remove_mapping(d, start_gfn, nr, mfn);
 }
 
-int map_dev_mmio_region(struct domain *d,
-                        gfn_t gfn,
-                        unsigned long nr,
-                        mfn_t mfn)
+int map_dev_mmio_page(struct domain *d, gfn_t gfn, mfn_t mfn)
 {
     int res;
 
-    if ( !(nr && iomem_access_permitted(d, mfn_x(mfn), mfn_x(mfn) + nr - 1)) )
+    if ( !iomem_access_permitted(d, mfn_x(mfn), mfn_x(mfn)) )
         return 0;
 
-    res = p2m_insert_mapping(d, gfn, nr, mfn, p2m_mmio_direct_c);
+    res = p2m_insert_mapping(d, gfn, 1, mfn, p2m_mmio_direct_c);
     if ( res < 0 )
     {
-        printk(XENLOG_G_ERR "Unable to map MFNs [%#"PRI_mfn" - %#"PRI_mfn" in Dom%d\n",
-               mfn_x(mfn), mfn_x(mfn) + nr - 1, d->domain_id);
+        printk(XENLOG_G_ERR "Unable to map MFN %#"PRI_mfn" in %pd\n",
+               mfn_x(mfn), d);
         return res;
     }
 
@@ -2257,7 +2295,7 @@ void __init setup_virt_paging(void)
         [3] = { 42,      22/*22*/,  3,          1 },
         [4] = { 44,      20/*20*/,  0,          2 },
         [5] = { 48,      16/*16*/,  0,          2 },
-        [6] = { 52,      12/*12*/,  3,          3 },
+        [6] = { 52,      12/*12*/,  4,          2 },
         [7] = { 0 }  /* Invalid */
     };
 

@@ -78,7 +78,7 @@ DEFINE_COMPAT_HANDLE(compat_argo_iov_t);
 static bool __read_mostly opt_argo;
 static bool __read_mostly opt_argo_mac_permissive;
 
-static int __init parse_argo(const char *s)
+static int __init cf_check parse_argo(const char *s)
 {
     const char *ss;
     int val, rc = 0;
@@ -2208,13 +2208,13 @@ do_argo_op(unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) arg1,
 }
 
 #ifdef CONFIG_COMPAT
-long
+int
 compat_argo_op(unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) arg1,
                XEN_GUEST_HANDLE_PARAM(void) arg2, unsigned long arg3,
                unsigned long arg4)
 {
     struct domain *currd = current->domain;
-    long rc;
+    int rc;
     xen_argo_send_addr_t send_addr;
     xen_argo_iov_t iovs[XEN_ARGO_MAXIOV];
     compat_argo_iov_t compat_iovs[XEN_ARGO_MAXIOV];
@@ -2268,7 +2268,7 @@ compat_argo_op(unsigned int cmd, XEN_GUEST_HANDLE_PARAM(void) arg1,
 
     rc = sendv(currd, &send_addr.src, &send_addr.dst, iovs, niov, arg4);
  out:
-    argo_dprintk("<-compat_argo_op(%u)=%ld\n", cmd, rc);
+    argo_dprintk("<-compat_argo_op(%u)=%d\n", cmd, rc);
 
     return rc;
 }

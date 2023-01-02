@@ -89,9 +89,9 @@ void pv_inject_event(const struct x86_event *event)
 
     if ( unlikely(null_trap_bounce(curr, tb)) )
     {
-        gprintk(XENLOG_WARNING,
-                "Unhandled %s fault/trap [#%d, ec=%04x]\n",
-                trapstr(vector), vector, error_code);
+        gprintk(XENLOG_ERR,
+                "Unhandled: vec %u, %s[%04x]\n",
+                vector, vector_name(vector), error_code);
 
         if ( vector == TRAP_page_fault )
             show_page_walk(event->cr2);
@@ -130,7 +130,7 @@ bool set_guest_nmi_trapbounce(void)
 
 static DEFINE_PER_CPU(struct vcpu *, softirq_nmi_vcpu);
 
-static void nmi_softirq(void)
+static void cf_check nmi_softirq(void)
 {
     struct vcpu **v_ptr = &this_cpu(softirq_nmi_vcpu);
 

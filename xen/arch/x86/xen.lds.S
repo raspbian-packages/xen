@@ -2,6 +2,8 @@
 /* Modified for i386/x86-64 Xen by Keir Fraser */
 
 #include <xen/cache.h>
+#include <xen/lib.h>
+#include <xen/xen.lds.h>
 #include <asm/page.h>
 #undef ENTRY
 #undef ALIGN
@@ -34,6 +36,10 @@ ENTRY(start_pa)
 # define SECTION_ALIGN PAGE_SIZE
 #endif
 
+#ifndef HAVE_LD_SORT_BY_INIT_PRIORITY
+# define SORT_BY_INIT_PRIORITY SORT
+#endif
+
 OUTPUT_FORMAT(FORMAT, FORMAT, FORMAT)
 
 OUTPUT_ARCH(i386:x86-64)
@@ -42,9 +48,7 @@ OUTPUT_ARCH(i386:x86-64)
 PHDRS
 {
   text PT_LOAD ;
-#if defined(BUILD_ID) || defined(CONFIG_PVH_GUEST)
   note PT_NOTE ;
-#endif
 }
 #define PHDR(x) :x
 #else
@@ -77,9 +81,7 @@ SECTIONS
   _start = .;
   DECL_SECTION(.text) {
         _stext = .;            /* Text and read-only data */
-       *(.text)
-       *(.text.__x86_indirect_thunk_*)
-       *(.text.page_aligned)
+       *(.text.header)
 
        . = ALIGN(PAGE_SIZE);
        _stextentry = .;
@@ -87,10 +89,20 @@ SECTIONS
        . = ALIGN(PAGE_SIZE);
        _etextentry = .;
 
+       *(.text.kexec)          /* Page aligned in the object file. */
+       kexec_reloc_end = .;
+
        *(.text.cold)
-       *(.text.unlikely)
+       *(.text.unlikely .text.*_unlikely .text.unlikely.*)
+
+       *(.text.page_aligned)
+       *(.text)
+#ifdef CONFIG_CC_SPLIT_SECTIONS
+       *(.text.*)
+#endif
+       *(.text.__x86_indirect_thunk_*)
+
        *(.fixup)
-       *(.text.kexec)
        *(.gnu.warning)
        _etext = .;             /* End of text section */
   } PHDR(text) = 0x9090
@@ -101,6 +113,24 @@ SECTIONS
   __2M_rodata_start = .;       /* Start of 2M superpages, mapped RO. */
   DECL_SECTION(.rodata) {
        _srodata = .;
+
+       __ro_after_init_start = .;
+       *(.data.ro_after_init)
+
+       . = ALIGN(8);
+       /* Exception table */
+       __start___ex_table = .;
+       *(.ex_table)
+       __stop___ex_table = .;
+
+       /* Pre-exception table */
+       __start___pre_ex_table = .;
+       *(.ex_table.pre)
+       __stop___pre_ex_table = .;
+
+       . = ALIGN(PAGE_SIZE);
+       __ro_after_init_end = .;
+
        /* Bug frames table */
        __start_bug_frames = .;
        *(.bug_frames.0)
@@ -127,26 +157,14 @@ SECTIONS
        *(.note.gnu.build-id)
        __note_gnu_build_id_end = .;
 #endif
-       . = ALIGN(8);
-       /* Exception table */
-       __start___ex_table = .;
-       *(.ex_table)
-       __stop___ex_table = .;
-
-       /* Pre-exception table */
-       __start___pre_ex_table = .;
-       *(.ex_table.pre)
-       __stop___pre_ex_table = .;
-
-#ifdef CONFIG_HAS_VPCI
-       . = ALIGN(POINTER_ALIGN);
-       __start_vpci_array = .;
-       *(SORT(.data.vpci.*))
-       __end_vpci_array = .;
-#endif
+       VPCI_ARRAY
   } PHDR(text)
 
 #if defined(CONFIG_PVH_GUEST) && !defined(EFI)
+  /*
+   * In principle this should be fine to live in .note (below), but let's keep
+   * it separate in case anyone decided to find these notes by section name.
+   */
   DECL_SECTION(.note.Xen) {
       *(.note.Xen)
   } PHDR(note) PHDR(text)
@@ -174,6 +192,13 @@ SECTIONS
 #endif
 #endif
 
+#ifndef EFI
+  /* Retain these just for the purpose of possible analysis tools. */
+  DECL_SECTION(.note) {
+       *(.note.*)
+  } PHDR(note) PHDR(text)
+#endif
+
   _erodata = .;
 
   . = ALIGN(SECTION_ALIGN);
@@ -189,6 +214,7 @@ SECTIONS
 #endif
        _sinittext = .;
        *(.init.text)
+       *(.text.startup)
        _einittext = .;
        /*
         * Here are the replacement instructions. The linker sticks them
@@ -204,6 +230,12 @@ SECTIONS
   DECL_SECTION(.init.data) {
 #endif
        *(.init.bss.stack_aligned)
+
+       . = ALIGN(POINTER_ALIGN);
+       __initdata_cf_clobber_start = .;
+       *(.init.data.cf_clobber)
+       *(.init.rodata.cf_clobber)
+       __initdata_cf_clobber_end = .;
 
        *(.init.rodata)
        *(.init.rodata.*)
@@ -239,20 +271,44 @@ SECTIONS
         *(.altinstructions)
         __alt_instructions_end = .;
 
-#ifdef CONFIG_DEBUG_LOCK_PROFILE
-       . = ALIGN(POINTER_ALIGN);
-       __lock_profile_start = .;
-       *(.lockprofile.data)
-       __lock_profile_end = .;
-#endif
+       LOCK_PROFILE_DATA
 
        . = ALIGN(8);
        __ctors_start = .;
-       *(.ctors)
+       *(SORT_BY_INIT_PRIORITY(.init_array.*))
+       *(SORT_BY_INIT_PRIORITY(.ctors.*))
        *(.init_array)
-       *(SORT(.init_array.*))
+       *(.ctors)
        __ctors_end = .;
   } PHDR(text)
+
+#ifndef EFI
+  /*
+   * With --orphan-sections=warn (or =error) we need to handle certain linker
+   * generated sections.  These are all expected to be empty; respective
+   * ASSERT()s can be found towards the end of this file.  Put them in the
+   * text program header, just to be on the safe side against e.g. a linker
+   * otherwise chosing to put them in a separate one.
+   */
+  DECL_SECTION(.got) {
+       *(.got)
+  } PHDR(text)
+  DECL_SECTION(.got.plt) {
+       *(.got.plt)
+  } PHDR(text)
+  DECL_SECTION(.igot.plt) {
+       *(.igot.plt)
+  } PHDR(text)
+  DECL_SECTION(.iplt) {
+       *(.iplt)
+  } PHDR(text)
+  DECL_SECTION(.plt) {
+       *(.plt)
+  } PHDR(text)
+  DECL_SECTION(.rela) {
+       *(.rela.*)
+  } PHDR(text)
+#endif
 
   . = ALIGN(SECTION_ALIGN);
   __init_end = .;
@@ -267,20 +323,12 @@ SECTIONS
        *(.data.schedulers)
        __end_schedulers_array = .;
 
-#ifdef CONFIG_HYPFS
-       . = ALIGN(8);
-       __paramhypfs_start = .;
-       *(.data.paramhypfs)
-       __paramhypfs_end = .;
-#endif
+       HYPFS_PARAM
   } PHDR(text)
 
   DECL_SECTION(.data) {
        *(.data.page_aligned)
-       *(.data)
-       *(.data.rel)
-       *(.data.rel.*)
-       CONSTRUCTORS
+       *(.data .data.*)
   } PHDR(text)
 
   DECL_SECTION(.bss) {
@@ -294,7 +342,7 @@ SECTIONS
        *(.bss.percpu.read_mostly)
        . = ALIGN(SMP_CACHE_BYTES);
        __per_cpu_data_end = .;
-       *(.bss)
+       *(.bss .bss.*)
        . = ALIGN(POINTER_ALIGN);
        __bss_end = .;
   } PHDR(text)
@@ -307,71 +355,6 @@ SECTIONS
     __base_relocs_start = .;
     *(.reloc)
     __base_relocs_end = .;
-  }
-  /*
-   * Explicitly list debug section for the PE output so that they don't end
-   * up at VA 0 which is below image base and thus invalid. Also use the
-   * NOLOAD directive, despite currently ignored by ld for PE output, in
-   * order to record that we'd prefer these sections to not be loaded into
-   * memory.
-   *
-   * Note that we're past _end here, so if these sections get loaded they'll
-   * be discarded at runtime anyway.
-   */
-  .debug_abbrev ALIGN(1) (NOLOAD) : {
-     *(.debug_abbrev)
-  }
-  .debug_info ALIGN(1) (NOLOAD) : {
-    *(.debug_info)
-    *(.gnu.linkonce.wi.*)
-  }
-  .debug_types ALIGN(1) (NOLOAD) : {
-    *(.debug_types)
-  }
-  .debug_str ALIGN(1) (NOLOAD) : {
-    *(.debug_str)
-  }
-  .debug_line ALIGN(1) (NOLOAD) : {
-    *(.debug_line)
-    *(.debug_line.*)
-  }
-  .debug_line_str ALIGN(1) (NOLOAD) : {
-    *(.debug_line_str)
-  }
-  .debug_names ALIGN(4) (NOLOAD) : {
-    *(.debug_names)
-  }
-  .debug_frame ALIGN(4) (NOLOAD) : {
-    *(.debug_frame)
-  }
-  .debug_loc ALIGN(1) (NOLOAD) : {
-    *(.debug_loc)
-  }
-  .debug_loclists ALIGN(4) (NOLOAD) : {
-    *(.debug_loclists)
-  }
-  .debug_ranges ALIGN(8) (NOLOAD) : {
-    *(.debug_ranges)
-  }
-  .debug_rnglists ALIGN(4) (NOLOAD) : {
-    *(.debug_rnglists)
-  }
-  .debug_addr ALIGN(8) (NOLOAD) : {
-    *(.debug_addr)
-  }
-  .debug_aranges ALIGN(1) (NOLOAD) : {
-    *(.debug_aranges)
-  }
-  .debug_pubnames ALIGN(1) (NOLOAD) : {
-    *(.debug_pubnames)
-  }
-  .debug_pubtypes ALIGN(1) (NOLOAD) : {
-    *(.debug_pubtypes)
-  }
-  /* Trick the linker into setting the image size to no less than 16Mb. */
-  __image_end__ = .;
-  .pad ALIGN(__section_alignment__) : {
-    . = __image_end__ < __image_base__ + MB(16) ? ALIGN(MB(16)) : .;
   }
 #elif defined(XEN_BUILD_EFI)
   /*
@@ -387,34 +370,26 @@ SECTIONS
   efi = .;
 #endif
 
+  DWARF2_DEBUG_SECTIONS
+
+#ifdef EFI
+  /* Trick the linker into setting the image size to no less than 16Mb. */
+  __image_end__ = .;
+  .pad ALIGN(__section_alignment__) : {
+    . = __image_end__ < __image_base__ + MB(16) ? ALIGN(MB(16)) : .;
+  }
+#endif
+
 #ifdef CONFIG_HYPERV_GUEST
   hv_hcall_page = ABSOLUTE(HV_HCALL_PAGE - XEN_VIRT_START + __XEN_VIRT_START);
 #endif
 
-  /* Sections to be discarded */
-  /DISCARD/ : {
-       *(.exit.text)
-       *(.exit.data)
-       *(.exitcall.exit)
-       *(.discard)
-       *(.discard.*)
-       *(.eh_frame)
-#ifdef EFI
-       *(.comment)
-       *(.comment.*)
-       *(.note.Xen)
-#endif
-  }
+  DISCARD_SECTIONS
 
 #ifndef EFI
-  /* Stabs debugging sections.  */
-  .stab 0 : { *(.stab) }
-  .stabstr 0 : { *(.stabstr) }
-  .stab.excl 0 : { *(.stab.excl) }
-  .stab.exclstr 0 : { *(.stab.exclstr) }
-  .stab.index 0 : { *(.stab.index) }
-  .stab.indexstr 0 : { *(.stab.indexstr) }
-  .comment 0 : { *(.comment) }
+  STABS_DEBUG_SECTIONS
+
+  ELF_DETAILS_SECTIONS
 #endif
 }
 
@@ -424,7 +399,7 @@ ASSERT(__2M_rwdata_end <= XEN_VIRT_END - XEN_VIRT_START + __XEN_VIRT_START -
        "Xen image overlaps stubs area")
 
 #ifdef CONFIG_KEXEC
-ASSERT(kexec_reloc_size - kexec_reloc <= PAGE_SIZE, "kexec_reloc is too large")
+ASSERT(kexec_reloc_end - kexec_reloc <= PAGE_SIZE, "kexec_reloc is too large")
 #endif
 
 /* The Multiboot setup paths relies on this to simplify superpage PTE creation. */
@@ -447,6 +422,21 @@ ASSERT(IS_ALIGNED(trampoline_start, 4), "trampoline_start misaligned")
 ASSERT(IS_ALIGNED(trampoline_end,   4), "trampoline_end misaligned")
 ASSERT(IS_ALIGNED(__bss_start,      8), "__bss_start misaligned")
 ASSERT(IS_ALIGNED(__bss_end,        8), "__bss_end misaligned")
+
+#ifndef EFI
+ASSERT(!SIZEOF(.got),      ".got non-empty")
+/*
+ * At least GNU ld 2.30 and earlier fail to discard the generic part of
+ * .got.plt when no actual entries were allocated. Permit this case alongside
+ * the section being empty.
+ */
+ASSERT(!SIZEOF(.got.plt) || SIZEOF(.got.plt) == 3 * 8,
+       "unexpected .got.plt size")
+ASSERT(!SIZEOF(.igot.plt), ".igot.plt non-empty")
+ASSERT(!SIZEOF(.iplt),     ".iplt non-empty")
+ASSERT(!SIZEOF(.plt),      ".plt non-empty")
+ASSERT(!SIZEOF(.rela),     "leftover relocations")
+#endif
 
 ASSERT((trampoline_end - trampoline_start) < TRAMPOLINE_SPACE - MBI_SPACE_MIN,
     "not enough room for trampoline and mbi data")

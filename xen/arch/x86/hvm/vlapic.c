@@ -312,7 +312,7 @@ static void vlapic_init_sipi_one(struct vcpu *target, uint32_t icr)
     vcpu_unpause(target);
 }
 
-static void vlapic_init_sipi_action(void *data)
+static void cf_check vlapic_init_sipi_action(void *data)
 {
     struct vcpu *origin = data;
     uint32_t icr = vcpu_vlapic(origin)->init_sipi.icr;
@@ -580,7 +580,7 @@ static uint32_t vlapic_get_tmcct(const struct vlapic *vlapic)
 static void vlapic_set_tdcr(struct vlapic *vlapic, unsigned int val)
 {
     /* Only bits 0, 1 and 3 are settable; others are MBZ. */
-    val &= 0xb;
+    val &= APIC_TDR_DIV_MASK;
     vlapic_set_reg(vlapic, APIC_TDCR, val);
 
     /* Update the demangled hw.timer_divisor. */
@@ -615,8 +615,9 @@ static uint32_t vlapic_read_aligned(const struct vlapic *vlapic,
     return 0;
 }
 
-static int vlapic_mmio_read(struct vcpu *v, unsigned long address,
-                            unsigned int len, unsigned long *pval)
+static int cf_check vlapic_mmio_read(
+    struct vcpu *v, unsigned long address, unsigned int len,
+    unsigned long *pval)
 {
     struct vlapic *vlapic = vcpu_vlapic(v);
     unsigned int offset = address - vlapic_base_address(vlapic);
@@ -690,13 +691,13 @@ int guest_rdmsr_x2apic(const struct vcpu *v, uint32_t msr, uint64_t *val)
     return X86EMUL_OKAY;
 }
 
-static void vlapic_pt_cb(struct vcpu *v, void *data)
+static void cf_check vlapic_pt_cb(struct vcpu *v, void *data)
 {
     TRACE_0D(TRC_HVM_EMUL_LAPIC_TIMER_CB);
     *(s_time_t *)data = hvm_get_guest_time(v);
 }
 
-static void vlapic_tdt_pt_cb(struct vcpu *v, void *data)
+static void cf_check vlapic_tdt_pt_cb(struct vcpu *v, void *data)
 {
     *(s_time_t *)data = hvm_get_guest_time(v);
     vcpu_vlapic(v)->hw.tdt_msr = 0;
@@ -887,7 +888,7 @@ void vlapic_reg_write(struct vcpu *v, unsigned int reg, uint32_t val)
     {
         uint32_t current_divisor = vlapic->hw.timer_divisor;
 
-        vlapic_set_tdcr(vlapic, val & 0xb);
+        vlapic_set_tdcr(vlapic, val);
 
         vlapic_update_timer(vlapic, vlapic_get_reg(vlapic, APIC_LVTT), false,
                             current_divisor);
@@ -898,8 +899,8 @@ void vlapic_reg_write(struct vcpu *v, unsigned int reg, uint32_t val)
     }
 }
 
-static int vlapic_mmio_write(struct vcpu *v, unsigned long address,
-                             unsigned int len, unsigned long val)
+static int cf_check vlapic_mmio_write(
+    struct vcpu *v, unsigned long address, unsigned int len, unsigned long val)
 {
     struct vlapic *vlapic = vcpu_vlapic(v);
     unsigned int offset = address - vlapic_base_address(vlapic);
@@ -1019,7 +1020,7 @@ int guest_wrmsr_x2apic(struct vcpu *v, uint32_t msr, uint64_t msr_content)
         break;
 
     case APIC_TDCR:
-        if ( msr_content & ~APIC_TDR_DIV_1 )
+        if ( msr_content & ~APIC_TDR_DIV_MASK )
             return X86EMUL_EXCEPTION;
         break;
 
@@ -1052,7 +1053,7 @@ int guest_wrmsr_x2apic(struct vcpu *v, uint32_t msr, uint64_t msr_content)
     return X86EMUL_OKAY;
 }
 
-static int vlapic_range(struct vcpu *v, unsigned long addr)
+static int cf_check vlapic_range(struct vcpu *v, unsigned long addr)
 {
     struct vlapic *vlapic = vcpu_vlapic(v);
     unsigned long offset  = addr - vlapic_base_address(vlapic);
@@ -1481,7 +1482,7 @@ static void lapic_rearm(struct vlapic *s)
     s->timer_last_update = s->pt.last_plt_gtime;
 }
 
-static int lapic_save_hidden(struct vcpu *v, hvm_domain_context_t *h)
+static int cf_check lapic_save_hidden(struct vcpu *v, hvm_domain_context_t *h)
 {
     if ( !has_vlapic(v->domain) )
         return 0;
@@ -1489,7 +1490,7 @@ static int lapic_save_hidden(struct vcpu *v, hvm_domain_context_t *h)
     return hvm_save_entry(LAPIC, v->vcpu_id, h, &vcpu_vlapic(v)->hw);
 }
 
-static int lapic_save_regs(struct vcpu *v, hvm_domain_context_t *h)
+static int cf_check lapic_save_regs(struct vcpu *v, hvm_domain_context_t *h)
 {
     if ( !has_vlapic(v->domain) )
         return 0;
@@ -1528,7 +1529,7 @@ static void lapic_load_fixup(struct vlapic *vlapic)
     }
 }
 
-static int lapic_load_hidden(struct domain *d, hvm_domain_context_t *h)
+static int cf_check lapic_load_hidden(struct domain *d, hvm_domain_context_t *h)
 {
     unsigned int vcpuid = hvm_load_instance(h);
     struct vcpu *v;
@@ -1562,7 +1563,7 @@ static int lapic_load_hidden(struct domain *d, hvm_domain_context_t *h)
     return 0;
 }
 
-static int lapic_load_regs(struct domain *d, hvm_domain_context_t *h)
+static int cf_check lapic_load_regs(struct domain *d, hvm_domain_context_t *h)
 {
     unsigned int vcpuid = hvm_load_instance(h);
     struct vcpu *v;

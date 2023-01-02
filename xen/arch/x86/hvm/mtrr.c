@@ -75,7 +75,7 @@ static uint8_t __read_mostly mtrr_epat_tbl[MTRR_NUM_TYPES][MEMORY_NUM_TYPES] =
 static uint8_t __read_mostly pat_entry_tbl[PAT_TYPE_NUMS] =
     { [0 ... PAT_TYPE_NUMS-1] = INVALID_MEM_TYPE };
 
-static int __init hvm_mtrr_pat_init(void)
+static int __init cf_check hvm_mtrr_pat_init(void)
 {
     unsigned int i, j;
 
@@ -586,7 +586,7 @@ int hvm_get_mem_pinned_cacheattr(struct domain *d, gfn_t gfn,
     return rc;
 }
 
-static void free_pinned_cacheattr_entry(struct rcu_head *rcu)
+static void cf_check free_pinned_cacheattr_entry(struct rcu_head *rcu)
 {
     xfree(container_of(rcu, struct hvm_mem_pinned_cacheattr_range, rcu));
 }
@@ -687,7 +687,7 @@ int hvm_set_mem_pinned_cacheattr(struct domain *d, uint64_t gfn_start,
     return 0;
 }
 
-static int hvm_save_mtrr_msr(struct vcpu *v, hvm_domain_context_t *h)
+static int cf_check hvm_save_mtrr_msr(struct vcpu *v, hvm_domain_context_t *h)
 {
     const struct mtrr_state *mtrr_state = &v->arch.hvm.mtrr;
     struct hvm_hw_mtrr hw_mtrr = {
@@ -725,7 +725,7 @@ static int hvm_save_mtrr_msr(struct vcpu *v, hvm_domain_context_t *h)
     return hvm_save_entry(MTRR, v->vcpu_id, h, &hw_mtrr);
 }
 
-static int hvm_load_mtrr_msr(struct domain *d, hvm_domain_context_t *h)
+static int cf_check hvm_load_mtrr_msr(struct domain *d, hvm_domain_context_t *h)
 {
     unsigned int vcpuid, i;
     struct vcpu *v;

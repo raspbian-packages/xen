@@ -893,6 +893,9 @@ long long xc_logdirty_control(xc_interface *xch,
                               unsigned int mode,
                               xc_shadow_op_stats_t *stats);
 
+int xc_get_paging_mempool_size(xc_interface *xch, uint32_t domid, uint64_t *size);
+int xc_set_paging_mempool_size(xc_interface *xch, uint32_t domid, uint64_t size);
+
 int xc_sched_credit_domain_set(xc_interface *xch,
                                uint32_t domid,
                                struct xen_domctl_sched_credit *sdom);
@@ -1597,6 +1600,7 @@ int xc_vmtrace_set_option(xc_interface *xch, uint32_t domid,
 
 int xc_domctl(xc_interface *xch, struct xen_domctl *domctl);
 int xc_sysctl(xc_interface *xch, struct xen_sysctl *sysctl);
+long xc_memory_op(xc_interface *xch, unsigned int cmd, void *arg, size_t len);
 
 int xc_version(xc_interface *xch, int cmd, void *arg);
 
@@ -2096,6 +2100,8 @@ int xc_monitor_privileged_call(xc_interface *xch, uint32_t domain_id,
                                bool enable);
 int xc_monitor_emul_unimplemented(xc_interface *xch, uint32_t domain_id,
                                   bool enable);
+int xc_monitor_vmexit(xc_interface *xch, uint32_t domain_id, bool enable,
+                      bool sync);
 /**
  * This function enables / disables emulation for each REP for a
  * REP-compatible instruction.
@@ -2290,7 +2296,8 @@ int xc_memshr_fork(xc_interface *xch,
  *
  * With VMs that have a lot of memory this call may block for a long time.
  */
-int xc_memshr_fork_reset(xc_interface *xch, uint32_t forked_domain);
+int xc_memshr_fork_reset(xc_interface *xch, uint32_t forked_domain,
+                         bool reset_state, bool reset_memory);
 
 /* Debug calls: return the number of pages referencing the shared frame backing
  * the input argument. Should be one or greater.
@@ -2528,61 +2535,6 @@ int xc_psr_get_domain_data(xc_interface *xch, uint32_t domid,
                            uint64_t *data);
 int xc_psr_get_hw_info(xc_interface *xch, uint32_t socket,
                        xc_psr_feat_type type, xc_psr_hw_info *hw_info);
-
-typedef struct xc_cpu_policy xc_cpu_policy_t;
-
-/* Create and free a xc_cpu_policy object. */
-xc_cpu_policy_t *xc_cpu_policy_init(void);
-void xc_cpu_policy_destroy(xc_cpu_policy_t *policy);
-
-/* Retrieve a system policy, or get/set a domains policy. */
-int xc_cpu_policy_get_system(xc_interface *xch, unsigned int policy_idx,
-                             xc_cpu_policy_t *policy);
-int xc_cpu_policy_get_domain(xc_interface *xch, uint32_t domid,
-                             xc_cpu_policy_t *policy);
-int xc_cpu_policy_set_domain(xc_interface *xch, uint32_t domid,
-                             xc_cpu_policy_t *policy);
-
-/* Manipulate a policy via architectural representations. */
-int xc_cpu_policy_serialise(xc_interface *xch, const xc_cpu_policy_t *policy,
-                            xen_cpuid_leaf_t *leaves, uint32_t *nr_leaves,
-                            xen_msr_entry_t *msrs, uint32_t *nr_msrs);
-int xc_cpu_policy_update_cpuid(xc_interface *xch, xc_cpu_policy_t *policy,
-                               const xen_cpuid_leaf_t *leaves,
-                               uint32_t nr);
-int xc_cpu_policy_update_msrs(xc_interface *xch, xc_cpu_policy_t *policy,
-                              const xen_msr_entry_t *msrs, uint32_t nr);
-
-/* Compatibility calculations. */
-bool xc_cpu_policy_is_compatible(xc_interface *xch, xc_cpu_policy_t *host,
-                                 xc_cpu_policy_t *guest);
-
-int xc_get_cpu_levelling_caps(xc_interface *xch, uint32_t *caps);
-int xc_get_cpu_featureset(xc_interface *xch, uint32_t index,
-                          uint32_t *nr_features, uint32_t *featureset);
-
-int xc_cpu_policy_get_size(xc_interface *xch, uint32_t *nr_leaves,
-                           uint32_t *nr_msrs);
-int xc_set_domain_cpu_policy(xc_interface *xch, uint32_t domid,
-                             uint32_t nr_leaves, xen_cpuid_leaf_t *leaves,
-                             uint32_t nr_msrs, xen_msr_entry_t *msrs,
-                             uint32_t *err_leaf_p, uint32_t *err_subleaf_p,
-                             uint32_t *err_msr_p);
-
-uint32_t xc_get_cpu_featureset_size(void);
-
-enum xc_static_cpu_featuremask {
-    XC_FEATUREMASK_KNOWN,
-    XC_FEATUREMASK_SPECIAL,
-    XC_FEATUREMASK_PV_MAX,
-    XC_FEATUREMASK_PV_DEF,
-    XC_FEATUREMASK_HVM_SHADOW_MAX,
-    XC_FEATUREMASK_HVM_SHADOW_DEF,
-    XC_FEATUREMASK_HVM_HAP_MAX,
-    XC_FEATUREMASK_HVM_HAP_DEF,
-};
-const uint32_t *xc_get_static_cpu_featuremask(enum xc_static_cpu_featuremask);
-
 #endif
 
 int xc_livepatch_upload(xc_interface *xch,

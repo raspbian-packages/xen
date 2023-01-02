@@ -706,6 +706,35 @@ long long xc_logdirty_control(xc_interface *xch,
     return (rc == 0) ? domctl.u.shadow_op.pages : rc;
 }
 
+int xc_get_paging_mempool_size(xc_interface *xch, uint32_t domid, uint64_t *size)
+{
+    int rc;
+    struct xen_domctl domctl = {
+        .cmd         = XEN_DOMCTL_get_paging_mempool_size,
+        .domain      = domid,
+    };
+
+    rc = do_domctl(xch, &domctl);
+    if ( rc )
+        return rc;
+
+    *size = domctl.u.paging_mempool.size;
+    return 0;
+}
+
+int xc_set_paging_mempool_size(xc_interface *xch, uint32_t domid, uint64_t size)
+{
+    struct xen_domctl domctl = {
+        .cmd         = XEN_DOMCTL_set_paging_mempool_size,
+        .domain      = domid,
+        .u.paging_mempool = {
+            .size = size,
+        },
+    };
+
+    return do_domctl(xch, &domctl);
+}
+
 int xc_domain_setmaxmem(xc_interface *xch,
                         uint32_t domid,
                         uint64_t max_memkb)
@@ -736,7 +765,7 @@ int xc_domain_set_memory_map(xc_interface *xch,
 
     set_xen_guest_handle(fmap.map.buffer, entries);
 
-    rc = do_memory_op(xch, XENMEM_set_memory_map, &fmap, sizeof(fmap));
+    rc = xc_memory_op(xch, XENMEM_set_memory_map, &fmap, sizeof(fmap));
 
     xc_hypercall_bounce_post(xch, entries);
 
@@ -760,7 +789,7 @@ int xc_get_machine_memory_map(xc_interface *xch,
 
     set_xen_guest_handle(memmap.buffer, entries);
 
-    rc = do_memory_op(xch, XENMEM_machine_memory_map, &memmap, sizeof(memmap));
+    rc = xc_memory_op(xch, XENMEM_machine_memory_map, &memmap, sizeof(memmap));
 
     xc_hypercall_bounce_post(xch, entries);
 
@@ -814,7 +843,7 @@ int xc_reserved_device_memory_map(xc_interface *xch,
 
     set_xen_guest_handle(xrdmmap.buffer, entries);
 
-    rc = do_memory_op(xch, XENMEM_reserved_device_memory_map,
+    rc = xc_memory_op(xch, XENMEM_reserved_device_memory_map,
                       &xrdmmap, sizeof(xrdmmap));
 
     xc_hypercall_bounce_post(xch, entries);
@@ -879,7 +908,7 @@ int xc_domain_get_tsc_info(xc_interface *xch,
 int xc_domain_maximum_gpfn(xc_interface *xch, uint32_t domid, xen_pfn_t *gpfns)
 {
     struct xen_memory_domain dom = { .domid = domid };
-    long rc = do_memory_op(xch, XENMEM_maximum_gpfn, &dom, sizeof(dom));
+    long rc = xc_memory_op(xch, XENMEM_maximum_gpfn, &dom, sizeof(dom));
 
     if ( rc >= 0 )
     {
@@ -924,7 +953,7 @@ int xc_domain_increase_reservation(xc_interface *xch,
 
     set_xen_guest_handle(reservation.extent_start, extent_start);
 
-    err = do_memory_op(xch, XENMEM_increase_reservation, &reservation, sizeof(reservation));
+    err = xc_memory_op(xch, XENMEM_increase_reservation, &reservation, sizeof(reservation));
 
     xc_hypercall_bounce_post(xch, extent_start);
 
@@ -987,7 +1016,7 @@ int xc_domain_decrease_reservation(xc_interface *xch,
     }
     set_xen_guest_handle(reservation.extent_start, extent_start);
 
-    err = do_memory_op(xch, XENMEM_decrease_reservation, &reservation, sizeof(reservation));
+    err = xc_memory_op(xch, XENMEM_decrease_reservation, &reservation, sizeof(reservation));
 
     xc_hypercall_bounce_post(xch, extent_start);
 
@@ -1031,7 +1060,7 @@ int xc_domain_add_to_physmap(xc_interface *xch,
         .idx = idx,
         .gpfn = gpfn,
     };
-    return do_memory_op(xch, XENMEM_add_to_physmap, &xatp, sizeof(xatp));
+    return xc_memory_op(xch, XENMEM_add_to_physmap, &xatp, sizeof(xatp));
 }
 
 int xc_domain_add_to_physmap_batch(xc_interface *xch,
@@ -1068,7 +1097,7 @@ int xc_domain_add_to_physmap_batch(xc_interface *xch,
     set_xen_guest_handle(xatp_batch.gpfns, gpfns);
     set_xen_guest_handle(xatp_batch.errs, errs);
 
-    rc = do_memory_op(xch, XENMEM_add_to_physmap_batch,
+    rc = xc_memory_op(xch, XENMEM_add_to_physmap_batch,
                       &xatp_batch, sizeof(xatp_batch));
 
 out:
@@ -1087,7 +1116,7 @@ int xc_domain_remove_from_physmap(xc_interface *xch,
         .domid = domid,
         .gpfn = gpfn,
     };
-    return do_memory_op(xch, XENMEM_remove_from_physmap, &xrfp, sizeof(xrfp));
+    return xc_memory_op(xch, XENMEM_remove_from_physmap, &xrfp, sizeof(xrfp));
 }
 
 int xc_domain_claim_pages(xc_interface *xch,
@@ -1104,7 +1133,7 @@ int xc_domain_claim_pages(xc_interface *xch,
 
     set_xen_guest_handle(reservation.extent_start, HYPERCALL_BUFFER_NULL);
 
-    err = do_memory_op(xch, XENMEM_claim_pages, &reservation, sizeof(reservation));
+    err = xc_memory_op(xch, XENMEM_claim_pages, &reservation, sizeof(reservation));
     /* Ignore it if the hypervisor does not support the call. */
     if (err == -1 && errno == ENOSYS)
         err = errno = 0;
@@ -1134,7 +1163,7 @@ int xc_domain_populate_physmap(xc_interface *xch,
     }
     set_xen_guest_handle(reservation.extent_start, extent_start);
 
-    err = do_memory_op(xch, XENMEM_populate_physmap, &reservation, sizeof(reservation));
+    err = xc_memory_op(xch, XENMEM_populate_physmap, &reservation, sizeof(reservation));
 
     xc_hypercall_bounce_post(xch, extent_start);
     return err;
@@ -1197,7 +1226,7 @@ int xc_domain_memory_exchange_pages(xc_interface *xch,
     set_xen_guest_handle(exchange.in.extent_start, in_extents);
     set_xen_guest_handle(exchange.out.extent_start, out_extents);
 
-    rc = do_memory_op(xch, XENMEM_exchange, &exchange, sizeof(exchange));
+    rc = xc_memory_op(xch, XENMEM_exchange, &exchange, sizeof(exchange));
 
 out:
     xc_hypercall_bounce_post(xch, in_extents);
@@ -1227,16 +1256,12 @@ static int xc_domain_pod_target(xc_interface *xch,
         .target_pages = target_pages
     };
 
-    err = do_memory_op(xch, op, &pod_target, sizeof(pod_target));
+    err = xc_memory_op(xch, op, &pod_target, sizeof(pod_target));
 
     if ( err < 0 )
-    {
         DPRINTF("Failed %s_pod_target dom %d\n",
                 (op==XENMEM_set_pod_target)?"set":"get",
                 domid);
-        errno = -err;
-        err = -1;
-    }
     else
         err = 0;
 
@@ -1544,7 +1569,8 @@ int xc_get_device_group(
 {
     int rc;
     DECLARE_DOMCTL;
-    DECLARE_HYPERCALL_BOUNCE(sdev_array, max_sdevs * sizeof(*sdev_array), XC_HYPERCALL_BUFFER_BOUNCE_IN);
+    DECLARE_HYPERCALL_BOUNCE(sdev_array, max_sdevs * sizeof(*sdev_array),
+                             XC_HYPERCALL_BUFFER_BOUNCE_OUT);
 
     if ( xc_hypercall_bounce_pre(xch, sdev_array) )
     {
@@ -2181,7 +2207,7 @@ int xc_domain_getvnuma(xc_interface *xch,
     vnuma_topo.domid = domid;
     vnuma_topo.pad = 0;
 
-    rc = do_memory_op(xch, XENMEM_get_vnumainfo, &vnuma_topo,
+    rc = xc_memory_op(xch, XENMEM_get_vnumainfo, &vnuma_topo,
                       sizeof(vnuma_topo));
 
     *nr_vnodes = vnuma_topo.nr_vnodes;

@@ -1295,7 +1295,7 @@ static inline int mkec(uint8_t e, int32_t ec, ...)
    generate_exception_if((uint8_t)(state->ip -                          \
                                    ctxt->regs->r(ip)) > MAX_INST_LEN,   \
                          EXC_GP, 0);                                    \
-   rc = ops->insn_fetch(x86_seg_cs, _ip, &_x, (_size), ctxt);           \
+   rc = ops->insn_fetch(_ip, &_x, _size, ctxt);                         \
    if ( rc ) goto done;                                                 \
    _x;                                                                  \
 })
@@ -1363,7 +1363,7 @@ do {                                                                    \
         ip = (uint16_t)ip;                                              \
     else if ( !mode_64bit() )                                           \
         ip = (uint32_t)ip;                                              \
-    rc = ops->insn_fetch(x86_seg_cs, ip, NULL, 0, ctxt);                \
+    rc = ops->insn_fetch(ip, NULL, 0, ctxt);                            \
     if ( rc ) goto done;                                                \
     _regs.r(ip) = ip;                                                   \
     singlestep = _regs.eflags & X86_EFLAGS_TF;                          \
@@ -2525,7 +2525,7 @@ static void adjust_bnd(struct x86_emulate_ctxt *ctxt,
  done:;
 }
 
-int x86emul_unhandleable_rw(
+int cf_check x86emul_unhandleable_rw(
     enum x86_segment seg,
     unsigned long offset,
     void *p_data,
@@ -4741,7 +4741,7 @@ x86_emulate(
                    ? 8 : op_bytes;
         if ( (rc = read_ulong(x86_seg_ss, sp_post_inc(op_bytes + src.val),
                               &dst.val, op_bytes, ctxt, ops)) != 0 ||
-             (rc = ops->insn_fetch(x86_seg_cs, dst.val, NULL, 0, ctxt)) )
+             (rc = ops->insn_fetch(dst.val, NULL, 0, ctxt)) )
             goto done;
         _regs.r(ip) = dst.val;
         adjust_bnd(ctxt, ops, vex.pfx);
@@ -5629,14 +5629,14 @@ x86_emulate(
             break;
         case 2: /* call (near) */
             dst.val = _regs.r(ip);
-            if ( (rc = ops->insn_fetch(x86_seg_cs, src.val, NULL, 0, ctxt)) )
+            if ( (rc = ops->insn_fetch(src.val, NULL, 0, ctxt)) )
                 goto done;
             _regs.r(ip) = src.val;
             src.val = dst.val;
             adjust_bnd(ctxt, ops, vex.pfx);
             goto push;
         case 4: /* jmp (near) */
-            if ( (rc = ops->insn_fetch(x86_seg_cs, src.val, NULL, 0, ctxt)) )
+            if ( (rc = ops->insn_fetch(src.val, NULL, 0, ctxt)) )
                 goto done;
             _regs.r(ip) = src.val;
             dst.type = OP_NONE;
@@ -7609,8 +7609,8 @@ x86_emulate(
 #ifndef X86EMUL_NO_SIMD
     case X86EMUL_OPC_VEX_66(0x0f3a, 0x08): /* vroundps $imm8,{x,y}mm/mem,{x,y}mm */
     case X86EMUL_OPC_VEX_66(0x0f3a, 0x09): /* vroundpd $imm8,{x,y}mm/mem,{x,y}mm */
-    case X86EMUL_OPC_VEX_66(0x0f3a, 0x0a): /* vroundss $imm8,{x,y}mm/mem,{x,y}mm,{x,y}mm */
-    case X86EMUL_OPC_VEX_66(0x0f3a, 0x0b): /* vroundsd $imm8,{x,y}mm/mem,{x,y}mm,{x,y}mm */
+    case X86EMUL_OPC_VEX_66(0x0f3a, 0x0a): /* vroundss $imm8,xmm/mem,xmm,xmm */
+    case X86EMUL_OPC_VEX_66(0x0f3a, 0x0b): /* vroundsd $imm8,xmm/mem,xmm,xmm */
     case X86EMUL_OPC_VEX_66(0x0f3a, 0x0c): /* vblendps $imm8,{x,y}mm/mem,{x,y}mm,{x,y}mm */
     case X86EMUL_OPC_VEX_66(0x0f3a, 0x0d): /* vblendpd $imm8,{x,y}mm/mem,{x,y}mm,{x,y}mm */
     case X86EMUL_OPC_VEX_66(0x0f3a, 0x40): /* vdpps $imm8,{x,y}mm/mem,{x,y}mm,{x,y}mm */
@@ -10579,8 +10579,8 @@ x86_emulate(
         host_and_vcpu_must_have(sse4_1);
         goto simd_0f3a_common;
 
-    case X86EMUL_OPC_EVEX_66(0x0f3a, 0x0a): /* vrndscaless $imm8,[xyz]mm/mem,[xyz]mm,[xyz]mm{k} */
-    case X86EMUL_OPC_EVEX_66(0x0f3a, 0x0b): /* vrndscalesd $imm8,[xyz]mm/mem,[xyz]mm,[xyz]mm{k} */
+    case X86EMUL_OPC_EVEX_66(0x0f3a, 0x0a): /* vrndscaless $imm8,xmm/mem,xmm,xmm{k} */
+    case X86EMUL_OPC_EVEX_66(0x0f3a, 0x0b): /* vrndscalesd $imm8,xmm/mem,xmm,xmm{k} */
         generate_exception_if(ea.type != OP_REG && evex.brs, EXC_UD);
         /* fall through */
     case X86EMUL_OPC_EVEX_66(0x0f3a, 0x08): /* vrndscaleps $imm8,[xyz]mm/mem,[xyz]mm{k} */
@@ -11066,7 +11066,7 @@ x86_emulate(
         break;
 
     case X86EMUL_OPC_EVEX_66(0x0f3a, 0x66): /* vfpclassp{s,d} $imm8,[xyz]mm/mem,k{k} */
-    case X86EMUL_OPC_EVEX_66(0x0f3a, 0x67): /* vfpclasss{s,d} $imm8,[xyz]mm/mem,k{k} */
+    case X86EMUL_OPC_EVEX_66(0x0f3a, 0x67): /* vfpclasss{s,d} $imm8,xmm/mem,k{k} */
         host_and_vcpu_must_have(avx512dq);
         generate_exception_if(!evex.r || !evex.R || evex.z, EXC_UD);
         if ( !(b & 1) )
@@ -12225,8 +12225,7 @@ struct x86_emulate_state *
 x86_decode_insn(
     struct x86_emulate_ctxt *ctxt,
     int (*insn_fetch)(
-        enum x86_segment seg, unsigned long offset,
-        void *p_data, unsigned int bytes,
+        unsigned long offset, void *p_data, unsigned int bytes,
         struct x86_emulate_ctxt *ctxt))
 {
     static DEFINE_PER_CPU(struct x86_emulate_state, state);
@@ -12324,7 +12323,7 @@ x86_insn_operand_ea(const struct x86_emulate_state *state,
  * memory operand (like POP), but it does not mean e.g. segment selector
  * loads, where the descriptor table access is considered an implicit one.
  */
-bool
+bool cf_check
 x86_insn_is_mem_access(const struct x86_emulate_state *state,
                        const struct x86_emulate_ctxt *ctxt)
 {
@@ -12416,7 +12415,7 @@ x86_insn_is_mem_access(const struct x86_emulate_state *state,
  * loads, where the (possible) descriptor table write is considered an
  * implicit access.
  */
-bool
+bool cf_check
 x86_insn_is_mem_write(const struct x86_emulate_state *state,
                       const struct x86_emulate_ctxt *ctxt)
 {
@@ -12588,7 +12587,7 @@ x86_insn_is_mem_write(const struct x86_emulate_state *state,
     return false;
 }
 
-bool
+bool cf_check
 x86_insn_is_portio(const struct x86_emulate_state *state,
                    const struct x86_emulate_ctxt *ctxt)
 {
@@ -12603,7 +12602,7 @@ x86_insn_is_portio(const struct x86_emulate_state *state,
     return false;
 }
 
-bool
+bool cf_check
 x86_insn_is_cr_access(const struct x86_emulate_state *state,
                       const struct x86_emulate_ctxt *ctxt)
 {

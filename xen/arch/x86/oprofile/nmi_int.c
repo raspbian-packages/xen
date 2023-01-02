@@ -95,7 +95,7 @@ bool nmi_oprofile_send_virq(void)
 	return v;
 }
 
-static int nmi_callback(const struct cpu_user_regs *regs, int cpu)
+static int cf_check nmi_callback(const struct cpu_user_regs *regs, int cpu)
 {
 	int xen_mode, ovf;
 
@@ -131,7 +131,7 @@ static void nmi_cpu_save_registers(struct op_msrs *msrs)
 }
 
 
-static void nmi_save_registers(void * dummy)
+static void cf_check nmi_save_registers(void *dummy)
 {
 	int cpu = smp_processor_id();
 	struct op_msrs * msrs = &cpu_msrs[cpu];
@@ -179,7 +179,7 @@ static int allocate_msrs(void)
 }
 
 
-static void nmi_cpu_setup(void * dummy)
+static void cf_check nmi_cpu_setup(void *dummy)
 {
 	int cpu = smp_processor_id();
 	struct op_msrs * msrs = &cpu_msrs[cpu];
@@ -245,7 +245,7 @@ static void nmi_restore_registers(struct op_msrs * msrs)
 }
 
 
-static void nmi_cpu_shutdown(void * dummy)
+static void cf_check nmi_cpu_shutdown(void *dummy)
 {
 	int cpu = smp_processor_id();
 	struct op_msrs * msrs = &cpu_msrs[cpu];
@@ -261,7 +261,7 @@ void nmi_release_counters(void)
 }
 
 
-static void nmi_cpu_start(void * dummy)
+static void cf_check nmi_cpu_start(void *dummy)
 {
 	int cpu = smp_processor_id();
 	struct op_msrs const * msrs = &cpu_msrs[cpu];
@@ -278,7 +278,7 @@ int nmi_start(void)
 }
 
 
-static void nmi_cpu_stop(void * dummy)
+static void cf_check nmi_cpu_stop(void *dummy)
 {
 	unsigned int v;
 	int cpu = smp_processor_id();
@@ -340,7 +340,7 @@ static int __init p4_init(char ** cpu_type)
 
 static int force_arch_perfmon;
 
-static int force_cpu_type(const char *str)
+static int __init cf_check force_cpu_type(const char *str)
 {
 	if (!strcmp(str, "arch_perfmon")) {
 		force_arch_perfmon = 1;
@@ -388,7 +388,7 @@ static int __init arch_perfmon_init(char **cpu_type)
 	return 1;
 }
 
-static int __init nmi_init(void)
+static int __init cf_check nmi_init(void)
 {
 	__u8 vendor = current_cpu_data.x86_vendor;
 	__u8 family = current_cpu_data.x86;

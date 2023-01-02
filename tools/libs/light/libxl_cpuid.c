@@ -221,6 +221,7 @@ int libxl_cpuid_parse_config(libxl_cpuid_policy_list *cpuid, const char* str)
         {"serialize",    0x00000007,  0, CPUID_REG_EDX, 14,  1},
         {"tsxldtrk",     0x00000007,  0, CPUID_REG_EDX, 16,  1},
         {"cet-ibt",      0x00000007,  0, CPUID_REG_EDX, 20,  1},
+        {"avx512-fp16",  0x00000007,  0, CPUID_REG_EDX, 23,  1},
         {"ibrsb",        0x00000007,  0, CPUID_REG_EDX, 26,  1},
         {"stibp",        0x00000007,  0, CPUID_REG_EDX, 27,  1},
         {"l1d-flush",    0x00000007,  0, CPUID_REG_EDX, 28,  1},
@@ -235,6 +236,7 @@ int libxl_cpuid_parse_config(libxl_cpuid_policy_list *cpuid, const char* str)
         {"fsrcs",        0x00000007,  1, CPUID_REG_EAX, 12,  1},
 
         {"intel-psfd",   0x00000007,  2, CPUID_REG_EDX,  0,  1},
+        {"mcdt-no",      0x00000007,  2, CPUID_REG_EDX,  5,  1},
 
         {"lahfsahf",     0x80000001, NA, CPUID_REG_ECX,  0,  1},
         {"cmplegacy",    0x80000001, NA, CPUID_REG_ECX,  1,  1},

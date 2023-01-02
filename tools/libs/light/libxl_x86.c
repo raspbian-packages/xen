@@ -529,20 +529,9 @@ int libxl__arch_domain_create(libxl__gc *gc,
         xc_domain_set_time_offset(ctx->xch, domid, rtc_timeoffset);
 
     if (d_config->b_info.type != LIBXL_DOMAIN_TYPE_PV) {
-        unsigned int shadow_mb = DIV_ROUNDUP(d_config->b_info.shadow_memkb,
-                                             1024);
-        int r = xc_shadow_control(ctx->xch, domid,
-                                  XEN_DOMCTL_SHADOW_OP_SET_ALLOCATION,
-                                  &shadow_mb, 0);
-
-        if (r) {
-            LOGED(ERROR, domid,
-                  "Failed to set %u MiB %s allocation",
-                  shadow_mb,
-                  libxl_defbool_val(d_config->c_info.hap) ? "HAP" : "shadow");
-            ret = ERROR_FAIL;
+        ret = libxl__domain_set_paging_mempool_size(gc, d_config, domid);
+        if (ret)
             goto out;
-        }
     }
 
     if (d_config->c_info.type == LIBXL_DOMAIN_TYPE_PV &&
@@ -819,11 +808,14 @@ void libxl__arch_domain_create_info_setdefault(libxl__gc *gc,
 {
 }
 
-void libxl__arch_domain_build_info_setdefault(libxl__gc *gc,
-                                              libxl_domain_build_info *b_info)
+int libxl__arch_domain_build_info_setdefault(libxl__gc *gc,
+                                             libxl_domain_build_info *b_info,
+                                             const libxl_physinfo *physinfo)
 {
     libxl_defbool_setdefault(&b_info->acpi, true);
     libxl_defbool_setdefault(&b_info->arch_x86.msr_relaxed, false);
+
+    return 0;
 }
 
 int libxl__arch_passthrough_mode_setdefault(libxl__gc *gc,
@@ -880,19 +872,6 @@ void libxl__arch_update_domain_config(libxl__gc *gc,
      */
     libxl_defbool_setdefault(&dst->b_info.arch_x86.msr_relaxed,
                     libxl_defbool_val(src->b_info.arch_x86.msr_relaxed));
-}
-
-unsigned long libxl__arch_get_required_paging_memory(unsigned long maxmem_kb,
-                                                     unsigned int smp_cpus)
-{
-    /*
-     * 256 pages (1MB) per vcpu,
-     * plus 1 page per MiB of RAM for the P2M map,
-     * plus 1 page per MiB of RAM to shadow the resident processes.
-     * This is higher than the minimum that Xen would allocate if no value
-     * were given (but the Xen minimum is for safety, not performance).
-     */
-    return 4 * (256 * smp_cpus + 2 * (maxmem_kb / 1024));
 }
 
 /*

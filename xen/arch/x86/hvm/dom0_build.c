@@ -113,10 +113,9 @@ static int __init pvh_populate_memory_range(struct domain *d,
         { .align = PFN_DOWN(MB(2)), .order = PAGE_ORDER_2M },
         { .align = PFN_DOWN(KB(4)), .order = PAGE_ORDER_4K },
     };
-    unsigned int max_order = MAX_ORDER, i = 0;
+    unsigned int max_order = MAX_ORDER;
     struct page_info *page;
     int rc;
-#define MAP_MAX_ITER 64
 
     while ( nr_pages != 0 )
     {
@@ -174,8 +173,7 @@ static int __init pvh_populate_memory_range(struct domain *d,
             continue;
         }
 
-        rc = guest_physmap_add_page(d, _gfn(start), page_to_mfn(page),
-                                    order);
+        rc = p2m_add_page(d, _gfn(start), page_to_mfn(page), order, p2m_ram_rw);
         if ( rc != 0 )
         {
             printk("Failed to populate memory: [%#lx,%#lx): %d\n",
@@ -185,12 +183,16 @@ static int __init pvh_populate_memory_range(struct domain *d,
         start += 1UL << order;
         nr_pages -= 1UL << order;
         order_stats[order]++;
-        if ( (++i % MAP_MAX_ITER) == 0 )
-            process_pending_softirqs();
+        /*
+         * Process pending softirqs on every successful loop: it's unknown
+         * whether the p2m/IOMMU code will have split the page into multiple
+         * smaller entries, and thus the time consumed would be much higher
+         * than populating a single entry.
+         */
+        process_pending_softirqs();
     }
 
     return 0;
-#undef MAP_MAX_ITER
 }
 
 /* Steal RAM from the end of a memory region. */
@@ -742,15 +744,15 @@ static int __init pvh_setup_cpus(struct domain *d, paddr_t entry,
     return 0;
 }
 
-static int __init acpi_count_intr_ovr(struct acpi_subtable_header *header,
-                                     const unsigned long end)
+static int __init cf_check acpi_count_intr_ovr(
+    struct acpi_subtable_header *header, const unsigned long end)
 {
     acpi_intr_overrides++;
     return 0;
 }
 
-static int __init acpi_set_intr_ovr(struct acpi_subtable_header *header,
-                                    const unsigned long end)
+static int __init cf_check acpi_set_intr_ovr(
+    struct acpi_subtable_header *header, const unsigned long end)
 {
     const struct acpi_madt_interrupt_override *intr =
         container_of(header, struct acpi_madt_interrupt_override, header);
@@ -761,15 +763,15 @@ static int __init acpi_set_intr_ovr(struct acpi_subtable_header *header,
     return 0;
 }
 
-static int __init acpi_count_nmi_src(struct acpi_subtable_header *header,
-                                     const unsigned long end)
+static int __init cf_check acpi_count_nmi_src(
+    struct acpi_subtable_header *header, const unsigned long end)
 {
     acpi_nmi_sources++;
     return 0;
 }
 
-static int __init acpi_set_nmi_src(struct acpi_subtable_header *header,
-                                   const unsigned long end)
+static int __init cf_check acpi_set_nmi_src(
+    struct acpi_subtable_header *header, const unsigned long end)
 {
     const struct acpi_madt_nmi_source *src =
         container_of(header, struct acpi_madt_nmi_source, header);
@@ -1267,6 +1269,12 @@ int __init dom0_construct_pvh(struct domain *d, const module_t *image,
     {
         printk("Failed to setup Dom0 ACPI tables: %d\n", rc);
         return rc;
+    }
+
+    if ( opt_dom0_verbose )
+    {
+        printk("Dom%u memory map:\n", d->domain_id);
+        print_e820_memory_map(d->arch.e820, d->arch.nr_e820);
     }
 
     printk("WARNING: PVH is an experimental mode with limited functionality\n");

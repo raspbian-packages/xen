@@ -13,7 +13,7 @@ Modified by
 Hans van Kranenburg <hans@knorrie.org>
 Maximilian Engelhardt <maxi@daemonizer.de>
 ---
- xen/Makefile                 |  8 +++++---
+ xen/build.mk                 |  8 +++++---
  xen/common/kernel.c          |  8 ++++----
  xen/common/version.c         | 22 +++++++++++-----------
  xen/drivers/char/console.c   | 11 ++++-------
@@ -21,38 +21,42 @@ Maximilian Engelhardt <maxi@daemonizer.de>
  xen/include/xen/version.h    |  7 ++++---
  6 files changed, 32 insertions(+), 32 deletions(-)
 
-diff --git a/xen/Makefile b/xen/Makefile
-index 8a403ee..2efbd63 100644
---- a/xen/Makefile
-+++ b/xen/Makefile
-@@ -434,7 +434,7 @@ endef
- targets += .banner
- 
- # compile.h contains dynamic build info. Rebuilt on every 'make' invocation.
--include/xen/compile.h: include/xen/compile.h.in .banner
-+include/xen/compile.h: include/xen/compile.h.in
- 	@sed -e 's/@@date@@/$(XEN_BUILD_DATE)/g' \
+diff --git a/xen/build.mk b/xen/build.mk
+index 758590c..8ee1fc9 100644
+--- a/xen/build.mk
++++ b/xen/build.mk
+@@ -17,7 +17,6 @@ targets += .banner
+ quiet_cmd_compile.h = UPD     $@
+ define cmd_compile.h
+     if [ ! -r $@ -o -O $@ ]; then \
+-	cat .banner; \
+ 	sed -e 's/@@date@@/$(XEN_BUILD_DATE)/g' \
  	    -e 's/@@time@@/$(XEN_BUILD_TIME)/g' \
  	    -e 's/@@whoami@@/$(XEN_WHOAMI)/g' \
-@@ -445,9 +445,11 @@ include/xen/compile.h: include/xen/compile.h.in .banner
+@@ -28,13 +27,16 @@ define cmd_compile.h
  	    -e 's/@@subversion@@/$(XEN_SUBVERSION)/g' \
  	    -e 's/@@extraversion@@/$(XEN_EXTRAVERSION)/g' \
- 	    -e 's!@@changeset@@!$(shell tools/scmversion $(XEN_ROOT) || echo "unavailable")!g' \
+ 	    -e 's!@@changeset@@!$(shell $(srctree)/tools/scmversion $(XEN_ROOT) || echo "unavailable")!g' \
 +	    -e 's/@@system_distribution@@/$(shell lsb_release -is)/g' \
 +	    -e 's/@@system_maintainer_domain@@/$(shell grep Maintainer ${SOURCE_BASE_DIR}/debian/control | sed -ne 's,^Maintainer: .[^<]*<[^@>]*@\([^>]*\)>,\1,p')/g' \
 +	    -e 's/@@system_maintainer_local@@/$(shell grep Maintainer ${SOURCE_BASE_DIR}/debian/control | sed -ne 's,^Maintainer: .[^<]*<\([^@>]*\)@.*>,\1,p')/g' \
 +	    -e 's/@@system_version@@/$(shell cd ${SOURCE_BASE_DIR}; dpkg-parsechangelog | awk '/^Version:/ {print $$2}')/g' \
- 	    < include/xen/compile.h.in > $@.new
--	@cat .banner
--	@sed -rf tools/process-banner.sed < .banner >> $@.new
- 	@mv -f $@.new $@
+ 	    < $< > $(dot-target).tmp; \
+-	sed -rf $(srctree)/tools/process-banner.sed < .banner >> $(dot-target).tmp; \
+ 	mv -f $(dot-target).tmp $@; \
+     fi
+ endef
  
- asm-offsets.s: arch/$(TARGET_ARCH)/$(TARGET_SUBARCH)/asm-offsets.c
+-include/xen/compile.h: include/xen/compile.h.in .banner FORCE
++include/xen/compile.h: include/xen/compile.h.in FORCE
+ 	$(if $(filter-out FORCE,$?),$(Q)rm -fv $@)
+ 	$(call if_changed,compile.h)
+ 
 diff --git a/xen/common/kernel.c b/xen/common/kernel.c
-index 7ed9652..b9c0767 100644
+index f8134d3..4ac3ba7 100644
 --- a/xen/common/kernel.c
 +++ b/xen/common/kernel.c
-@@ -414,9 +414,9 @@ static int __init buildinfo_init(void)
+@@ -414,9 +414,9 @@ static int __init cf_check buildinfo_init(void)
  
      hypfs_add_dir(&buildinfo, &compileinfo, true);
      hypfs_string_set_reference(&compiler, xen_compiler());
@@ -123,7 +127,7 @@ index d320135..b44d411 100644
  {
      return "<denied>";
 diff --git a/xen/drivers/char/console.c b/xen/drivers/char/console.c
-index 7d0a603..f1ec810 100644
+index e8468c1..0a5bf92 100644
 --- a/xen/drivers/char/console.c
 +++ b/xen/drivers/char/console.c
 @@ -1000,14 +1000,11 @@ void __init console_init_preirq(void)
@@ -146,7 +150,7 @@ index 7d0a603..f1ec810 100644
      /* Locate and print the buildid, if applicable. */
      xen_build_init();
 diff --git a/xen/include/xen/compile.h.in b/xen/include/xen/compile.h.in
-index 440ecb2..0c3ca58 100644
+index 3151d1e..b4f7c98 100644
 --- a/xen/include/xen/compile.h.in
 +++ b/xen/include/xen/compile.h.in
 @@ -1,8 +1,9 @@
@@ -162,7 +166,7 @@ index 440ecb2..0c3ca58 100644
  #define XEN_COMPILER		"@@compiler@@"
  
  #define XEN_VERSION		@@version@@
-@@ -10,4 +11,3 @@
+@@ -11,4 +12,3 @@
  #define XEN_EXTRAVERSION	"@@extraversion@@"
  
  #define XEN_CHANGESET		"@@changeset@@"

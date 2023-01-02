@@ -35,6 +35,7 @@
 #include <xen/softirq.h>
 
 #include "mm-locks.h"
+#include "p2m.h"
 
 #define atomic_read_ept_entry(__pepte)                              \
     ( (ept_entry_t) { .epte = read_atomic(&(__pepte)->epte) } )
@@ -246,8 +247,7 @@ static void ept_free_entry(struct p2m_domain *p2m, ept_entry_t *ept_entry, int l
             ept_free_entry(p2m, epte + i, level - 1);
         unmap_domain_page(epte);
     }
-    
-    p2m_tlb_flush_sync(p2m);
+
     p2m_free_ptp(p2m, mfn_to_page(_mfn(ept_entry->mfn)));
 }
 
@@ -344,7 +344,7 @@ static int ept_next_level(struct p2m_domain *p2m, bool_t read_only,
     {
         int rc;
 
-        if ( e.sa_p2mt == p2m_populate_on_demand )
+        if ( p2m_is_pod(e.sa_p2mt) )
             return GUEST_TABLE_POD_PAGE;
 
         if ( read_only )
@@ -491,7 +491,7 @@ int epte_get_entry_emt(struct domain *d, gfn_t gfn, mfn_t mfn,
 {
     int gmtrr_mtype, hmtrr_mtype;
     struct vcpu *v = current;
-    unsigned long i;
+    unsigned long i, special_pgs;
 
     *ipat = false;
 
@@ -518,6 +518,10 @@ int epte_get_entry_emt(struct domain *d, gfn_t gfn, mfn_t mfn,
         return MTRR_TYPE_UNCACHABLE;
     }
 
+    /*
+     * Conditional must be kept in sync with the code in
+     * {iomem,ioports}_{permit,deny}_access().
+     */
     if ( type != p2m_mmio_direct && !is_iommu_enabled(d) &&
          !cache_flush_permitted(d) )
     {
@@ -525,15 +529,17 @@ int epte_get_entry_emt(struct domain *d, gfn_t gfn, mfn_t mfn,
         return MTRR_TYPE_WRBACK;
     }
 
-    for ( i = 0; i < (1ul << order); i++ )
-    {
+    for ( special_pgs = i = 0; i < (1ul << order); i++ )
         if ( is_special_page(mfn_to_page(mfn_add(mfn, i))) )
-        {
-            if ( order )
-                return -1;
-            *ipat = true;
-            return MTRR_TYPE_WRBACK;
-        }
+            special_pgs++;
+
+    if ( special_pgs )
+    {
+        if ( special_pgs != (1ul << order) )
+            return -1;
+
+        *ipat = true;
+        return MTRR_TYPE_WRBACK;
     }
 
     switch ( type )
@@ -625,7 +631,7 @@ int epte_get_entry_emt(struct domain *d, gfn_t gfn, mfn_t mfn,
  * - zero if no adjustment was done,
  * - a positive value if at least one adjustment was done.
  */
-static int resolve_misconfig(struct p2m_domain *p2m, unsigned long gfn)
+static int cf_check resolve_misconfig(struct p2m_domain *p2m, unsigned long gfn)
 {
     struct ept_data *ept = &p2m->ept;
     unsigned int level = ept->wl;
@@ -794,7 +800,7 @@ bool_t ept_handle_misconfig(uint64_t gpa)
  *
  * Returns: 0 for success, -errno for failure
  */
-static int
+static int cf_check
 ept_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
               unsigned int order, p2m_type_t p2mt, p2m_access_t p2ma,
               int sve)
@@ -1003,10 +1009,9 @@ out:
 }
 
 /* Read ept p2m entries */
-static mfn_t ept_get_entry(struct p2m_domain *p2m,
-                           gfn_t gfn_, p2m_type_t *t, p2m_access_t* a,
-                           p2m_query_t q, unsigned int *page_order,
-                           bool_t *sve)
+static mfn_t cf_check ept_get_entry(
+    struct p2m_domain *p2m, gfn_t gfn_, p2m_type_t *t, p2m_access_t *a,
+    p2m_query_t q, unsigned int *page_order, bool *sve)
 {
     ept_entry_t *table =
         map_domain_page(pagetable_get_mfn(p2m_get_pagetable(p2m)));
@@ -1071,7 +1076,7 @@ static mfn_t ept_get_entry(struct p2m_domain *p2m,
     index = gfn_remainder >> (i * EPT_TABLE_ORDER);
     ept_entry = table + index;
 
-    if ( ept_entry->sa_p2mt == p2m_populate_on_demand )
+    if ( p2m_is_pod(ept_entry->sa_p2mt) )
     {
         if ( !(q & P2M_ALLOC) )
         {
@@ -1166,8 +1171,8 @@ out:
     return;
 }
 
-static void ept_change_entry_type_global(struct p2m_domain *p2m,
-                                         p2m_type_t ot, p2m_type_t nt)
+static void cf_check ept_change_entry_type_global(
+    struct p2m_domain *p2m, p2m_type_t ot, p2m_type_t nt)
 {
     unsigned long mfn = p2m->ept.mfn;
 
@@ -1178,10 +1183,9 @@ static void ept_change_entry_type_global(struct p2m_domain *p2m,
         ept_sync_domain(p2m);
 }
 
-static int ept_change_entry_type_range(struct p2m_domain *p2m,
-                                       p2m_type_t ot, p2m_type_t nt,
-                                       unsigned long first_gfn,
-                                       unsigned long last_gfn)
+static int cf_check ept_change_entry_type_range(
+    struct p2m_domain *p2m, p2m_type_t ot, p2m_type_t nt,
+    unsigned long first_gfn, unsigned long last_gfn)
 {
     unsigned int i, wl = p2m->ept.wl;
     unsigned long mask = (1 << EPT_TABLE_ORDER) - 1;
@@ -1225,7 +1229,7 @@ static int ept_change_entry_type_range(struct p2m_domain *p2m,
     return rc < 0 ? rc : 0;
 }
 
-static void ept_memory_type_changed(struct p2m_domain *p2m)
+static void cf_check ept_memory_type_changed(struct p2m_domain *p2m)
 {
     unsigned long mfn = p2m->ept.mfn;
 
@@ -1234,14 +1238,6 @@ static void ept_memory_type_changed(struct p2m_domain *p2m)
 
     if ( ept_invalidate_emt_subtree(p2m, _mfn(mfn), 0, p2m->ept.wl) )
         ept_sync_domain(p2m);
-}
-
-static void __ept_sync_domain(void *info)
-{
-    /*
-     * The invalidation will be done before VMENTER (see
-     * vmx_vmenter_helper()).
-     */
 }
 
 static void ept_sync_domain_prepare(struct p2m_domain *p2m)
@@ -1269,7 +1265,8 @@ static void ept_sync_domain_prepare(struct p2m_domain *p2m)
 
 static void ept_sync_domain_mask(struct p2m_domain *p2m, const cpumask_t *mask)
 {
-    on_selected_cpus(mask, __ept_sync_domain, p2m, 1);
+    /* Invalidation will be done in vmx_vmenter_helper(). */
+    on_selected_cpus(mask, NULL, NULL, 1);
 }
 
 void ept_sync_domain(struct p2m_domain *p2m)
@@ -1291,7 +1288,7 @@ void ept_sync_domain(struct p2m_domain *p2m)
     ept_sync_domain_mask(p2m, d->dirty_cpumask);
 }
 
-static void ept_tlb_flush(struct p2m_domain *p2m)
+static void cf_check ept_tlb_flush(struct p2m_domain *p2m)
 {
     ept_sync_domain_mask(p2m, p2m->domain->dirty_cpumask);
 }
@@ -1354,7 +1351,7 @@ static void ept_disable_pml(struct p2m_domain *p2m)
     vmx_domain_update_eptp(p2m->domain);
 }
 
-static void ept_enable_hardware_log_dirty(struct p2m_domain *p2m)
+static void cf_check ept_enable_hardware_log_dirty(struct p2m_domain *p2m)
 {
     struct p2m_domain *hostp2m = p2m_get_hostp2m(p2m->domain);
 
@@ -1363,7 +1360,7 @@ static void ept_enable_hardware_log_dirty(struct p2m_domain *p2m)
     p2m_unlock(hostp2m);
 }
 
-static void ept_disable_hardware_log_dirty(struct p2m_domain *p2m)
+static void cf_check ept_disable_hardware_log_dirty(struct p2m_domain *p2m)
 {
     struct p2m_domain *hostp2m = p2m_get_hostp2m(p2m->domain);
 
@@ -1372,7 +1369,7 @@ static void ept_disable_hardware_log_dirty(struct p2m_domain *p2m)
     p2m_unlock(hostp2m);
 }
 
-static void ept_flush_pml_buffers(struct p2m_domain *p2m)
+static void cf_check ept_flush_pml_buffers(struct p2m_domain *p2m)
 {
     /* Domain must have been paused */
     ASSERT(atomic_read(&p2m->domain->pause_count));
@@ -1441,7 +1438,7 @@ static const char *memory_type_to_str(unsigned int x)
     return memory_types[x][0] ? memory_types[x] : "?";
 }
 
-static void ept_dump_p2m_table(unsigned char key)
+static void cf_check ept_dump_p2m_table(unsigned char key)
 {
     struct domain *d;
     ept_entry_t *table, *ept_entry;
@@ -1485,7 +1482,7 @@ static void ept_dump_p2m_table(unsigned char key)
             ept_entry = table + (gfn_remainder >> order);
             if ( ret != GUEST_TABLE_MAP_FAILED && is_epte_valid(ept_entry) )
             {
-                if ( ept_entry->sa_p2mt == p2m_populate_on_demand )
+                if ( p2m_is_pod(ept_entry->sa_p2mt) )
                     printk("gfn: %13lx order: %2d PoD\n", gfn, order);
                 else
                     printk("gfn: %13lx order: %2d mfn: %13lx %c%c%c %c%c%c\n",

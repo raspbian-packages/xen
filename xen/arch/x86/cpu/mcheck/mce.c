@@ -63,7 +63,7 @@ struct mca_banks *mca_allbanks;
 #endif
 
 int mce_verbosity;
-static int __init mce_set_verbosity(const char *str)
+static int __init cf_check mce_set_verbosity(const char *str)
 {
     if ( strcmp("verbose", str) == 0 )
         mce_verbosity = MCE_VERBOSE;
@@ -75,7 +75,7 @@ static int __init mce_set_verbosity(const char *str)
 custom_param("mce_verbosity", mce_set_verbosity);
 
 /* Handle unconfigured int18 (should never happen) */
-static void unexpected_machine_check(const struct cpu_user_regs *regs)
+static void cf_check unexpected_machine_check(const struct cpu_user_regs *regs)
 {
     console_force_unlock();
     printk("Unexpected Machine Check Exception\n");
@@ -469,7 +469,7 @@ static int mce_urgent_action(const struct cpu_user_regs *regs,
 }
 
 /* Shared #MC handler. */
-void mcheck_cmn_handler(const struct cpu_user_regs *regs)
+void cf_check mcheck_cmn_handler(const struct cpu_user_regs *regs)
 {
     static DEFINE_MCE_BARRIER(mce_trap_bar);
     static atomic_t severity_cpu = ATOMIC_INIT(-1);
@@ -733,7 +733,7 @@ static int cpu_bank_alloc(unsigned int cpu)
     return 0;
 }
 
-static int cpu_callback(
+static int cf_check cpu_callback(
     struct notifier_block *nfb, unsigned long action, void *hcpu)
 {
     unsigned int cpu = (unsigned long)hcpu;
@@ -961,7 +961,7 @@ void x86_mcinfo_dump(struct mc_info *mi)
     } while ( 1 );
 }
 
-static void do_mc_get_cpu_info(void *v)
+static void cf_check do_mc_get_cpu_info(void *v)
 {
     int cpu = smp_processor_id();
     int cindex, cpn;
@@ -1242,7 +1242,7 @@ static void x86_mc_hwcr_wren_restore(uint64_t hwcr)
         wrmsrl(MSR_K8_HWCR, hwcr);
 }
 
-static void x86_mc_msrinject(void *data)
+static void cf_check x86_mc_msrinject(void *data)
 {
     struct xen_mc_msrinject *mci = data;
     struct mcinfo_msr *msr;
@@ -1274,7 +1274,7 @@ static void x86_mc_msrinject(void *data)
 }
 
 /*ARGSUSED*/
-static void x86_mc_mceinject(void *data)
+static void cf_check x86_mc_mceinject(void *data)
 {
     printk("Simulating #MC on cpu %d\n", smp_processor_id());
     __asm__ __volatile__("int $0x12");
@@ -1684,7 +1684,7 @@ long do_mca(XEN_GUEST_HANDLE_PARAM(xen_mc_t) u_xen_mc)
 }
 
 int mcinfo_dumpped;
-static int x86_mcinfo_dump_panic(mctelem_cookie_t mctc)
+static int cf_check x86_mcinfo_dump_panic(mctelem_cookie_t mctc)
 {
     struct mc_info *mcip = mctelem_dataptr(mctc);
 
@@ -1801,7 +1801,7 @@ static enum mce_result mce_action(const struct cpu_user_regs *regs,
  * should be committed for dom0 consumption, 0 if it should be
  * dismissed.
  */
-static int mce_delayed_action(mctelem_cookie_t mctc)
+static int cf_check mce_delayed_action(mctelem_cookie_t mctc)
 {
     enum mce_result result;
     int ret = 0;
@@ -1837,7 +1837,7 @@ static int mce_delayed_action(mctelem_cookie_t mctc)
 }
 
 /* Softirq Handler for this MCE# processing */
-static void mce_softirq(void)
+static void cf_check mce_softirq(void)
 {
     static DEFINE_MCE_BARRIER(mce_inside_bar);
     static DEFINE_MCE_BARRIER(mce_severity_bar);

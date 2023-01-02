@@ -162,7 +162,7 @@ static inline int hpet_check_access_length(
     return 0;
 }
 
-static int hpet_read(
+static int cf_check hpet_read(
     struct vcpu *v, unsigned long addr, unsigned int length,
     unsigned long *pval)
 {
@@ -219,7 +219,7 @@ static void hpet_stop_timer(HPETState *h, unsigned int tn,
     hpet_get_comparator(h, tn, guest_time);
 }
 
-static void hpet_timer_fired(struct vcpu *v, void *data)
+static void cf_check hpet_timer_fired(struct vcpu *v, void *data)
 {
     unsigned int tn = (unsigned long)data;
     HPETState *h = vcpu_vhpet(v);
@@ -351,7 +351,7 @@ static void timer_sanitize_int_route(HPETState *h, unsigned int tn)
                   HPET_TN_ROUTE);
 }
 
-static int hpet_write(
+static int cf_check hpet_write(
     struct vcpu *v, unsigned long addr,
     unsigned int length, unsigned long val)
 {
@@ -569,7 +569,7 @@ static int hpet_write(
     return X86EMUL_OKAY;
 }
 
-static int hpet_range(struct vcpu *v, unsigned long addr)
+static int cf_check hpet_range(struct vcpu *v, unsigned long addr)
 {
     return ( (addr >= HPET_BASE_ADDRESS) &&
              (addr < (HPET_BASE_ADDRESS + HPET_MMAP_SIZE)) );
@@ -582,7 +582,7 @@ static const struct hvm_mmio_ops hpet_mmio_ops = {
 };
 
 
-static int hpet_save(struct vcpu *v, hvm_domain_context_t *h)
+static int cf_check hpet_save(struct vcpu *v, hvm_domain_context_t *h)
 {
     const struct domain *d = v->domain;
     HPETState *hp = domain_vhpet(d);
@@ -645,7 +645,7 @@ static int hpet_save(struct vcpu *v, hvm_domain_context_t *h)
     return rc;
 }
 
-static int hpet_load(struct domain *d, hvm_domain_context_t *h)
+static int cf_check hpet_load(struct domain *d, hvm_domain_context_t *h)
 {
     HPETState *hp = domain_vhpet(d);
     struct hvm_hw_hpet *rec;

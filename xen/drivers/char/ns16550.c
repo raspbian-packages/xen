@@ -91,6 +91,7 @@ struct ns16550_config {
         param_exar_xr17v352,
         param_exar_xr17v354,
         param_exar_xr17v358,
+        param_intel_lpss,
     } param;
 };
 
@@ -111,7 +112,7 @@ struct ns16550_config_param {
 static void enable_exar_enhanced_bits(const struct ns16550 *uart);
 #endif
 
-static void ns16550_delayed_resume(void *data);
+static void cf_check ns16550_delayed_resume(void *data);
 
 static u8 ns_read_reg(const struct ns16550 *uart, unsigned int reg)
 {
@@ -174,7 +175,7 @@ static void handle_dw_usr_busy_quirk(struct ns16550 *uart)
     }
 }
 
-static void ns16550_interrupt(
+static void cf_check ns16550_interrupt(
     int irq, void *dev_id, struct cpu_user_regs *regs)
 {
     struct serial_port *port = dev_id;
@@ -206,7 +207,7 @@ static void ns16550_interrupt(
 /* Safe: ns16550_poll() runs as softirq so not reentrant on a given CPU. */
 static DEFINE_PER_CPU(struct serial_port *, poll_port);
 
-static void __ns16550_poll(struct cpu_user_regs *regs)
+static void cf_check __ns16550_poll(struct cpu_user_regs *regs)
 {
     struct serial_port *port = this_cpu(poll_port);
     struct ns16550 *uart = port->uart;
@@ -229,7 +230,7 @@ out:
     set_timer(&uart->timer, NOW() + MILLISECS(uart->timeout_ms));
 }
 
-static void ns16550_poll(void *data)
+static void cf_check ns16550_poll(void *data)
 {
     this_cpu(poll_port) = data;
 #ifdef run_in_exception_handler
@@ -239,7 +240,7 @@ static void ns16550_poll(void *data)
 #endif
 }
 
-static int ns16550_tx_ready(struct serial_port *port)
+static int cf_check ns16550_tx_ready(struct serial_port *port)
 {
     struct ns16550 *uart = port->uart;
 
@@ -250,13 +251,13 @@ static int ns16550_tx_ready(struct serial_port *port)
               uart->lsr_mask ) == uart->lsr_mask ) ? uart->fifo_size : 0;
 }
 
-static void ns16550_putc(struct serial_port *port, char c)
+static void cf_check ns16550_putc(struct serial_port *port, char c)
 {
     struct ns16550 *uart = port->uart;
     ns_write_reg(uart, UART_THR, c);
 }
 
-static int ns16550_getc(struct serial_port *port, char *pc)
+static int cf_check ns16550_getc(struct serial_port *port, char *pc)
 {
     struct ns16550 *uart = port->uart;
 
@@ -344,7 +345,7 @@ static void ns16550_setup_preirq(struct ns16550 *uart)
                  UART_FCR_ENABLE | UART_FCR_CLRX | UART_FCR_CLTX | UART_FCR_TRG14);
 }
 
-static void __init ns16550_init_preirq(struct serial_port *port)
+static void __init cf_check ns16550_init_preirq(struct serial_port *port)
 {
     struct ns16550 *uart = port->uart;
 
@@ -373,7 +374,7 @@ static void __init ns16550_init_preirq(struct serial_port *port)
         uart->fifo_size = 16;
 }
 
-static void __init ns16550_init_irq(struct serial_port *port)
+static void __init cf_check ns16550_init_irq(struct serial_port *port)
 {
 #ifdef NS16550_PCI
     struct ns16550 *uart = port->uart;
@@ -399,7 +400,7 @@ static void ns16550_setup_postirq(struct ns16550 *uart)
         set_timer(&uart->timer, NOW() + MILLISECS(uart->timeout_ms));
 }
 
-static void __init ns16550_init_postirq(struct serial_port *port)
+static void __init cf_check ns16550_init_postirq(struct serial_port *port)
 {
     struct ns16550 *uart = port->uart;
     int rc, bits;
@@ -434,8 +435,8 @@ static void __init ns16550_init_postirq(struct serial_port *port)
         if ( uart->msi )
         {
             struct msi_info msi = {
-                .bus = uart->ps_bdf[0],
-                .devfn = PCI_DEVFN(uart->ps_bdf[1], uart->ps_bdf[2]),
+                .sbdf = PCI_SBDF(0, uart->ps_bdf[0], uart->ps_bdf[1],
+                                 uart->ps_bdf[2]),
                 .irq = rc = uart->irq,
                 .entry_nr = 1
             };
@@ -491,7 +492,7 @@ static void __init ns16550_init_postirq(struct serial_port *port)
     ns16550_setup_postirq(uart);
 }
 
-static void ns16550_suspend(struct serial_port *port)
+static void cf_check ns16550_suspend(struct serial_port *port)
 {
     struct ns16550 *uart = port->uart;
 
@@ -532,7 +533,7 @@ static void _ns16550_resume(struct serial_port *port)
 }
 
 static int delayed_resume_tries;
-static void ns16550_delayed_resume(void *data)
+static void cf_check ns16550_delayed_resume(void *data)
 {
     struct serial_port *port = data;
     struct ns16550 *uart = port->uart;
@@ -543,7 +544,7 @@ static void ns16550_delayed_resume(void *data)
         _ns16550_resume(port);
 }
 
-static void ns16550_resume(struct serial_port *port)
+static void cf_check ns16550_resume(struct serial_port *port)
 {
     struct ns16550 *uart = port->uart;
 
@@ -569,7 +570,7 @@ static void ns16550_resume(struct serial_port *port)
         _ns16550_resume(port);
 }
 
-static void __init ns16550_endboot(struct serial_port *port)
+static void __init cf_check ns16550_endboot(struct serial_port *port)
 {
 #ifdef CONFIG_HAS_IOPORTS
     struct ns16550 *uart = port->uart;
@@ -583,13 +584,13 @@ static void __init ns16550_endboot(struct serial_port *port)
 #endif
 }
 
-static int __init ns16550_irq(struct serial_port *port)
+static int __init cf_check ns16550_irq(struct serial_port *port)
 {
     struct ns16550 *uart = port->uart;
     return ((uart->irq > 0) ? uart->irq : -1);
 }
 
-static void ns16550_start_tx(struct serial_port *port)
+static void cf_check ns16550_start_tx(struct serial_port *port)
 {
     struct ns16550 *uart = port->uart;
     u8 ier = ns_read_reg(uart, UART_IER);
@@ -599,7 +600,7 @@ static void ns16550_start_tx(struct serial_port *port)
         ns_write_reg(uart, UART_IER, ier | UART_IER_ETHREI);
 }
 
-static void ns16550_stop_tx(struct serial_port *port)
+static void cf_check ns16550_stop_tx(struct serial_port *port)
 {
     struct ns16550 *uart = port->uart;
     u8 ier = ns_read_reg(uart, UART_IER);
@@ -821,6 +822,16 @@ static const struct ns16550_config_param __initconst uart_param[] = {
         .bar0 = 1,
         .mmio = 1,
         .max_ports = 8,
+    },
+    [param_intel_lpss] = {
+        .uart_offset = 0x000,
+        .reg_shift = 2,
+        .reg_width = 1,
+        .fifo_size = 64,
+        .lsr_mask = UART_LSR_THRE,
+        .bar0 = 1,
+        .mmio = 1,
+        .max_ports = 1,
     },
 };
 
@@ -1065,6 +1076,90 @@ static const struct ns16550_config __initconst uart_config[] =
         .vendor_id = PCI_VENDOR_ID_EXAR,
         .dev_id = 0x0358,
         .param = param_exar_xr17v358
+    },
+    /* Intel Corp. TGL-LP LPSS PCI UART #0 */
+    {
+        .vendor_id = PCI_VENDOR_ID_INTEL,
+        .dev_id = 0xa0a8,
+        .param = param_intel_lpss
+    },
+    /* Intel Corp. TGL-LP LPSS PCI UART #1 */
+    {
+        .vendor_id = PCI_VENDOR_ID_INTEL,
+        .dev_id = 0xa0a9,
+        .param = param_intel_lpss
+    },
+    /* Intel Corp. TGL-LP LPSS PCI UART #2 */
+    {
+        .vendor_id = PCI_VENDOR_ID_INTEL,
+        .dev_id = 0xa0c7,
+        .param = param_intel_lpss
+    },
+    /* Intel Corp. TGL-H LPSS PCI UART #0 */
+    {
+        .vendor_id = PCI_VENDOR_ID_INTEL,
+        .dev_id = 0x43a8,
+        .param = param_intel_lpss
+    },
+    /* Intel Corp. TGL-H LPSS PCI UART #1 */
+    {
+        .vendor_id = PCI_VENDOR_ID_INTEL,
+        .dev_id = 0x43a9,
+        .param = param_intel_lpss
+    },
+    /* Intel Corp. TGL-H LPSS PCI UART #2 */
+    {
+        .vendor_id = PCI_VENDOR_ID_INTEL,
+        .dev_id = 0x43a7,
+        .param = param_intel_lpss
+    },
+    /* Intel Corp. ADL-P LPSS PCI UART #0 */
+    {
+        .vendor_id = PCI_VENDOR_ID_INTEL,
+        .dev_id = 0x51a8,
+        .param = param_intel_lpss
+    },
+    /* Intel Corp. ADL-P LPSS PCI UART #1 */
+    {
+        .vendor_id = PCI_VENDOR_ID_INTEL,
+        .dev_id = 0x51a9,
+        .param = param_intel_lpss
+    },
+    /* Intel Corp. ADL-P LPSS PCI UART #2 */
+    {
+        .vendor_id = PCI_VENDOR_ID_INTEL,
+        .dev_id = 0x51c7,
+        .param = param_intel_lpss
+    },
+    /* Intel Corp. ADL-P LPSS PCI UART #3 */
+    {
+        .vendor_id = PCI_VENDOR_ID_INTEL,
+        .dev_id = 0x51da,
+        .param = param_intel_lpss
+    },
+    /* Intel Corp. ADL-S LPSS PCI UART #0 */
+    {
+        .vendor_id = PCI_VENDOR_ID_INTEL,
+        .dev_id = 0x7aa8,
+        .param = param_intel_lpss
+    },
+    /* Intel Corp. ADL-S LPSS PCI UART #1 */
+    {
+        .vendor_id = PCI_VENDOR_ID_INTEL,
+        .dev_id = 0x7aa9,
+        .param = param_intel_lpss
+    },
+    /* Intel Corp. ADL-S LPSS PCI UART #2 */
+    {
+        .vendor_id = PCI_VENDOR_ID_INTEL,
+        .dev_id = 0x7afe,
+        .param = param_intel_lpss
+    },
+    /* Intel Corp. ADL-S LPSS PCI UART #3 */
+    {
+        .vendor_id = PCI_VENDOR_ID_INTEL,
+        .dev_id = 0x7adc,
+        .param = param_intel_lpss
     },
 };
 

@@ -71,6 +71,15 @@ void evtchn_free(struct domain *d, struct evtchn *chn);
 /* Allocate a specific event channel port. */
 int evtchn_allocate_port(struct domain *d, unsigned int port);
 
+/* Allocate a new event channel */
+int __must_check evtchn_alloc_unbound(evtchn_alloc_unbound_t *alloc,
+                                      evtchn_port_t port);
+
+/* Bind an event channel port to interdomain */
+int __must_check evtchn_bind_interdomain(evtchn_bind_interdomain_t *bind,
+                                         struct domain *ld,
+                                         evtchn_port_t port);
+
 /* Unmask a local event-channel port. */
 int evtchn_unmask(unsigned int port);
 

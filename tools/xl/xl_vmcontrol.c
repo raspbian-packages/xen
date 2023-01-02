@@ -859,8 +859,8 @@ int create_domain(struct domain_create *dom_info)
         }
     }
 
-    if (debug || dom_info->dryrun) {
-        FILE *cfg_print_fh = (debug && !dom_info->dryrun) ? stderr : stdout;
+    if (debug || dryrun_only) {
+        FILE *cfg_print_fh = (debug && !dryrun_only) ? stderr : stdout;
         if (default_output_format == OUTPUT_FORMAT_SXP) {
             printf_info_sexp(-1, &d_config, cfg_print_fh);
         } else {
@@ -878,7 +878,7 @@ int create_domain(struct domain_create *dom_info)
 
 
     ret = 0;
-    if (dom_info->dryrun)
+    if (dryrun_only)
         goto out;
 
 start:
@@ -1169,93 +1169,91 @@ out:
 
 int main_create(int argc, char **argv)
 {
-    const char *filename = NULL;
-    struct domain_create dom_info;
-    int paused = 0, debug = 0, daemonize = 1, console_autoconnect = 0,
-        quiet = 0, monitor = 1, vnc = 0, vncautopass = 0, ignore_masks = 0;
+    struct domain_create dom_info = {
+        /* Command-line options */
+        .config_file = NULL,
+        .console_autoconnect = 0,
+        .debug = 0,
+        .daemonize = 1,
+        .ignore_global_affinity_masks = 0,
+        .monitor = 1,
+        .paused = 0,
+        .quiet = 0,
+        .vnc = 0,
+        .vncautopass = 0,
+
+        /* Extra configuration file settings */
+        .extra_config = NULL,
+
+        /* FDs, initialize to invalid */
+        .migrate_fd = -1,
+        .send_back_fd = -1,
+    };
     int opt, rc;
-    static struct option opts[] = {
-        {"dryrun", 0, 0, 'n'},
-        {"quiet", 0, 0, 'q'},
+    static const struct option opts[] = {
         {"defconfig", 1, 0, 'f'},
+        {"dryrun", 0, 0, 'n'},
+        {"ignore-global-affinity-masks", 0, 0, 'i'},
+        {"quiet", 0, 0, 'q'},
         {"vncviewer", 0, 0, 'V'},
         {"vncviewer-autopass", 0, 0, 'A'},
-        {"ignore-global-affinity-masks", 0, 0, 'i'},
         COMMON_LONG_OPTS
     };
 
-    dom_info.extra_config = NULL;
-
     if (argv[1] && argv[1][0] != '-' && !strchr(argv[1], '=')) {
-        filename = argv[1];
+        dom_info.config_file = argv[1];
         argc--; argv++;
     }
 
-    SWITCH_FOREACH_OPT(opt, "Fnqf:pcdeVAi", opts, "create", 0) {
-    case 'f':
-        filename = optarg;
-        break;
-    case 'p':
-        paused = 1;
-        break;
-    case 'c':
-        console_autoconnect = 1;
-        break;
-    case 'd':
-        debug = 1;
+    SWITCH_FOREACH_OPT(opt, "AFVcdef:inpq", opts, "create", 0) {
+    case 'A':
+        dom_info.vnc = dom_info.vncautopass = 1;
         break;
     case 'F':
-        daemonize = 0;
+        dom_info.daemonize = 0;
+        break;
+    case 'V':
+        dom_info.vnc = 1;
+        break;
+    case 'c':
+        dom_info.console_autoconnect = 1;
+        break;
+    case 'd':
+        dom_info.debug = 1;
         break;
     case 'e':
-        daemonize = 0;
-        monitor = 0;
+        dom_info.daemonize = 0;
+        dom_info.monitor = 0;
+        break;
+    case 'f':
+        dom_info.config_file = optarg;
+        break;
+    case 'i':
+        dom_info.ignore_global_affinity_masks = 1;
         break;
     case 'n':
         dryrun_only = 1;
         break;
+    case 'p':
+        dom_info.paused = 1;
+        break;
     case 'q':
-        quiet = 1;
-        break;
-    case 'V':
-        vnc = 1;
-        break;
-    case 'A':
-        vnc = vncautopass = 1;
-        break;
-    case 'i':
-        ignore_masks = 1;
+        dom_info.quiet = 1;
         break;
     }
-
-    memset(&dom_info, 0, sizeof(dom_info));
 
     for (; optind < argc; optind++) {
         if (strchr(argv[optind], '=') != NULL) {
             string_realloc_append(&dom_info.extra_config, argv[optind]);
             string_realloc_append(&dom_info.extra_config, "\n");
-        } else if (!filename) {
-            filename = argv[optind];
+        } else if (!dom_info.config_file) {
+            dom_info.config_file = argv[optind];
         } else {
             help("create");
             free(dom_info.extra_config);
             return 2;
         }
     }
-
-    dom_info.debug = debug;
-    dom_info.daemonize = daemonize;
-    dom_info.monitor = monitor;
-    dom_info.paused = paused;
-    dom_info.dryrun = dryrun_only;
-    dom_info.quiet = quiet;
-    dom_info.config_file = filename;
-    dom_info.migrate_fd = -1;
-    dom_info.send_back_fd = -1;
-    dom_info.vnc = vnc;
-    dom_info.vncautopass = vncautopass;
-    dom_info.console_autoconnect = console_autoconnect;
-    dom_info.ignore_global_affinity_masks = ignore_masks;
 
     rc = create_domain(&dom_info);
     if (rc < 0) {

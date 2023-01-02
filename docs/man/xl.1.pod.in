@@ -442,15 +442,14 @@ allocate.
 The default unit is kiB.  Add 't' for TiB, 'g' for GiB, 'm' for
 MiB, 'k' for kiB, and 'b' for bytes (e.g., `2048m` for 2048 MiB).
 
-NB that users normally shouldn't need this command; B<xl mem-set> will
-set this as appropriate automatically.
-
 I<mem> can't be set lower than the current memory target for
 I<domain-id>.  It is allowed to be higher than the configured maximum
 memory size of the domain (B<maxmem> parameter in the domain's
-configuration). Note however that the initial B<maxmem> value is still
-used as an upper limit for B<xl mem-set>.  Also note that calling B<xl
-mem-set> will reset this value.
+configuration).
+
+Setting the maximum memory size above the configured maximum memory size
+will require special guest support (memory hotplug) in order to be usable
+by the guest.
 
 The domain will not receive any signal regarding the changed memory
 limit.
@@ -1943,24 +1942,6 @@ Specify the socket to process, otherwise all sockets are processed.
 
 Show MBA settings for a certain domain or all domains. For linear mode, it
 shows the decimal value. For non-linear mode, it shows hexadecimal value.
-
-=back
-
-=head1 ENVIRONMENT
-
-=over 4
-
-=item B<LIBXL_DISK_BACKEND_UNTRUSTED>
-
-Set this environment variable to "1" to suggest to the guest that the disk
-backend shouldn't be trusted. If the variable is absent or set to "0", the
-backend will be trusted.
-
-=item B<LIBXL_NIC_BACKEND_UNTRUSTED>
-
-Set this environment variable to "1" to suggest to the guest that the network
-backend shouldn't be trusted. If the variable is absent or set to "0", the
-backend will be trusted.
 
 =back
 

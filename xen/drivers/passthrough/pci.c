@@ -146,7 +146,7 @@ static struct phantom_dev {
 } phantom_devs[8];
 static unsigned int nr_phantom_devs;
 
-static int __init parse_phantom_dev(const char *str)
+static int __init cf_check parse_phantom_dev(const char *str)
 {
     const char *s;
     unsigned int seg, bus, slot;
@@ -182,7 +182,7 @@ custom_param("pci-phantom", parse_phantom_dev);
 static u16 __read_mostly command_mask;
 static u16 __read_mostly bridge_ctl_mask;
 
-static int __init parse_pci_param(const char *s)
+static int __init cf_check parse_pci_param(const char *s)
 {
     const char *ss;
     int rc = 0;
@@ -416,8 +416,8 @@ static struct pci_dev *alloc_pdev(struct pci_seg *pseg, u8 bus, u8 devfn)
             break;
     }
 
-    check_pdev(pdev);
     apply_quirks(pdev);
+    check_pdev(pdev);
 
     return pdev;
 }
@@ -449,7 +449,7 @@ static void free_pdev(struct pci_seg *pseg, struct pci_dev *pdev)
     xfree(pdev);
 }
 
-static void _pci_hide_device(struct pci_dev *pdev)
+static void __init _pci_hide_device(struct pci_dev *pdev)
 {
     if ( pdev->domain )
         return;
@@ -501,43 +501,24 @@ int __init pci_ro_device(int seg, int bus, int devfn)
         memset(pseg->ro_map, 0, sz);
     }
 
-    __set_bit(PCI_BDF2(bus, devfn), pseg->ro_map);
+    __set_bit(PCI_BDF(bus, devfn), pseg->ro_map);
     _pci_hide_device(pdev);
 
     return 0;
 }
 
-struct pci_dev *pci_get_pdev(uint16_t seg, uint8_t bus, uint8_t devfn)
-{
-    const struct pci_seg *pseg = get_pseg(seg);
-    struct pci_dev *pdev;
-
-    ASSERT(pcidevs_locked());
-
-    if ( !pseg )
-        return NULL;
-
-    list_for_each_entry ( pdev, &pseg->alldevs_list, alldevs_list )
-        if ( pdev->bus == bus && pdev->devfn == devfn )
-            return pdev;
-
-    return NULL;
-}
-
-struct pci_dev *pci_get_real_pdev(int seg, int bus, int devfn)
+struct pci_dev *pci_get_real_pdev(pci_sbdf_t sbdf)
 {
     struct pci_dev *pdev;
     int stride;
 
-    if ( seg < 0 || bus < 0 || devfn < 0 )
-        return NULL;
-
-    for ( pdev = pci_get_pdev(seg, bus, devfn), stride = 4;
+    for ( pdev = pci_get_pdev(NULL, sbdf), stride = 4;
           !pdev && stride; stride >>= 1 )
     {
-        if ( !(devfn & (8 - stride)) )
+        if ( !(sbdf.devfn & stride) )
             continue;
-        pdev = pci_get_pdev(seg, bus, devfn & ~(8 - stride));
+        sbdf.devfn &= ~stride;
+        pdev = pci_get_pdev(NULL, sbdf);
         if ( pdev && stride != pdev->phantom_stride )
             pdev = NULL;
     }
@@ -545,10 +526,11 @@ struct pci_dev *pci_get_real_pdev(int seg, int bus, int devfn)
     return pdev;
 }
 
-struct pci_dev *pci_get_pdev_by_domain(const struct domain *d, uint16_t seg,
-                                       uint8_t bus, uint8_t devfn)
+struct pci_dev *pci_get_pdev(const struct domain *d, pci_sbdf_t sbdf)
 {
     struct pci_dev *pdev;
+
+    ASSERT(d || pcidevs_locked());
 
     /*
      * The hardware domain owns the majority of the devices in the system.
@@ -556,21 +538,21 @@ struct pci_dev *pci_get_pdev_by_domain(const struct domain *d, uint16_t seg,
      * likely going to be faster, whereas for a single segment the difference
      * shouldn't be that large.
      */
-    if ( is_hardware_domain(d) )
+    if ( !d || is_hardware_domain(d) )
     {
-        const struct pci_seg *pseg = get_pseg(seg);
+        const struct pci_seg *pseg = get_pseg(sbdf.seg);
 
         if ( !pseg )
             return NULL;
 
         list_for_each_entry ( pdev, &pseg->alldevs_list, alldevs_list )
-            if ( pdev->bus == bus && pdev->devfn == devfn &&
-                 pdev->domain == d )
+            if ( pdev->sbdf.bdf == sbdf.bdf &&
+                 (!d || pdev->domain == d) )
                 return pdev;
     }
     else
         list_for_each_entry ( pdev, &d->pdev_list, domain_list )
-            if ( pdev->bus == bus && pdev->devfn == devfn )
+            if ( pdev->sbdf.bdf == sbdf.bdf )
                 return pdev;
 
     return NULL;
@@ -677,7 +659,9 @@ int pci_add_device(u16 seg, u8 bus, u8 devfn,
     else if ( info->is_virtfn )
     {
         pcidevs_lock();
-        pdev = pci_get_pdev(seg, info->physfn.bus, info->physfn.devfn);
+        pdev = pci_get_pdev(NULL,
+                            PCI_SBDF(seg, info->physfn.bus,
+                                     info->physfn.devfn));
         if ( pdev )
             pf_is_extfn = pdev->info.is_extfn;
         pcidevs_unlock();
@@ -855,7 +839,7 @@ static int deassign_device(struct domain *d, uint16_t seg, uint8_t bus,
         return -EINVAL;
 
     ASSERT(pcidevs_locked());
-    pdev = pci_get_pdev_by_domain(d, seg, bus, devfn);
+    pdev = pci_get_pdev(d, PCI_SBDF(seg, bus, devfn));
     if ( !pdev )
         return -ENODEV;
 
@@ -876,15 +860,15 @@ static int deassign_device(struct domain *d, uint16_t seg, uint8_t bus,
         devfn += pdev->phantom_stride;
         if ( PCI_SLOT(devfn) != PCI_SLOT(pdev->devfn) )
             break;
-        ret = hd->platform_ops->reassign_device(d, target, devfn,
-                                                pci_to_dev(pdev));
+        ret = iommu_call(hd->platform_ops, reassign_device, d, target, devfn,
+                         pci_to_dev(pdev));
         if ( ret )
             goto out;
     }
 
     devfn = pdev->devfn;
-    ret = hd->platform_ops->reassign_device(d, target, devfn,
-                                            pci_to_dev(pdev));
+    ret = iommu_call(hd->platform_ops, reassign_device, d, target, devfn,
+                     pci_to_dev(pdev));
     if ( ret )
         goto out;
 
@@ -896,7 +880,7 @@ static int deassign_device(struct domain *d, uint16_t seg, uint8_t bus,
  out:
     if ( ret )
         printk(XENLOG_G_ERR "%pd: deassign (%pp) failed (%d)\n",
-               d, &PCI_SBDF3(seg, bus, devfn), ret);
+               d, &PCI_SBDF(seg, bus, devfn), ret);
 
     return ret;
 }
@@ -1019,7 +1003,7 @@ void pci_check_disable_device(u16 seg, u8 bus, u8 devfn)
     u16 cword;
 
     pcidevs_lock();
-    pdev = pci_get_real_pdev(seg, bus, devfn);
+    pdev = pci_get_real_pdev(PCI_SBDF(seg, bus, devfn));
     if ( pdev )
     {
         if ( now < pdev->fault.time ||
@@ -1044,7 +1028,7 @@ void pci_check_disable_device(u16 seg, u8 bus, u8 devfn)
  * scan pci devices to add all existed PCI devices to alldevs_list,
  * and setup pci hierarchy in array bus2bridge.
  */
-static int __init _scan_pci_devices(struct pci_seg *pseg, void *arg)
+static int __init cf_check _scan_pci_devices(struct pci_seg *pseg, void *arg)
 {
     struct pci_dev *pdev;
     int bus, dev, func;
@@ -1122,7 +1106,8 @@ static void __hwdom_init setup_one_hwdom_device(const struct setup_hwdom *ctxt,
                ctxt->d->domain_id, err);
 }
 
-static int __hwdom_init _setup_hwdom_pci_devices(struct pci_seg *pseg, void *arg)
+static int __hwdom_init cf_check _setup_hwdom_pci_devices(
+    struct pci_seg *pseg, void *arg)
 {
     struct setup_hwdom *ctxt = arg;
     int bus, devfn;
@@ -1131,7 +1116,8 @@ static int __hwdom_init _setup_hwdom_pci_devices(struct pci_seg *pseg, void *arg
     {
         for ( devfn = 0; devfn < 256; devfn++ )
         {
-            struct pci_dev *pdev = pci_get_pdev(pseg->nr, bus, devfn);
+            struct pci_dev *pdev = pci_get_pdev(NULL,
+                                                PCI_SBDF(pseg->nr, bus, devfn));
 
             if ( !pdev )
                 continue;
@@ -1233,7 +1219,8 @@ static bool_t hest_source_is_pcie_aer(const struct acpi_hest_header *hest_hdr)
     return 0;
 }
 
-static int aer_hest_parse(const struct acpi_hest_header *hest_hdr, void *data)
+static int cf_check aer_hest_parse(
+    const struct acpi_hest_header *hest_hdr, void *data)
 {
     struct aer_hest_parse_info *info = data;
     const struct acpi_hest_aer_common *p;
@@ -1278,7 +1265,7 @@ bool_t pcie_aer_get_firmware_first(const struct pci_dev *pdev)
 }
 #endif
 
-static int _dump_pci_devices(struct pci_seg *pseg, void *arg)
+static int cf_check _dump_pci_devices(struct pci_seg *pseg, void *arg)
 {
     struct pci_dev *pdev;
 
@@ -1301,7 +1288,7 @@ static int _dump_pci_devices(struct pci_seg *pseg, void *arg)
     return 0;
 }
 
-static void dump_pci_devices(unsigned char ch)
+static void cf_check dump_pci_devices(unsigned char ch)
 {
     printk("==== PCI devices ====\n");
     pcidevs_lock();
@@ -1309,7 +1296,7 @@ static void dump_pci_devices(unsigned char ch)
     pcidevs_unlock();
 }
 
-static int __init setup_dump_pcidevs(void)
+static int __init cf_check setup_dump_pcidevs(void)
 {
     register_keyhandler('Q', dump_pci_devices, "dump PCI devices", 1);
     return 0;
@@ -1320,7 +1307,7 @@ static int iommu_add_device(struct pci_dev *pdev)
 {
     const struct domain_iommu *hd;
     int rc;
-    u8 devfn;
+    unsigned int devfn = pdev->devfn;
 
     if ( !pdev->domain )
         return -EINVAL;
@@ -1331,19 +1318,19 @@ static int iommu_add_device(struct pci_dev *pdev)
     if ( !is_iommu_enabled(pdev->domain) )
         return 0;
 
-    rc = hd->platform_ops->add_device(pdev->devfn, pci_to_dev(pdev));
+    rc = iommu_call(hd->platform_ops, add_device, devfn, pci_to_dev(pdev));
     if ( rc || !pdev->phantom_stride )
         return rc;
 
-    for ( devfn = pdev->devfn ; ; )
+    for ( ; ; )
     {
         devfn += pdev->phantom_stride;
         if ( PCI_SLOT(devfn) != PCI_SLOT(pdev->devfn) )
             return 0;
-        rc = hd->platform_ops->add_device(devfn, pci_to_dev(pdev));
+        rc = iommu_call(hd->platform_ops, add_device, devfn, pci_to_dev(pdev));
         if ( rc )
             printk(XENLOG_WARNING "IOMMU: add %pp failed (%d)\n",
-                   &pdev->sbdf, rc);
+                   &PCI_SBDF(pdev->seg, pdev->bus, devfn), rc);
     }
 }
 
@@ -1361,7 +1348,7 @@ static int iommu_enable_device(struct pci_dev *pdev)
          !hd->platform_ops->enable_device )
         return 0;
 
-    return hd->platform_ops->enable_device(pci_to_dev(pdev));
+    return iommu_call(hd->platform_ops, enable_device, pci_to_dev(pdev));
 }
 
 static int iommu_remove_device(struct pci_dev *pdev)
@@ -1383,15 +1370,19 @@ static int iommu_remove_device(struct pci_dev *pdev)
         devfn += pdev->phantom_stride;
         if ( PCI_SLOT(devfn) != PCI_SLOT(pdev->devfn) )
             break;
-        rc = hd->platform_ops->remove_device(devfn, pci_to_dev(pdev));
+        rc = iommu_call(hd->platform_ops, remove_device, devfn,
+                        pci_to_dev(pdev));
         if ( !rc )
             continue;
 
-        printk(XENLOG_ERR "IOMMU: remove %pp failed (%d)\n", &pdev->sbdf, rc);
+        printk(XENLOG_ERR "IOMMU: remove %pp failed (%d)\n",
+               &PCI_SBDF(pdev->seg, pdev->bus, devfn), rc);
         return rc;
     }
 
-    return hd->platform_ops->remove_device(pdev->devfn, pci_to_dev(pdev));
+    devfn = pdev->devfn;
+
+    return iommu_call(hd->platform_ops, remove_device, devfn, pci_to_dev(pdev));
 }
 
 static int device_assigned(u16 seg, u8 bus, u8 devfn)
@@ -1400,7 +1391,7 @@ static int device_assigned(u16 seg, u8 bus, u8 devfn)
     int rc = 0;
 
     ASSERT(pcidevs_locked());
-    pdev = pci_get_pdev(seg, bus, devfn);
+    pdev = pci_get_pdev(NULL, PCI_SBDF(seg, bus, devfn));
 
     if ( !pdev )
         rc = -ENODEV;
@@ -1431,9 +1422,14 @@ static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn, u32 flag)
 
     /* device_assigned() should already have cleared the device for assignment */
     ASSERT(pcidevs_locked());
-    pdev = pci_get_pdev(seg, bus, devfn);
+    pdev = pci_get_pdev(NULL, PCI_SBDF(seg, bus, devfn));
     ASSERT(pdev && (pdev->domain == hardware_domain ||
                     pdev->domain == dom_io));
+
+    /* Do not allow broken devices to be assigned to guests. */
+    rc = -EBADF;
+    if ( pdev->broken && d != hardware_domain && d != dom_io )
+        goto done;
 
     rc = pdev_msix_assign(d, pdev);
     if ( rc )
@@ -1448,7 +1444,8 @@ static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn, u32 flag)
 
     pdev->fault.count = 0;
 
-    if ( (rc = hd->platform_ops->assign_device(d, devfn, pci_to_dev(pdev), flag)) )
+    if ( (rc = iommu_call(hd->platform_ops, assign_device, d, devfn,
+                          pci_to_dev(pdev), flag)) )
         goto done;
 
     for ( ; pdev->phantom_stride; rc = 0 )
@@ -1456,13 +1453,14 @@ static int assign_device(struct domain *d, u16 seg, u8 bus, u8 devfn, u32 flag)
         devfn += pdev->phantom_stride;
         if ( PCI_SLOT(devfn) != PCI_SLOT(pdev->devfn) )
             break;
-        rc = hd->platform_ops->assign_device(d, devfn, pci_to_dev(pdev), flag);
+        rc = iommu_call(hd->platform_ops, assign_device, d, devfn,
+                        pci_to_dev(pdev), flag);
     }
 
  done:
     if ( rc )
         printk(XENLOG_G_WARNING "%pd: assign (%pp) failed (%d)\n",
-               d, &PCI_SBDF3(seg, bus, devfn), rc);
+               d, &PCI_SBDF(seg, bus, devfn), rc);
     /* The device is assigned to dom_io so mark it as quarantined */
     else if ( d == dom_io )
         pdev->quarantine = true;
@@ -1484,29 +1482,37 @@ static int iommu_get_device_group(
     if ( !is_iommu_enabled(d) || !ops->get_device_group_id )
         return 0;
 
-    group_id = ops->get_device_group_id(seg, bus, devfn);
+    group_id = iommu_call(ops, get_device_group_id, seg, bus, devfn);
+    if ( group_id < 0 )
+        return group_id;
 
     pcidevs_lock();
     for_each_pdev( d, pdev )
     {
-        if ( (pdev->seg != seg) ||
-             ((pdev->bus == bus) && (pdev->devfn == devfn)) )
+        unsigned int b = pdev->bus;
+        unsigned int df = pdev->devfn;
+
+        if ( (pdev->seg != seg) || ((b == bus) && (df == devfn)) )
             continue;
 
-        if ( xsm_get_device_group(XSM_HOOK, (seg << 16) | (pdev->bus << 8) | pdev->devfn) )
+        if ( xsm_get_device_group(XSM_HOOK, (seg << 16) | (b << 8) | df) )
             continue;
 
-        sdev_id = ops->get_device_group_id(seg, pdev->bus, pdev->devfn);
+        sdev_id = iommu_call(ops, get_device_group_id, seg, b, df);
+        if ( sdev_id < 0 )
+        {
+            pcidevs_unlock();
+            return sdev_id;
+        }
+
         if ( (sdev_id == group_id) && (i < max_sdevs) )
         {
-            bdf = 0;
-            bdf |= (pdev->bus & 0xff) << 16;
-            bdf |= (pdev->devfn & 0xff) << 8;
+            bdf = (b << 16) | (df << 8);
 
             if ( unlikely(copy_to_guest_offset(buf, i, &bdf, 1)) )
             {
                 pcidevs_unlock();
-                return -1;
+                return -EFAULT;
             }
             i++;
         }
@@ -1530,9 +1536,7 @@ void iommu_dev_iotlb_flush_timeout(struct domain *d, struct pci_dev *pdev)
         return;
     }
 
-    list_del(&pdev->domain_list);
-    pdev->domain = NULL;
-    _pci_hide_device(pdev);
+    pdev->broken = true;
 
     if ( !d->is_shutting_down && printk_ratelimit() )
         printk(XENLOG_ERR "dom%d: ATS device %pp flush failed\n",
@@ -1567,15 +1571,14 @@ int iommu_do_pci_domctl(
 
         seg = domctl->u.get_device_group.machine_sbdf >> 16;
         bus = PCI_BUS(domctl->u.get_device_group.machine_sbdf);
-        devfn = PCI_DEVFN2(domctl->u.get_device_group.machine_sbdf);
+        devfn = PCI_DEVFN(domctl->u.get_device_group.machine_sbdf);
         max_sdevs = domctl->u.get_device_group.max_sdevs;
         sdevs = domctl->u.get_device_group.sdev_array;
 
         ret = iommu_get_device_group(d, seg, bus, devfn, sdevs, max_sdevs);
         if ( ret < 0 )
         {
-            dprintk(XENLOG_ERR, "iommu_get_device_group() failed!\n");
-            ret = -EFAULT;
+            dprintk(XENLOG_ERR, "iommu_get_device_group() failed: %d\n", ret);
             domctl->u.get_device_group.num_sdevs = 0;
         }
         else
@@ -1618,7 +1621,7 @@ int iommu_do_pci_domctl(
 
         seg = machine_sbdf >> 16;
         bus = PCI_BUS(machine_sbdf);
-        devfn = PCI_DEVFN2(machine_sbdf);
+        devfn = PCI_DEVFN(machine_sbdf);
 
         pcidevs_lock();
         ret = device_assigned(seg, bus, devfn);
@@ -1627,7 +1630,7 @@ int iommu_do_pci_domctl(
             if ( ret )
             {
                 printk(XENLOG_G_INFO "%pp already assigned, or non-existent\n",
-                       &PCI_SBDF3(seg, bus, devfn));
+                       &PCI_SBDF(seg, bus, devfn));
                 ret = -EINVAL;
             }
         }
@@ -1663,7 +1666,7 @@ int iommu_do_pci_domctl(
 
         seg = machine_sbdf >> 16;
         bus = PCI_BUS(machine_sbdf);
-        devfn = PCI_DEVFN2(machine_sbdf);
+        devfn = PCI_DEVFN(machine_sbdf);
 
         pcidevs_lock();
         ret = deassign_device(d, seg, bus, devfn);

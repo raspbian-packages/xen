@@ -88,7 +88,7 @@ int libxl_evenable_disk_eject(libxl_ctx *ctx, uint32_t guest_domid,
     memset(evg, 0, sizeof(*evg));
     evg->user = user;
     evg->domid = guest_domid;
-    LIBXL_LIST_INSERT_HEAD(&CTX->disk_eject_evgens, evg, entry);
+    XEN_LIST_INSERT_HEAD(&CTX->disk_eject_evgens, evg, entry);
 
     uint32_t domid = libxl_get_stubdom_id(ctx, guest_domid);
 
@@ -133,7 +133,7 @@ int libxl_evenable_disk_eject(libxl_ctx *ctx, uint32_t guest_domid,
 void libxl__evdisable_disk_eject(libxl__gc *gc, libxl_evgen_disk_eject *evg) {
     CTX_LOCK;
 
-    LIBXL_LIST_REMOVE(evg, entry);
+    XEN_LIST_REMOVE(evg, entry);
 
     if (libxl__ev_xswatch_isregistered(&evg->watch))
         libxl__ev_xswatch_deregister(gc, &evg->watch);
@@ -159,9 +159,34 @@ static int libxl__device_disk_setdefault(libxl__gc *gc, uint32_t domid,
     libxl_defbool_setdefault(&disk->discard_enable, !!disk->readwrite);
     libxl_defbool_setdefault(&disk->colo_enable, false);
     libxl_defbool_setdefault(&disk->colo_restore_enable, false);
+    libxl_defbool_setdefault(&disk->trusted, true);
 
     rc = libxl__resolve_domid(gc, disk->backend_domname, &disk->backend_domid);
     if (rc < 0) return rc;
+
+    if (disk->specification == LIBXL_DISK_SPECIFICATION_UNKNOWN)
+        disk->specification = LIBXL_DISK_SPECIFICATION_XEN;
+
+    if (disk->specification == LIBXL_DISK_SPECIFICATION_XEN &&
+        disk->transport != LIBXL_DISK_TRANSPORT_UNKNOWN) {
+        LOGD(ERROR, domid, "Transport is only supported for specification virtio");
+        return ERROR_INVAL;
+    }
+
+    /* Force transport mmio for specification virtio for now */
+    if (disk->specification == LIBXL_DISK_SPECIFICATION_VIRTIO) {
+        if (!(disk->transport == LIBXL_DISK_TRANSPORT_UNKNOWN ||
+              disk->transport == LIBXL_DISK_TRANSPORT_MMIO)) {
+            LOGD(ERROR, domid, "Unsupported transport for specification virtio");
+            return ERROR_INVAL;
+        }
+        disk->transport = LIBXL_DISK_TRANSPORT_MMIO;
+    }
+
+    if (hotplug && disk->specification == LIBXL_DISK_SPECIFICATION_VIRTIO) {
+        LOGD(ERROR, domid, "Hotplug isn't supported for specification virtio");
+        return ERROR_FAIL;
+    }
 
     /* Force Qdisk backend for CDROM devices of guests with a device model. */
     if (disk->is_cdrom != 0 &&
@@ -204,6 +229,9 @@ static int libxl__device_from_disk(libxl__gc *gc, uint32_t domid,
         case LIBXL_DISK_BACKEND_QDISK:
             device->backend_kind = LIBXL__DEVICE_KIND_QDISK;
             break;
+        case LIBXL_DISK_BACKEND_STANDALONE:
+            device->backend_kind = LIBXL__DEVICE_KIND_VIRTIO_DISK;
+            break;
         default:
             LOGD(ERROR, domid, "Unrecognized disk backend type: %d",
                  disk->backend);
@@ -212,7 +240,8 @@ static int libxl__device_from_disk(libxl__gc *gc, uint32_t domid,
 
     device->domid = domid;
     device->devid = devid;
-    device->kind  = LIBXL__DEVICE_KIND_VBD;
+    device->kind = disk->backend == LIBXL_DISK_BACKEND_STANDALONE ?
+        LIBXL__DEVICE_KIND_VIRTIO_DISK : LIBXL__DEVICE_KIND_VBD;
 
     return 0;
 }
@@ -246,7 +275,6 @@ static void device_disk_add(libxl__egc *egc, uint32_t domid,
     libxl_domain_config d_config;
     libxl_device_disk disk_saved;
     libxl__flock *lock = NULL;
-    const char *envvar;
 
     libxl_domain_config_init(&d_config);
     libxl_device_disk_init(&disk_saved);
@@ -331,7 +359,14 @@ static void device_disk_add(libxl__egc *egc, uint32_t domid,
 
                 assert(device->backend_kind == LIBXL__DEVICE_KIND_VBD);
                 break;
+            case LIBXL_DISK_BACKEND_STANDALONE:
+                dev = disk->pdev_path;
 
+                flexarray_append(back, "params");
+                flexarray_append(back, dev);
+
+                assert(device->backend_kind == LIBXL__DEVICE_KIND_VIRTIO_DISK);
+                break;
             case LIBXL_DISK_BACKEND_TAP:
                 LOG(ERROR, "blktap is not supported");
                 rc = ERROR_FAIL;
@@ -387,6 +422,14 @@ static void device_disk_add(libxl__egc *egc, uint32_t domid,
         flexarray_append_pair(back, "discard-enable",
                               libxl_defbool_val(disk->discard_enable) ?
                               "1" : "0");
+        flexarray_append(back, "specification");
+        flexarray_append(back, libxl__device_disk_string_of_specification(disk->specification));
+        if (disk->specification == LIBXL_DISK_SPECIFICATION_VIRTIO) {
+            flexarray_append(back, "transport");
+            flexarray_append(back, libxl__device_disk_string_of_transport(disk->transport));
+            flexarray_append_pair(back, "base", GCSPRINTF("%"PRIu64, disk->base));
+            flexarray_append_pair(back, "irq", GCSPRINTF("%u", disk->irq));
+        }
 
         flexarray_append(front, "backend-id");
         flexarray_append(front, GCSPRINTF("%d", disk->backend_domid));
@@ -397,9 +440,7 @@ static void device_disk_add(libxl__egc *egc, uint32_t domid,
         flexarray_append(front, "device-type");
         flexarray_append(front, disk->is_cdrom ? "cdrom" : "disk");
         flexarray_append(front, "trusted");
-        envvar = getenv("LIBXL_DISK_BACKEND_UNTRUSTED");
-        /* Set "trusted=1" if envvar missing or is "0". */
-        flexarray_append(front, !envvar || !strcmp("0", envvar) ? "1" : "0");
+        flexarray_append(front, libxl_defbool_val(disk->trusted) ? "1" : "0");
 
         /*
          * Old PV kernel disk frontends before 2.6.26 rely on tool stack to
@@ -537,6 +578,53 @@ static int libxl__disk_from_xenstore(libxl__gc *gc, const char *libxl_path,
     }
     libxl_string_to_backend(ctx, tmp, &(disk->backend));
 
+    tmp = libxl__xs_read(gc, XBT_NULL,
+                         GCSPRINTF("%s/specification", libxl_path));
+    if (!tmp) {
+        LOG(DEBUG, "Missing xenstore node %s/specification, assuming specification xen", libxl_path);
+        disk->specification = LIBXL_DISK_SPECIFICATION_XEN;
+    } else {
+        rc = libxl_disk_specification_from_string(tmp, &disk->specification);
+        if (rc) {
+            LOG(ERROR, "Unable to parse xenstore node %s/specification", libxl_path);
+            goto cleanup;
+        }
+    }
+
+    if (disk->specification == LIBXL_DISK_SPECIFICATION_VIRTIO) {
+        tmp = libxl__xs_read(gc, XBT_NULL,
+                             GCSPRINTF("%s/transport", libxl_path));
+        if (!tmp) {
+            LOG(ERROR, "Missing xenstore node %s/transport", libxl_path);
+            goto cleanup;
+        }
+        rc = libxl_disk_transport_from_string(tmp, &disk->transport);
+        if (rc) {
+            LOG(ERROR, "Unable to parse xenstore node %s/transport", libxl_path);
+            goto cleanup;
+        }
+        if (disk->transport != LIBXL_DISK_TRANSPORT_MMIO) {
+            LOG(ERROR, "Only transport mmio is expected for specification virtio");
+            goto cleanup;
+        }
+
+        tmp = libxl__xs_read(gc, XBT_NULL,
+                             GCSPRINTF("%s/base", libxl_path));
+        if (!tmp) {
+            LOG(ERROR, "Missing xenstore node %s/base", libxl_path);
+            goto cleanup;
+        }
+        disk->base = strtoul(tmp, NULL, 10);
+
+        tmp = libxl__xs_read(gc, XBT_NULL,
+                             GCSPRINTF("%s/irq", libxl_path));
+        if (!tmp) {
+            LOG(ERROR, "Missing xenstore node %s/irq", libxl_path);
+            goto cleanup;
+        }
+        disk->irq = strtoul(tmp, NULL, 10);
+    }
+
     disk->vdev = xs_read(ctx->xsh, XBT_NULL,
                          GCSPRINTF("%s/dev", libxl_path), &len);
     if (!disk->vdev) {
@@ -580,6 +668,42 @@ cleanup:
     return rc;
 }
 
+static int libxl__device_disk_get_path(libxl__gc *gc, uint32_t domid,
+                                       char **path)
+{
+    const char *xen_dir, *virtio_dir;
+    char *xen_path, *virtio_path;
+    int rc;
+
+    /* default path */
+    xen_path = GCSPRINTF("%s/device/%s",
+                         libxl__xs_libxl_path(gc, domid),
+                         libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VBD));
+
+    rc = libxl__xs_read_checked(gc, XBT_NULL, xen_path, &xen_dir);
+    if (rc)
+        return rc;
+
+    virtio_path = GCSPRINTF("%s/device/%s",
+                            libxl__xs_libxl_path(gc, domid),
+                            libxl__device_kind_to_string(LIBXL__DEVICE_KIND_VIRTIO_DISK));
+
+    rc = libxl__xs_read_checked(gc, XBT_NULL, virtio_path, &virtio_dir);
+    if (rc)
+        return rc;
+
+    if (xen_dir && virtio_dir) {
+        LOGD(ERROR, domid, "Invalid configuration, both xen and virtio paths are present");
+        return ERROR_INVAL;
+    } else if (virtio_dir) {
+        *path = virtio_path;
+    } else {
+        *path = xen_path;
+    }
+
+    return 0;
+}
+
 int libxl_vdev_to_device_disk(libxl_ctx *ctx, uint32_t domid,
                               const char *vdev, libxl_device_disk *disk)
 {
@@ -593,10 +717,12 @@ int libxl_vdev_to_device_disk(libxl_ctx *ctx, uint32_t domid,
 
     libxl_device_disk_init(disk);
 
-    libxl_path = libxl__domain_device_libxl_path(gc, domid, devid,
-                                                 LIBXL__DEVICE_KIND_VBD);
+    rc = libxl__device_disk_get_path(gc, domid, &libxl_path);
+    if (rc)
+        return rc;
 
-    rc = libxl__disk_from_xenstore(gc, libxl_path, devid, disk);
+    rc = libxl__disk_from_xenstore(gc, GCSPRINTF("%s/%d", libxl_path, devid),
+                                   devid, disk);
 
     GC_FREE;
     return rc;
@@ -610,16 +736,19 @@ int libxl_device_disk_getinfo(libxl_ctx *ctx, uint32_t domid,
     char *fe_path, *libxl_path;
     char *val;
     int rc;
+    libxl__device_kind kind;
 
     diskinfo->backend = NULL;
 
     diskinfo->devid = libxl__device_disk_dev_number(disk->vdev, NULL, NULL);
 
-    /* tap devices entries in xenstore are written as vbd devices. */
+    /* tap devices entries in xenstore are written as vbd/virtio_disk devices. */
+    kind = disk->backend == LIBXL_DISK_BACKEND_STANDALONE ?
+        LIBXL__DEVICE_KIND_VIRTIO_DISK : LIBXL__DEVICE_KIND_VBD;
     fe_path = libxl__domain_device_frontend_path(gc, domid, diskinfo->devid,
-                                                 LIBXL__DEVICE_KIND_VBD);
+                                                 kind);
     libxl_path = libxl__domain_device_libxl_path(gc, domid, diskinfo->devid,
-                                                 LIBXL__DEVICE_KIND_VBD);
+                                                 kind);
     diskinfo->backend = xs_read(ctx->xsh, XBT_NULL,
                                 GCSPRINTF("%s/backend", libxl_path), NULL);
     if (!diskinfo->backend) {
@@ -1423,6 +1552,7 @@ LIBXL_DEFINE_DEVICE_LIST(disk)
 #define libxl__device_disk_update_devid NULL
 
 DEFINE_DEVICE_TYPE_STRUCT(disk, VBD, disks,
+    .get_path    = libxl__device_disk_get_path,
     .merge       = libxl_device_disk_merge,
     .dm_needed   = libxl_device_disk_dm_needed,
     .from_xenstore = (device_from_xenstore_fn_t)libxl__disk_from_xenstore,

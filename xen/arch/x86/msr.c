@@ -24,12 +24,14 @@
 #include <xen/nospec.h>
 #include <xen/sched.h>
 
+#include <asm/amd.h>
 #include <asm/debugreg.h>
 #include <asm/hvm/nestedhvm.h>
 #include <asm/hvm/viridian.h>
 #include <asm/msr.h>
 #include <asm/pv/domain.h>
 #include <asm/setup.h>
+#include <asm/xstate.h>
 
 #include <public/hvm/params.h>
 
@@ -331,10 +333,9 @@ int guest_rdmsr(struct vcpu *v, uint32_t msr, uint64_t *val)
         break;
 
     case MSR_IA32_BNDCFGS:
-        if ( !cp->feat.mpx || !is_hvm_domain(d) ||
-             !hvm_get_guest_bndcfgs(v, val) )
+        if ( !cp->feat.mpx ) /* Implies Intel HVM only */
             goto gp_fault;
-        break;
+        goto get_reg;
 
     case MSR_IA32_XSS:
         if ( !cp->xstate.xsaves )
@@ -387,6 +388,16 @@ int guest_rdmsr(struct vcpu *v, uint32_t msr, uint64_t *val)
             goto gp_fault;
         *val = get_cpu_family(cp->basic.raw_fms, NULL, NULL) >= 0x10
                ? K8_HWCR_TSC_FREQ_SEL : 0;
+        break;
+
+    case MSR_VIRT_SPEC_CTRL:
+        if ( !cp->extd.virt_ssbd )
+            goto gp_fault;
+
+        if ( cpu_has_amd_ssbd )
+            *val = msrs->spec_ctrl.raw & SPEC_CTRL_SSBD;
+        else
+            *val = msrs->virt_spec_ctrl.raw;
         break;
 
     case MSR_AMD64_DE_CFG:
@@ -612,11 +623,33 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
         ret = guest_wrmsr_x2apic(v, msr, val);
         break;
 
+#ifdef CONFIG_HVM
     case MSR_IA32_BNDCFGS:
-        if ( !cp->feat.mpx || !is_hvm_domain(d) ||
-             !hvm_set_guest_bndcfgs(v, val) )
+        if ( !cp->feat.mpx || /* Implies Intel HVM only */
+             !is_canonical_address(val) || (val & IA32_BNDCFGS_RESERVED) )
             goto gp_fault;
-        break;
+
+        /*
+         * While MPX instructions are supposed to be gated on XCR0.BND*, let's
+         * nevertheless force the relevant XCR0 bits on when the feature is
+         * being enabled in BNDCFGS.
+         */
+        if ( (val & IA32_BNDCFGS_ENABLE) &&
+             !(v->arch.xcr0_accum & (X86_XCR0_BNDREGS | X86_XCR0_BNDCSR)) )
+        {
+            uint64_t xcr0 = get_xcr0();
+
+            if ( v != current ||
+                 handle_xsetbv(XCR_XFEATURE_ENABLED_MASK,
+                               xcr0 | X86_XCR0_BNDREGS | X86_XCR0_BNDCSR) )
+                goto gp_fault;
+
+            if ( handle_xsetbv(XCR_XFEATURE_ENABLED_MASK, xcr0) )
+                /* nothing, best effort only */;
+        }
+
+        goto set_reg;
+#endif /* CONFIG_HVM */
 
     case MSR_IA32_XSS:
         if ( !cp->xstate.xsaves )
@@ -650,6 +683,30 @@ int guest_wrmsr(struct vcpu *v, uint32_t msr, uint64_t val)
         msrs->tsc_aux = val;
         if ( v == curr )
             wrmsr_tsc_aux(val);
+        break;
+
+    case MSR_VIRT_SPEC_CTRL:
+        if ( !cp->extd.virt_ssbd )
+            goto gp_fault;
+
+        /* Only supports SSBD bit, the rest are ignored. */
+        if ( cpu_has_amd_ssbd )
+        {
+            if ( val & SPEC_CTRL_SSBD )
+                msrs->spec_ctrl.raw |= SPEC_CTRL_SSBD;
+            else
+                msrs->spec_ctrl.raw &= ~SPEC_CTRL_SSBD;
+        }
+        else
+        {
+            msrs->virt_spec_ctrl.raw = val & SPEC_CTRL_SSBD;
+            if ( v == curr )
+                /*
+                 * Propagate the value to hardware, as it won't be set on guest
+                 * resume path.
+                 */
+                amd_set_legacy_ssbd(val & SPEC_CTRL_SSBD);
+        }
         break;
 
     case MSR_AMD64_DE_CFG:

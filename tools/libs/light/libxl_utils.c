@@ -18,8 +18,6 @@
 #include <ctype.h>
 
 #include "libxl_internal.h"
-#include "libxl_arch.h"
-#include "_paths.h"
 
 #ifndef LIBXL_HAVE_NONCONST_LIBXL_BASENAME_RETURN_VALUE
 const
@@ -40,7 +38,8 @@ char *libxl_basename(const char *name)
 
 unsigned long libxl_get_required_shadow_memory(unsigned long maxmem_kb, unsigned int smp_cpus)
 {
-    return libxl__arch_get_required_paging_memory(maxmem_kb, smp_cpus);
+    return libxl__get_required_paging_memory(maxmem_kb, smp_cpus,
+                                             LIBXL_DOMAIN_TYPE_INVALID, false);
 }
 
 char *libxl_domid_to_name(libxl_ctx *ctx, uint32_t domid)
@@ -147,8 +146,7 @@ char *libxl_cpupoolid_to_name(libxl_ctx *ctx, uint32_t poolid)
 
     snprintf(path, sizeof(path), "/local/pool/%d/name", poolid);
     s = xs_read(ctx->xsh, XBT_NULL, path, &len);
-    if (!s && (poolid == 0))
-        return strdup("Pool-0");
+
     return s;
 }
 
@@ -299,6 +297,8 @@ int libxl_string_to_backend(libxl_ctx *ctx, char *s, libxl_disk_backend *backend
         *backend = LIBXL_DISK_BACKEND_TAP;
     } else if (!strcmp(s, "qdisk")) {
         *backend = LIBXL_DISK_BACKEND_QDISK;
+    } else if (!strcmp(s, "standalone")) {
+        *backend = LIBXL_DISK_BACKEND_STANDALONE;
     } else if (!strcmp(s, "tap")) {
         p = strchr(s, ':');
         if (!p) {

@@ -31,11 +31,11 @@ extern const struct iommu_init_ops intel_iommu_init_ops;
 
 void print_iommu_regs(struct acpi_drhd_unit *drhd);
 void print_vtd_entries(struct vtd_iommu *iommu, int bus, int devfn, u64 gmfn);
-keyhandler_fn_t vtd_dump_iommu_info;
+keyhandler_fn_t cf_check vtd_dump_iommu_info;
 
-bool intel_iommu_supports_eim(void);
-int intel_iommu_enable_eim(void);
-void intel_iommu_disable_eim(void);
+bool cf_check intel_iommu_supports_eim(void);
+int cf_check intel_iommu_enable_eim(void);
+void cf_check intel_iommu_disable_eim(void);
 
 int enable_qinval(struct vtd_iommu *iommu);
 void disable_qinval(struct vtd_iommu *iommu);
@@ -45,19 +45,19 @@ void disable_intremap(struct vtd_iommu *iommu);
 int iommu_alloc(struct acpi_drhd_unit *drhd);
 void iommu_free(struct acpi_drhd_unit *drhd);
 
+domid_t did_to_domain_id(const struct vtd_iommu *iommu, unsigned int did);
+
 int iommu_flush_iec_global(struct vtd_iommu *iommu);
 int iommu_flush_iec_index(struct vtd_iommu *iommu, u8 im, u16 iidx);
 void clear_fault_bits(struct vtd_iommu *iommu);
 
-int __must_check vtd_flush_context_reg(struct vtd_iommu *iommu, uint16_t did,
-                                       uint16_t source_id,
-                                       uint8_t function_mask, uint64_t type,
-                                       bool flush_non_present_entry);
-int __must_check vtd_flush_iotlb_reg(struct vtd_iommu *iommu, uint16_t did,
-                                     uint64_t addr, unsigned int size_order,
-                                     uint64_t type,
-                                     bool flush_non_present_entry,
-                                     bool flush_dev_iotlb);
+int __must_check cf_check vtd_flush_context_reg(
+    struct vtd_iommu *iommu, uint16_t did, uint16_t source_id,
+    uint8_t function_mask, uint64_t type, bool flush_non_present_entry);
+int __must_check cf_check vtd_flush_iotlb_reg(
+    struct vtd_iommu *iommu, uint16_t did, uint64_t addr,
+    unsigned int size_order, uint64_t type, bool flush_non_present_entry,
+    bool flush_dev_iotlb);
 
 struct vtd_iommu *ioapic_to_iommu(unsigned int apic_id);
 struct vtd_iommu *hpet_to_iommu(unsigned int hpet_id);
@@ -76,8 +76,6 @@ int __must_check qinval_device_iotlb_sync(struct vtd_iommu *iommu,
                                           struct pci_dev *pdev,
                                           u16 did, u16 size, u64 addr);
 
-void flush_all_cache(void);
-
 uint64_t alloc_pgtable_maddr(unsigned long npages, nodeid_t node);
 void free_pgtable_maddr(u64 maddr);
 void *map_vtd_domain_page(u64 maddr);
@@ -88,17 +86,19 @@ int domain_context_mapping_one(struct domain *domain, struct vtd_iommu *iommu,
                                paddr_t pgd_maddr, unsigned int mode);
 int domain_context_unmap_one(struct domain *domain, struct vtd_iommu *iommu,
                              uint8_t bus, uint8_t devfn);
-int intel_iommu_get_reserved_device_memory(iommu_grdm_t *func, void *ctxt);
+int cf_check intel_iommu_get_reserved_device_memory(
+    iommu_grdm_t *func, void *ctxt);
 
-unsigned int io_apic_read_remap_rte(unsigned int apic, unsigned int reg);
-void io_apic_write_remap_rte(unsigned int apic,
-                             unsigned int reg, unsigned int value);
+unsigned int cf_check io_apic_read_remap_rte(
+    unsigned int apic, unsigned int reg);
+void cf_check io_apic_write_remap_rte(
+    unsigned int apic, unsigned int reg, unsigned int value);
 
 struct msi_desc;
 struct msi_msg;
-int msi_msg_write_remap_rte(struct msi_desc *, struct msi_msg *);
+int cf_check msi_msg_write_remap_rte(struct msi_desc *, struct msi_msg *);
 
-int intel_setup_hpet_msi(struct msi_desc *);
+int cf_check intel_setup_hpet_msi(struct msi_desc *);
 
 int is_igd_vt_enabled_quirk(void);
 bool is_azalia_tlb_enabled(const struct acpi_drhd_unit *);

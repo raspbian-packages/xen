@@ -30,7 +30,7 @@
 
 #define XSM_FRAMEWORK_VERSION    "1.0.1"
 
-struct xsm_ops __read_mostly xsm_ops;
+struct xsm_ops __alt_call_maybe_initdata xsm_ops;
 
 enum xsm_ops_state {
     XSM_OPS_UNREGISTERED,
@@ -55,7 +55,7 @@ static enum xsm_bootparam __initdata xsm_bootparam =
     XSM_BOOTPARAM_DUMMY;
 #endif
 
-static int __init parse_xsm_param(const char *s)
+static int __init cf_check parse_xsm_param(const char *s)
 {
     int rc = 0;
 

@@ -15,6 +15,7 @@
 #include <xen/vmap.h>
 
 #include <asm/byteorder.h>
+#include <asm/fixmap.h>
 #include <asm/kernel.h>
 #include <asm/setup.h>
 
@@ -255,7 +256,7 @@ static __init int kernel_decompress(struct bootmodule *mod)
     char *output, *input;
     char magic[2];
     int rc;
-    unsigned kernel_order_out;
+    unsigned int kernel_order_out;
     paddr_t output_size;
     struct page_info *pages;
     mfn_t mfn;

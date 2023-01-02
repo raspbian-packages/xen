@@ -18,6 +18,7 @@
 #include <xen/delay.h>
 #include <xen/types.h>
 #include <asm/apic.h>
+#include <asm/endbr.h>
 #include <asm/processor.h>
 #include <asm/alternative.h>
 #include <xen/init.h>
@@ -172,6 +173,9 @@ text_poke(void *addr, const void *opcode, size_t len)
     return memcpy(addr, opcode, len);
 }
 
+extern void *const __initdata_cf_clobber_start[];
+extern void *const __initdata_cf_clobber_end[];
+
 /*
  * Replace instructions with better alternatives for this CPU type.
  * This runs before SMP is initialized to avoid SMP problems with
@@ -279,6 +283,28 @@ static void init_or_livepatch _apply_alternatives(struct alt_instr *start,
 
                 if ( dest )
                 {
+                    /*
+                     * When building for CET-IBT, all function pointer targets
+                     * should have an endbr64 instruction.
+                     *
+                     * If this is not the case, leave a warning because
+                     * something is probably wrong with the build.  A CET-IBT
+                     * enabled system might have exploded already.
+                     *
+                     * Otherwise, skip the endbr64 instruction.  This is a
+                     * marginal perf improvement which saves on instruction
+                     * decode bandwidth.
+                     */
+                    if ( IS_ENABLED(CONFIG_XEN_IBT) )
+                    {
+                        if ( is_endbr64(dest) )
+                            dest += ENDBR64_LEN;
+                        else
+                            printk(XENLOG_WARNING
+                                   "altcall %ps dest %ps has no endbr64\n",
+                                   orig, dest);
+                    }
+
                     disp = dest - (orig + 5);
                     ASSERT(disp == (int32_t)disp);
                     *(int32_t *)(buf + 1) = disp;
@@ -307,6 +333,41 @@ static void init_or_livepatch _apply_alternatives(struct alt_instr *start,
         add_nops(buf + a->repl_len, total_len - a->repl_len);
         text_poke(orig, buf, total_len);
     }
+
+    /*
+     * Clobber endbr64 instructions now that altcall has finished optimising
+     * all indirect branches to direct ones.
+     */
+    if ( force && cpu_has_xen_ibt )
+    {
+        void *const *val;
+        unsigned int clobbered = 0;
+
+        /*
+         * This is some minor structure (ab)use.  We walk the entire contents
+         * of .init.{ro,}data.cf_clobber as if it were an array of pointers.
+         *
+         * If the pointer points into .text, and at an endbr64 instruction,
+         * nop out the endbr64.  This causes the pointer to no longer be a
+         * legal indirect branch target under CET-IBT.  This is a
+         * defence-in-depth measure, to reduce the options available to an
+         * adversary who has managed to hijack a function pointer.
+         */
+        for ( val = __initdata_cf_clobber_start;
+              val < __initdata_cf_clobber_end;
+              val++ )
+        {
+            void *ptr = *val;
+
+            if ( !is_kernel_text(ptr) || !is_endbr64(ptr) )
+                continue;
+
+            place_endbr64_poison(ptr);
+            clobbered++;
+        }
+
+        printk("altcall: Optimised away %u endbr64 instructions\n", clobbered);
+    }
 }
 
 void init_or_livepatch apply_alternatives(struct alt_instr *start,
@@ -324,8 +385,8 @@ static unsigned int __initdata alt_done;
  * condition where an NMI hits while we are midway though patching some
  * instructions in the NMI path.
  */
-static int __init nmi_apply_alternatives(const struct cpu_user_regs *regs,
-                                         int cpu)
+static int __init cf_check nmi_apply_alternatives(
+    const struct cpu_user_regs *regs, int cpu)
 {
     /*
      * More than one NMI may occur between the two set_nmi_callback() below.

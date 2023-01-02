@@ -157,8 +157,8 @@ bool handle_pio(uint16_t port, unsigned int size, int dir)
     return true;
 }
 
-static bool_t g2m_portio_accept(const struct hvm_io_handler *handler,
-                                const ioreq_t *p)
+static bool cf_check g2m_portio_accept(
+    const struct hvm_io_handler *handler, const ioreq_t *p)
 {
     struct vcpu *curr = current;
     const struct hvm_domain *hvm = &curr->domain->arch.hvm;
@@ -180,8 +180,9 @@ static bool_t g2m_portio_accept(const struct hvm_io_handler *handler,
     return 0;
 }
 
-static int g2m_portio_read(const struct hvm_io_handler *handler,
-                           uint64_t addr, uint32_t size, uint64_t *data)
+static int cf_check g2m_portio_read(
+    const struct hvm_io_handler *handler, uint64_t addr, uint32_t size,
+    uint64_t *data)
 {
     struct hvm_vcpu_io *hvio = &current->arch.hvm.hvm_io;
     const struct g2m_ioport *g2m_ioport = hvio->g2m_ioport;
@@ -205,8 +206,9 @@ static int g2m_portio_read(const struct hvm_io_handler *handler,
     return X86EMUL_OKAY;
 }
 
-static int g2m_portio_write(const struct hvm_io_handler *handler,
-                            uint64_t addr, uint32_t size, uint64_t data)
+static int cf_check g2m_portio_write(
+    const struct hvm_io_handler *handler, uint64_t addr, uint32_t size,
+    uint64_t data)
 {
     struct hvm_vcpu_io *hvio = &current->arch.hvm.hvm_io;
     const struct g2m_ioport *g2m_ioport = hvio->g2m_ioport;
@@ -262,14 +264,15 @@ unsigned int hvm_pci_decode_addr(unsigned int cf8, unsigned int addr,
 }
 
 /* vPCI config space IO ports handlers (0xcf8/0xcfc). */
-static bool vpci_portio_accept(const struct hvm_io_handler *handler,
-                               const ioreq_t *p)
+static bool cf_check vpci_portio_accept(
+    const struct hvm_io_handler *handler, const ioreq_t *p)
 {
     return (p->addr == 0xcf8 && p->size == 4) || (p->addr & ~3) == 0xcfc;
 }
 
-static int vpci_portio_read(const struct hvm_io_handler *handler,
-                            uint64_t addr, uint32_t size, uint64_t *data)
+static int cf_check vpci_portio_read(
+    const struct hvm_io_handler *handler, uint64_t addr, uint32_t size,
+    uint64_t *data)
 {
     const struct domain *d = current->domain;
     unsigned int reg;
@@ -300,8 +303,9 @@ static int vpci_portio_read(const struct hvm_io_handler *handler,
     return X86EMUL_OKAY;
 }
 
-static int vpci_portio_write(const struct hvm_io_handler *handler,
-                             uint64_t addr, uint32_t size, uint64_t data)
+static int cf_check vpci_portio_write(
+    const struct hvm_io_handler *handler, uint64_t addr, uint32_t size,
+    uint64_t data)
 {
     struct domain *d = current->domain;
     unsigned int reg;
@@ -388,7 +392,7 @@ static unsigned int vpci_mmcfg_decode_addr(const struct hvm_mmcfg *mmcfg,
     return addr & (PCI_CFG_SPACE_EXP_SIZE - 1);
 }
 
-static int vpci_mmcfg_accept(struct vcpu *v, unsigned long addr)
+static int cf_check vpci_mmcfg_accept(struct vcpu *v, unsigned long addr)
 {
     struct domain *d = v->domain;
     bool found;
@@ -400,8 +404,8 @@ static int vpci_mmcfg_accept(struct vcpu *v, unsigned long addr)
     return found;
 }
 
-static int vpci_mmcfg_read(struct vcpu *v, unsigned long addr,
-                           unsigned int len, unsigned long *data)
+static int cf_check vpci_mmcfg_read(
+    struct vcpu *v, unsigned long addr, unsigned int len, unsigned long *data)
 {
     struct domain *d = v->domain;
     const struct hvm_mmcfg *mmcfg;
@@ -427,8 +431,8 @@ static int vpci_mmcfg_read(struct vcpu *v, unsigned long addr,
     return X86EMUL_OKAY;
 }
 
-static int vpci_mmcfg_write(struct vcpu *v, unsigned long addr,
-                            unsigned int len, unsigned long data)
+static int cf_check vpci_mmcfg_write(
+    struct vcpu *v, unsigned long addr, unsigned int len, unsigned long data)
 {
     struct domain *d = v->domain;
     const struct hvm_mmcfg *mmcfg;

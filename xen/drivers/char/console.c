@@ -15,6 +15,7 @@
 #include <xen/init.h>
 #include <xen/event.h>
 #include <xen/console.h>
+#include <xen/debugger.h>
 #include <xen/param.h>
 #include <xen/serial.h>
 #include <xen/softirq.h>
@@ -26,7 +27,6 @@
 #include <xen/kexec.h>
 #include <xen/ctype.h>
 #include <xen/warning.h>
-#include <asm/debugger.h>
 #include <asm/div64.h>
 #include <xen/hypercall.h> /* for do_console_io */
 #include <xen/early_printk.h>
@@ -88,7 +88,7 @@ static const char con_timestamp_mode_2_string[][7] = {
     [TSM_RAW] = "raw",
 };
 
-static void con_timestamp_mode_upd(struct param_hypfs *par)
+static void cf_check con_timestamp_mode_upd(struct param_hypfs *par)
 {
     const char *val = con_timestamp_mode_2_string[opt_con_timestamp_mode];
 
@@ -98,7 +98,7 @@ static void con_timestamp_mode_upd(struct param_hypfs *par)
 #define con_timestamp_mode_upd(par)
 #endif
 
-static int parse_console_timestamps(const char *s);
+static int cf_check parse_console_timestamps(const char *s);
 custom_runtime_param("console_timestamps", parse_console_timestamps,
                      con_timestamp_mode_upd);
 
@@ -160,8 +160,8 @@ static int __read_mostly xenlog_guest_upper_thresh =
 static int __read_mostly xenlog_guest_lower_thresh =
     XENLOG_GUEST_LOWER_THRESHOLD;
 
-static int parse_loglvl(const char *s);
-static int parse_guest_loglvl(const char *s);
+static int cf_check parse_loglvl(const char *s);
+static int cf_check parse_guest_loglvl(const char *s);
 
 #ifdef CONFIG_HYPFS
 #define LOGLVL_VAL_SZ 16
@@ -176,13 +176,13 @@ static void xenlog_update_val(int lower, int upper, char *val)
     snprintf(val, LOGLVL_VAL_SZ, "%s/%s", lvl2opt[lower], lvl2opt[upper]);
 }
 
-static void __init xenlog_init(struct param_hypfs *par)
+static void __init cf_check xenlog_init(struct param_hypfs *par)
 {
     xenlog_update_val(xenlog_lower_thresh, xenlog_upper_thresh, xenlog_val);
     custom_runtime_set_var(par, xenlog_val);
 }
 
-static void __init xenlog_guest_init(struct param_hypfs *par)
+static void __init cf_check xenlog_guest_init(struct param_hypfs *par)
 {
     xenlog_update_val(xenlog_guest_lower_thresh, xenlog_guest_upper_thresh,
                       xenlog_guest_val);
@@ -240,7 +240,7 @@ static int _parse_loglvl(const char *s, int *lower, int *upper, char *val)
     return *s ? -EINVAL : 0;
 }
 
-static int parse_loglvl(const char *s)
+static int cf_check parse_loglvl(const char *s)
 {
     int ret;
 
@@ -251,7 +251,7 @@ static int parse_loglvl(const char *s)
     return ret;
 }
 
-static int parse_guest_loglvl(const char *s)
+static int cf_check parse_guest_loglvl(const char *s)
 {
     int ret;
 
@@ -280,7 +280,7 @@ static int *__read_mostly upper_thresh_adj = &xenlog_upper_thresh;
 static int *__read_mostly lower_thresh_adj = &xenlog_lower_thresh;
 static const char *__read_mostly thresh_adj = "standard";
 
-static void do_toggle_guest(unsigned char key, struct cpu_user_regs *regs)
+static void cf_check do_toggle_guest(unsigned char key, struct cpu_user_regs *regs)
 {
     if ( upper_thresh_adj == &xenlog_upper_thresh )
     {
@@ -307,13 +307,13 @@ static void do_adj_thresh(unsigned char key)
            loglvl_str(*upper_thresh_adj));
 }
 
-static void do_inc_thresh(unsigned char key, struct cpu_user_regs *regs)
+static void cf_check do_inc_thresh(unsigned char key, struct cpu_user_regs *regs)
 {
     ++*lower_thresh_adj;
     do_adj_thresh(key);
 }
 
-static void do_dec_thresh(unsigned char key, struct cpu_user_regs *regs)
+static void cf_check do_dec_thresh(unsigned char key, struct cpu_user_regs *regs)
 {
     if ( *lower_thresh_adj )
         --*lower_thresh_adj;
@@ -424,7 +424,7 @@ void console_serial_puts(const char *s, size_t nr)
     pv_console_puts(s, nr);
 }
 
-static void dump_console_ring_key(unsigned char key)
+static void cf_check dump_console_ring_key(unsigned char key)
 {
     uint32_t idx, len, sofar, c;
     unsigned int order;
@@ -552,7 +552,7 @@ static void __serial_rx(char c, struct cpu_user_regs *regs)
 #endif
 }
 
-static void serial_rx(char c, struct cpu_user_regs *regs)
+static void cf_check serial_rx(char c, struct cpu_user_regs *regs)
 {
     static int switch_code_count = 0;
 
@@ -574,7 +574,7 @@ static void serial_rx(char c, struct cpu_user_regs *regs)
     __serial_rx(c, regs);
 }
 
-static void notify_dom0_con_ring(void *unused)
+static void cf_check notify_dom0_con_ring(void *unused)
 {
     send_global_virq(VIRQ_CON_RING);
 }
@@ -675,8 +675,8 @@ static long guest_console_write(XEN_GUEST_HANDLE_PARAM(char) buffer,
     return 0;
 }
 
-long do_console_io(unsigned int cmd, unsigned int count,
-                   XEN_GUEST_HANDLE_PARAM(char) buffer)
+long do_console_io(
+    unsigned int cmd, unsigned int count, XEN_GUEST_HANDLE_PARAM(char) buffer)
 {
     long rc;
     unsigned int idx, len;
@@ -793,7 +793,7 @@ static int printk_prefix_check(char *p, char **pp)
             ((loglvl < upper_thresh) && printk_ratelimit()));
 } 
 
-static int parse_console_timestamps(const char *s)
+static int cf_check parse_console_timestamps(const char *s)
 {
     switch ( parse_bool(s, NULL) )
     {
@@ -1283,7 +1283,7 @@ void panic(const char *fmt, ...)
  * **************************************************************
  */
 
-static void suspend_steal_fn(const char *str, size_t nr) { }
+static void cf_check suspend_steal_fn(const char *str, size_t nr) { }
 static int suspend_steal_id;
 
 int console_suspend(void)

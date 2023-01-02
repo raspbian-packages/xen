@@ -12,7 +12,7 @@ struct efi_rs_state {
 #ifdef CONFIG_X86
  /*
   * The way stacks get set up leads to them always being on an 8-byte
-  * boundary not evenly divisible by 16 (see asm-x86/current.h). The EFI ABI,
+  * boundary not evenly divisible by 16 (see asm/current.h). The EFI ABI,
   * just like the CPU one, however requires stacks to be 16-byte aligned
   * before every function call. Since the compiler assumes this (unless
   * passing it -mpreferred-stack-boundary=3), it wouldn't generate code to
@@ -626,7 +626,15 @@ int efi_runtime_call(struct xenpf_efi_runtime_call *op)
 
     case XEN_EFI_query_variable_info:
     {
-        uint64_t max_store_size, remain_store_size, max_size;
+        /*
+         * Put OUT variables on the stack to make them 8 byte aligned when
+         * called from the compat handler, as their placement in
+         * compat_pf_efi_runtime_call will make them 4 byte aligned instead
+         * and compilers may validly complain.  This is done regardless of
+         * whether called from the compat handler or not, as it's not worth
+         * the extra logic to differentiate.
+         */
+        uint64_t max_store_size = 0, remain_store_size = 0, max_size = 0;
 
         if ( op->misc & ~XEN_EFI_VARINFO_BOOT_SNAPSHOT )
             return -EINVAL;
@@ -659,21 +667,6 @@ int efi_runtime_call(struct xenpf_efi_runtime_call *op)
 
         if ( !efi_enabled(EFI_RS) || (efi_rs->Hdr.Revision >> 16) < 2 )
             return -EOPNOTSUPP;
-
-        /*
-         * Bounce the variables onto the stack to make them 8 byte aligned when
-         * called from the compat handler, as their placement in
-         * compat_pf_efi_runtime_call will make them 4 byte aligned instead and
-         * and compilers may validly complain.
-         *
-         * Note that while the function parameters are OUT only, copy the
-         * values here anyway just in case. This is done regardless of whether
-         * called from the compat handler or not, as it's not worth the extra
-         * logic to differentiate.
-         */
-        max_store_size = op->u.query_variable_info.max_store_size;
-        remain_store_size = op->u.query_variable_info.remain_store_size;
-        max_size = op->u.query_variable_info.max_size;
 
         state = efi_rs_enter();
         if ( !state.cr3 )

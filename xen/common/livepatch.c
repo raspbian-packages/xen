@@ -40,7 +40,7 @@ static LIST_HEAD(payload_list);
 
 /*
  * Patches which have been applied. Need RCU in case we crash (and then
- * traps code would iterate via applied_list) when adding entries onthe list.
+ * traps code would iterate via applied_list) when adding entries on the list.
  */
 static DEFINE_RCU_READ_LOCK(rcu_applied_lock);
 static LIST_HEAD(applied_list);
@@ -157,10 +157,9 @@ unsigned long livepatch_symbols_lookup_by_name(const char *symname)
     return 0;
 }
 
-static const char *livepatch_symbols_lookup(unsigned long addr,
-                                            unsigned long *symbolsize,
-                                            unsigned long *offset,
-                                            char *namebuf)
+static const char *cf_check livepatch_symbols_lookup(
+    unsigned long addr, unsigned long *symbolsize, unsigned long *offset,
+    char *namebuf)
 {
     const struct payload *data;
     unsigned int i, best;
@@ -324,8 +323,8 @@ static int move_payload(struct payload *payload, struct livepatch_elf *elf)
 
     /*
      * Total of all three regions - RX, RW, and RO. We have to have
-     * keep them in seperate pages so we PAGE_ALIGN the RX and RW to have
-     * them on seperate pages. The last one will by default fall on its
+     * keep them in separate pages so we PAGE_ALIGN the RX and RW to have
+     * them on separate pages. The last one will by default fall on its
      * own page.
      */
     size = PAGE_ALIGN(payload->text_size) + PAGE_ALIGN(payload->rw_size) +
@@ -889,7 +888,7 @@ static bool_t is_payload_symbol(const struct livepatch_elf *elf,
         return 0;
 
     /*
-     * The payload is not a final image as we dynmically link against it.
+     * The payload is not a final image as we dynamically link against it.
      * As such the linker has left symbols we don't care about and which
      * binutils would have removed had it be a final image. Hence we:
      * - For SHF_ALLOC - ignore symbols referring to sections that are not
@@ -1530,7 +1529,7 @@ static bool_t is_work_scheduled(const struct payload *data)
 
 /*
  * Check if payload has any of the vetoing, non-atomic hooks assigned.
- * A vetoing, non-atmic hook may perform an operation that changes the
+ * A vetoing, non-atomic hook may perform an operation that changes the
  * hypervisor state and may not be guaranteed to succeed. Result of
  * such operation may be returned and may change the livepatch workflow.
  * Such hooks may require additional cleanup actions performed by other
@@ -1597,7 +1596,7 @@ static int schedule_work(struct payload *data, uint32_t cmd, uint32_t timeout)
     return 0;
 }
 
-static void tasklet_fn(void *unused)
+static void cf_check tasklet_fn(void *unused)
 {
     this_cpu(work_to_do) = 1;
 }
@@ -2074,7 +2073,7 @@ static const char *state2str(unsigned int state)
     return names[state];
 }
 
-static void livepatch_printall(unsigned char key)
+static void cf_check livepatch_printall(unsigned char key)
 {
     struct payload *data;
     const void *binary_id = NULL;
@@ -2130,7 +2129,7 @@ static void livepatch_printall(unsigned char key)
     spin_unlock(&payload_lock);
 }
 
-static int cpu_callback(
+static int cf_check cpu_callback(
     struct notifier_block *nfb, unsigned long action, void *hcpu)
 {
     unsigned int cpu = (unsigned long)hcpu;
@@ -2145,7 +2144,7 @@ static struct notifier_block cpu_nfb = {
     .notifier_call = cpu_callback
 };
 
-static int __init livepatch_init(void)
+static int __init cf_check livepatch_init(void)
 {
     unsigned int cpu;
 

@@ -1,7 +1,6 @@
 XEN_ROOT=$(CURDIR)/../..
 include $(XEN_ROOT)/tools/Rules.mk
 
-CFLAGS += -Werror
 # Include configure output (config.h)
 CFLAGS += -include $(XEN_ROOT)/tools/config.h
 CFLAGS += $(CFLAGS_libxenevtchn)
@@ -50,16 +49,13 @@ TARGETS_COPY += xencov_split
 TARGETS_COPY += xenpvnetboot
 
 # Everything which needs to be built
-TARGETS_BUILD := $(filter-out $(TARGETS_COPY),$(TARGETS_ALL))
+TARGETS := $(filter-out $(TARGETS_COPY),$(TARGETS_ALL))
 
-# ... including build-only targets
-TARGETS_BUILD += $(TARGETS_BUILD-y)
-
-.PHONY: all build
-all build: $(TARGETS_BUILD)
+.PHONY: all
+all: $(TARGETS)
 
 .PHONY: install
-install: build
+install: all
 	$(INSTALL_DIR) $(DESTDIR)$(bindir)
 	$(INSTALL_DIR) $(DESTDIR)$(sbindir)
 	$(INSTALL_DIR) $(DESTDIR)$(LIBEXEC_BIN)
@@ -75,7 +71,7 @@ uninstall:
 
 .PHONY: clean
 clean:
-	$(RM) *.o $(TARGETS_BUILD) *~ $(DEPS_RM)
+	$(RM) *.o $(TARGETS) $(DEPS_RM)
 
 .PHONY: distclean
 distclean: clean
@@ -85,6 +81,9 @@ xen-access: xen-access.o
 
 xen-cpuid: xen-cpuid.o
 	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS_libxenctrl) $(LDLIBS_libxenguest) $(APPEND_LDFLAGS)
+
+xen-detect: xen-detect.o
+	$(CC) $(LDFLAGS) -o $@ $< $(APPEND_LDFLAGS)
 
 xen-hvmctx: xen-hvmctx.o
 	$(CC) $(LDFLAGS) -o $@ $< $(LDLIBS_libxenctrl) $(APPEND_LDFLAGS)

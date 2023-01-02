@@ -35,7 +35,6 @@
 #include <asm/page.h>
 #include <asm/paging.h>
 #include <asm/p2m.h>
-#include <asm/hvm/vmx/vmx.h> /* ept_p2m_init() */
 #include <asm/mem_sharing.h>
 #include <asm/hvm/nestedhvm.h>
 #include <asm/altp2m.h>
@@ -43,29 +42,20 @@
 #include <xsm/xsm.h>
 
 #include "mm-locks.h"
+#include "p2m.h"
 
 /* Override macro from asm/page.h to make work with mfn_t */
 #undef virt_to_mfn
 #define virt_to_mfn(v) _mfn(__virt_to_mfn(v))
+
+DEFINE_PERCPU_RWLOCK_GLOBAL(p2m_percpu_rwlock);
 
 /* Turn on/off host superpage page table support for hap, default on. */
 bool_t __initdata opt_hap_1gb = 1, __initdata opt_hap_2mb = 1;
 boolean_param("hap_1gb", opt_hap_1gb);
 boolean_param("hap_2mb", opt_hap_2mb);
 
-DEFINE_PERCPU_RWLOCK_GLOBAL(p2m_percpu_rwlock);
-
-static void p2m_nestedp2m_init(struct p2m_domain *p2m)
-{
-#ifdef CONFIG_HVM
-    INIT_LIST_HEAD(&p2m->np2m_list);
-
-    p2m->np2m_base = P2M_BASE_EADDR;
-    p2m->np2m_generation = 0;
-#endif
-}
-
-static int p2m_init_logdirty(struct p2m_domain *p2m)
+int p2m_init_logdirty(struct p2m_domain *p2m)
 {
     if ( p2m->logdirty_ranges )
         return 0;
@@ -78,207 +68,13 @@ static int p2m_init_logdirty(struct p2m_domain *p2m)
     return 0;
 }
 
-static void p2m_free_logdirty(struct p2m_domain *p2m)
+void p2m_free_logdirty(struct p2m_domain *p2m)
 {
     if ( !p2m->logdirty_ranges )
         return;
 
     rangeset_destroy(p2m->logdirty_ranges);
     p2m->logdirty_ranges = NULL;
-}
-
-/* Init the datastructures for later use by the p2m code */
-static int p2m_initialise(struct domain *d, struct p2m_domain *p2m)
-{
-    int ret = 0;
-
-    mm_rwlock_init(&p2m->lock);
-    INIT_PAGE_LIST_HEAD(&p2m->pages);
-
-    p2m->domain = d;
-    p2m->default_access = p2m_access_rwx;
-    p2m->p2m_class = p2m_host;
-
-    p2m_pod_init(p2m);
-    p2m_nestedp2m_init(p2m);
-
-    if ( hap_enabled(d) && cpu_has_vmx )
-        ret = ept_p2m_init(p2m);
-    else
-        p2m_pt_init(p2m);
-
-    spin_lock_init(&p2m->ioreq.lock);
-
-    return ret;
-}
-
-static struct p2m_domain *p2m_init_one(struct domain *d)
-{
-    struct p2m_domain *p2m = xzalloc(struct p2m_domain);
-
-    if ( !p2m )
-        return NULL;
-
-    if ( !zalloc_cpumask_var(&p2m->dirty_cpumask) )
-        goto free_p2m;
-
-    if ( p2m_initialise(d, p2m) )
-        goto free_cpumask;
-    return p2m;
-
-free_cpumask:
-    free_cpumask_var(p2m->dirty_cpumask);
-free_p2m:
-    xfree(p2m);
-    return NULL;
-}
-
-static void p2m_free_one(struct p2m_domain *p2m)
-{
-    p2m_free_logdirty(p2m);
-    if ( hap_enabled(p2m->domain) && cpu_has_vmx )
-        ept_p2m_uninit(p2m);
-    free_cpumask_var(p2m->dirty_cpumask);
-    xfree(p2m);
-}
-
-static int p2m_init_hostp2m(struct domain *d)
-{
-    struct p2m_domain *p2m = p2m_init_one(d);
-    int rc;
-
-    if ( !p2m )
-        return -ENOMEM;
-
-    rc = p2m_init_logdirty(p2m);
-
-    if ( !rc )
-        d->arch.p2m = p2m;
-    else
-        p2m_free_one(p2m);
-
-    return rc;
-}
-
-static void p2m_teardown_hostp2m(struct domain *d)
-{
-    /* Iterate over all p2m tables per domain */
-    struct p2m_domain *p2m = p2m_get_hostp2m(d);
-
-    if ( p2m )
-    {
-        p2m_free_one(p2m);
-        d->arch.p2m = NULL;
-    }
-}
-
-#ifdef CONFIG_HVM
-static void p2m_teardown_nestedp2m(struct domain *d)
-{
-    unsigned int i;
-    struct p2m_domain *p2m;
-
-    for ( i = 0; i < MAX_NESTEDP2M; i++ )
-    {
-        if ( !d->arch.nested_p2m[i] )
-            continue;
-        p2m = d->arch.nested_p2m[i];
-        list_del(&p2m->np2m_list);
-        p2m_free_one(p2m);
-        d->arch.nested_p2m[i] = NULL;
-    }
-}
-
-static int p2m_init_nestedp2m(struct domain *d)
-{
-    unsigned int i;
-    struct p2m_domain *p2m;
-
-    mm_lock_init(&d->arch.nested_p2m_lock);
-    for ( i = 0; i < MAX_NESTEDP2M; i++ )
-    {
-        d->arch.nested_p2m[i] = p2m = p2m_init_one(d);
-        if ( p2m == NULL )
-        {
-            p2m_teardown_nestedp2m(d);
-            return -ENOMEM;
-        }
-        p2m->p2m_class = p2m_nested;
-        p2m->write_p2m_entry_pre = NULL;
-        p2m->write_p2m_entry_post = nestedp2m_write_p2m_entry_post;
-        list_add(&p2m->np2m_list, &p2m_get_hostp2m(d)->np2m_list);
-    }
-
-    return 0;
-}
-
-static void p2m_teardown_altp2m(struct domain *d)
-{
-    unsigned int i;
-    struct p2m_domain *p2m;
-
-    for ( i = 0; i < MAX_ALTP2M; i++ )
-    {
-        if ( !d->arch.altp2m_p2m[i] )
-            continue;
-        p2m = d->arch.altp2m_p2m[i];
-        d->arch.altp2m_p2m[i] = NULL;
-        p2m_free_one(p2m);
-    }
-}
-
-static int p2m_init_altp2m(struct domain *d)
-{
-    unsigned int i;
-    struct p2m_domain *p2m;
-    struct p2m_domain *hostp2m = p2m_get_hostp2m(d);
-
-    mm_lock_init(&d->arch.altp2m_list_lock);
-    for ( i = 0; i < MAX_ALTP2M; i++ )
-    {
-        d->arch.altp2m_p2m[i] = p2m = p2m_init_one(d);
-        if ( p2m == NULL )
-        {
-            p2m_teardown_altp2m(d);
-            return -ENOMEM;
-        }
-        p2m->p2m_class = p2m_alternate;
-        p2m->access_required = hostp2m->access_required;
-        _atomic_set(&p2m->active_vcpus, 0);
-    }
-
-    return 0;
-}
-#endif
-
-int p2m_init(struct domain *d)
-{
-    int rc;
-
-    rc = p2m_init_hostp2m(d);
-    if ( rc )
-        return rc;
-
-#ifdef CONFIG_HVM
-    /* Must initialise nestedp2m unconditionally
-     * since nestedhvm_enabled(d) returns false here.
-     * (p2m_init runs too early for HVM_PARAM_* options) */
-    rc = p2m_init_nestedp2m(d);
-    if ( rc )
-    {
-        p2m_teardown_hostp2m(d);
-        return rc;
-    }
-
-    rc = p2m_init_altp2m(d);
-    if ( rc )
-    {
-        p2m_teardown_hostp2m(d);
-        p2m_teardown_nestedp2m(d);
-    }
-#endif
-
-    return rc;
 }
 
 int p2m_is_logdirty_range(struct p2m_domain *p2m, unsigned long start,
@@ -291,8 +87,6 @@ int p2m_is_logdirty_range(struct p2m_domain *p2m, unsigned long start,
         return -1;
     return 0;
 }
-
-#ifdef CONFIG_HVM
 
 static void change_entry_type_global(struct p2m_domain *p2m,
                                      p2m_type_t ot, p2m_type_t nt)
@@ -462,8 +256,6 @@ void p2m_flush_hardware_cached_dirty(struct domain *d)
     }
 }
 
-#endif /* CONFIG_HVM */
-
 /*
  * Force a synchronous P2M TLB flush if a deferred flush is pending.
  *
@@ -490,25 +282,11 @@ void p2m_unlock_and_tlb_flush(struct p2m_domain *p2m)
         mm_write_unlock(&p2m->lock);
 }
 
-mfn_t __get_gfn_type_access(struct p2m_domain *p2m, unsigned long gfn_l,
-                    p2m_type_t *t, p2m_access_t *a, p2m_query_t q,
-                    unsigned int *page_order, bool_t locked)
+mfn_t p2m_get_gfn_type_access(struct p2m_domain *p2m, gfn_t gfn,
+                              p2m_type_t *t, p2m_access_t *a, p2m_query_t q,
+                              unsigned int *page_order, bool_t locked)
 {
-#ifdef CONFIG_HVM
     mfn_t mfn;
-    gfn_t gfn = _gfn(gfn_l);
-
-    if ( !p2m || !paging_mode_translate(p2m->domain) )
-    {
-#endif
-        /*
-         * Not necessarily true, but for non-translated guests we claim
-         * it's the most generic kind of memory.
-         */
-        *t = p2m_ram_rw;
-        return _mfn(gfn_l);
-#ifdef CONFIG_HVM
-    }
 
     /* Unshare makes no sense without populate. */
     if ( q & P2M_UNSHARE )
@@ -533,8 +311,8 @@ mfn_t __get_gfn_type_access(struct p2m_domain *p2m, unsigned long gfn_l,
          * Try to unshare. If we fail, communicate ENOMEM without
          * sleeping.
          */
-        if ( mem_sharing_unshare_page(p2m->domain, gfn_l) < 0 )
-            mem_sharing_notify_enomem(p2m->domain, gfn_l, false);
+        if ( mem_sharing_unshare_page(p2m->domain, gfn_x(gfn)) < 0 )
+            mem_sharing_notify_enomem(p2m->domain, gfn_x(gfn), false);
         mfn = p2m->get_entry(p2m, gfn, t, a, q, page_order, NULL);
     }
 
@@ -547,18 +325,13 @@ mfn_t __get_gfn_type_access(struct p2m_domain *p2m, unsigned long gfn_l,
     }
 
     return mfn;
-#endif
 }
 
-void __put_gfn(struct p2m_domain *p2m, unsigned long gfn)
+void p2m_put_gfn(struct p2m_domain *p2m, gfn_t gfn)
 {
-    if ( !p2m || !paging_mode_translate(p2m->domain) )
-        /* Nothing to do in this case */
-        return;
+    ASSERT(gfn_locked_by_me(p2m, gfn_x(gfn)));
 
-    ASSERT(gfn_locked_by_me(p2m, gfn));
-
-    gfn_unlock(p2m, gfn, 0);
+    gfn_unlock(p2m, gfn_x(gfn), 0);
 }
 
 /* Atomically look up a GFN and take a reference count on the backing page. */
@@ -579,7 +352,7 @@ struct page_info *p2m_get_page_from_gfn(
     {
         /* Fast path: look up and get out */
         p2m_read_lock(p2m);
-        mfn = __get_gfn_type_access(p2m, gfn_x(gfn), t, a, 0, NULL, 0);
+        mfn = p2m_get_gfn_type_access(p2m, gfn, t, a, 0, NULL, 0);
         if ( p2m_is_any_ram(*t) && mfn_valid(mfn)
              && !((q & P2M_UNSHARE) && p2m_is_shared(*t)) )
         {
@@ -626,33 +399,26 @@ struct page_info *p2m_get_page_from_gfn(
     return page;
 }
 
-#ifdef CONFIG_HVM
 /* Returns: 0 for success, -errno for failure */
 int p2m_set_entry(struct p2m_domain *p2m, gfn_t gfn, mfn_t mfn,
                   unsigned int page_order, p2m_type_t p2mt, p2m_access_t p2ma)
 {
-    struct domain *d = p2m->domain;
+    bool hap = hap_enabled(p2m->domain);
     unsigned long todo = 1ul << page_order;
-    unsigned int order;
     int set_rc, rc = 0;
 
     ASSERT(gfn_locked_by_me(p2m, gfn));
 
     while ( todo )
     {
-        if ( hap_enabled(d) )
-        {
-            unsigned long fn_mask = !mfn_eq(mfn, INVALID_MFN) ? mfn_x(mfn) : 0;
-
-            fn_mask |= gfn_x(gfn) | todo;
-
-            order = (!(fn_mask & ((1ul << PAGE_ORDER_1G) - 1)) &&
-                     hap_has_1gb) ? PAGE_ORDER_1G :
-                    (!(fn_mask & ((1ul << PAGE_ORDER_2M) - 1)) &&
-                     hap_has_2mb) ? PAGE_ORDER_2M : PAGE_ORDER_4K;
-        }
-        else
-            order = 0;
+        unsigned long fn_mask = (!mfn_eq(mfn, INVALID_MFN) ? mfn_x(mfn) : 0) |
+                                gfn_x(gfn) | todo;
+        unsigned int order = (!(fn_mask & ((1ul << PAGE_ORDER_1G) - 1)) &&
+                              hap && hap_has_1gb)
+                             ? PAGE_ORDER_1G
+                             : (!(fn_mask & ((1ul << PAGE_ORDER_2M) - 1)) &&
+                                (!hap || hap_has_2mb))
+                               ? PAGE_ORDER_2M : PAGE_ORDER_4K;
 
         set_rc = p2m->set_entry(p2m, gfn, mfn, order, p2mt, p2ma, -1);
         if ( set_rc )
@@ -666,7 +432,6 @@ int p2m_set_entry(struct p2m_domain *p2m, gfn_t gfn, mfn_t mfn,
 
     return rc;
 }
-#endif
 
 mfn_t p2m_alloc_ptp(struct p2m_domain *p2m, unsigned int level)
 {
@@ -745,75 +510,9 @@ int p2m_alloc_table(struct p2m_domain *p2m)
     return 0;
 }
 
-/*
- * hvm fixme: when adding support for pvh non-hardware domains, this path must
- * cleanup any foreign p2m types (release refcnts on them).
- */
-void p2m_teardown(struct p2m_domain *p2m, bool remove_root, bool *preempted)
-/* Return all the p2m pages to Xen.
- * We know we don't have any extra mappings to these pages */
-{
-    struct page_info *pg, *root_pg = NULL;
-    struct domain *d;
-    unsigned int i = 0;
-
-    if (p2m == NULL)
-        return;
-
-    d = p2m->domain;
-
-    p2m_lock(p2m);
-    ASSERT(atomic_read(&d->shr_pages) == 0);
-
-    if ( remove_root )
-        p2m->phys_table = pagetable_null();
-    else if ( !pagetable_is_null(p2m->phys_table) )
-    {
-        root_pg = pagetable_get_page(p2m->phys_table);
-        clear_domain_page(pagetable_get_mfn(p2m->phys_table));
-    }
-
-    while ( (pg = page_list_remove_head(&p2m->pages)) )
-    {
-        if ( pg == root_pg )
-            continue;
-
-        d->arch.paging.free_page(d, pg);
-
-        /* Arbitrarily check preemption every 1024 iterations */
-        if ( preempted && !(++i % 1024) && general_preempt_check() )
-        {
-            *preempted = true;
-            break;
-        }
-    }
-
-    if ( root_pg )
-        page_list_add(root_pg, &p2m->pages);
-
-    p2m_unlock(p2m);
-}
-
-void p2m_final_teardown(struct domain *d)
-{
-#ifdef CONFIG_HVM
-    /*
-     * We must teardown both of them unconditionally because
-     * we initialise them unconditionally.
-     */
-    p2m_teardown_altp2m(d);
-    p2m_teardown_nestedp2m(d);
-#endif
-
-    /* Iterate over all p2m tables per domain */
-    p2m_teardown_hostp2m(d);
-}
-
-#ifdef CONFIG_HVM
-
 static int __must_check
-p2m_remove_page(struct p2m_domain *p2m, gfn_t gfn, mfn_t mfn,
-                unsigned int page_order)
+p2m_remove_entry(struct p2m_domain *p2m, gfn_t gfn, mfn_t mfn,
+                 unsigned int page_order)
 {
     unsigned long i;
     p2m_type_t t;
@@ -874,69 +573,28 @@ p2m_remove_page(struct p2m_domain *p2m, gfn_t gfn, mfn_t mfn,
 }
 
 int
-guest_physmap_remove_page(struct domain *d, gfn_t gfn,
-                          mfn_t mfn, unsigned int page_order)
+p2m_remove_page(struct domain *d, gfn_t gfn, mfn_t mfn,
+                unsigned int page_order)
 {
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
     int rc;
 
-    /* IOMMU for PV guests is handled in get_page_type() and put_page(). */
     if ( !paging_mode_translate(d) )
-        return 0;
+    {
+        ASSERT_UNREACHABLE();
+        return -EPERM;
+    }
 
     gfn_lock(p2m, gfn, page_order);
-    rc = p2m_remove_page(p2m, gfn, mfn, page_order);
+    rc = p2m_remove_entry(p2m, gfn, mfn, page_order);
     gfn_unlock(p2m, gfn, page_order);
 
     return rc;
 }
 
-#endif /* CONFIG_HVM */
-
 int
-guest_physmap_add_page(struct domain *d, gfn_t gfn, mfn_t mfn,
-                       unsigned int page_order)
-{
-    /* IOMMU for PV guests is handled in get_page_type() and put_page(). */
-    if ( !paging_mode_translate(d) )
-    {
-        struct page_info *page = mfn_to_page(mfn);
-        unsigned long i;
-
-        /*
-         * Our interface for PV guests wrt IOMMU entries hasn't been very
-         * clear; but historically, pages have started out with IOMMU mappings,
-         * and only lose them when changed to a different page type.
-         *
-         * Retain this property by grabbing a writable type ref and then
-         * dropping it immediately.  The result will be pages that have a
-         * writable type (and an IOMMU entry), but a count of 0 (such that
-         * any guest-requested type changes succeed and remove the IOMMU
-         * entry).
-         */
-        for ( i = 0; i < (1UL << page_order); ++i, ++page )
-        {
-            if ( !need_iommu_pt_sync(d) )
-                /* nothing */;
-            else if ( get_page_and_type(page, d, PGT_writable_page) )
-                put_page_and_type(page);
-            else
-                return -EINVAL;
-
-            set_gpfn_from_mfn(mfn_x(mfn) + i, gfn_x(gfn) + i);
-        }
-
-        return 0;
-    }
-
-    return guest_physmap_add_entry(d, gfn, mfn, page_order, p2m_ram_rw);
-}
-
-#ifdef CONFIG_HVM
-
-int
-guest_physmap_add_entry(struct domain *d, gfn_t gfn, mfn_t mfn,
-                        unsigned int page_order, p2m_type_t t)
+p2m_add_page(struct domain *d, gfn_t gfn, mfn_t mfn,
+             unsigned int page_order, p2m_type_t t)
 {
     struct p2m_domain *p2m = p2m_get_hostp2m(d);
     unsigned long i;
@@ -1016,16 +674,18 @@ guest_physmap_add_entry(struct domain *d, gfn_t gfn, mfn_t mfn,
             ASSERT(mfn_valid(omfn));
             set_gpfn_from_mfn(mfn_x(omfn), INVALID_M2P_ENTRY);
         }
-        else if ( ot == p2m_populate_on_demand )
+        else if ( p2m_is_pod(ot) )
         {
             /* Count how man PoD entries we'll be replacing if successful */
             pod_count++;
         }
+#ifdef CONFIG_MEM_PAGING
         else if ( p2m_is_paging(ot) && (ot != p2m_ram_paging_out) )
         {
             /* We're plugging a hole in the physmap where a paged out page was */
             atomic_dec(&d->paged_pages);
         }
+#endif
     }
 
     /* Then, look for m->p mappings for this range and deal with them */
@@ -1058,7 +718,7 @@ guest_physmap_add_entry(struct domain *d, gfn_t gfn, mfn_t mfn,
                 P2M_DEBUG("old gfn=%#lx -> mfn %#lx\n",
                           gfn_x(ogfn) , mfn_x(omfn));
                 if ( mfn_eq(omfn, mfn_add(mfn, i)) &&
-                     (rc = p2m_remove_page(p2m, ogfn, omfn, 0)) )
+                     (rc = p2m_remove_entry(p2m, ogfn, omfn, 0)) )
                     goto out;
             }
         }
@@ -1538,12 +1198,9 @@ static int clear_mmio_p2m_entry(struct domain *d, unsigned long gfn_l,
     return rc;
 }
 
-#endif /* CONFIG_HVM */
-
-int set_identity_p2m_entry(struct domain *d, unsigned long gfn_l,
+int p2m_add_identity_entry(struct domain *d, unsigned long gfn_l,
                            p2m_access_t p2ma, unsigned int flag)
 {
-#ifdef CONFIG_HVM
     p2m_type_t p2mt;
     p2m_access_t a;
     gfn_t gfn = _gfn(gfn_l);
@@ -1553,13 +1210,8 @@ int set_identity_p2m_entry(struct domain *d, unsigned long gfn_l,
 
     if ( !paging_mode_translate(d) )
     {
-#endif
-        if ( !is_iommu_enabled(d) )
-            return 0;
-        return iommu_legacy_map(d, _dfn(gfn_l), _mfn(gfn_l),
-                                1ul << PAGE_ORDER_4K,
-                                p2m_access_to_iommu_flags(p2ma));
-#ifdef CONFIG_HVM
+        ASSERT_UNREACHABLE();
+        return -EPERM;
     }
 
     gfn_lock(p2m, gfn, 0);
@@ -1585,12 +1237,10 @@ int set_identity_p2m_entry(struct domain *d, unsigned long gfn_l,
 
     gfn_unlock(p2m, gfn, 0);
     return ret;
-#endif
 }
 
-int clear_identity_p2m_entry(struct domain *d, unsigned long gfn_l)
+int p2m_remove_identity_entry(struct domain *d, unsigned long gfn_l)
 {
-#ifdef CONFIG_HVM
     p2m_type_t p2mt;
     p2m_access_t a;
     gfn_t gfn = _gfn(gfn_l);
@@ -1600,11 +1250,8 @@ int clear_identity_p2m_entry(struct domain *d, unsigned long gfn_l)
 
     if ( !paging_mode_translate(d) )
     {
-#endif
-        if ( !is_iommu_enabled(d) )
-            return 0;
-        return iommu_legacy_unmap(d, _dfn(gfn_l), 1ul << PAGE_ORDER_4K);
-#ifdef CONFIG_HVM
+        ASSERT_UNREACHABLE();
+        return -EPERM;
     }
 
     gfn_lock(p2m, gfn, 0);
@@ -1626,7 +1273,6 @@ int clear_identity_p2m_entry(struct domain *d, unsigned long gfn_l)
     }
 
     return ret;
-#endif
 }
 
 #ifdef CONFIG_MEM_SHARING
@@ -1671,8 +1317,6 @@ int set_shared_p2m_entry(struct domain *d, unsigned long gfn_l, mfn_t mfn)
 
 #endif /* CONFIG_MEM_SHARING */
 
-#ifdef CONFIG_HVM
-
 static struct p2m_domain *
 p2m_getlru_nestedp2m(struct domain *d, struct p2m_domain *p2m)
 {
@@ -1702,11 +1346,10 @@ p2m_flush_table_locked(struct p2m_domain *p2m)
      * when discarding them.
      */
     ASSERT(!p2m_is_hostp2m(p2m));
-#ifdef CONFIG_HVM
-    /* Nested p2m's do not do pod, hence the asserts (and no pod lock)*/
+
+    /* Nested p2m's do not do pod, hence the asserts (and no pod lock) */
     ASSERT(page_list_empty(&p2m->pod.super));
     ASSERT(page_list_empty(&p2m->pod.single));
-#endif
 
     /* No need to flush if it's already empty */
     if ( p2m_is_nestedp2m(p2m) && p2m->np2m_base == P2M_BASE_EADDR )
@@ -1954,6 +1597,11 @@ unsigned long paging_gva_to_gfn(struct vcpu *v,
         const struct paging_mode *mode;
         uint8_t l1_p2ma;
         unsigned int l1_page_order;
+        struct npfec npfec = {
+            .read_access  = 1,
+            .write_access = *pfec & PFEC_write_access,
+            .insn_fetch   = *pfec & PFEC_insn_fetch,
+        };
         int rv;
 
         /* translate l2 guest va into l2 guest gfn */
@@ -1964,11 +1612,8 @@ unsigned long paging_gva_to_gfn(struct vcpu *v,
         if ( l2_gfn == gfn_x(INVALID_GFN) )
             return gfn_x(INVALID_GFN);
 
-        rv = nestedhap_walk_L1_p2m(v, pfn_to_paddr(l2_gfn), &l1_gpa,
-                                   &l1_page_order, &l1_p2ma,
-                                   1,
-                                   !!(*pfec & PFEC_write_access),
-                                   !!(*pfec & PFEC_insn_fetch));
+        rv = nhvm_hap_walk_L1_p2m(
+            v, pfn_to_paddr(l2_gfn), &l1_gpa, &l1_page_order, &l1_p2ma, npfec);
 
         if ( rv != NESTEDHVM_PAGEFAULT_DONE )
             return gfn_x(INVALID_GFN);
@@ -1987,58 +1632,6 @@ unsigned long paging_gva_to_gfn(struct vcpu *v,
 
     return hostmode->gva_to_gfn(v, hostp2m, va, pfec);
 }
-
-#endif /* CONFIG_HVM */
-
-/*
- * If the map is non-NULL, we leave this function having acquired an extra ref
- * on mfn_to_page(*mfn).  In all cases, *pfec contains appropriate
- * synthetic/structure PFEC_* bits.
- */
-void *map_domain_gfn(struct p2m_domain *p2m, gfn_t gfn, mfn_t *mfn,
-                     p2m_query_t q, uint32_t *pfec)
-{
-    p2m_type_t p2mt;
-    struct page_info *page;
-
-    if ( !gfn_valid(p2m->domain, gfn) )
-    {
-        *pfec = PFEC_reserved_bit | PFEC_page_present;
-        return NULL;
-    }
-
-    /* Translate the gfn, unsharing if shared. */
-    page = p2m_get_page_from_gfn(p2m, gfn, &p2mt, NULL, q);
-    if ( p2m_is_paging(p2mt) )
-    {
-        ASSERT(p2m_is_hostp2m(p2m));
-        if ( page )
-            put_page(page);
-        p2m_mem_paging_populate(p2m->domain, gfn);
-        *pfec = PFEC_page_paged;
-        return NULL;
-    }
-    if ( p2m_is_shared(p2mt) )
-    {
-        if ( page )
-            put_page(page);
-        *pfec = PFEC_page_shared;
-        return NULL;
-    }
-    if ( !page )
-    {
-        *pfec = 0;
-        return NULL;
-    }
-
-    *pfec = PFEC_page_present;
-    *mfn = page_to_mfn(page);
-    ASSERT(mfn_valid(*mfn));
-
-    return map_domain_page(*mfn);
-}
-
-#ifdef CONFIG_HVM
 
 static unsigned int mmio_order(const struct domain *d,
                                unsigned long start_fn, unsigned long nr)
@@ -2153,8 +1746,8 @@ int altp2m_get_effective_entry(struct p2m_domain *ap2m, gfn_t gfn, mfn_t *mfn,
         unsigned int page_order;
         int rc;
 
-        *mfn = __get_gfn_type_access(hp2m, gfn_x(gfn), t, a,
-                                     P2M_ALLOC | P2M_UNSHARE, &page_order, 0);
+        *mfn = p2m_get_gfn_type_access(hp2m, gfn, t, a, P2M_ALLOC | P2M_UNSHARE,
+                                       &page_order, 0);
 
         rc = -ESRCH;
         if ( !mfn_valid(*mfn) || *t != p2m_ram_rw )
@@ -2222,10 +1815,11 @@ bool_t p2m_switch_vcpu_altp2m_by_id(struct vcpu *v, unsigned int idx)
  */
 bool p2m_altp2m_get_or_propagate(struct p2m_domain *ap2m, unsigned long gfn_l,
                                  mfn_t *mfn, p2m_type_t *p2mt,
-                                 p2m_access_t *p2ma, unsigned int page_order)
+                                 p2m_access_t *p2ma, unsigned int *page_order)
 {
     p2m_type_t ap2mt;
     p2m_access_t ap2ma;
+    unsigned int cur_order;
     unsigned long mask;
     gfn_t gfn;
     mfn_t amfn;
@@ -2238,7 +1832,10 @@ bool p2m_altp2m_get_or_propagate(struct p2m_domain *ap2m, unsigned long gfn_l,
      */
     p2m_lock(ap2m);
 
-    amfn = get_gfn_type_access(ap2m, gfn_l, &ap2mt, &ap2ma, 0, NULL);
+    amfn = get_gfn_type_access(ap2m, gfn_l, &ap2mt, &ap2ma, 0, &cur_order);
+
+    if ( cur_order > *page_order )
+        cur_order = *page_order;
 
     if ( !mfn_eq(amfn, INVALID_MFN) )
     {
@@ -2246,6 +1843,7 @@ bool p2m_altp2m_get_or_propagate(struct p2m_domain *ap2m, unsigned long gfn_l,
         *mfn  = amfn;
         *p2mt = ap2mt;
         *p2ma = ap2ma;
+        *page_order = cur_order;
         return false;
     }
 
@@ -2253,6 +1851,7 @@ bool p2m_altp2m_get_or_propagate(struct p2m_domain *ap2m, unsigned long gfn_l,
     if ( mfn_eq(*mfn, INVALID_MFN) )
     {
         p2m_unlock(ap2m);
+        *page_order = cur_order;
         return false;
     }
 
@@ -2261,11 +1860,11 @@ bool p2m_altp2m_get_or_propagate(struct p2m_domain *ap2m, unsigned long gfn_l,
      * to the start of the superpage.  NB that we repupose `amfn`
      * here.
      */
-    mask = ~((1UL << page_order) - 1);
+    mask = ~((1UL << cur_order) - 1);
     amfn = _mfn(mfn_x(*mfn) & mask);
     gfn = _gfn(gfn_l & mask);
 
-    rc = p2m_set_entry(ap2m, gfn, amfn, page_order, *p2mt, *p2ma);
+    rc = p2m_set_entry(ap2m, gfn, amfn, cur_order, *p2mt, *p2ma);
     p2m_unlock(ap2m);
 
     if ( rc )
@@ -2513,7 +2112,7 @@ int p2m_change_altp2m_gfn(struct domain *d, unsigned int idx,
     {
         mfn = ap2m->get_entry(ap2m, old_gfn, &t, &a, 0, NULL, NULL);
         rc = mfn_valid(mfn)
-             ? p2m_remove_page(ap2m, old_gfn, mfn, PAGE_ORDER_4K)
+             ? p2m_remove_entry(ap2m, old_gfn, mfn, PAGE_ORDER_4K)
              : 0;
         goto out;
     }
@@ -2550,9 +2149,6 @@ int p2m_altp2m_propagate_change(struct domain *d, gfn_t gfn,
                                 p2m_type_t p2mt, p2m_access_t p2ma)
 {
     struct p2m_domain *p2m;
-    p2m_access_t a;
-    p2m_type_t t;
-    mfn_t m;
     unsigned int i;
     unsigned int reset_count = 0;
     unsigned int last_reset_idx = ~0;
@@ -2565,15 +2161,17 @@ int p2m_altp2m_propagate_change(struct domain *d, gfn_t gfn,
 
     for ( i = 0; i < MAX_ALTP2M; i++ )
     {
+        p2m_type_t t;
+        p2m_access_t a;
+
         if ( d->arch.altp2m_eptp[i] == mfn_x(INVALID_MFN) )
             continue;
 
         p2m = d->arch.altp2m_p2m[i];
-        m = get_gfn_type_access(p2m, gfn_x(gfn), &t, &a, 0, NULL);
 
         /* Check for a dropped page that may impact this altp2m */
         if ( mfn_eq(mfn, INVALID_MFN) &&
-             gfn_x(gfn) >= p2m->min_remapped_gfn &&
+             gfn_x(gfn) + (1UL << page_order) > p2m->min_remapped_gfn &&
              gfn_x(gfn) <= p2m->max_remapped_gfn )
         {
             if ( !reset_count++ )
@@ -2584,8 +2182,6 @@ int p2m_altp2m_propagate_change(struct domain *d, gfn_t gfn,
             else
             {
                 /* At least 2 altp2m's impacted, so reset everything */
-                __put_gfn(p2m, gfn_x(gfn));
-
                 for ( i = 0; i < MAX_ALTP2M; i++ )
                 {
                     if ( i == last_reset_idx ||
@@ -2599,23 +2195,25 @@ int p2m_altp2m_propagate_change(struct domain *d, gfn_t gfn,
                 break;
             }
         }
-        else if ( !mfn_eq(m, INVALID_MFN) )
+        else if ( !mfn_eq(get_gfn_type_access(p2m, gfn_x(gfn), &t, &a, 0,
+                                              NULL), INVALID_MFN) )
         {
             int rc = p2m_set_entry(p2m, gfn, mfn, page_order, p2mt, p2ma);
 
             /* Best effort: Don't bail on error. */
             if ( !ret )
                 ret = rc;
-        }
 
-        __put_gfn(p2m, gfn_x(gfn));
+            p2m_put_gfn(p2m, gfn);
+        }
+        else
+            p2m_put_gfn(p2m, gfn);
     }
 
     altp2m_list_unlock(d);
 
     return ret;
 }
-#endif /* CONFIG_HVM */
 
 /*** Audit ***/
 
@@ -2694,7 +2292,7 @@ void audit_p2m(struct domain *d,
              * blow away the m2p entry. */
             set_gpfn_from_mfn(mfn, INVALID_M2P_ENTRY);
         }
-        __put_gfn(p2m, gfn);
+        p2m_put_gfn(p2m, _gfn(gfn));
 
         P2M_PRINTK("OK: mfn=%#lx, gfn=%#lx, p2mfn=%#lx\n",
                        mfn, gfn, mfn_x(p2mfn));
@@ -2720,8 +2318,6 @@ out_p2m_audit:
     *p2m_bad = (uint64_t) pmbad;
 }
 #endif /* P2M_AUDIT */
-
-#ifdef CONFIG_HVM
 
 /*
  * Add frame from foreign domain to target domain's physmap. Similar to
@@ -2796,7 +2392,7 @@ static int p2m_add_foreign(struct domain *tdom, unsigned long fgfn,
     {
         if ( is_special_page(mfn_to_page(prev_mfn)) )
             /* Special pages are simply unhooked from this phys slot */
-            rc = guest_physmap_remove_page(tdom, _gfn(gpfn), prev_mfn, 0);
+            rc = p2m_remove_page(tdom, _gfn(gpfn), prev_mfn, 0);
         else
             /* Normal domain memory is freed, to avoid leaking memory. */
             rc = guest_remove_page(tdom, gpfn);
@@ -2804,7 +2400,7 @@ static int p2m_add_foreign(struct domain *tdom, unsigned long fgfn,
             goto put_both;
     }
     /*
-     * Create the new mapping. Can't use guest_physmap_add_page() because it
+     * Create the new mapping. Can't use p2m_add_page() because it
      * will update the m2p table which will result in  mfn -> gpfn of dom0
      * and not fgfn of domU.
      */
@@ -2918,7 +2514,7 @@ int xenmem_add_to_physmap_one(
     {
         if ( is_special_page(mfn_to_page(prev_mfn)) )
             /* Special pages are simply unhooked from this phys slot. */
-            rc = guest_physmap_remove_page(d, gpfn, prev_mfn, PAGE_ORDER_4K);
+            rc = p2m_remove_page(d, gpfn, prev_mfn, PAGE_ORDER_4K);
         else if ( !mfn_eq(mfn, prev_mfn) )
             /* Normal domain memory is freed, to avoid leaking memory. */
             rc = guest_remove_page(d, gfn_x(gpfn));
@@ -2926,11 +2522,11 @@ int xenmem_add_to_physmap_one(
 
     /* Unmap from old location, if any. */
     if ( !rc && old_gpfn != INVALID_M2P_ENTRY && !gfn_eq(_gfn(old_gpfn), gpfn) )
-        rc = guest_physmap_remove_page(d, _gfn(old_gpfn), mfn, PAGE_ORDER_4K);
+        rc = p2m_remove_page(d, _gfn(old_gpfn), mfn, PAGE_ORDER_4K);
 
     /* Map at new location. */
     if ( !rc )
-        rc = guest_physmap_add_page(d, gpfn, mfn, PAGE_ORDER_4K);
+        rc = p2m_add_page(d, gpfn, mfn, PAGE_ORDER_4K, p2m_ram_rw);
 
  put_all:
     put_gfn(d, gfn_x(gpfn));
@@ -3109,8 +2705,6 @@ int p2m_set_altp2m_view_visibility(struct domain *d, unsigned int altp2m_idx,
 
     return rc;
 }
-
-#endif /* CONFIG_HVM */
 
 /*
  * Local variables:

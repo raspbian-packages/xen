@@ -24,8 +24,6 @@
 #include <xen/hvm/hvm_xs_strings.h>
 #include <xen/hvm/e820.h>
 
-#include "_paths.h"
-
 //#define DEBUG 1
 
 libxl_domain_type libxl__domain_type(libxl__gc *gc, uint32_t domid)
@@ -379,6 +377,7 @@ int libxl__build_pre(libxl__gc *gc, uint32_t domid,
     state->console_port = xc_evtchn_alloc_unbound(ctx->xch, domid, state->console_domid);
 
     rc = libxl__arch_domain_create(gc, d_config, state, domid);
+    if (rc) goto out;
 
     /* Construct a CPUID policy, but only for brand new domains.  Domains
      * being migrated-in/restored have CPUID handled during the
@@ -386,6 +385,7 @@ int libxl__build_pre(libxl__gc *gc, uint32_t domid,
     if (!state->restore)
         rc = libxl__cpuid_legacy(ctx, domid, false, info);
 
+out:
     return rc;
 }
 
@@ -722,14 +722,10 @@ out:
 }
 
 static int hvm_build_set_params(xc_interface *handle, uint32_t domid,
-                                libxl_domain_build_info *info,
-                                int store_evtchn, unsigned long *store_mfn,
-                                int console_evtchn, unsigned long *console_mfn,
-                                domid_t store_domid, domid_t console_domid)
+                                libxl_domain_build_info *info)
 {
     struct hvm_info_table *va_hvm;
     uint8_t *va_map, sum;
-    uint64_t str_mfn, cons_mfn;
     int i;
 
     if (info->type == LIBXL_DOMAIN_TYPE_HVM) {
@@ -749,14 +745,6 @@ static int hvm_build_set_params(xc_interface *handle, uint32_t domid,
         va_hvm->checksum -= sum;
         munmap(va_map, XC_PAGE_SIZE);
     }
-
-    xc_hvm_param_get(handle, domid, HVM_PARAM_STORE_PFN, &str_mfn);
-    xc_hvm_param_get(handle, domid, HVM_PARAM_CONSOLE_PFN, &cons_mfn);
-    xc_hvm_param_set(handle, domid, HVM_PARAM_STORE_EVTCHN, store_evtchn);
-    xc_hvm_param_set(handle, domid, HVM_PARAM_CONSOLE_EVTCHN, console_evtchn);
-
-    *store_mfn = str_mfn;
-    *console_mfn = cons_mfn;
 
     return 0;
 }
@@ -1123,7 +1111,9 @@ int libxl__build_hvm(libxl__gc *gc, uint32_t domid,
     dom->vga_hole_size = device_model ? LIBXL_VGA_HOLE_SIZE : 0;
     dom->device_model = device_model;
     dom->max_vcpus = info->max_vcpus;
+    dom->console_evtchn = state->console_port;
     dom->console_domid = state->console_domid;
+    dom->xenstore_evtchn = state->store_port;
     dom->xenstore_domid = state->store_domid;
 
     rc = libxl__domain_device_construct_rdm(gc, d_config,
@@ -1169,14 +1159,14 @@ int libxl__build_hvm(libxl__gc *gc, uint32_t domid,
     if (rc != 0)
         goto out;
 
-    rc = hvm_build_set_params(ctx->xch, domid, info, state->store_port,
-                               &state->store_mfn, state->console_port,
-                               &state->console_mfn, state->store_domid,
-                               state->console_domid);
+    rc = hvm_build_set_params(ctx->xch, domid, info);
     if (rc != 0) {
         LOG(ERROR, "hvm build set params failed");
         goto out;
     }
+
+    state->console_mfn = dom->console_pfn;
+    state->store_mfn = dom->xenstore_pfn;
     state->vuart_gfn = dom->vuart_gfn;
 
     rc = hvm_build_set_xs_values(gc, domid, dom, info);
@@ -1458,6 +1448,32 @@ out:
     CTX_UNLOCK;
     GC_FREE;
     return rc;
+}
+
+int libxl__domain_set_paging_mempool_size(
+    libxl__gc *gc, libxl_domain_config *d_config, uint32_t domid)
+{
+    uint64_t shadow_mem;
+
+    shadow_mem = d_config->b_info.shadow_memkb;
+    shadow_mem <<= 10;
+
+    if ((shadow_mem >> 10) != d_config->b_info.shadow_memkb) {
+        LOGED(ERROR, domid,
+              "shadow_memkb value %"PRIu64"kB too large",
+              d_config->b_info.shadow_memkb);
+        return ERROR_FAIL;
+    }
+
+    int r = xc_set_paging_mempool_size(CTX->xch, domid, shadow_mem);
+    if (r) {
+        LOGED(ERROR, domid,
+              "Failed to set paging mempool size to %"PRIu64"kB",
+              d_config->b_info.shadow_memkb);
+        return ERROR_FAIL;
+    }
+
+    return 0;
 }
 
 /*

@@ -12,7 +12,9 @@
  * this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
+#include <xen/cpu.h>
 #include <xen/sched.h>
+#include <xen/iocap.h>
 #include <xen/iommu.h>
 #include <xen/paging.h>
 #include <xen/guest_access.h>
@@ -24,10 +26,13 @@
 #include <asm/hvm/io.h>
 #include <asm/io_apic.h>
 #include <asm/mem_paging.h>
+#include <asm/pt-contig-markers.h>
 #include <asm/setup.h>
 
 const struct iommu_init_ops *__initdata iommu_init_ops;
-struct iommu_ops __read_mostly iommu_ops;
+struct iommu_ops __ro_after_init iommu_ops;
+bool __read_mostly iommu_non_coherent;
+bool __initdata iommu_superpages = true;
 
 enum iommu_intremap __read_mostly iommu_intremap = iommu_intremap_full;
 
@@ -43,14 +48,17 @@ bool __read_mostly iommu_intpost;
 
 void __init acpi_iommu_init(void)
 {
-    int ret;
+    int ret = -ENODEV;
 
     if ( !iommu_enable && !iommu_intremap )
         return;
 
-    ret = acpi_dmar_init();
-    if ( ret == -ENODEV )
-        ret = acpi_ivrs_init();
+    if ( !acpi_disabled )
+    {
+        ret = acpi_dmar_init();
+        if ( ret == -ENODEV )
+            ret = acpi_ivrs_init();
+    }
 
     if ( ret )
     {
@@ -98,7 +106,12 @@ int __init iommu_hardware_setup(void)
         mask_IO_APIC_setup(ioapic_entries);
     }
 
+    if ( !iommu_superpages )
+        iommu_ops.page_sizes &= PAGE_SIZE_4K;
+
     rc = iommu_init_ops->setup();
+
+    ASSERT(iommu_superpages || iommu_ops.page_sizes == PAGE_SIZE_4K);
 
     if ( ioapic_entries )
     {
@@ -125,7 +138,7 @@ int iommu_enable_x2apic(void)
     if ( !iommu_ops.enable_x2apic )
         return -EOPNOTSUPP;
 
-    return iommu_ops.enable_x2apic();
+    return iommu_call(&iommu_ops, enable_x2apic);
 }
 
 void iommu_update_ire_from_apic(
@@ -142,7 +155,7 @@ unsigned int iommu_read_apic_from_ire(unsigned int apic, unsigned int reg)
 int __init iommu_setup_hpet_msi(struct msi_desc *msi)
 {
     const struct iommu_ops *ops = iommu_get_ops();
-    return ops->setup_hpet_msi ? ops->setup_hpet_msi(msi) : -ENODEV;
+    return ops->setup_hpet_msi ? iommu_call(ops, setup_hpet_msi, msi) : -ENODEV;
 }
 
 void __hwdom_init arch_iommu_check_autotranslated_hwdom(struct domain *d)
@@ -271,12 +284,12 @@ void iommu_identity_map_teardown(struct domain *d)
     }
 }
 
-static bool __hwdom_init hwdom_iommu_map(const struct domain *d,
-                                         unsigned long pfn,
-                                         unsigned long max_pfn)
+static unsigned int __hwdom_init hwdom_iommu_map(const struct domain *d,
+                                                 unsigned long pfn,
+                                                 unsigned long max_pfn)
 {
     mfn_t mfn = _mfn(pfn);
-    unsigned int i, type;
+    unsigned int i, type, perms = IOMMUF_readable | IOMMUF_writable;
 
     /*
      * Set up 1:1 mapping for dom0. Default to include only conventional RAM
@@ -285,50 +298,66 @@ static bool __hwdom_init hwdom_iommu_map(const struct domain *d,
      * that fall in unusable ranges for PV Dom0.
      */
     if ( (pfn > max_pfn && !mfn_valid(mfn)) || xen_in_range(pfn) )
-        return false;
+        return 0;
 
     switch ( type = page_get_ram_type(mfn) )
     {
     case RAM_TYPE_UNUSABLE:
-        return false;
+        return 0;
 
     case RAM_TYPE_CONVENTIONAL:
         if ( iommu_hwdom_strict )
-            return false;
+            return 0;
         break;
 
     default:
         if ( type & RAM_TYPE_RESERVED )
         {
             if ( !iommu_hwdom_inclusive && !iommu_hwdom_reserved )
-                return false;
+                perms = 0;
         }
-        else if ( is_hvm_domain(d) || !iommu_hwdom_inclusive || pfn > max_pfn )
-            return false;
+        else if ( is_hvm_domain(d) )
+            return 0;
+        else if ( !iommu_hwdom_inclusive || pfn > max_pfn )
+            perms = 0;
     }
 
     /* Check that it doesn't overlap with the Interrupt Address Range. */
     if ( pfn >= 0xfee00 && pfn <= 0xfeeff )
-        return false;
+        return 0;
     /* ... or the IO-APIC */
-    for ( i = 0; has_vioapic(d) && i < d->arch.hvm.nr_vioapics; i++ )
-        if ( pfn == PFN_DOWN(domain_vioapic(d, i)->base_address) )
-            return false;
+    if ( has_vioapic(d) )
+    {
+        for ( i = 0; i < d->arch.hvm.nr_vioapics; i++ )
+            if ( pfn == PFN_DOWN(domain_vioapic(d, i)->base_address) )
+                return 0;
+    }
+    else if ( is_pv_domain(d) )
+    {
+        /*
+         * Be consistent with CPU mappings: Dom0 is permitted to establish r/o
+         * ones there (also for e.g. HPET in certain cases), so it should also
+         * have such established for IOMMUs.
+         */
+        if ( iomem_access_permitted(d, pfn, pfn) &&
+             rangeset_contains_singleton(mmio_ro_ranges, pfn) )
+            perms = IOMMUF_readable;
+    }
     /*
      * ... or the PCIe MCFG regions.
      * TODO: runtime added MMCFG regions are not checked to make sure they
      * don't overlap with already mapped regions, thus preventing trapping.
      */
     if ( has_vpci(d) && vpci_is_mmcfg_address(d, pfn_to_paddr(pfn)) )
-        return false;
+        return 0;
 
-    return true;
+    return perms;
 }
 
 void __hwdom_init arch_iommu_hwdom_init(struct domain *d)
 {
-    unsigned long i, top, max_pfn;
-    unsigned int flush_flags = 0;
+    unsigned long i, top, max_pfn, start, count;
+    unsigned int flush_flags = 0, start_perms = 0;
 
     BUG_ON(!is_hardware_domain(d));
 
@@ -359,27 +388,57 @@ void __hwdom_init arch_iommu_hwdom_init(struct domain *d)
      * First Mb will get mapped in one go by pvh_populate_p2m(). Avoid
      * setting up potentially conflicting mappings here.
      */
-    i = paging_mode_translate(d) ? PFN_DOWN(MB(1)) : 0;
+    start = paging_mode_translate(d) ? PFN_DOWN(MB(1)) : 0;
 
-    for ( ; i < top; i++ )
+    for ( i = start, count = 0; i < top; )
     {
         unsigned long pfn = pdx_to_pfn(i);
-        int rc;
+        unsigned int perms = hwdom_iommu_map(d, pfn, max_pfn);
 
-        if ( !hwdom_iommu_map(d, pfn, max_pfn) )
-            rc = 0;
+        if ( !perms )
+            /* nothing */;
         else if ( paging_mode_translate(d) )
-            rc = set_identity_p2m_entry(d, pfn, p2m_access_rw, 0);
+        {
+            int rc;
+
+            rc = p2m_add_identity_entry(d, pfn,
+                                        perms & IOMMUF_writable ? p2m_access_rw
+                                                                : p2m_access_r,
+                                        0);
+            if ( rc )
+                printk(XENLOG_WARNING
+                       "%pd: identity mapping of %lx failed: %d\n",
+                       d, pfn, rc);
+        }
+        else if ( pfn != start + count || perms != start_perms )
+        {
+            long rc;
+
+        commit:
+            while ( (rc = iommu_map(d, _dfn(start), _mfn(start), count,
+                                    start_perms | IOMMUF_preempt,
+                                    &flush_flags)) > 0 )
+            {
+                start += rc;
+                count -= rc;
+                process_pending_softirqs();
+            }
+            if ( rc )
+                printk(XENLOG_WARNING
+                       "%pd: IOMMU identity mapping of [%lx,%lx) failed: %ld\n",
+                       d, start, start + count, rc);
+            start = pfn;
+            count = 1;
+            start_perms = perms;
+        }
         else
-            rc = iommu_map(d, _dfn(pfn), _mfn(pfn), 1ul << PAGE_ORDER_4K,
-                           IOMMUF_readable | IOMMUF_writable, &flush_flags);
+            ++count;
 
-        if ( rc )
-            printk(XENLOG_WARNING "%pd: identity %smapping of %lx failed: %d\n",
-                   d, !paging_mode_translate(d) ? "IOMMU " : "", pfn, rc);
-
-        if (!(i & 0xfffff))
+        if ( !(++i & 0xfffff) )
             process_pending_softirqs();
+
+        if ( i == top && count )
+            goto commit;
     }
 
     /* Use if to avoid compiler warning */
@@ -392,15 +451,23 @@ void arch_pci_init_pdev(struct pci_dev *pdev)
     pdev->arch.pseudo_domid = DOMID_INVALID;
 }
 
-unsigned long *__init iommu_init_domid(void)
+unsigned long *__init iommu_init_domid(domid_t reserve)
 {
+    unsigned long *map;
+
     if ( !iommu_quarantine )
         return ZERO_BLOCK_PTR;
 
     BUILD_BUG_ON(DOMID_MASK * 2U >= UINT16_MAX);
 
-    return xzalloc_array(unsigned long,
-                         BITS_TO_LONGS(UINT16_MAX - DOMID_MASK));
+    map = xzalloc_array(unsigned long, BITS_TO_LONGS(UINT16_MAX - DOMID_MASK));
+    if ( map && reserve != DOMID_INVALID )
+    {
+        ASSERT(reserve > DOMID_MASK);
+        __set_bit(reserve & DOMID_MASK, map);
+    }
+
+    return map;
 }
 
 domid_t iommu_alloc_domid(unsigned long *map)
@@ -455,7 +522,7 @@ int iommu_free_pgtables(struct domain *d)
      * Pages will be moved to the free list below. So we want to
      * clear the root page-table to avoid any potential use after-free.
      */
-    hd->platform_ops->clear_root_pgtable(d);
+    iommu_vcall(hd->platform_ops, clear_root_pgtable, d);
 
     while ( (pg = page_list_remove_head(&hd->arch.pgtables.list)) )
     {
@@ -468,11 +535,12 @@ int iommu_free_pgtables(struct domain *d)
     return 0;
 }
 
-struct page_info *iommu_alloc_pgtable(struct domain_iommu *hd)
+struct page_info *iommu_alloc_pgtable(struct domain_iommu *hd,
+                                      uint64_t contig_mask)
 {
     unsigned int memflags = 0;
     struct page_info *pg;
-    void *p;
+    uint64_t *p;
 
 #ifdef CONFIG_NUMA
     if ( hd->node != NUMA_NO_NODE )
@@ -484,10 +552,31 @@ struct page_info *iommu_alloc_pgtable(struct domain_iommu *hd)
         return NULL;
 
     p = __map_domain_page(pg);
-    clear_page(p);
 
-    if ( hd->platform_ops->sync_cache )
-        iommu_vcall(hd->platform_ops, sync_cache, p, PAGE_SIZE);
+    if ( contig_mask )
+    {
+        /* See pt-contig-markers.h for a description of the marker scheme. */
+        unsigned int i, shift = find_first_set_bit(contig_mask);
+
+        ASSERT((CONTIG_LEVEL_SHIFT & (contig_mask >> shift)) == CONTIG_LEVEL_SHIFT);
+
+        p[0] = (CONTIG_LEVEL_SHIFT + 0ull) << shift;
+        p[1] = 0;
+        p[2] = 1ull << shift;
+        p[3] = 0;
+
+        for ( i = 4; i < PAGE_SIZE / sizeof(*p); i += 4 )
+        {
+            p[i + 0] = (find_first_set_bit(i) + 0ull) << shift;
+            p[i + 1] = 0;
+            p[i + 2] = 1ull << shift;
+            p[i + 3] = 0;
+        }
+    }
+    else
+        clear_page(p);
+
+    iommu_sync_cache(p, PAGE_SIZE);
 
     unmap_domain_page(p);
 
@@ -497,6 +586,105 @@ struct page_info *iommu_alloc_pgtable(struct domain_iommu *hd)
 
     return pg;
 }
+
+/*
+ * Intermediate page tables which get replaced by large pages may only be
+ * freed after a suitable IOTLB flush. Hence such pages get queued on a
+ * per-CPU list, with a per-CPU tasklet processing the list on the assumption
+ * that the necessary IOTLB flush will have occurred by the time tasklets get
+ * to run. (List and tasklet being per-CPU has the benefit of accesses not
+ * requiring any locking.)
+ */
+static DEFINE_PER_CPU(struct page_list_head, free_pgt_list);
+static DEFINE_PER_CPU(struct tasklet, free_pgt_tasklet);
+
+static void cf_check free_queued_pgtables(void *arg)
+{
+    struct page_list_head *list = arg;
+    struct page_info *pg;
+    unsigned int done = 0;
+
+    ASSERT(list == &this_cpu(free_pgt_list));
+
+    while ( (pg = page_list_remove_head(list)) )
+    {
+        free_domheap_page(pg);
+
+        /*
+         * Just to be on the safe side, check for processing softirqs every
+         * once in a while.  Generally it is expected that parties queuing
+         * pages for freeing will find a need for preemption before too many
+         * pages can be queued.  Granularity of checking is somewhat arbitrary.
+         */
+        if ( !(++done & 0x1ff) )
+             process_pending_softirqs();
+    }
+}
+
+void iommu_queue_free_pgtable(struct domain_iommu *hd, struct page_info *pg)
+{
+    unsigned int cpu = smp_processor_id();
+
+    spin_lock(&hd->arch.pgtables.lock);
+    page_list_del(pg, &hd->arch.pgtables.list);
+    spin_unlock(&hd->arch.pgtables.lock);
+
+    page_list_add_tail(pg, &per_cpu(free_pgt_list, cpu));
+
+    tasklet_schedule(&per_cpu(free_pgt_tasklet, cpu));
+}
+
+static int cf_check cpu_callback(
+    struct notifier_block *nfb, unsigned long action, void *hcpu)
+{
+    unsigned int cpu = (unsigned long)hcpu;
+    struct page_list_head *list = &per_cpu(free_pgt_list, cpu);
+    struct tasklet *tasklet = &per_cpu(free_pgt_tasklet, cpu);
+
+    switch ( action )
+    {
+    case CPU_DOWN_PREPARE:
+        tasklet_kill(tasklet);
+        break;
+
+    case CPU_DEAD:
+        if ( !page_list_empty(list) )
+        {
+            page_list_splice(list, &this_cpu(free_pgt_list));
+            INIT_PAGE_LIST_HEAD(list);
+            tasklet_schedule(&this_cpu(free_pgt_tasklet));
+        }
+        break;
+
+    case CPU_UP_PREPARE:
+        INIT_PAGE_LIST_HEAD(list);
+        fallthrough;
+    case CPU_DOWN_FAILED:
+        tasklet_init(tasklet, free_queued_pgtables, list);
+        if ( !page_list_empty(list) )
+            tasklet_schedule(tasklet);
+        break;
+    }
+
+    return NOTIFY_DONE;
+}
+
+static struct notifier_block cpu_nfb = {
+    .notifier_call = cpu_callback,
+};
+
+static int __init cf_check bsp_init(void)
+{
+    if ( iommu_enabled )
+    {
+        cpu_callback(&cpu_nfb, CPU_UP_PREPARE,
+                     (void *)(unsigned long)smp_processor_id());
+        register_cpu_notifier(&cpu_nfb);
+    }
+
+    return 0;
+}
+presmp_initcall(bsp_init);
 
 bool arch_iommu_use_permitted(const struct domain *d)
 {
@@ -508,8 +696,16 @@ bool arch_iommu_use_permitted(const struct domain *d)
            (likely(!mem_sharing_enabled(d)) &&
             likely(!mem_paging_enabled(d)) &&
             likely(!p2m_pod_active(d)) &&
-            likely(!p2m_get_hostp2m(d)->global_logdirty));
+            likely(!p2m_is_global_logdirty(d)));
 }
+
+static int __init cf_check adjust_irq_affinities(void)
+{
+    iommu_adjust_irq_affinities();
+
+    return 0;
+}
+__initcall(adjust_irq_affinities);
 
 /*
  * Local variables:

@@ -47,10 +47,11 @@ enum io_state try_fwd_ioserv(struct cpu_user_regs *regs,
                              struct vcpu *v, mmio_info_t *info)
 {
     struct vcpu_io *vio = &v->io;
+    const struct instr_details instr = info->dabt_instr;
+    struct hsr_dabt dabt = info->dabt;
     ioreq_t p = {
         .type = IOREQ_TYPE_COPY,
         .addr = info->gpa,
-        .size = 1 << info->dabt.size,
         .count = 1,
         .dir = !info->dabt.write,
         /*
@@ -60,7 +61,6 @@ enum io_state try_fwd_ioserv(struct cpu_user_regs *regs,
          * memory access. So for now, we can safely always set to 0.
          */
         .df = 0,
-        .data = get_user_reg(regs, info->dabt.reg),
         .state = STATE_IOREQ_READY,
     };
     struct ioreq_server *s = NULL;
@@ -72,15 +72,28 @@ enum io_state try_fwd_ioserv(struct cpu_user_regs *regs,
         return IO_ABORT;
     }
 
+    if ( instr.state == INSTR_CACHE )
+        p.size = dcache_line_bytes;
+    else
+        p.size = 1U << info->dabt.size;
+
     s = ioreq_server_select(v->domain, &p);
     if ( !s )
         return IO_UNHANDLED;
 
-    if ( !info->dabt.valid )
-        return IO_ABORT;
+    /*
+     * When the data abort is caused due to cache maintenance and the address
+     * belongs to an emulated region, Xen should ignore this instruction.
+     */
+    if ( instr.state == INSTR_CACHE )
+        return IO_HANDLED;
 
+    ASSERT(dabt.valid);
+
+    p.data = get_user_reg(regs, info->dabt.reg);
     vio->req = p;
     vio->suspended = false;
+    vio->info.dabt_instr = instr;
 
     rc = ioreq_send(s, &p, 0);
     if ( rc != IO_RETRY || vio->suspended )
@@ -96,6 +109,7 @@ enum io_state try_fwd_ioserv(struct cpu_user_regs *regs,
 bool arch_ioreq_complete_mmio(void)
 {
     struct vcpu *v = current;
+    struct instr_details dabt_instr = v->io.info.dabt_instr;
     struct cpu_user_regs *regs = guest_cpu_user_regs();
     const union hsr hsr = { .bits = regs->hsr };
 
@@ -107,6 +121,7 @@ bool arch_ioreq_complete_mmio(void)
 
     if ( handle_ioserv(regs, v) == IO_HANDLED )
     {
+        finalize_instr_emulation(&dabt_instr);
         advance_pc(regs, hsr);
         return true;
     }

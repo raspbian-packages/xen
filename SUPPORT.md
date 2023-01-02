@@ -9,13 +9,13 @@ for the definitions of the support status levels etc.
 
 # Release Support
 
-    Xen-Version: 4.16
-    Initial-Release: 2021-12-02
-    Supported-Until: 2023-06-02
-    Security-Support-Until: 2024-12-02
+    Xen-Version: 4.17
+    Initial-Release: 2022-12-12
+    Supported-Until: 2024-06-12
+    Security-Support-Until: 2025-12-12
 
 Release Notes
-: <a href="https://wiki.xenproject.org/wiki/Xen_Project_4.16_Release_Notes">RN</a>
+: <a href="https://wiki.xenproject.org/wiki/Xen_Project_4.17_Release_Notes">RN</a>
 
 # Feature Support
 
@@ -47,6 +47,12 @@ For the Cortex A57 r0p0 - r1p1, see Errata 832075.
 ### Physical CPU Hotplug
 
     Status, x86: Supported
+
+### Physical Memory
+
+    Status, x86: Supported up to 12 TiB. Hosts with more memory are supported, but not security supported.
+    Status, Arm32: Supported up to 12 GiB
+    Status, Arm64: Supported up to 2 TiB
 
 ### Physical Memory Hotplug
 
@@ -114,6 +120,14 @@ Dom0 support requires an IOMMU (Intel VT-d / AMD IOMMU).
 ARM only has one guest type at the moment
 
     Status: Supported
+
+## Guest Limits
+
+### Memory
+
+    Status, x86: Supported up to 8 TiB. Guests with more memory, but less than 16 TiB, are supported, but not security supported.
+    Status, Arm32: Supported up to 12 GiB
+    Status, Arm64: Supported up to 1 TiB
 
 ## Hypervisor file system
 
@@ -277,11 +291,32 @@ to boot with memory < maxmem.
 
     Status, x86 HVM: Supported
 
+### Static Allocation
+
+Static allocation refers to domains for which memory areas are
+pre-defined by configuration using physical address ranges.
+
+    Status, ARM: Tech Preview
+
+### Static Heap
+
+Allow reserving parts of RAM through the device tree using physical
+address ranges as heap.
+
+    Status, ARM: Tech Preview
+
 ### Memory Sharing
 
 Allow sharing of identical pages between guests
 
     Status, x86 HVM: Experimental
+
+### Static Memory Sharing
+
+Allow to statically set up shared memory on dom0less system,
+enabling domains to do shm-based communication
+
+    Status, ARM: Tech Preview
 
 ### Memory Paging
 
@@ -416,7 +451,11 @@ Guest-side driver capable of speaking the Xen PV block protocol
     Status, FreeBSD: Supported, Security support external
     Status, NetBSD: Supported, Security support external
     Status, OpenBSD: Supported, Security support external
-    Status, Windows: Supported
+    Status, Windows: Supported, with caveats
+
+Windows frontend currently trusts the backend;
+bugs in the frontend which allow backend to cause mischief will not be
+considered security vulnerabilities.
 
 ### Netfront
 
@@ -426,20 +465,32 @@ Guest-side driver capable of speaking the Xen PV networking protocol
     Status, FreeBSD: Supported, Security support external
     Status, NetBSD: Supported, Security support external
     Status, OpenBSD: Supported, Security support external
-    Status, Windows: Supported
+    Status, Windows: Supported, with caveats
+
+Windows frontend currently trusts the backend;
+bugs in the frontend which allow backend to cause mischief will not be
+considered security vulnerabilities.
 
 ### PV Framebuffer (frontend)
 
 Guest-side driver capable of speaking the Xen PV Framebuffer protocol
 
-    Status, Linux (xen-fbfront): Supported
+    Status, Linux (xen-fbfront): Supported, with caveats
+
+Linux frontend currently trusts the backend;
+bugs in the frontend which allow backend to cause mischief will not be
+considered security vulnerabilities.
 
 ### PV display (frontend)
 
 Guest-side driver capable of speaking the Xen PV display protocol
 
-    Status, Linux: Supported (outside of "backend allocation" mode)
-    Status, Linux: Experimental (in "backend allocation" mode)
+    Status, Linux, outside of "backend allocation" mode: Supported, with caveats
+    Status, Linux, "backend allocation" mode: Experimental
+
+Linux frontend currently trusts the backend;
+bugs in the frontend which allow backend to cause mischief will not be
+considered security vulnerabilities.
 
 ### PV Console (frontend)
 
@@ -448,7 +499,11 @@ Guest-side driver capable of speaking the Xen PV console protocol
     Status, Linux (hvc_xen): Supported
     Status, FreeBSD: Supported, Security support external
     Status, NetBSD: Supported, Security support external
-    Status, Windows: Supported
+    Status, Windows: Supported, with caveats
+
+Windows frontend currently trusts the backend;
+bugs in the frontend which allow backend to cause mischief will not be
+considered security vulnerabilities.
 
 ### PV keyboard (frontend)
 
@@ -456,11 +511,19 @@ Guest-side driver capable of speaking the Xen PV keyboard protocol.
 Note that the "keyboard protocol" includes mouse / pointer /
 multi-touch support as well.
 
-    Status, Linux (xen-kbdfront): Supported
+    Status, Linux (xen-kbdfront): Supported, with caveats
+
+Linux frontend currently trusts the backend;
+bugs in the frontend which allow backend to cause mischief will not be
+considered security vulnerabilities.
 
 ### PV USB (frontend)
 
-    Status, Linux: Supported
+    Status, Linux: Supported, with caveats
+
+Linux frontend currently trusts the backend;
+bugs in the frontend which allow backend to cause mischief will not be
+considered security vulnerabilities.
 
 ### PV SCSI protocol (frontend)
 
@@ -468,6 +531,10 @@ multi-touch support as well.
 
 NB that while the PV SCSI frontend is in Linux and tested regularly,
 there is currently no xl support.
+
+Linux frontend currently trusts the backend;
+bugs in the frontend which allow backend to cause mischief will not be
+considered security vulnerabilities.
 
 ### PV TPM (frontend)
 
@@ -491,7 +558,11 @@ Guest-side driver capable of making pv system calls
 
 Guest-side driver capable of speaking the Xen PV sound protocol
 
-    Status, Linux: Supported
+    Status, Linux: Supported, with caveats
+
+Linux frontend currently trusts the backend;
+bugs in the frontend which allow backend to cause mischief will not be
+considered security vulnerabilities.
 
 ## Virtual device support, host side
 
@@ -845,6 +916,24 @@ OVMF firmware implements the UEFI boot protocol.
 
     Status, qemu-xen: Supported
 
+## Dom0less
+
+Guest creation from the hypervisor at boot without Dom0 intervention.
+
+    Status, ARM: Supported
+
+Memory of dom0less DomUs is not scrubbed at boot when bootscrub=on or
+bootscrub=off are passed as Xen command line parameters. (Memory should
+be scrubbed with bootscrub=idle.) No XSAs will be issues due to
+unscrubbed memory.
+
+## Static Event Channel
+
+Allow to setup the static event channel on dom0less system, enabling domains
+to send/receive notifications.
+
+    Status, ARM: Tech Preview
+
 # Format and definitions
 
 This file contains prose, and machine-readable fragments.
@@ -992,6 +1081,9 @@ are given the following labels:
 
     This feature is security supported
     by a different organization (not the XenProject).
+    The extent of support is defined by that organization.
+    It might be limited, e.g. like described in **Supported, with caveats**
+    below.
     See **External security support** below.
 
   * **Supported, with caveats**

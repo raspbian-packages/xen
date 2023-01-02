@@ -373,9 +373,7 @@ static void __init gicv2_dist_init(void)
 
     /* Default priority for global interrupts */
     for ( i = 32; i < nr_lines; i += 4 )
-        writel_gicd(GIC_PRI_IRQ << 24 | GIC_PRI_IRQ << 16 |
-                    GIC_PRI_IRQ << 8 | GIC_PRI_IRQ,
-                    GICD_IPRIORITYR + (i / 4) * 4);
+        writel_gicd(GIC_PRI_IRQ_ALL, GICD_IPRIORITYR + (i / 4) * 4);
 
     /* Disable all global interrupts */
     for ( i = 32; i < nr_lines; i += 32 )
@@ -403,15 +401,11 @@ static void gicv2_cpu_init(void)
 
     /* Set SGI priorities */
     for ( i = 0; i < 16; i += 4 )
-        writel_gicd(GIC_PRI_IPI << 24 | GIC_PRI_IPI << 16 |
-                    GIC_PRI_IPI << 8 | GIC_PRI_IPI,
-                    GICD_IPRIORITYR + (i / 4) * 4);
+        writel_gicd(GIC_PRI_IPI_ALL, GICD_IPRIORITYR + (i / 4) * 4);
 
     /* Set PPI priorities */
     for ( i = 16; i < 32; i += 4 )
-        writel_gicd(GIC_PRI_IRQ << 24 | GIC_PRI_IRQ << 16 |
-                    GIC_PRI_IRQ << 8 | GIC_PRI_IRQ,
-                    GICD_IPRIORITYR + (i / 4) * 4);
+        writel_gicd(GIC_PRI_IRQ_ALL, GICD_IPRIORITYR + (i / 4) * 4);
 
     /* Local settings: interface controller */
     /* Don't mask by priority */
@@ -685,7 +679,7 @@ static void gicv2_irq_set_affinity(struct irq_desc *desc, const cpumask_t *cpu_m
     spin_unlock(&gicv2.lock);
 }
 
-static int gicv2_map_hwdown_extra_mappings(struct domain *d)
+static int gicv2_map_hwdom_extra_mappings(struct domain *d)
 {
     const struct v2m_data *v2m_data;
 
@@ -1089,7 +1083,7 @@ static void __init gicv2_dt_init(void)
     gicv2_extension_dt_init(node);
 }
 
-static int gicv2_iomem_deny_access(const struct domain *d)
+static int gicv2_iomem_deny_access(struct domain *d)
 {
     int rc;
     unsigned long mfn, nr;
@@ -1358,7 +1352,7 @@ const static struct gic_hw_operations gicv2_ops = {
     .make_hwdom_madt     = gicv2_make_hwdom_madt,
     .get_hwdom_extra_madt_size = gicv2_get_hwdom_extra_madt_size,
 #endif
-    .map_hwdom_extra_mappings = gicv2_map_hwdown_extra_mappings,
+    .map_hwdom_extra_mappings = gicv2_map_hwdom_extra_mappings,
     .iomem_deny_access   = gicv2_iomem_deny_access,
     .do_LPI              = gicv2_do_LPI,
 };

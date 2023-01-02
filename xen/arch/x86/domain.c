@@ -73,11 +73,11 @@
 
 DEFINE_PER_CPU(struct vcpu *, curr_vcpu);
 
-static void default_idle(void);
+static void cf_check default_idle(void);
 void (*pm_idle) (void) __read_mostly = default_idle;
 void (*dead_idle) (void) __read_mostly = default_dead_idle;
 
-static void default_idle(void)
+static void cf_check default_idle(void)
 {
     struct cpu_info *info = get_cpu_info();
 
@@ -92,7 +92,7 @@ static void default_idle(void)
         local_irq_enable();
 }
 
-void default_dead_idle(void)
+void cf_check default_dead_idle(void)
 {
     /*
      * When going into S3, without flushing caches modified data may be
@@ -131,7 +131,7 @@ void play_dead(void)
         dead_idle();
 }
 
-static void noreturn idle_loop(void)
+static void noreturn cf_check idle_loop(void)
 {
     unsigned int cpu = smp_processor_id();
     /*
@@ -721,7 +721,8 @@ static bool emulation_flags_ok(const struct domain *d, uint32_t emflags)
 }
 
 int arch_domain_create(struct domain *d,
-                       struct xen_domctl_createdomain *config)
+                       struct xen_domctl_createdomain *config,
+                       unsigned int flags)
 {
     bool paging_initialised = false;
     uint32_t emflags;
@@ -830,7 +831,7 @@ int arch_domain_create(struct domain *d,
 
     if ( is_hvm_domain(d) )
     {
-        if ( (rc = hvm_domain_initialise(d)) != 0 )
+        if ( (rc = hvm_domain_initialise(d, config)) != 0 )
             goto fail;
     }
     else if ( is_pv_domain(d) )
@@ -939,7 +940,7 @@ int arch_domain_soft_reset(struct domain *d)
     if ( !is_hvm_domain(d) )
         return -EINVAL;
 
-    spin_lock(&d->event_lock);
+    write_lock(&d->event_lock);
     for ( i = 0; i < d->nr_pirqs ; i++ )
     {
         if ( domain_pirq_to_emuirq(d, i) != IRQ_UNBOUND )
@@ -949,7 +950,7 @@ int arch_domain_soft_reset(struct domain *d)
                 break;
         }
     }
-    spin_unlock(&d->event_lock);
+    write_unlock(&d->event_lock);
 
     if ( ret )
         return ret;
@@ -1495,11 +1496,14 @@ int arch_vcpu_reset(struct vcpu *v)
     return 0;
 }
 
-long
-arch_do_vcpu_op(
-    int cmd, struct vcpu *v, XEN_GUEST_HANDLE_PARAM(void) arg)
+long do_vcpu_op(int cmd, unsigned int vcpuid, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     long rc = 0;
+    struct domain *d = current->domain;
+    struct vcpu *v;
+
+    if ( (v = domain_vcpu(d, vcpuid)) == NULL )
+        return -ENOENT;
 
     switch ( cmd )
     {
@@ -1551,7 +1555,7 @@ arch_do_vcpu_op(
     }
 
     default:
-        rc = -ENOSYS;
+        rc = common_vcpu_op(cmd, v, arg);
         break;
     }
 
@@ -1797,7 +1801,7 @@ static void save_segments(struct vcpu *v)
     }
 }
 
-void paravirt_ctxt_switch_from(struct vcpu *v)
+void cf_check paravirt_ctxt_switch_from(struct vcpu *v)
 {
     save_segments(v);
 
@@ -1811,7 +1815,7 @@ void paravirt_ctxt_switch_from(struct vcpu *v)
         write_debugreg(7, 0);
 }
 
-void paravirt_ctxt_switch_to(struct vcpu *v)
+void cf_check paravirt_ctxt_switch_to(struct vcpu *v)
 {
     root_pgentry_t *root_pgt = this_cpu(root_pgt);
 
@@ -2530,7 +2534,7 @@ void vcpu_mark_events_pending(struct vcpu *v)
         vcpu_kick(v);
 }
 
-static void vcpu_kick_softirq(void)
+static void cf_check vcpu_kick_softirq(void)
 {
     /*
      * Nothing to do here: we merely prevent notifiers from racing with checks
@@ -2539,26 +2543,12 @@ static void vcpu_kick_softirq(void)
      */
 }
 
-static int __init init_vcpu_kick_softirq(void)
+static int __init cf_check init_vcpu_kick_softirq(void)
 {
     open_softirq(VCPU_KICK_SOFTIRQ, vcpu_kick_softirq);
     return 0;
 }
 __initcall(init_vcpu_kick_softirq);
-
-void domain_pause_for_debugger(void)
-{
-#ifdef CONFIG_CRASH_DEBUG
-    struct vcpu *curr = current;
-    struct domain *d = curr->domain;
-
-    domain_pause_by_systemcontroller_nosync(d);
-
-    /* if gdbsx active, we just need to pause the domain */
-    if ( curr->arch.gdbsx_vcpu_event == 0 )
-        send_global_virq(VIRQ_DEBUGGER);
-#endif
-}
 
 /*
  * Local variables:

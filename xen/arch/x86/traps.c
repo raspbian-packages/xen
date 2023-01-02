@@ -29,12 +29,14 @@
 #include <xen/lib.h>
 #include <xen/err.h>
 #include <xen/errno.h>
+#include <xen/hypercall.h>
 #include <xen/mm.h>
 #include <xen/param.h>
 #include <xen/console.h>
 #include <xen/shutdown.h>
 #include <xen/guest_access.h>
 #include <asm/regs.h>
+#include <xen/debugger.h>
 #include <xen/delay.h>
 #include <xen/event.h>
 #include <xen/spinlock.h>
@@ -57,12 +59,12 @@
 #include <xen/bitops.h>
 #include <asm/desc.h>
 #include <asm/debugreg.h>
+#include <asm/gdbsx.h>
 #include <asm/smp.h>
 #include <asm/flushtlb.h>
 #include <asm/uaccess.h>
 #include <asm/i387.h>
 #include <asm/xstate.h>
-#include <asm/debugger.h>
 #include <asm/msr.h>
 #include <asm/nmi.h>
 #include <asm/xenoprof.h>
@@ -70,7 +72,6 @@
 #include <asm/x86_emulate.h>
 #include <asm/traps.h>
 #include <asm/hvm/vpt.h>
-#include <asm/hypercall.h>
 #include <asm/mce.h>
 #include <asm/apic.h>
 #include <asm/mc146818rtc.h>
@@ -125,46 +126,16 @@ DEFINE_PER_CPU_PAGE_ALIGNED(struct tss_page, tss_page);
 static int debug_stack_lines = 20;
 integer_param("debug_stack_lines", debug_stack_lines);
 
-static bool opt_ler;
+static bool __ro_after_init opt_ler;
 boolean_param("ler", opt_ler);
 
 /* LastExceptionFromIP on this hardware.  Zero if LER is not in use. */
-unsigned int __read_mostly ler_msr;
+unsigned int __ro_after_init ler_msr;
 
 const unsigned int nmi_cpu;
 
 #define stack_words_per_line 4
 #define ESP_BEFORE_EXCEPTION(regs) ((unsigned long *)regs->rsp)
-
-static void do_trap(struct cpu_user_regs *regs);
-static void do_reserved_trap(struct cpu_user_regs *regs);
-
-void (* const exception_table[TRAP_nr])(struct cpu_user_regs *regs) = {
-    [TRAP_divide_error]                 = do_trap,
-    [TRAP_debug]                        = do_debug,
-    [TRAP_nmi]                          = (void *)do_nmi,
-    [TRAP_int3]                         = do_int3,
-    [TRAP_overflow]                     = do_trap,
-    [TRAP_bounds]                       = do_trap,
-    [TRAP_invalid_op]                   = do_invalid_op,
-    [TRAP_no_device]                    = do_device_not_available,
-    [TRAP_double_fault]                 = do_reserved_trap,
-    [TRAP_copro_seg]                    = do_reserved_trap,
-    [TRAP_invalid_tss]                  = do_trap,
-    [TRAP_no_segment]                   = do_trap,
-    [TRAP_stack_error]                  = do_trap,
-    [TRAP_gp_fault]                     = do_general_protection,
-    [TRAP_page_fault]                   = do_page_fault,
-    [TRAP_spurious_int]                 = do_reserved_trap,
-    [TRAP_copro_error]                  = do_trap,
-    [TRAP_alignment_check]              = do_trap,
-    [TRAP_machine_check]                = (void *)do_machine_check,
-    [TRAP_simd_error]                   = do_trap,
-    [TRAP_virtualisation]               = do_reserved_trap,
-    [X86_EXC_CP]                        = do_entry_CP,
-    [X86_EXC_CP + 1 ...
-     (ARRAY_SIZE(exception_table) - 1)] = do_reserved_trap,
-};
 
 void show_code(const struct cpu_user_regs *regs)
 {
@@ -328,16 +299,13 @@ static void show_guest_stack(struct vcpu *v, const struct cpu_user_regs *regs)
 
     if ( v != current )
     {
-        struct vcpu *vcpu;
-
         if ( !guest_kernel_mode(v, regs) )
         {
             printk("User mode stack\n");
             return;
         }
 
-        vcpu = maddr_get_owner(read_cr3()) == v->domain ? v : NULL;
-        if ( !vcpu )
+        if ( maddr_get_owner(read_cr3()) != v->domain )
         {
             stack_page = stack = do_page_walk(v, (unsigned long)stack);
             if ( (unsigned long)stack < PAGE_SIZE )
@@ -622,7 +590,7 @@ static void show_trace(const struct cpu_user_regs *regs)
     printk("\n");
 }
 
-void show_stack(const struct cpu_user_regs *regs)
+static void show_stack(const struct cpu_user_regs *regs)
 {
     unsigned long *stack = ESP_BEFORE_EXCEPTION(regs), *stack_bottom, addr;
     int i;
@@ -653,15 +621,12 @@ void show_stack_overflow(unsigned int cpu, const struct cpu_user_regs *regs)
 {
     unsigned long esp = regs->rsp;
     unsigned long curr_stack_base = esp & ~(STACK_SIZE - 1);
-#ifdef MEMORY_GUARD
     unsigned long esp_top, esp_bottom;
-#endif
 
     if ( _p(curr_stack_base) != stack_base[cpu] )
         printk("Current stack base %p differs from expected %p\n",
                _p(curr_stack_base), stack_base[cpu]);
 
-#ifdef MEMORY_GUARD
     esp_bottom = (esp | (STACK_SIZE - 1)) + 1;
     esp_top    = esp_bottom - PRIMARY_STACK_SIZE;
 
@@ -689,7 +654,6 @@ void show_stack_overflow(unsigned int cpu, const struct cpu_user_regs *regs)
     _show_trace(esp, regs->rbp);
 
     printk("\n");
-#endif
 }
 
 void show_execution_state(const struct cpu_user_regs *regs)
@@ -702,6 +666,11 @@ void show_execution_state(const struct cpu_user_regs *regs)
     show_stack(regs);
 
     console_unlock_recursive_irqrestore(flags);
+}
+
+void cf_check show_execution_state_nonconst(struct cpu_user_regs *regs)
+{
+    show_execution_state(regs);
 }
 
 void vcpu_show_execution_state(struct vcpu *v)
@@ -775,36 +744,27 @@ static cpumask_t show_state_mask;
 static bool opt_show_all;
 boolean_param("async-show-all", opt_show_all);
 
-static int nmi_show_execution_state(const struct cpu_user_regs *regs, int cpu)
+static int cf_check nmi_show_execution_state(
+    const struct cpu_user_regs *regs, int cpu)
 {
     if ( !cpumask_test_cpu(cpu, &show_state_mask) )
         return 0;
 
     if ( opt_show_all )
         show_execution_state(regs);
+    else if ( guest_mode(regs) )
+        printk(XENLOG_ERR "CPU%d\t%pv\t%04x:%p in guest\n",
+               cpu, current, regs->cs, _p(regs->rip));
     else
-        printk(XENLOG_ERR "CPU%d @ %04x:%08lx (%pS)\n", cpu, regs->cs,
-               regs->rip, guest_mode(regs) ? NULL : _p(regs->rip));
+        printk(XENLOG_ERR "CPU%d\t%pv\t%04x:%p in Xen: %pS\n",
+               cpu, current, regs->cs, _p(regs->rip), _p(regs->rip));
+
     cpumask_clear_cpu(cpu, &show_state_mask);
 
     return 1;
 }
 
-const char *trapstr(unsigned int trapnr)
-{
-    static const char * const strings[] = {
-        "divide error", "debug", "nmi", "bkpt", "overflow", "bounds",
-        "invalid opcode", "device not available", "double fault",
-        "coprocessor segment", "invalid tss", "segment not found",
-        "stack error", "general protection fault", "page fault",
-        "spurious interrupt", "coprocessor error", "alignment check",
-        "machine check", "simd error", "virtualisation exception"
-    };
-
-    return trapnr < ARRAY_SIZE(strings) ? strings[trapnr] : "???";
-}
-
-static const char *vec_name(unsigned int vec)
+const char *vector_name(unsigned int vec)
 {
     static const char names[][4] = {
 #define P(x) [X86_EXC_ ## x] = "#" #x
@@ -874,24 +834,25 @@ void fatal_trap(const struct cpu_user_regs *regs, bool show_remote)
                     msecs = 10;
                 }
             }
+            if ( pending )
+                printk("Non-responding CPUs: {%*pbl}\n",
+                       CPUMASK_PR(&show_state_mask));
         }
     }
 
     panic("FATAL TRAP: vec %u, %s[%04x]%s\n",
-          trapnr, vec_name(trapnr), regs->error_code,
+          trapnr, vector_name(trapnr), regs->error_code,
           (regs->eflags & X86_EFLAGS_IF) ? "" : " IN INTERRUPT CONTEXT");
 }
 
-static void do_reserved_trap(struct cpu_user_regs *regs)
+void do_unhandled_trap(struct cpu_user_regs *regs)
 {
     unsigned int trapnr = regs->entry_vector;
 
     if ( debugger_trap_fatal(trapnr, regs) )
         return;
 
-    show_execution_state(regs);
-    panic("FATAL RESERVED TRAP: vec %u, %s[%04x]\n",
-          trapnr, vec_name(trapnr), regs->error_code);
+    fatal_trap(regs, false);
 }
 
 static void fixup_exception_return(struct cpu_user_regs *regs,
@@ -962,7 +923,7 @@ static bool extable_fixup(struct cpu_user_regs *regs, bool print)
      */
     if ( IS_ENABLED(CONFIG_DEBUG) && print )
         printk(XENLOG_GUEST XENLOG_WARNING "Fixup %s[%04x]: %p [%ps] -> %p\n",
-               vec_name(regs->entry_vector), regs->error_code,
+               vector_name(regs->entry_vector), regs->error_code,
                _p(regs->rip), _p(regs->rip), _p(fixup));
 
     fixup_exception_return(regs, fixup);
@@ -971,15 +932,12 @@ static bool extable_fixup(struct cpu_user_regs *regs, bool print)
     return true;
 }
 
-static void do_trap(struct cpu_user_regs *regs)
+void do_trap(struct cpu_user_regs *regs)
 {
     unsigned int trapnr = regs->entry_vector;
 
     if ( regs->error_code & X86_XEC_EXT )
         goto hardware_trap;
-
-    if ( debugger_trap_entry(trapnr, regs) )
-        return;
 
     ASSERT(trapnr < 32);
 
@@ -998,10 +956,7 @@ static void do_trap(struct cpu_user_regs *regs)
     if ( debugger_trap_fatal(trapnr, regs) )
         return;
 
-    show_execution_state(regs);
-    panic("FATAL TRAP: vector = %d (%s)\n"
-          "[error_code=%04x]\n",
-          trapnr, trapstr(trapnr), regs->error_code);
+    fatal_trap(regs, false);
 }
 
 int guest_rdmsr_xen(const struct vcpu *v, uint32_t idx, uint64_t *val)
@@ -1189,6 +1144,12 @@ void cpuid_hypervisor_leaves(const struct vcpu *v, uint32_t leaf,
         res->a |= XEN_HVM_CPUID_DOMID_PRESENT;
         res->c = d->domain_id;
 
+        /*
+         * Per-vCPU event channel upcalls are implemented and work
+         * correctly with PIRQs routed over event channels.
+         */
+        res->a |= XEN_HVM_CPUID_UPCALL_VECTOR;
+
         break;
 
     case 5: /* PV-specific parameters */
@@ -1211,9 +1172,6 @@ void do_invalid_op(struct cpu_user_regs *regs)
     unsigned long fixup;
     int id = -1, lineno;
     const struct virtual_region *region;
-
-    if ( debugger_trap_entry(TRAP_invalid_op, regs) )
-        return;
 
     if ( likely(guest_mode(regs)) )
     {
@@ -1319,8 +1277,7 @@ void do_invalid_op(struct cpu_user_regs *regs)
 
 void do_int3(struct cpu_user_regs *regs)
 {
-    if ( debugger_trap_entry(TRAP_int3, regs) )
-        return;
+    struct vcpu *curr = current;
 
     if ( !guest_mode(regs) )
     {
@@ -1331,6 +1288,13 @@ void do_int3(struct cpu_user_regs *regs)
             printk(XENLOG_DEBUG "Hit embedded breakpoint at %p [%ps]\n",
                    _p(regs->rip), _p(regs->rip));
 
+        return;
+    }
+
+    if ( guest_kernel_mode(curr, regs) && curr->domain->debugger_attached )
+    {
+        curr->arch.gdbsx_vcpu_event = TRAP_int3;
+        domain_pause_for_debugger();
         return;
     }
 
@@ -1610,9 +1574,6 @@ void do_page_fault(struct cpu_user_regs *regs)
     /* fixup_page_fault() might change regs->error_code, so cache it here. */
     error_code = regs->error_code;
 
-    if ( debugger_trap_entry(TRAP_page_fault, regs) )
-        return;
-
     perfc_incr(page_faults);
 
     /* Any shadow stack access fault is a bug in Xen. */
@@ -1710,9 +1671,6 @@ void do_general_protection(struct cpu_user_regs *regs)
 #ifdef CONFIG_PV
     struct vcpu *v = current;
 #endif
-
-    if ( debugger_trap_entry(TRAP_gp_fault, regs) )
-        return;
 
     if ( regs->error_code & X86_XEC_EXT )
         goto hardware_gp;
@@ -1870,29 +1828,28 @@ static void unknown_nmi_error(const struct cpu_user_regs *regs,
     }
 }
 
-static int dummy_nmi_callback(const struct cpu_user_regs *regs, int cpu)
-{
-    return 0;
-}
-
-static nmi_callback_t *nmi_callback = dummy_nmi_callback;
+static nmi_callback_t *__read_mostly nmi_callback;
 
 DEFINE_PER_CPU(unsigned int, nmi_count);
 
 void do_nmi(const struct cpu_user_regs *regs)
 {
     unsigned int cpu = smp_processor_id();
+    nmi_callback_t *callback;
     unsigned char reason = 0;
     bool handle_unknown = false;
 
     this_cpu(nmi_count)++;
     nmi_enter();
 
-    if ( nmi_callback(regs, cpu) )
-    {
-        nmi_exit();
-        return;
-    }
+    /*
+     * Think carefully before putting any logic before this point.
+     * nmi_callback() might be the crash quiesce...
+     */
+
+    callback = ACCESS_ONCE(nmi_callback);
+    if ( unlikely(callback) && callback(regs, cpu) )
+        goto out;
 
     /*
      * Accessing port 0x61 may trap to SMM which has been actually
@@ -1919,6 +1876,7 @@ void do_nmi(const struct cpu_user_regs *regs)
             unknown_nmi_error(regs, reason);
     }
 
+ out:
     nmi_exit();
 }
 
@@ -1933,7 +1891,7 @@ nmi_callback_t *set_nmi_callback(nmi_callback_t *callback)
 
 void unset_nmi_callback(void)
 {
-    nmi_callback = dummy_nmi_callback;
+    nmi_callback = NULL;
 }
 
 bool nmi_check_continuation(void)
@@ -2005,9 +1963,6 @@ void do_debug(struct cpu_user_regs *regs)
 
     /* Stash dr6 as early as possible. */
     dr6 = read_debugreg(6);
-
-    if ( debugger_trap_entry(TRAP_debug, regs) )
-        return;
 
     /*
      * At the time of writing (March 2018), on the subject of %dr6:
@@ -2117,6 +2072,12 @@ void do_debug(struct cpu_user_regs *regs)
     v->arch.dr6 |= (dr6 & ~X86_DR6_DEFAULT);
     v->arch.dr6 &= (dr6 | ~X86_DR6_DEFAULT);
 
+    if ( guest_kernel_mode(v, regs) && v->domain->debugger_attached )
+    {
+        domain_pause_for_debugger();
+        return;
+    }
+
     pv_inject_hw_exception(TRAP_debug, X86_EVENT_NO_EC);
 }
 
@@ -2131,9 +2092,6 @@ void do_entry_CP(struct cpu_user_regs *regs)
     };
     const char *err = "??";
     unsigned int ec = regs->error_code;
-
-    if ( debugger_trap_entry(X86_EXC_CP, regs) )
-        return;
 
     /* Decode ec if possible */
     if ( ec < ARRAY_SIZE(errors) && errors[ec][0] )
@@ -2173,7 +2131,7 @@ static void __init set_intr_gate(unsigned int n, void *addr)
     __set_intr_gate(n, 0, addr);
 }
 
-static unsigned int calc_ler_msr(void)
+static unsigned int noinline __init calc_ler_msr(void)
 {
     switch ( boot_cpu_data.x86_vendor )
     {
@@ -2211,8 +2169,17 @@ void percpu_traps_init(void)
     if ( !opt_ler )
         return;
 
-    if ( !ler_msr && (ler_msr = calc_ler_msr()) )
+    if ( !ler_msr )
+    {
+        ler_msr = calc_ler_msr();
+        if ( !ler_msr )
+        {
+            opt_ler = false;
+            return;
+        }
+
         setup_force_cpu_cap(X86_FEATURE_XEN_LBR);
+    }
 
     if ( cpu_has_xen_lbr )
         wrmsrl(MSR_IA32_DEBUGCTLMSR, IA32_DEBUGCTLMSR_LBR);

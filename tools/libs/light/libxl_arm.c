@@ -8,6 +8,46 @@
 #include <assert.h>
 #include <xen/device_tree_defs.h>
 
+/*
+ * There is no clear requirements for the total size of Virtio MMIO region.
+ * The size of control registers is 0x100 and device-specific configuration
+ * registers starts at the offset 0x100, however it's size depends on the device
+ * and the driver. Pick the biggest known size at the moment to cover most
+ * of the devices (also consider allowing the user to configure the size via
+ * config file for the one not conforming with the proposed value).
+ */
+#define VIRTIO_MMIO_DEV_SIZE   xen_mk_ullong(0x200)
+
+static uint64_t alloc_virtio_mmio_base(libxl__gc *gc, uint64_t *virtio_mmio_base)
+{
+    uint64_t base = *virtio_mmio_base;
+
+    /* Make sure we have enough reserved resources */
+    if (base + VIRTIO_MMIO_DEV_SIZE >
+        GUEST_VIRTIO_MMIO_BASE + GUEST_VIRTIO_MMIO_SIZE) {
+        LOG(ERROR, "Ran out of reserved range for Virtio MMIO BASE 0x%"PRIx64"\n",
+            base);
+        return 0;
+    }
+    *virtio_mmio_base += VIRTIO_MMIO_DEV_SIZE;
+
+    return base;
+}
+
+static uint32_t alloc_virtio_mmio_irq(libxl__gc *gc, uint32_t *virtio_mmio_irq)
+{
+    uint32_t irq = *virtio_mmio_irq;
+
+    /* Make sure we have enough reserved resources */
+    if (irq > GUEST_VIRTIO_MMIO_SPI_LAST) {
+        LOG(ERROR, "Ran out of reserved range for Virtio MMIO IRQ %u\n", irq);
+        return 0;
+    }
+    (*virtio_mmio_irq)++;
+
+    return irq;
+}
+
 static const char *gicv_to_string(libxl_gic_version gic_version)
 {
     switch (gic_version) {
@@ -26,8 +66,10 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
 {
     uint32_t nr_spis = 0;
     unsigned int i;
-    uint32_t vuart_irq;
-    bool vuart_enabled = false;
+    uint32_t vuart_irq, virtio_irq = 0;
+    bool vuart_enabled = false, virtio_enabled = false;
+    uint64_t virtio_mmio_base = GUEST_VIRTIO_MMIO_BASE;
+    uint32_t virtio_mmio_irq = GUEST_VIRTIO_MMIO_SPI_FIRST;
 
     /*
      * If pl011 vuart is enabled then increment the nr_spis to allow allocation
@@ -38,6 +80,35 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
         vuart_irq = GUEST_VPL011_SPI;
         vuart_enabled = true;
     }
+
+    for (i = 0; i < d_config->num_disks; i++) {
+        libxl_device_disk *disk = &d_config->disks[i];
+
+        if (disk->specification == LIBXL_DISK_SPECIFICATION_VIRTIO) {
+            disk->base = alloc_virtio_mmio_base(gc, &virtio_mmio_base);
+            if (!disk->base)
+                return ERROR_FAIL;
+
+            disk->irq = alloc_virtio_mmio_irq(gc, &virtio_mmio_irq);
+            if (!disk->irq)
+                return ERROR_FAIL;
+
+            if (virtio_irq < disk->irq)
+                virtio_irq = disk->irq;
+            virtio_enabled = true;
+
+            LOG(DEBUG, "Allocate Virtio MMIO params for Vdev %s: IRQ %u BASE 0x%"PRIx64,
+                disk->vdev, disk->irq, disk->base);
+        }
+    }
+
+    /*
+     * Every virtio-mmio device uses one emulated SPI. If Virtio devices are
+     * present, make sure that we allocate enough SPIs for them.
+     * The resulting "nr_spis" needs to cover the highest possible SPI.
+     */
+    if (virtio_enabled)
+        nr_spis = max(nr_spis, virtio_irq - 32 + 1);
 
     for (i = 0; i < d_config->b_info.num_irqs; i++) {
         uint32_t irq = d_config->b_info.irqs[i];
@@ -55,6 +126,13 @@ int libxl__arch_domain_prepare_config(libxl__gc *gc,
          */
         if (vuart_enabled && irq == vuart_irq) {
             LOG(ERROR, "Physical IRQ %u conflicting with pl011 SPI\n", irq);
+            return ERROR_FAIL;
+        }
+
+        /* The same check as for vpl011 */
+        if (virtio_enabled &&
+            (irq >= GUEST_VIRTIO_MMIO_SPI_FIRST && irq <= virtio_irq)) {
+            LOG(ERROR, "Physical IRQ %u conflicting with Virtio MMIO IRQ range\n", irq);
             return ERROR_FAIL;
         }
 
@@ -131,19 +209,7 @@ int libxl__arch_domain_create(libxl__gc *gc,
                               libxl__domain_build_state *state,
                               uint32_t domid)
 {
-    libxl_ctx *ctx = libxl__gc_owner(gc);
-    unsigned int shadow_mb = DIV_ROUNDUP(d_config->b_info.shadow_memkb, 1024);
-
-    int r = xc_shadow_control(ctx->xch, domid,
-                              XEN_DOMCTL_SHADOW_OP_SET_ALLOCATION,
-                              &shadow_mb, 0);
-    if (r) {
-        LOGED(ERROR, domid,
-              "Failed to set %u MiB shadow allocation", shadow_mb);
-        return ERROR_FAIL;
-    }
-
-    return 0;
+    return libxl__domain_set_paging_mempool_size(gc, d_config, domid);
 }
 
 int libxl__arch_extra_memory(libxl__gc *gc,
@@ -164,20 +230,6 @@ int libxl__arch_extra_memory(libxl__gc *gc,
     *out = LIBXL_MAXMEM_CONSTANT + DIV_ROUNDUP(size, 1024);
 out:
     return rc;
-}
-
-unsigned long libxl__arch_get_required_paging_memory(unsigned long maxmem_kb,
-                                                     unsigned int smp_cpus)
-{
-    /*
-     * 256 pages (1MB) per vcpu,
-     * plus 1 page per MiB of RAM for the P2M map,
-     * plus 1 page per MiB of extended region. This default value is 128 MiB
-     * which should be enough for domains that are not running backend.
-     * This is higher than the minimum that Xen would allocate if no value
-     * were given (but the Xen minimum is for safety, not performance).
-     */
-    return 4 * (256 * smp_cpus + maxmem_kb / 1024 + 128);
 }
 
 static struct arch_info {
@@ -813,6 +865,70 @@ static int make_vpci_node(libxl__gc *gc, void *fdt,
     return 0;
 }
 
+static int make_xen_iommu_node(libxl__gc *gc, void *fdt)
+{
+    int res;
+
+    /* See Linux Documentation/devicetree/bindings/iommu/xen,grant-dma.yaml */
+    res = fdt_begin_node(fdt, "xen_iommu");
+    if (res) return res;
+
+    res = fdt_property_compat(gc, fdt, 1, "xen,grant-dma");
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "#iommu-cells", 1);
+    if (res) return res;
+
+    res = fdt_property_cell(fdt, "phandle", GUEST_PHANDLE_IOMMU);
+    if (res) return res;
+
+    res = fdt_end_node(fdt);
+    if (res) return res;
+
+    return 0;
+}
+
+static int make_virtio_mmio_node(libxl__gc *gc, void *fdt,
+                                 uint64_t base, uint32_t irq,
+                                 uint32_t backend_domid)
+{
+    int res;
+    gic_interrupt intr;
+    const char *name = GCSPRINTF("virtio@%"PRIx64, base);
+
+    res = fdt_begin_node(fdt, name);
+    if (res) return res;
+
+    res = fdt_property_compat(gc, fdt, 1, "virtio,mmio");
+    if (res) return res;
+
+    res = fdt_property_regs(gc, fdt, GUEST_ROOT_ADDRESS_CELLS, GUEST_ROOT_SIZE_CELLS,
+                            1, base, VIRTIO_MMIO_DEV_SIZE);
+    if (res) return res;
+
+    set_interrupt(intr, irq, 0xf, DT_IRQ_TYPE_EDGE_RISING);
+    res = fdt_property_interrupts(gc, fdt, &intr, 1);
+    if (res) return res;
+
+    res = fdt_property(fdt, "dma-coherent", NULL, 0);
+    if (res) return res;
+
+    if (backend_domid != LIBXL_TOOLSTACK_DOMID) {
+        uint32_t iommus_prop[2];
+
+        iommus_prop[0] = cpu_to_fdt32(GUEST_PHANDLE_IOMMU);
+        iommus_prop[1] = cpu_to_fdt32(backend_domid);
+
+        res = fdt_property(fdt, "iommus", iommus_prop, sizeof(iommus_prop));
+        if (res) return res;
+    }
+
+    res = fdt_end_node(fdt);
+    if (res) return res;
+
+    return 0;
+}
+
 static const struct arch_info *get_arch_info(libxl__gc *gc,
                                              const struct xc_dom_image *dom)
 {
@@ -1014,6 +1130,8 @@ static int libxl__prepare_dtb(libxl__gc *gc, libxl_domain_config *d_config,
     size_t fdt_size = 0;
     int pfdt_size = 0;
     libxl_domain_build_info *const info = &d_config->b_info;
+    bool iommu_created;
+    unsigned int i;
 
     const libxl_version_info *vers;
     const struct arch_info *ainfo;
@@ -1119,6 +1237,22 @@ next_resize:
 
         if (d_config->num_pcidevs)
             FDT( make_vpci_node(gc, fdt, ainfo, dom) );
+
+        iommu_created = false;
+        for (i = 0; i < d_config->num_disks; i++) {
+            libxl_device_disk *disk = &d_config->disks[i];
+
+            if (disk->specification == LIBXL_DISK_SPECIFICATION_VIRTIO) {
+                if (disk->backend_domid != LIBXL_TOOLSTACK_DOMID &&
+                    !iommu_created) {
+                    FDT( make_xen_iommu_node(gc, fdt) );
+                    iommu_created = true;
+                }
+
+                FDT( make_virtio_mmio_node(gc, fdt, disk->base, disk->irq,
+                                           disk->backend_domid) );
+            }
+        }
 
         if (pfdt)
             FDT( copy_partial_fdt(gc, fdt, pfdt) );
@@ -1410,14 +1544,15 @@ void libxl__arch_domain_create_info_setdefault(libxl__gc *gc,
     }
 }
 
-void libxl__arch_domain_build_info_setdefault(libxl__gc *gc,
-                                              libxl_domain_build_info *b_info)
+int libxl__arch_domain_build_info_setdefault(libxl__gc *gc,
+                                             libxl_domain_build_info *b_info,
+                                             const libxl_physinfo *physinfo)
 {
     /* ACPI is disabled by default */
     libxl_defbool_setdefault(&b_info->acpi, false);
 
     if (b_info->type != LIBXL_DOMAIN_TYPE_PV)
-        return;
+        return 0;
 
     LOG(DEBUG, "Converting build_info to PVH");
 
@@ -1425,6 +1560,8 @@ void libxl__arch_domain_build_info_setdefault(libxl__gc *gc,
     memset(&b_info->u, '\0', sizeof(b_info->u));
     b_info->type = LIBXL_DOMAIN_TYPE_INVALID;
     libxl_domain_build_info_init_type(b_info, LIBXL_DOMAIN_TYPE_PVH);
+
+    return 0;
 }
 
 int libxl__arch_passthrough_mode_setdefault(libxl__gc *gc,

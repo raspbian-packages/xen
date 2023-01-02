@@ -22,6 +22,18 @@
 #include <xen/sched.h>
 #include <xen/vmap.h>
 
+#include <asm/setup.h>
+
+/*
+ * struct to hold pci device bar.
+ */
+struct pdev_bar_check
+{
+    paddr_t start;
+    paddr_t end;
+    bool is_valid;
+};
+
 /*
  * List for all the pci host bridges.
  */
@@ -29,6 +41,8 @@
 static LIST_HEAD(pci_host_bridges);
 
 static atomic_t domain_nr = ATOMIC_INIT(-1);
+
+static int use_dt_domains = -1;
 
 static inline void __iomem *pci_remap_cfgspace(paddr_t start, size_t len)
 {
@@ -137,14 +151,16 @@ void pci_add_host_bridge(struct pci_host_bridge *bridge)
     list_add_tail(&bridge->node, &pci_host_bridges);
 }
 
-static int pci_get_new_domain_nr(void)
+int pci_get_new_domain_nr(void)
 {
+    if ( use_dt_domains )
+        return -1;
+
     return atomic_inc_return(&domain_nr);
 }
 
 static int pci_bus_find_domain_nr(struct dt_device_node *dev)
 {
-    static int use_dt_domains = -1;
     int domain;
 
     domain = dt_get_pci_domain_nr(dev);
@@ -192,17 +208,15 @@ static int pci_bus_find_domain_nr(struct dt_device_node *dev)
     return domain;
 }
 
-int pci_host_common_probe(struct dt_device_node *dev, const void *data)
+int pci_host_common_probe(struct dt_device_node *dev,
+                          const struct pci_ecam_ops *ops)
 {
     struct pci_host_bridge *bridge;
     struct pci_config_window *cfg;
-    struct pci_ecam_ops *ops;
     int err;
 
     if ( dt_device_for_passthrough(dev) )
         return 0;
-
-    ops = (struct pci_ecam_ops *) data;
 
     bridge = pci_alloc_host_bridge();
     if ( !bridge )
@@ -239,10 +253,10 @@ err_exit:
 /*
  * Get host bridge node given a device attached to it.
  */
-struct dt_device_node *pci_find_host_bridge_node(struct device *dev)
+const struct dt_device_node *
+pci_find_host_bridge_node(const struct pci_dev *pdev)
 {
     struct pci_host_bridge *bridge;
-    struct pci_dev *pdev = dev_to_pci(dev);
 
     bridge = pci_find_host_bridge(pdev->seg, pdev->bus);
     if ( unlikely(!bridge) )
@@ -292,6 +306,117 @@ int pci_get_host_bridge_segment(const struct dt_device_node *node,
     return -EINVAL;
 }
 
+int pci_host_iterate_bridges_and_count(struct domain *d,
+                                       int (*cb)(struct domain *d,
+                                                 struct pci_host_bridge *bridge))
+{
+    struct pci_host_bridge *bridge;
+    int count = 0;
+
+    list_for_each_entry( bridge, &pci_host_bridges, node )
+    {
+        int ret;
+
+        ret = cb(d, bridge);
+        if ( ret < 0 )
+            return ret;
+        count += ret;
+    }
+    return count;
+}
+
+/*
+ * For each PCI host bridge we need to only map those ranges
+ * which are used by Domain-0 to properly initialize the bridge,
+ * e.g. we do not want to map ECAM configuration space which lives in
+ * "reg" device tree property, but we want to map other regions of
+ * the host bridge. The PCI aperture defined by the "ranges" device
+ * tree property should also be skipped.
+ */
+int __init pci_host_bridge_mappings(struct domain *d)
+{
+    struct pci_host_bridge *bridge;
+    struct map_range_data mr_data = {
+        .d = d,
+        .p2mt = p2m_mmio_direct_dev,
+        .skip_mapping = false
+    };
+
+    list_for_each_entry( bridge, &pci_host_bridges, node )
+    {
+        const struct dt_device_node *dev = bridge->dt_node;
+        unsigned int i;
+
+        for ( i = 0; i < dt_number_of_address(dev); i++ )
+        {
+            uint64_t addr, size;
+            int err;
+
+            err = dt_device_get_address(dev, i, &addr, &size);
+            if ( err )
+            {
+                printk(XENLOG_ERR
+                       "Unable to retrieve address range index=%u for %s\n",
+                       i, dt_node_full_name(dev));
+                return err;
+            }
+
+            if ( bridge->ops->need_p2m_hwdom_mapping(d, bridge, addr) )
+            {
+                err = map_range_to_domain(dev, addr, size, &mr_data);
+                if ( err )
+                    return err;
+            }
+        }
+    }
+
+    return 0;
+}
+
+/*
+ * TODO: BAR addresses and Root Complex window addresses are not guaranteed
+ * to be page aligned. We should check for alignment but this is not the
+ * right place for alignment check.
+ */
+static int is_bar_valid(const struct dt_device_node *dev,
+                        paddr_t addr, paddr_t len, void *data)
+{
+    struct pdev_bar_check *bar_data = data;
+    paddr_t s = bar_data->start;
+    paddr_t e = bar_data->end;
+
+    if ( (s >= addr) && (e <= (addr + len - 1)) )
+        bar_data->is_valid =  true;
+
+    return 0;
+}
+
+/* TODO: Revisit this function when ACPI PCI passthrough support is added. */
+bool pci_check_bar(const struct pci_dev *pdev, mfn_t start, mfn_t end)
+{
+    int ret;
+    const struct dt_device_node *dt_node;
+    paddr_t s = mfn_to_maddr(start);
+    paddr_t e = mfn_to_maddr(end);
+    struct pdev_bar_check bar_data =  {
+        .start = s,
+        .end = e,
+        .is_valid = false
+    };
+
+    if ( s >= e )
+        return false;
+
+    dt_node = pci_find_host_bridge_node(pdev);
+    if ( !dt_node )
+        return false;
+
+    ret = dt_for_each_range(dt_node, &is_bar_valid, &bar_data);
+    if ( ret < 0 )
+        return false;
+
+    return bar_data.is_valid;
+}
 /*
  * Local variables:
  * mode: C

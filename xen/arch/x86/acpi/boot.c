@@ -39,7 +39,6 @@
 #include <asm/processor.h>
 #include <asm/hpet.h> /* for hpet_address */
 #include <mach_apic.h>
-#include <mach_mpparse.h>
 
 #define PREFIX			"ACPI: "
 
@@ -61,7 +60,7 @@ static u64 acpi_lapic_addr __initdata = APIC_DEFAULT_PHYS_BASE;
                               Boot-time Configuration
    -------------------------------------------------------------------------- */
 
-static int __init acpi_parse_madt(struct acpi_table_header *table)
+static int __init cf_check acpi_parse_madt(struct acpi_table_header *table)
 {
 	struct acpi_table_madt *madt =
 		container_of(table, struct acpi_table_madt, header);
@@ -75,12 +74,10 @@ static int __init acpi_parse_madt(struct acpi_table_header *table)
 		       madt->address);
 	}
 
-	acpi_madt_oem_check(madt->header.oem_id, madt->header.oem_table_id);
-
 	return 0;
 }
 
-static int __init
+static int __init cf_check
 acpi_parse_x2apic(struct acpi_subtable_header *header, const unsigned long end)
 {
 	struct acpi_madt_local_x2apic *processor =
@@ -136,7 +133,7 @@ acpi_parse_x2apic(struct acpi_subtable_header *header, const unsigned long end)
 	return 0;
 }
 
-static int __init
+static int __init cf_check
 acpi_parse_lapic(struct acpi_subtable_header * header, const unsigned long end)
 {
 	struct acpi_madt_local_apic *processor =
@@ -174,7 +171,7 @@ acpi_parse_lapic(struct acpi_subtable_header * header, const unsigned long end)
 	return 0;
 }
 
-static int __init
+static int __init cf_check
 acpi_parse_lapic_addr_ovr(struct acpi_subtable_header * header,
 			  const unsigned long end)
 {
@@ -190,7 +187,7 @@ acpi_parse_lapic_addr_ovr(struct acpi_subtable_header * header,
 	return 0;
 }
 
-static int __init
+static int __init cf_check
 acpi_parse_x2apic_nmi(struct acpi_subtable_header *header,
 		      const unsigned long end)
 {
@@ -209,7 +206,7 @@ acpi_parse_x2apic_nmi(struct acpi_subtable_header *header,
 	return 0;
 }
 
-static int __init
+static int __init cf_check
 acpi_parse_lapic_nmi(struct acpi_subtable_header * header, const unsigned long end)
 {
 	struct acpi_madt_local_apic_nmi *lapic_nmi =
@@ -226,7 +223,7 @@ acpi_parse_lapic_nmi(struct acpi_subtable_header * header, const unsigned long e
 	return 0;
 }
 
-static int __init
+static int __init cf_check
 acpi_parse_ioapic(struct acpi_subtable_header * header, const unsigned long end)
 {
 	struct acpi_madt_io_apic *ioapic =
@@ -243,7 +240,7 @@ acpi_parse_ioapic(struct acpi_subtable_header * header, const unsigned long end)
 	return 0;
 }
 
-static int __init
+static int __init cf_check
 acpi_parse_int_src_ovr(struct acpi_subtable_header * header,
 		       const unsigned long end)
 {
@@ -270,7 +267,7 @@ acpi_parse_int_src_ovr(struct acpi_subtable_header * header,
 	return 0;
 }
 
-static int __init
+static int __init cf_check
 acpi_parse_nmi_src(struct acpi_subtable_header * header, const unsigned long end)
 {
 	struct acpi_madt_nmi_source *nmi_src =
@@ -286,7 +283,7 @@ acpi_parse_nmi_src(struct acpi_subtable_header * header, const unsigned long end
 	return 0;
 }
 
-static int __init acpi_parse_hpet(struct acpi_table_header *table)
+static int __init cf_check acpi_parse_hpet(struct acpi_table_header *table)
 {
 	const struct acpi_table_hpet *hpet_tbl =
 		container_of(table, const struct acpi_table_hpet, header);
@@ -322,7 +319,7 @@ static int __init acpi_parse_hpet(struct acpi_table_header *table)
 	return 0;
 }
 
-static int __init acpi_invalidate_bgrt(struct acpi_table_header *table)
+static int __init cf_check acpi_invalidate_bgrt(struct acpi_table_header *table)
 {
 	struct acpi_table_bgrt *bgrt_tbl =
 		container_of(table, struct acpi_table_bgrt, header);
@@ -475,20 +472,10 @@ acpi_fadt_parse_sleep_info(const struct acpi_table_fadt *fadt)
 	       acpi_sinfo.wakeup_vector, acpi_sinfo.vector_width);
 }
 
-static int __init acpi_parse_fadt(struct acpi_table_header *table)
+static int __init cf_check acpi_parse_fadt(struct acpi_table_header *table)
 {
 	const struct acpi_table_fadt *fadt =
 		container_of(table, const struct acpi_table_fadt, header);
-
-#ifdef	CONFIG_ACPI_INTERPRETER
-	/* initialize sci_int early for INT_SRC_OVR MADT parsing */
-	acpi_fadt.sci_int = fadt->sci_int;
-
-	/* initialize rev and apic_phys_dest_mode for x86_64 genapic */
-	acpi_fadt.revision = fadt->revision;
-	acpi_fadt.force_apic_physical_destination_mode =
-	    fadt->force_apic_physical_destination_mode;
-#endif
 
 	/* detect the location of the ACPI PM Timer */
 	if (fadt->header.revision >= FADT2_REVISION_ID &&
@@ -674,9 +661,7 @@ static void __init acpi_process_madt(void)
 			error = acpi_parse_madt_ioapic_entries();
 			if (!error) {
 				acpi_ioapic = true;
-
 				smp_found_config = true;
-				clustered_apic_check();
 			}
 		}
 		if (error == -EINVAL) {
@@ -756,8 +741,6 @@ int __init acpi_boot_init(void)
 	acpi_table_parse(ACPI_SIG_HPET, acpi_parse_hpet);
 
 	acpi_mmcfg_init();
-
-	acpi_iommu_init();
 
 	erst_init();
 

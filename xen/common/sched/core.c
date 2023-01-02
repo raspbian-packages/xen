@@ -71,10 +71,10 @@ cpumask_t sched_res_mask;
 static DEFINE_SPINLOCK(sched_free_cpu_lock);
 
 /* Various timer handlers. */
-static void s_timer_fn(void *unused);
-static void vcpu_periodic_timer_fn(void *data);
-static void vcpu_singleshot_timer_fn(void *data);
-static void poll_timer_fn(void *data);
+static void cf_check s_timer_fn(void *unused);
+static void cf_check vcpu_periodic_timer_fn(void *data);
+static void cf_check vcpu_singleshot_timer_fn(void *data);
+static void cf_check poll_timer_fn(void *data);
 
 /* This is global for now so that private implementations can reach it */
 DEFINE_PER_CPU_READ_MOSTLY(struct sched_resource *, sched_res);
@@ -98,13 +98,13 @@ static bool scheduler_active;
 static void sched_set_affinity(
     struct sched_unit *unit, const cpumask_t *hard, const cpumask_t *soft);
 
-static struct sched_resource *
+static struct sched_resource *cf_check
 sched_idle_res_pick(const struct scheduler *ops, const struct sched_unit *unit)
 {
     return unit->res;
 }
 
-static void *
+static void *cf_check
 sched_idle_alloc_udata(const struct scheduler *ops, struct sched_unit *unit,
                        void *dd)
 {
@@ -112,12 +112,12 @@ sched_idle_alloc_udata(const struct scheduler *ops, struct sched_unit *unit,
     return ZERO_BLOCK_PTR;
 }
 
-static void
+static void cf_check
 sched_idle_free_udata(const struct scheduler *ops, void *priv)
 {
 }
 
-static void sched_idle_schedule(
+static void cf_check sched_idle_schedule(
     const struct scheduler *ops, struct sched_unit *unit, s_time_t now,
     bool tasklet_work_scheduled)
 {
@@ -585,7 +585,7 @@ int sched_init_vcpu(struct vcpu *v)
          */
         sched_set_affinity(unit, cpumask_of(0), cpumask_of(0));
     }
-    else if ( is_hardware_domain(d) && opt_dom0_vcpus_pin )
+    else if ( d->domain_id == 0 && opt_dom0_vcpus_pin )
     {
         /*
          * If dom0_vcpus_pin is specified, dom0 vCPUs are pinned 1:1 to
@@ -1520,7 +1520,7 @@ long vcpu_yield(void)
     return 0;
 }
 
-static void domain_watchdog_timeout(void *data)
+static void cf_check domain_watchdog_timeout(void *data)
 {
     struct domain *d = data;
 
@@ -2573,7 +2573,7 @@ static struct sched_unit *sched_wait_rendezvous_in(struct sched_unit *prev,
     return prev->next_task;
 }
 
-static void sched_slave(void)
+static void cf_check sched_slave(void)
 {
     struct vcpu          *v, *vprev = current;
     struct sched_unit    *prev = vprev->sched_unit, *next;
@@ -2637,7 +2637,7 @@ static void sched_slave(void)
  * - deschedule the current domain (scheduler independent).
  * - pick a new domain (scheduler dependent).
  */
-static void schedule(void)
+static void cf_check schedule(void)
 {
     struct vcpu          *vnext, *vprev = current;
     struct sched_unit    *prev = vprev->sched_unit, *next = NULL;
@@ -2702,28 +2702,28 @@ static void schedule(void)
 }
 
 /* The scheduler timer: force a run through the scheduler */
-static void s_timer_fn(void *unused)
+static void cf_check s_timer_fn(void *unused)
 {
     raise_softirq(SCHEDULE_SOFTIRQ);
     SCHED_STAT_CRANK(sched_irq);
 }
 
 /* Per-VCPU periodic timer function: sends a virtual timer interrupt. */
-static void vcpu_periodic_timer_fn(void *data)
+static void cf_check vcpu_periodic_timer_fn(void *data)
 {
     struct vcpu *v = data;
     vcpu_periodic_timer_work(v);
 }
 
 /* Per-VCPU single-shot timer function: sends a virtual timer interrupt. */
-static void vcpu_singleshot_timer_fn(void *data)
+static void cf_check vcpu_singleshot_timer_fn(void *data)
 {
     struct vcpu *v = data;
     send_timer_event(v);
 }
 
 /* SCHEDOP_poll timeout callback. */
-static void poll_timer_fn(void *data)
+static void cf_check poll_timer_fn(void *data)
 {
     struct vcpu *v = data;
 
@@ -2803,7 +2803,7 @@ static int cpu_schedule_up(unsigned int cpu)
     return 0;
 }
 
-static void sched_res_free(struct rcu_head *head)
+static void cf_check sched_res_free(struct rcu_head *head)
 {
     struct sched_resource *sr = container_of(head, struct sched_resource, rcu);
 
@@ -2844,7 +2844,7 @@ void sched_rm_cpu(unsigned int cpu)
     cpu_schedule_down(cpu);
 }
 
-static int cpu_schedule_callback(
+static int cf_check cpu_schedule_callback(
     struct notifier_block *nfb, unsigned long action, void *hcpu)
 {
     unsigned int cpu = (unsigned long)hcpu;
@@ -2933,7 +2933,7 @@ const cpumask_t *sched_get_opt_cpumask(enum sched_gran opt, unsigned int cpu)
     return mask;
 }
 
-static void schedule_dummy(void)
+static void cf_check schedule_dummy(void)
 {
     sched_tasklet_check_cpu(smp_processor_id());
 }
@@ -2952,10 +2952,30 @@ void scheduler_enable(void)
     scheduler_active = true;
 }
 
+static inline
+const struct scheduler *__init sched_get_by_name(const char *sched_name)
+{
+    unsigned int i;
+
+    for ( i = 0; i < NUM_SCHEDULERS; i++ )
+        if ( schedulers[i] && !strcmp(schedulers[i]->opt_name, sched_name) )
+            return schedulers[i];
+
+    return NULL;
+}
+
+int __init sched_get_id_by_name(const char *sched_name)
+{
+    const struct scheduler *scheduler = sched_get_by_name(sched_name);
+
+    return scheduler ? scheduler->sched_id : -1;
+}
+
 /* Initialise the data structures. */
 void __init scheduler_init(void)
 {
     struct domain *idle_domain;
+    const struct scheduler *scheduler;
     int i;
 
     scheduler_enable();
@@ -2986,25 +3006,17 @@ void __init scheduler_init(void)
                    schedulers[i]->opt_name);
             schedulers[i] = NULL;
         }
-
-        if ( schedulers[i] && !ops.name &&
-             !strcmp(schedulers[i]->opt_name, opt_sched) )
-            ops = *schedulers[i];
     }
 
-    if ( !ops.name )
+    scheduler = sched_get_by_name(opt_sched);
+    if ( !scheduler )
     {
         printk("Could not find scheduler: %s\n", opt_sched);
-        for ( i = 0; i < NUM_SCHEDULERS; i++ )
-            if ( schedulers[i] &&
-                 !strcmp(schedulers[i]->opt_name, CONFIG_SCHED_DEFAULT) )
-            {
-                ops = *schedulers[i];
-                break;
-            }
-        BUG_ON(!ops.name);
-        printk("Using '%s' (%s)\n", ops.name, ops.opt_name);
+        scheduler = sched_get_by_name(CONFIG_SCHED_DEFAULT);
+        BUG_ON(!scheduler);
+        printk("Using '%s' (%s)\n", scheduler->name, scheduler->opt_name);
     }
+    ops = *scheduler;
 
     if ( cpu_schedule_up(0) )
         BUG();
@@ -3026,7 +3038,12 @@ void __init scheduler_init(void)
         sched_ratelimit_us = SCHED_DEFAULT_RATELIMIT_US;
     }
 
-    idle_domain = domain_create(DOMID_IDLE, NULL, false);
+    /*
+     * The idle dom is created privileged to ensure unrestricted access during
+     * setup and will be demoted by xsm_set_system_active() when setup is
+     * complete.
+     */
+    idle_domain = domain_create(DOMID_IDLE, NULL, CDF_privileged);
     BUG_ON(IS_ERR(idle_domain));
     BUG_ON(nr_cpu_ids > ARRAY_SIZE(idle_vcpu));
     idle_domain->vcpu = idle_vcpu;
@@ -3109,7 +3126,7 @@ int schedule_cpu_add(unsigned int cpu, struct cpupool *c)
     {
         const cpumask_t *mask;
         unsigned int cpu_iter, idx = 0;
-        struct sched_unit *old_unit, *master_unit;
+        struct sched_unit *master_unit;
         struct sched_resource *sr_old;
 
         /*
@@ -3133,7 +3150,6 @@ int schedule_cpu_add(unsigned int cpu, struct cpupool *c)
             if ( cpu == cpu_iter )
                 continue;
 
-            old_unit = idle_vcpu[cpu_iter]->sched_unit;
             sr_old = get_sched_res(cpu_iter);
             kill_timer(&sr_old->s_timer);
             idle_vcpu[cpu_iter]->sched_unit = master_unit;

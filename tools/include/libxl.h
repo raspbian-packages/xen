@@ -528,6 +528,21 @@
 #define LIBXL_HAVE_MAX_GRANT_VERSION 1
 
 /*
+ * LIBXL_HAVE_{DISK,NIC}_TRUSTED indicates that the libxl_device_disk and
+ * libxl_device_nic structs have a field to signal whether the backend of the
+ * device is to be trusted.  Such information is propagated to the frontend.
+ */
+#define LIBXL_HAVE_DISK_TRUSTED 1
+#define LIBXL_HAVE_NIC_TRUSTED 1
+
+/*
+ * LIBXL_HAVE_DEVICE_DISK_SPECIFICATION indicates that 'specification' and
+ * 'transport' fields (of libxl_disk_specification and libxl_disk_transport
+ * types respectively) are present in libxl_device_disk.
+ */
+#define LIBXL_HAVE_DEVICE_DISK_SPECIFICATION 1
+
+/*
  * libxl ABI compatibility
  *
  * The only guarantee which libxl makes regarding ABI compatibility
@@ -747,7 +762,7 @@
 typedef struct libxl__ctx libxl_ctx;
 
 #include <libxl_uuid.h>
-#include <_libxl_list.h>
+#include <xen_list.h>
 
 /* API compatibility. */
 #ifdef LIBXL_API_VERSION
@@ -1448,7 +1463,7 @@ typedef struct {
 } libxl_enum_string_table;
 
 struct libxl_event;
-typedef LIBXL_TAILQ_ENTRY(struct libxl_event) libxl_ev_link;
+typedef XEN_TAILQ_ENTRY(struct libxl_event) libxl_ev_link;
 
 /*
  * A boolean variable with an explicit default state.

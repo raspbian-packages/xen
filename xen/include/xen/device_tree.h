@@ -92,6 +92,10 @@ struct dt_device_node {
 
     /* IOMMU specific fields */
     bool is_protected;
+
+    /* HACK: Remove this if there is a need of space */
+    bool_t static_evtchn_created;
+
     /*
      * The main purpose of this list is to link the structure in the list
      * of devices assigned to domain.
@@ -317,6 +321,18 @@ static inline bool_t dt_property_name_is_equal(const struct dt_property *pp,
     return !dt_prop_cmp(pp->name, name);
 }
 
+static inline void
+dt_device_set_static_evtchn_created(struct dt_device_node *device)
+{
+    device->static_evtchn_created = true;
+}
+
+static inline bool_t
+dt_device_static_evtchn_created(const struct dt_device_node *device)
+{
+    return device->static_evtchn_created;
+}
+
 /**
  * dt_find_compatible_node - Find a node based on type and one of the
  *                           tokens in its "compatible" property
@@ -450,6 +466,9 @@ static inline bool_t dt_property_read_bool(const struct dt_device_node *np,
  * success, -EINVAL if the property does not exist, -ENODATA if property
  * doest not have value, and -EILSEQ if the string is not
  * null-terminated with the length of the property data.
+ *
+ * Note that the empty string "" has length of 1, thus -ENODATA cannot
+ * be interpreted as an empty string.
  *
  * The out_string pointer is modified only if a valid string can be decoded.
  */

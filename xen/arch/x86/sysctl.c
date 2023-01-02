@@ -69,7 +69,7 @@ struct l3_cache_info {
     unsigned long size;
 };
 
-static void l3_cache_get(void *arg)
+static void cf_check l3_cache_get(void *arg)
 {
     struct cpuid4_info info;
     struct l3_cache_info *l3_info = arg;
@@ -79,7 +79,7 @@ static void l3_cache_get(void *arg)
         l3_info->size = info.size / 1024; /* in KB unit */
 }
 
-static long smt_up_down_helper(void *data)
+static long cf_check smt_up_down_helper(void *data)
 {
     bool up = (bool)data;
     unsigned int cpu, sibling_mask = boot_cpu_data.x86_num_siblings - 1;

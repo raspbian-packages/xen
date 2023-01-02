@@ -41,9 +41,9 @@
 
 DEFINE_PER_CPU(uint32_t,trace_shadow_path_flags);
 
-static int sh_enable_log_dirty(struct domain *, bool log_global);
-static int sh_disable_log_dirty(struct domain *);
-static void sh_clean_dirty_bitmap(struct domain *);
+static int cf_check sh_enable_log_dirty(struct domain *, bool log_global);
+static int cf_check sh_disable_log_dirty(struct domain *);
+static void cf_check sh_clean_dirty_bitmap(struct domain *);
 
 /* Set up the shadow-specific parts of a domain struct at start of day.
  * Called for every domain from arch_domain_create() */
@@ -99,14 +99,14 @@ void shadow_vcpu_init(struct vcpu *v)
 #if SHADOW_AUDIT
 int shadow_audit_enable = 0;
 
-static void shadow_audit_key(unsigned char key)
+static void cf_check shadow_audit_key(unsigned char key)
 {
     shadow_audit_enable = !shadow_audit_enable;
     printk("%s shadow_audit_enable=%d\n",
            __func__, shadow_audit_enable);
 }
 
-static int __init shadow_audit_key_init(void)
+static int __init cf_check shadow_audit_key_init(void)
 {
     register_keyhandler('O', shadow_audit_key, "toggle shadow audits", 0);
     return 0;
@@ -390,7 +390,7 @@ static int oos_remove_write_access(struct vcpu *v, mfn_t gmfn,
          * the page.  If that doesn't work either, the guest is granting
          * his pagetables and must be killed after all.
          * This will flush the tlb, so we can return with no worries. */
-        sh_remove_shadows(d, gmfn, 0 /* Be thorough */, 1 /* Must succeed */);
+        shadow_remove_all_shadows(d, gmfn);
         return 1;
     }
 
@@ -1073,7 +1073,7 @@ void shadow_blow_tables_per_domain(struct domain *d)
 /* Blow all shadows of all shadowed domains: this can be used to cause the
  * guest's pagetables to be re-shadowed if we suspect that the shadows
  * have somehow got out of sync */
-static void shadow_blow_all_tables(unsigned char c)
+static void cf_check shadow_blow_all_tables(unsigned char c)
 {
     struct domain *d;
     printk("'%c' pressed -> blowing all shadow tables\n", c);
@@ -1084,7 +1084,7 @@ static void shadow_blow_all_tables(unsigned char c)
 }
 
 /* Register this function in the Xen console keypress table */
-static __init int shadow_blow_tables_keyhandler_init(void)
+static int __init cf_check shadow_blow_tables_keyhandler_init(void)
 {
     register_keyhandler('S', shadow_blow_all_tables, "reset shadow pagetables", 1);
     return 0;
@@ -1264,7 +1264,7 @@ void shadow_free(struct domain *d, mfn_t smfn)
  * This action is irreversible: the p2m mapping only ever grows.
  * That's OK because the p2m table only exists for translated domains,
  * and those domains can't ever turn off shadow mode. */
-static struct page_info *
+static struct page_info *cf_check
 shadow_alloc_p2m_page(struct domain *d)
 {
     struct page_info *pg = NULL;
@@ -1305,7 +1305,7 @@ shadow_alloc_p2m_page(struct domain *d)
     return pg;
 }
 
-static void
+static void cf_check
 shadow_free_p2m_page(struct domain *d, struct page_info *pg)
 {
     struct domain *owner = page_get_owner(pg);
@@ -1352,7 +1352,7 @@ int shadow_set_allocation(struct domain *d, unsigned int pages, bool *preempted)
 {
     struct page_info *sp;
 
-    ASSERT(paging_locked_by_me(d));
+    ASSERT(paging_locked_by_me(d) || system_state < SYS_STATE_active);
 
     if ( pages > 0 )
     {
@@ -1425,6 +1425,17 @@ static unsigned int shadow_get_allocation(struct domain *d)
         + d->arch.paging.shadow.p2m_pages;
     return ((pg >> (20 - PAGE_SHIFT))
             + ((pg & ((1 << (20 - PAGE_SHIFT)) - 1)) ? 1 : 0));
+}
+
+int shadow_get_allocation_bytes(struct domain *d, uint64_t *size)
+{
+    unsigned long pages = d->arch.paging.shadow.total_pages;
+
+    pages += d->arch.paging.shadow.p2m_pages;
+
+    *size = pages << PAGE_SHIFT;
+
+    return 0;
 }
 
 /**************************************************************************/
@@ -1637,7 +1648,7 @@ void shadow_hash_insert(struct domain *d, unsigned long n, unsigned int t,
     sh_hash_audit_bucket(d, key);
 }
 
-void shadow_hash_delete(struct domain *d, unsigned long n, unsigned int t,
+bool shadow_hash_delete(struct domain *d, unsigned long n, unsigned int t,
                         mfn_t smfn)
 /* Excise the mapping (n,t)->smfn from the hash table */
 {
@@ -1662,10 +1673,8 @@ void shadow_hash_delete(struct domain *d, unsigned long n, unsigned int t,
     {
         /* Need to search for the one we want */
         x = d->arch.paging.shadow.hash_table[key];
-        while ( 1 )
+        while ( x )
         {
-            ASSERT(x); /* We can't have hit the end, since our target is
-                        * still in the chain somehwere... */
             if ( next_shadow(x) == sp )
             {
                 x->next_shadow = sp->next_shadow;
@@ -1673,10 +1682,14 @@ void shadow_hash_delete(struct domain *d, unsigned long n, unsigned int t,
             }
             x = next_shadow(x);
         }
+        if ( !x )
+            return false;
     }
     set_next_shadow(sp, NULL);
 
     sh_hash_audit_bucket(d, key);
+
+    return true;
 }
 
 typedef int (*hash_vcpu_callback_t)(struct vcpu *v, mfn_t smfn, mfn_t other_mfn);
@@ -2294,10 +2307,12 @@ void sh_remove_shadows(struct domain *d, mfn_t gmfn, int fast, int all)
     }                                                                   \
 } while (0)
 
+#ifdef CONFIG_HVM
     DO_UNSHADOW(SH_type_l2_32_shadow);
     DO_UNSHADOW(SH_type_l1_32_shadow);
     DO_UNSHADOW(SH_type_l2_pae_shadow);
     DO_UNSHADOW(SH_type_l1_pae_shadow);
+#endif
     DO_UNSHADOW(SH_type_l4_64_shadow);
     DO_UNSHADOW(SH_type_l3_64_shadow);
     DO_UNSHADOW(SH_type_l2h_64_shadow);
@@ -2321,8 +2336,8 @@ void sh_remove_shadows(struct domain *d, mfn_t gmfn, int fast, int all)
     paging_unlock(d);
 }
 
-void shadow_prepare_page_type_change(struct domain *d, struct page_info *page,
-                                     unsigned long new_type)
+void shadow_prepare_page_type_change(struct domain *d,
+                                     const struct page_info *page)
 {
     if ( !(page->count_info & PGC_page_table) )
         return;
@@ -2334,7 +2349,7 @@ void shadow_prepare_page_type_change(struct domain *d, struct page_info *page,
      * pages are allowed to become writeable.
      */
     if ( (page->shadow_flags & SHF_oos_may_write) &&
-         new_type == PGT_writable_page )
+         (page->u.inuse.type_info & PGT_type_mask) == PGT_writable_page )
         return;
 #endif
 
@@ -2346,7 +2361,8 @@ void shadow_prepare_page_type_change(struct domain *d, struct page_info *page,
 /* Reset the up-pointers of every L3 shadow to 0.
  * This is called when l3 shadows stop being pinnable, to clear out all
  * the list-head bits so the up-pointer field is properly inititalised. */
-static int sh_clear_up_pointer(struct vcpu *v, mfn_t smfn, mfn_t unused)
+static int cf_check sh_clear_up_pointer(
+    struct vcpu *v, mfn_t smfn, mfn_t unused)
 {
     mfn_to_page(smfn)->up = 0;
     return 0;
@@ -2556,7 +2572,7 @@ static void sh_update_paging_modes(struct vcpu *v)
     v->arch.paging.mode->update_cr3(v, 0, false);
 }
 
-void shadow_update_paging_modes(struct vcpu *v)
+void cf_check shadow_update_paging_modes(struct vcpu *v)
 {
     paging_lock(v->domain);
     sh_update_paging_modes(v);
@@ -2772,12 +2788,14 @@ int shadow_enable(struct domain *d, u32 mode)
  out_locked:
     paging_unlock(d);
  out_unlocked:
+#ifdef CONFIG_HVM
     /*
      * This is fine to ignore the preemption here because only the root
      * will be allocated by p2m_alloc_table().
      */
     if ( rv != 0 && !pagetable_is_null(p2m_get_pagetable(p2m)) )
         p2m_teardown(p2m, true, NULL);
+#endif
     if ( rv != 0 && pg != NULL )
     {
         pg->count_info &= ~PGC_count_mask;
@@ -3106,7 +3124,7 @@ static int shadow_test_disable(struct domain *d)
 /* Shadow specific code which is called in paging_log_dirty_enable().
  * Return 0 if no problem found.
  */
-static int sh_enable_log_dirty(struct domain *d, bool log_global)
+static int cf_check sh_enable_log_dirty(struct domain *d, bool log_global)
 {
     int ret;
 
@@ -3134,7 +3152,7 @@ static int sh_enable_log_dirty(struct domain *d, bool log_global)
 }
 
 /* shadow specfic code which is called in paging_log_dirty_disable() */
-static int sh_disable_log_dirty(struct domain *d)
+static int cf_check sh_disable_log_dirty(struct domain *d)
 {
     int ret;
 
@@ -3148,7 +3166,7 @@ static int sh_disable_log_dirty(struct domain *d)
 /* This function is called when we CLEAN log dirty bitmap. See
  * paging_log_dirty_op() for details.
  */
-static void sh_clean_dirty_bitmap(struct domain *d)
+static void cf_check sh_clean_dirty_bitmap(struct domain *d)
 {
     paging_lock(d);
     /* Need to revoke write access to the domain's pages again.
@@ -3159,9 +3177,13 @@ static void sh_clean_dirty_bitmap(struct domain *d)
 }
 
 
-/* Fluhs TLB of selected vCPUs. */
-bool shadow_flush_tlb(bool (*flush_vcpu)(void *ctxt, struct vcpu *v),
-                      void *ctxt)
+static bool flush_vcpu(const struct vcpu *v, const unsigned long *vcpu_bitmap)
+{
+    return !vcpu_bitmap || test_bit(v->vcpu_id, vcpu_bitmap);
+}
+
+/* Flush TLB of selected vCPUs.  NULL for all. */
+bool cf_check shadow_flush_tlb(const unsigned long *vcpu_bitmap)
 {
     static DEFINE_PER_CPU(cpumask_t, flush_cpumask);
     cpumask_t *mask = &this_cpu(flush_cpumask);
@@ -3174,12 +3196,12 @@ bool shadow_flush_tlb(bool (*flush_vcpu)(void *ctxt, struct vcpu *v),
 
     /* Pause all other vcpus. */
     for_each_vcpu ( d, v )
-        if ( v != current && flush_vcpu(ctxt, v) )
+        if ( v != current && flush_vcpu(v, vcpu_bitmap) )
             vcpu_pause_nosync(v);
 
     /* Now that all VCPUs are signalled to deschedule, we wait... */
     for_each_vcpu ( d, v )
-        if ( v != current && flush_vcpu(ctxt, v) )
+        if ( v != current && flush_vcpu(v, vcpu_bitmap) )
             while ( !vcpu_runnable(v) && v->is_running )
                 cpu_relax();
 
@@ -3193,7 +3215,7 @@ bool shadow_flush_tlb(bool (*flush_vcpu)(void *ctxt, struct vcpu *v),
     {
         unsigned int cpu;
 
-        if ( !flush_vcpu(ctxt, v) )
+        if ( !flush_vcpu(v, vcpu_bitmap) )
             continue;
 
         paging_update_cr3(v, false);
@@ -3208,7 +3230,7 @@ bool shadow_flush_tlb(bool (*flush_vcpu)(void *ctxt, struct vcpu *v),
 
     /* Done. */
     for_each_vcpu ( d, v )
-        if ( v != current && flush_vcpu(ctxt, v) )
+        if ( v != current && flush_vcpu(v, vcpu_bitmap) )
             vcpu_unpause(v);
 
     return true;
@@ -3328,7 +3350,7 @@ void shadow_audit_tables(struct vcpu *v)
 
 #ifdef CONFIG_PV
 
-void pv_l1tf_tasklet(void *data)
+void cf_check pv_l1tf_tasklet(void *data)
 {
     struct domain *d = data;
 

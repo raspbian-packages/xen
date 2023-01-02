@@ -96,7 +96,7 @@ static void __init add_ivrs_mapping_entry(
 
             if ( !ivrs_mappings[alias_id].intremap_table )
                 panic("No memory for %pp's IRT\n",
-                      &PCI_SBDF2(iommu->seg, alias_id));
+                      &PCI_SBDF(iommu->seg, alias_id));
         }
     }
 
@@ -704,7 +704,7 @@ static u16 __init parse_ivhd_device_extended_range(
     return dev_length;
 }
 
-static int __init parse_ivrs_ioapic(const char *str)
+static int __init cf_check parse_ivrs_ioapic(const char *str)
 {
     const char *s = str;
     unsigned long id;
@@ -742,7 +742,7 @@ static int __init parse_ivrs_ioapic(const char *str)
 }
 custom_param("ivrs_ioapic[", parse_ivrs_ioapic);
 
-static int __init parse_ivrs_hpet(const char *str)
+static int __init cf_check parse_ivrs_hpet(const char *str)
 {
     const char *s = str;
     unsigned long id;
@@ -790,7 +790,7 @@ static u16 __init parse_ivhd_device_special(
     }
 
     AMD_IOMMU_DEBUG("IVHD Special: %pp variety %#x handle %#x\n",
-                    &PCI_SBDF2(seg, bdf), special->variety, special->handle);
+                    &PCI_SBDF(seg, bdf), special->variety, special->handle);
     add_ivrs_mapping_entry(bdf, bdf, special->header.data_setting, 0, true,
                            iommu);
 
@@ -816,7 +816,7 @@ static u16 __init parse_ivhd_device_special(
             AMD_IOMMU_DEBUG("IVHD: Command line override present for IO-APIC %#x"
                             "(IVRS: %#x devID %pp)\n",
                             ioapic_sbdf[idx].id, special->handle,
-                            &PCI_SBDF2(seg, bdf));
+                            &PCI_SBDF(seg, bdf));
             break;
         }
 
@@ -888,7 +888,7 @@ static u16 __init parse_ivhd_device_special(
             AMD_IOMMU_DEBUG("IVHD: Command line override present for HPET %#x "
                             "(IVRS: %#x devID %pp)\n",
                             hpet_sbdf.id, special->handle,
-                            &PCI_SBDF2(seg, bdf));
+                            &PCI_SBDF(seg, bdf));
             break;
         case HPET_NONE:
             /* set device id of hpet */
@@ -1078,7 +1078,26 @@ static inline bool_t is_ivmd_block(u8 type)
             type == ACPI_IVRS_TYPE_MEMORY_IOMMU);
 }
 
-static int __init parse_ivrs_table(struct acpi_table_header *table)
+static int __init cf_check add_one_extra_ivmd(unsigned long start,
+                                              unsigned long nr,
+                                              uint32_t id, void *ctxt)
+{
+    struct acpi_ivrs_memory ivmd = {
+        .header = {
+            .length = sizeof(ivmd),
+            .flags = ACPI_IVMD_UNITY | ACPI_IVMD_READ | ACPI_IVMD_WRITE,
+            .device_id = id,
+            .type = ACPI_IVRS_TYPE_MEMORY_ONE,
+        },
+    };
+
+    ivmd.start_address = pfn_to_paddr(start);
+    ivmd.memory_length = pfn_to_paddr(nr);
+
+    return parse_ivmd_block(&ivmd);
+}
+
+static int __init cf_check parse_ivrs_table(struct acpi_table_header *table)
 {
     const struct acpi_ivrs_header *ivrs_block;
     unsigned long length;
@@ -1121,6 +1140,8 @@ static int __init parse_ivrs_table(struct acpi_table_header *table)
         AMD_IOMMU_DEBUG("IVMD: %u command line provided entries\n", nr_ivmd);
     for ( i = 0; !error && i < nr_ivmd; ++i )
         error = parse_ivmd_block(user_ivmds + i);
+    if ( !error )
+        error = iommu_get_extra_reserved_device_memory(add_one_extra_ivmd, NULL);
 
     /* Each IO-APIC must have been mentioned in the table. */
     for ( apic = 0; !error && iommu_intremap && apic < nr_ioapics; ++apic )
@@ -1170,7 +1191,7 @@ static int __init parse_ivrs_table(struct acpi_table_header *table)
     return error;
 }
 
-static int __init detect_iommu_acpi(struct acpi_table_header *table)
+static int __init cf_check detect_iommu_acpi(struct acpi_table_header *table)
 {
     const struct acpi_ivrs_header *ivrs_block;
     unsigned long length = sizeof(struct acpi_table_ivrs);
@@ -1264,7 +1285,8 @@ static int __init get_last_bdf_ivhd(
     return last_bdf;
 }
 
-static int __init get_last_bdf_acpi(struct acpi_table_header *table)
+static int __init cf_check cf_check get_last_bdf_acpi(
+    struct acpi_table_header *table)
 {
     const struct acpi_ivrs_header *ivrs_block;
     unsigned long length = sizeof(struct acpi_table_ivrs);
@@ -1306,7 +1328,7 @@ int __init amd_iommu_update_ivrs_mapping_acpi(void)
     return acpi_table_parse(ACPI_SIG_IVRS, parse_ivrs_table);
 }
 
-static int __init
+static int __init cf_check
 get_supported_ivhd_type(struct acpi_table_header *table)
 {
     size_t length = sizeof(struct acpi_table_ivrs);
@@ -1369,7 +1391,7 @@ int __init amd_iommu_get_supported_ivhd_type(void)
  * Format:
  * ivmd=<start>[-<end>][=<bdf1>[-<bdf1>'][,<bdf2>[-<bdf2>'][,...]]][;<start>...]
  */
-static int __init parse_ivmd_param(const char *s)
+static int __init cf_check parse_ivmd_param(const char *s)
 {
     do {
         unsigned long start, end;
