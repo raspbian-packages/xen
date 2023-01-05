@@ -320,12 +320,6 @@ override_dh_compress:
 	find debian/xen-hypervisor-*/usr/lib/debug -type f -print0 \
 		| xargs -0r gzip -9vn
 
-# By default, files in debian/tmp which are not handled by anything
-# in rules are ignored.  This makes them into errors.
-override_dh_missing:
-	dh_missing --fail-missing
-
-
 # We are dropping the config file /etc/default/xen which appeared in
 # earlier versions.  See ./ucf-remove-fixup for more details.
 override_dh_ucf:
