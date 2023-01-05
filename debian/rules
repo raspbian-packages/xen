@@ -328,8 +328,3 @@ override_dh_compress:
 		debian/xenstore-utils/usr/bin
 	:
 	dh_compress -Xusr/share/doc/xen/html
-
-# We are dropping the config file /etc/default/xen which appeared in
-# earlier versions.  See ./ucf-remove-fixup for more details.
-override_dh_ucf:
-	dh_ucf
