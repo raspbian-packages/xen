@@ -301,16 +301,10 @@ override_dh_installinit:
 	dh_installinit --name xen --no-start -- defaults
 	dh_installinit --name xendomains --no-start -- defaults
 
-# dh_strip in dh compat 10 and earlier (which we are at so this
-# package builds on stretch) looks at filenames and modes to decide
-# what to process.  hvmloader doesn't match, so we must trick it.
-# It is sufficient to make it executable.  And we have to undo
-# that again, then.  This all happens after dh_install so we operate
-# on the package-specific file.
+# Don't strip the .note section from xen-shim. See also
+# debian/xen-utils-V.lintian-overrides.vsn-in
 override_dh_strip:
-	find debian/xen-utils-* -name hvmloader | xargs -r chmod -v +x
-	dh_strip
-	find debian/xen-utils-* -name hvmloader | xargs -r chmod -v -x
+	dh_strip --exclude=xen-shim
 
 # Hardlink the various xenstore-* programs together.  This is an
 # argv[0]-using binary of which we can have only one copy.  We need to
