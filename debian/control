@@ -17,7 +17,7 @@ Build-Depends:
    dh-python,
    bcc [amd64],
    gcc-multilib [amd64],
-   e2fslibs-dev,
+   libext2fs-dev,
    iasl,
    seabios (>= 1.7.4-2~) [amd64],
    libaio-dev,
