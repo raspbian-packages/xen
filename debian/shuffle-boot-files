@@ -33,6 +33,11 @@ verstring="${verstring%.gz}"
 #
 # So, e.g. debian/tmp/boot/xen-4.14.1-pre.gz will end up in our package
 # as debian/xen-hypervisor-4.14-amd64/boot/xen-4.14-amd64.gz
+#
+# Finally, note that we're not just renaming the files here, we are
+# actually manually doing part of the install process here. Afterwards,
+# we can ignore the content of debian/tmp/boot/. See the d/not-installed
+# file for this. The boot/ location is mentioned in there.
 find "$t/boot" -type f -print | while read f; do
 	basename="${f#$t/boot/}"
 	head="${basename%$verstring*}"
