@@ -44,3 +44,37 @@ find "$t/boot" -type f -print | while read f; do
 	tail="${basename#*$verstring}"
 	cp -v "$f" "${dest}/${head}${version}-${flavour}${tail}"
 done
+
+# For /usr/lib/debug, we make similar changes to the file names, before we
+# actually install them into the locations for our binary packages.
+#
+# After executing the upstream build process, we at first end up a situation
+# that looks like the following (small part from 'tree' output):
+#
+# [...]
+# ├── usr
+# │   ├── lib
+# │   │   ├── debug
+# │   │   │   ├── usr
+# │   │   │   │   └── lib
+# │   │   │   │       └── xen-4.17
+# │   │   │   │           └── boot
+# │   │   │   │               └── xen-shim-syms
+# │   │   │   ├── xen-4.17.0.efi.map
+# │   │   │   ├── xen-syms-4.17.0
+# │   │   │   └── xen-syms-4.17.0.map
+# [...]
+#
+# In this case we also want to strip off the .0 (or e.g. .3-pre) so that
+# the file names do not change when we do a package update with new
+# upstream stable branch line code. We especially do want this to
+# prevent filenames from changing during a stable security update.
+#
+# For consistency with the file names in boot/, we also add the flavour
+# name here. So, for example xen-4.17.0.efi.map.gz is renamed to
+# xen-4.17-amd64.efi.map.gz
+find "$t/usr/lib/debug" -maxdepth 1 -name 'xen*' -type f -print | while read f; do
+	head="${f%$verstring*}"
+	tail="${f#*$verstring}"
+	mv -v "$f" "${head}${version}-${flavour}${tail}"
+done
