@@ -301,24 +301,33 @@ override_dh_installinit:
 	dh_installinit --name xen --no-start -- defaults
 	dh_installinit --name xendomains --no-start -- defaults
 
+# We want to ship xen-shim-syms in a -dbg package, but if we just add a
+# xen-utils-V-dbg package for it, lintian will complain with the following
+# warning:
+# W: xen changes: package-builds-dbg-and-dbgsym-variants xen-utils-V-dbg xen-utils-V-dbgsym
+# So we disable the generation of an automatic dbgsym packages for xen-utils-V
+# and ship the automatically generated files in our xen-utils-V-dbg package.
+#
 # Don't strip the .note section from xen-shim. See also
 # debian/xen-utils-V.lintian-overrides.vsn-in
+#
+# Finally, don't strip anything in the -dbg packages
 override_dh_strip:
-	dh_strip --exclude=xen-shim
+	dh_strip --package=xen-utils-$(upstream_version) \
+		--dbg-package=xen-utils-$(upstream_version)-dbg \
+		--exclude=xen-shim
+	dh_strip --remaining-packages \
+		--no-package=xen-utils-$(upstream_version)-dbg \
+		--no-package=xen-hypervisor-$(upstream_version)-$(flavour)-dbg
 
 # Hardlink the various xenstore-* programs together.  This is an
 # argv[0]-using binary of which we can have only one copy.  We need to
 # do this late, because dh_strip breaks hardlinks.
-#
-# The debug files are fairly large, fairly rarely used,
-# and not compressed by the upstream build system.
 override_dh_compress:
 	rdfind -makehardlinks true -makeresultsfile false \
 		debian/xenstore-utils/usr/bin
 	:
 	dh_compress -Xusr/share/doc/xen/html
-	find debian/xen-hypervisor-*/usr/lib/debug -type f -print0 \
-		| xargs -0r gzip -9vn
 
 # We are dropping the config file /etc/default/xen which appeared in
 # earlier versions.  See ./ucf-remove-fixup for more details.

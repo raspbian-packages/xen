@@ -114,6 +114,16 @@ Description: Xen administrative tools
  qemu-utils and seabios are needed for "Xen HVM" (amd64)
 Built-Using: ${misc:Built-Using}
 
+Package: xen-utils-4.17-dbg
+Section: debug
+Architecture: amd64 arm64 armhf
+Priority: optional
+Depends: xen-utils-4.17 (= ${binary:Version}), ${misc:Depends}
+Description: debug symbols for xen-utils-4.17
+ This package provides debug symbols for the xen-utils binaries as well as
+ detached debug symbols for the `shim' used for booting PV guests in an HVM
+ container.
+
 Package: xen-hypervisor-4.17-amd64
 Section: kernel
 Architecture: amd64
@@ -124,6 +134,14 @@ Description: Xen Hypervisor on AMD64
  The hypervisor is the "core" for Xen itself.  It gets started by the boot
  loader and controls cpu and memory, sharing them between your
  administrative domain (Domain 0) and the virtual guest systems.
+
+Package: xen-hypervisor-4.17-amd64-dbg
+Section: debug
+Architecture: amd64
+Priority: optional
+Depends: xen-hypervisor-4.17-amd64 (= ${binary:Version}), ${misc:Depends}
+Description: debug symbols for Xen Hypervisor on AMD64
+ This package provides the detached debug symbols for the Xen hypervisor.
 
 Package: xen-system-amd64
 Section: admin
@@ -145,6 +163,14 @@ Description: Xen Hypervisor on ARM64
  loader and controls cpu and memory, sharing them between your
  administrative domain (Domain 0) and the virtual guest systems.
 
+Package: xen-hypervisor-4.17-arm64-dbg
+Section: debug
+Architecture: arm64
+Priority: optional
+Depends: xen-hypervisor-4.17-arm64 (= ${binary:Version}), ${misc:Depends}
+Description: debug symbols for Xen Hypervisor on ARM64
+ This package provides the detached debug symbols for the Xen hypervisor.
+
 Package: xen-system-arm64
 Section: admin
 Architecture: arm64
@@ -164,6 +190,14 @@ Description: Xen Hypervisor on ARMHF
  The hypervisor is the "core" for Xen itself.  It gets started by the boot
  loader and controls cpu and memory, sharing them between your
  administrative domain (Domain 0) and the virtual guest systems.
+
+Package: xen-hypervisor-4.17-armhf-dbg
+Section: debug
+Architecture: armhf
+Priority: optional
+Depends: xen-hypervisor-4.17-armhf (= ${binary:Version}), ${misc:Depends}
+Description: debug symbols for Xen Hypervisor on ARMHF
+ This package provides the detached debug symbols for the Xen hypervisor.
 
 Package: xen-system-armhf
 Section: admin
