@@ -62,8 +62,10 @@ Description: Xenstore command line utilities for Xen
 Package: xen-utils-common
 Section: admin
 Architecture: amd64 armhf arm64
-Depends: lsb-base, udev, xenstore-utils,
+Depends: sysvinit-utils (>= 3.05-4~) | lsb-base, udev, xenstore-utils,
     ${shlibs:Depends}, ${python3:Depends}, ${misc:Depends}
+# The "| lsb-base" is needed for backporting to bullseye. It can be removed
+# once backporting to bullseye is no longer needed.
 Suggests: xen-doc
 Description: Xen administrative tools - common files
  The userspace tools to manage a system virtualized through the Xen virtual
