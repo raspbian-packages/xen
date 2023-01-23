@@ -38,6 +38,7 @@ Build-Depends:
 Homepage: https://xenproject.org/
 Vcs-Browser: https://salsa.debian.org/xen-team/debian-xen
 Vcs-Git: https://salsa.debian.org/xen-team/debian-xen.git
+Rules-Requires-Root: no
 
 Package: xenstore-utils
 Architecture: amd64 arm64 armhf
