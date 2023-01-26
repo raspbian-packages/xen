@@ -5,10 +5,12 @@
 
 SHELL    := bash -e
 
-# SOURCE_BASE_DIR is used by our delta queue to find the top directory.  It
-# seems this information is currenty not directly provided by the Debian build
-# system.
-export SOURCE_BASE_DIR=$(shell pwd)
+# This gives us DEB_VERSION_UPSTREAM and DEB_VERSION (used by our delta queue)
+include /usr/share/dpkg/pkg-info.mk
+export DEB_VERSION
+
+# DEB_MAINTAINER is used by our delta queue
+export DEB_MAINTAINER := $(shell sed -ne 's/^Maintainer: \(.*\)$$/\1/p' debian/control)
 
 # This influences dpkg-buildflags to specify better linker
 # options.  See https://wiki.debian.org/Hardening
@@ -68,7 +70,7 @@ flavour=$(flavour_$(DEB_HOST_ARCH))
 # (Everywhere else, it is handled dynamically.)
 #
 upstream_version := \
- $(shell dpkg-parsechangelog -SVersion | sed 's/\(\.[0-9]*\)\..*/\1/' )
+ $(shell echo $(DEB_VERSION_UPSTREAM) | sed 's/\(\.[0-9]*\)\..*/\1/' )
 
 # Many of the debhelper files are most conveniently provided as
 # templates which depend on the flavour and the upstream version.
