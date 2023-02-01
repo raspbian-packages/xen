@@ -33,22 +33,62 @@
 #include <caml/fail.h>
 #include <caml/signals.h>
 
-#define _H(__h) ((xenevtchn_handle *)(__h))
+#define _H(__h) (*((xenevtchn_handle **)Data_custom_val(__h)))
 
-CAMLprim value stub_eventchn_init(void)
+static void stub_evtchn_finalize(value v)
 {
-	CAMLparam0();
+	xenevtchn_close(_H(v));
+}
+
+static struct custom_operations xenevtchn_ops = {
+	.identifier  = "xenevtchn",
+	.finalize    = stub_evtchn_finalize,
+	.compare     = custom_compare_default,     /* Can't compare     */
+	.hash        = custom_hash_default,        /* Can't hash        */
+	.serialize   = custom_serialize_default,   /* Can't serialize   */
+	.deserialize = custom_deserialize_default, /* Can't deserialize */
+	.compare_ext = custom_compare_ext_default, /* Can't compare     */
+};
+
+CAMLprim value stub_eventchn_init(value cloexec)
+{
+	CAMLparam1(cloexec);
 	CAMLlocal1(result);
 	xenevtchn_handle *xce;
+	unsigned int flags = 0;
+
+	if ( !Bool_val(cloexec) )
+		flags |= XENEVTCHN_NO_CLOEXEC;
 
 	caml_enter_blocking_section();
-	xce = xenevtchn_open(NULL, 0);
+	xce = xenevtchn_open(NULL, flags);
 	caml_leave_blocking_section();
 
 	if (xce == NULL)
 		caml_failwith("open failed");
 
-	result = (value)xce;
+	result = caml_alloc_custom(&xenevtchn_ops, sizeof(xce), 0, 1);
+	_H(result) = xce;
+
+	CAMLreturn(result);
+}
+
+CAMLprim value stub_eventchn_fdopen(value fdval)
+{
+	CAMLparam1(fdval);
+	CAMLlocal1(result);
+	xenevtchn_handle *xce;
+
+	caml_enter_blocking_section();
+	xce = xenevtchn_fdopen(NULL, Int_val(fdval), 0);
+	caml_leave_blocking_section();
+
+	if (xce == NULL)
+		caml_failwith("evtchn fdopen failed");
+
+	result = caml_alloc_custom(&xenevtchn_ops, sizeof(xce), 0, 1);
+	_H(result) = xce;
+
 	CAMLreturn(result);
 }
 
