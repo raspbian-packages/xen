@@ -71,8 +71,8 @@ done
 # prevent filenames from changing during a stable security update.
 #
 # For consistency with the file names in boot/, we also add the flavour
-# name here. So, for example xen-4.17.0.efi.map.gz is renamed to
-# xen-4.17-amd64.efi.map.gz
+# name here. So, for example xen-4.17.0.efi.map is renamed to
+# xen-4.17-amd64.efi.map
 find "$t/usr/lib/debug" -maxdepth 1 -name 'xen*' -type f -print | while read f; do
 	head="${f%$verstring*}"
 	tail="${f#*$verstring}"
