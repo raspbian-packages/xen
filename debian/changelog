@@ -1,3 +1,10 @@
+xen (4.17.0+24-g2f8851c37f-2) unstable; urgency=medium
+
+  * Upload to unstable now, since we got message from the OCaml team that we
+    are not bothering them while they're doing their stack rebuild.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Mon, 06 Feb 2023 14:27:40 +0100
+
 xen (4.17.0+24-g2f8851c37f-2~exp1) experimental; urgency=medium
 
   * Upload to experimental NEW to avoid disrupting ocaml transition.
