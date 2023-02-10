@@ -24,8 +24,6 @@ xen (4.17.0+24-g2f8851c37f-1) unstable; urgency=medium
      - Guests can cause Xenstore crash via soft reset
        XSA-425 CVE-2022-42330
        (Closes: #1029830)
-  * Note that the following XSA are not listed, because...
-     - XSA-423 and XSA-424 have patches for Linux
   * d/control: update build dependency to libext2fs-dev
   * debian: switch to debhelper compat version 13
   * d/rules: 'dh_missing --fail-missing' is default in dh compat 13
