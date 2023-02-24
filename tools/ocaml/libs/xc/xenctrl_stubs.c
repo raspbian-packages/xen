@@ -67,9 +67,9 @@ static void Noreturn failwith_xc(xc_interface *xch)
 	caml_raise_with_string(*caml_named_value("xc.error"), error_str);
 }
 
-CAMLprim value stub_xc_interface_open(void)
+CAMLprim value stub_xc_interface_open(value unit)
 {
-	CAMLparam0();
+	CAMLparam1(unit);
         xc_interface *xch;
 
 	/* Don't assert XC_OPENFLAG_NON_REENTRANT because these bindings
@@ -953,23 +953,25 @@ CAMLprim value stub_map_foreign_range(value xch, value dom,
 	CAMLparam4(xch, dom, size, mfn);
 	CAMLlocal1(result);
 	struct mmap_interface *intf;
-	uint32_t c_dom;
-	unsigned long c_mfn;
+	unsigned long c_mfn = Nativeint_val(mfn);
+	int len = Int_val(size);
+	void *ptr;
 
-	result = caml_alloc(sizeof(struct mmap_interface), Abstract_tag);
-	intf = (struct mmap_interface *) result;
+	BUILD_BUG_ON((sizeof(struct mmap_interface) % sizeof(value)) != 0);
+	result = caml_alloc(Wsize_bsize(sizeof(struct mmap_interface)),
+			    Abstract_tag);
 
-	intf->len = Int_val(size);
-
-	c_dom = _D(dom);
-	c_mfn = Nativeint_val(mfn);
 	caml_enter_blocking_section();
-	intf->addr = xc_map_foreign_range(_H(xch), c_dom,
-	                                  intf->len, PROT_READ|PROT_WRITE,
-	                                  c_mfn);
+	ptr = xc_map_foreign_range(_H(xch), _D(dom), len,
+				   PROT_READ|PROT_WRITE, c_mfn);
 	caml_leave_blocking_section();
-	if (!intf->addr)
+
+	if (!ptr)
 		caml_failwith("xc_map_foreign_range error");
+
+	intf = Data_abstract_val(result);
+	*intf = (struct mmap_interface){ ptr, len };
+
 	CAMLreturn(result);
 }
 
@@ -1136,17 +1138,12 @@ CAMLprim value stub_xc_domain_test_assign_device(value xch, value domid, value d
 	CAMLreturn(Val_bool(ret == 0));
 }
 
-static int domain_assign_device_rdm_flag_table[] = {
-    XEN_DOMCTL_DEV_RDM_RELAXED,
-};
-
-CAMLprim value stub_xc_domain_assign_device(value xch, value domid, value desc,
-                                            value rflag)
+CAMLprim value stub_xc_domain_assign_device(value xch, value domid, value desc)
 {
-	CAMLparam4(xch, domid, desc, rflag);
+	CAMLparam3(xch, domid, desc);
 	int ret;
 	int domain, bus, dev, func;
-	uint32_t sbdf, flag;
+	uint32_t sbdf;
 
 	domain = Int_val(Field(desc, 0));
 	bus = Int_val(Field(desc, 1));
@@ -1154,10 +1151,8 @@ CAMLprim value stub_xc_domain_assign_device(value xch, value domid, value desc,
 	func = Int_val(Field(desc, 3));
 	sbdf = encode_sbdf(domain, bus, dev, func);
 
-	ret = Int_val(Field(rflag, 0));
-	flag = domain_assign_device_rdm_flag_table[ret];
-
-	ret = xc_assign_device(_H(xch), _D(domid), sbdf, flag);
+	ret = xc_assign_device(_H(xch), _D(domid), sbdf,
+			       XEN_DOMCTL_DEV_RDM_RELAXED);
 
 	if (ret < 0)
 		failwith_xc(_H(xch));

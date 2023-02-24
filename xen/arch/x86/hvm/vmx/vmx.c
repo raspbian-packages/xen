@@ -396,6 +396,142 @@ void vmx_pi_hooks_deassign(struct domain *d)
     domain_unpause(d);
 }
 
+static const struct lbr_info {
+    u32 base, count;
+} p4_lbr[] = {
+    { MSR_P4_LER_FROM_LIP,          1 },
+    { MSR_P4_LER_TO_LIP,            1 },
+    { MSR_P4_LASTBRANCH_TOS,        1 },
+    { MSR_P4_LASTBRANCH_0_FROM_LIP, NUM_MSR_P4_LASTBRANCH_FROM_TO },
+    { MSR_P4_LASTBRANCH_0_TO_LIP,   NUM_MSR_P4_LASTBRANCH_FROM_TO },
+    { 0, 0 }
+}, c2_lbr[] = {
+    { MSR_IA32_LASTINTFROMIP,       1 },
+    { MSR_IA32_LASTINTTOIP,         1 },
+    { MSR_C2_LASTBRANCH_TOS,        1 },
+    { MSR_C2_LASTBRANCH_0_FROM_IP,  NUM_MSR_C2_LASTBRANCH_FROM_TO },
+    { MSR_C2_LASTBRANCH_0_TO_IP,    NUM_MSR_C2_LASTBRANCH_FROM_TO },
+    { 0, 0 }
+}, nh_lbr[] = {
+    { MSR_IA32_LASTINTFROMIP,       1 },
+    { MSR_IA32_LASTINTTOIP,         1 },
+    { MSR_NHL_LBR_SELECT,           1 },
+    { MSR_NHL_LASTBRANCH_TOS,       1 },
+    { MSR_P4_LASTBRANCH_0_FROM_LIP, NUM_MSR_P4_LASTBRANCH_FROM_TO },
+    { MSR_P4_LASTBRANCH_0_TO_LIP,   NUM_MSR_P4_LASTBRANCH_FROM_TO },
+    { 0, 0 }
+}, sk_lbr[] = {
+    { MSR_IA32_LASTINTFROMIP,       1 },
+    { MSR_IA32_LASTINTTOIP,         1 },
+    { MSR_NHL_LBR_SELECT,           1 },
+    { MSR_NHL_LASTBRANCH_TOS,       1 },
+    { MSR_SKL_LASTBRANCH_0_FROM_IP, NUM_MSR_SKL_LASTBRANCH },
+    { MSR_SKL_LASTBRANCH_0_TO_IP,   NUM_MSR_SKL_LASTBRANCH },
+    { MSR_SKL_LASTBRANCH_0_INFO,    NUM_MSR_SKL_LASTBRANCH },
+    { 0, 0 }
+}, at_lbr[] = {
+    { MSR_IA32_LASTINTFROMIP,       1 },
+    { MSR_IA32_LASTINTTOIP,         1 },
+    { MSR_C2_LASTBRANCH_TOS,        1 },
+    { MSR_C2_LASTBRANCH_0_FROM_IP,  NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
+    { MSR_C2_LASTBRANCH_0_TO_IP,    NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
+    { 0, 0 }
+}, sm_lbr[] = {
+    { MSR_IA32_LASTINTFROMIP,       1 },
+    { MSR_IA32_LASTINTTOIP,         1 },
+    { MSR_SM_LBR_SELECT,            1 },
+    { MSR_SM_LASTBRANCH_TOS,        1 },
+    { MSR_C2_LASTBRANCH_0_FROM_IP,  NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
+    { MSR_C2_LASTBRANCH_0_TO_IP,    NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
+    { 0, 0 }
+}, gm_lbr[] = {
+    { MSR_IA32_LASTINTFROMIP,       1 },
+    { MSR_IA32_LASTINTTOIP,         1 },
+    { MSR_SM_LBR_SELECT,            1 },
+    { MSR_SM_LASTBRANCH_TOS,        1 },
+    { MSR_GM_LASTBRANCH_0_FROM_IP,  NUM_MSR_GM_LASTBRANCH_FROM_TO },
+    { MSR_GM_LASTBRANCH_0_TO_IP,    NUM_MSR_GM_LASTBRANCH_FROM_TO },
+    { 0, 0 }
+};
+static const struct lbr_info *__ro_after_init model_specific_lbr;
+
+static const struct lbr_info *__init get_model_specific_lbr(void)
+{
+    switch ( boot_cpu_data.x86 )
+    {
+    case 6:
+        switch ( boot_cpu_data.x86_model )
+        {
+        /* Core2 Duo */
+        case 0x0f:
+        /* Enhanced Core */
+        case 0x17:
+        /* Xeon 7400 */
+        case 0x1d:
+            return c2_lbr;
+        /* Nehalem */
+        case 0x1a: case 0x1e: case 0x1f: case 0x2e:
+        /* Westmere */
+        case 0x25: case 0x2c: case 0x2f:
+        /* Sandy Bridge */
+        case 0x2a: case 0x2d:
+        /* Ivy Bridge */
+        case 0x3a: case 0x3e:
+        /* Haswell */
+        case 0x3c: case 0x3f: case 0x45: case 0x46:
+        /* Broadwell */
+        case 0x3d: case 0x47: case 0x4f: case 0x56:
+            return nh_lbr;
+        /* Skylake */
+        case 0x4e: case 0x5e:
+        /* Xeon Scalable */
+        case 0x55:
+        /* Cannon Lake */
+        case 0x66:
+        /* Goldmont Plus */
+        case 0x7a:
+        /* Ice Lake */
+        case 0x6a: case 0x6c: case 0x7d: case 0x7e:
+        /* Tiger Lake */
+        case 0x8c: case 0x8d:
+        /* Tremont */
+        case 0x86:
+        /* Kaby Lake */
+        case 0x8e: case 0x9e:
+        /* Comet Lake */
+        case 0xa5: case 0xa6:
+            return sk_lbr;
+        /* Atom */
+        case 0x1c: case 0x26: case 0x27: case 0x35: case 0x36:
+            return at_lbr;
+        /* Silvermont */
+        case 0x37: case 0x4a: case 0x4d: case 0x5a: case 0x5d:
+        /* Xeon Phi Knights Landing */
+        case 0x57:
+        /* Xeon Phi Knights Mill */
+        case 0x85:
+        /* Airmont */
+        case 0x4c:
+            return sm_lbr;
+        /* Goldmont */
+        case 0x5c: case 0x5f:
+            return gm_lbr;
+        }
+        break;
+
+    case 15:
+        switch ( boot_cpu_data.x86_model )
+        {
+        /* Pentium4/Xeon with em64t */
+        case 3: case 4: case 6:
+            return p4_lbr;
+        }
+        break;
+    }
+
+    return NULL;
+}
+
 static int cf_check vmx_domain_initialise(struct domain *d)
 {
     static const struct arch_csw csw = {
@@ -2837,6 +2973,7 @@ const struct hvm_function_table * __init start_vmx(void)
         vmx_function_table.tsc_scaling.setup = vmx_setup_tsc_scaling;
     }
 
+    model_specific_lbr = get_model_specific_lbr();
     lbr_tsx_fixup_check();
     ler_to_fixup_check();
 
@@ -2983,141 +3120,6 @@ static int vmx_cr_access(cr_access_qual_t qual)
     return X86EMUL_OKAY;
 }
 
-static const struct lbr_info {
-    u32 base, count;
-} p4_lbr[] = {
-    { MSR_P4_LER_FROM_LIP,          1 },
-    { MSR_P4_LER_TO_LIP,            1 },
-    { MSR_P4_LASTBRANCH_TOS,        1 },
-    { MSR_P4_LASTBRANCH_0_FROM_LIP, NUM_MSR_P4_LASTBRANCH_FROM_TO },
-    { MSR_P4_LASTBRANCH_0_TO_LIP,   NUM_MSR_P4_LASTBRANCH_FROM_TO },
-    { 0, 0 }
-}, c2_lbr[] = {
-    { MSR_IA32_LASTINTFROMIP,       1 },
-    { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_C2_LASTBRANCH_TOS,        1 },
-    { MSR_C2_LASTBRANCH_0_FROM_IP,  NUM_MSR_C2_LASTBRANCH_FROM_TO },
-    { MSR_C2_LASTBRANCH_0_TO_IP,    NUM_MSR_C2_LASTBRANCH_FROM_TO },
-    { 0, 0 }
-}, nh_lbr[] = {
-    { MSR_IA32_LASTINTFROMIP,       1 },
-    { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_NHL_LBR_SELECT,           1 },
-    { MSR_NHL_LASTBRANCH_TOS,       1 },
-    { MSR_P4_LASTBRANCH_0_FROM_LIP, NUM_MSR_P4_LASTBRANCH_FROM_TO },
-    { MSR_P4_LASTBRANCH_0_TO_LIP,   NUM_MSR_P4_LASTBRANCH_FROM_TO },
-    { 0, 0 }
-}, sk_lbr[] = {
-    { MSR_IA32_LASTINTFROMIP,       1 },
-    { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_NHL_LBR_SELECT,           1 },
-    { MSR_NHL_LASTBRANCH_TOS,       1 },
-    { MSR_SKL_LASTBRANCH_0_FROM_IP, NUM_MSR_SKL_LASTBRANCH },
-    { MSR_SKL_LASTBRANCH_0_TO_IP,   NUM_MSR_SKL_LASTBRANCH },
-    { MSR_SKL_LASTBRANCH_0_INFO,    NUM_MSR_SKL_LASTBRANCH },
-    { 0, 0 }
-}, at_lbr[] = {
-    { MSR_IA32_LASTINTFROMIP,       1 },
-    { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_C2_LASTBRANCH_TOS,        1 },
-    { MSR_C2_LASTBRANCH_0_FROM_IP,  NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
-    { MSR_C2_LASTBRANCH_0_TO_IP,    NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
-    { 0, 0 }
-}, sm_lbr[] = {
-    { MSR_IA32_LASTINTFROMIP,       1 },
-    { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_SM_LBR_SELECT,            1 },
-    { MSR_SM_LASTBRANCH_TOS,        1 },
-    { MSR_C2_LASTBRANCH_0_FROM_IP,  NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
-    { MSR_C2_LASTBRANCH_0_TO_IP,    NUM_MSR_ATOM_LASTBRANCH_FROM_TO },
-    { 0, 0 }
-}, gm_lbr[] = {
-    { MSR_IA32_LASTINTFROMIP,       1 },
-    { MSR_IA32_LASTINTTOIP,         1 },
-    { MSR_SM_LBR_SELECT,            1 },
-    { MSR_SM_LASTBRANCH_TOS,        1 },
-    { MSR_GM_LASTBRANCH_0_FROM_IP,  NUM_MSR_GM_LASTBRANCH_FROM_TO },
-    { MSR_GM_LASTBRANCH_0_TO_IP,    NUM_MSR_GM_LASTBRANCH_FROM_TO },
-    { 0, 0 }
-};
-
-static const struct lbr_info *last_branch_msr_get(void)
-{
-    switch ( boot_cpu_data.x86 )
-    {
-    case 6:
-        switch ( boot_cpu_data.x86_model )
-        {
-        /* Core2 Duo */
-        case 0x0f:
-        /* Enhanced Core */
-        case 0x17:
-        /* Xeon 7400 */
-        case 0x1d:
-            return c2_lbr;
-        /* Nehalem */
-        case 0x1a: case 0x1e: case 0x1f: case 0x2e:
-        /* Westmere */
-        case 0x25: case 0x2c: case 0x2f:
-        /* Sandy Bridge */
-        case 0x2a: case 0x2d:
-        /* Ivy Bridge */
-        case 0x3a: case 0x3e:
-        /* Haswell */
-        case 0x3c: case 0x3f: case 0x45: case 0x46:
-        /* Broadwell */
-        case 0x3d: case 0x47: case 0x4f: case 0x56:
-            return nh_lbr;
-        /* Skylake */
-        case 0x4e: case 0x5e:
-        /* Xeon Scalable */
-        case 0x55:
-        /* Cannon Lake */
-        case 0x66:
-        /* Goldmont Plus */
-        case 0x7a:
-        /* Ice Lake */
-        case 0x6a: case 0x6c: case 0x7d: case 0x7e:
-        /* Tiger Lake */
-        case 0x8c: case 0x8d:
-        /* Tremont */
-        case 0x86:
-        /* Kaby Lake */
-        case 0x8e: case 0x9e:
-        /* Comet Lake */
-        case 0xa5: case 0xa6:
-            return sk_lbr;
-        /* Atom */
-        case 0x1c: case 0x26: case 0x27: case 0x35: case 0x36:
-            return at_lbr;
-        /* Silvermont */
-        case 0x37: case 0x4a: case 0x4d: case 0x5a: case 0x5d:
-        /* Xeon Phi Knights Landing */
-        case 0x57:
-        /* Xeon Phi Knights Mill */
-        case 0x85:
-        /* Airmont */
-        case 0x4c:
-            return sm_lbr;
-        /* Goldmont */
-        case 0x5c: case 0x5f:
-            return gm_lbr;
-        }
-        break;
-
-    case 15:
-        switch ( boot_cpu_data.x86_model )
-        {
-        /* Pentium4/Xeon with em64t */
-        case 3: case 4: case 6:
-            return p4_lbr;
-        }
-        break;
-    }
-
-    return NULL;
-}
-
 enum
 {
     LBR_FORMAT_32                 = 0x0, /* 32-bit record format */
@@ -3224,7 +3226,7 @@ static void __init ler_to_fixup_check(void)
 
 static int is_last_branch_msr(u32 ecx)
 {
-    const struct lbr_info *lbr = last_branch_msr_get();
+    const struct lbr_info *lbr = model_specific_lbr;
 
     if ( lbr == NULL )
         return 0;
@@ -3544,17 +3546,25 @@ static int cf_check vmx_msr_write_intercept(
             goto gp_fault;
 
         /*
+         * The Arch LBR spec (new in Ice Lake) states that CPUs with no
+         * model-specific LBRs implement MSR_DBG_CTL.LBR by discarding writes
+         * and always returning 0.
+         *
+         * Use this property in all cases where we don't know any
+         * model-specific LBR information, as it matches real hardware
+         * behaviour on post-Ice Lake systems.
+         */
+        if ( !model_specific_lbr )
+            msr_content &= ~IA32_DEBUGCTLMSR_LBR;
+
+        /*
          * When a guest first enables LBR, arrange to save and restore the LBR
          * MSRs and allow the guest direct access.
          *
-         * MSR_DEBUGCTL and LBR has existed almost as long as MSRs have
-         * existed, and there is no architectural way to hide the feature, or
-         * fail the attempt to enable LBR.
-         *
-         * Unknown host LBR MSRs or hitting -ENOSPC with the guest load/save
-         * list are definitely hypervisor bugs, whereas -ENOMEM for allocating
-         * the load/save list is simply unlucky (and shouldn't occur with
-         * sensible management by the toolstack).
+         * Hitting -ENOSPC with the guest load/save list is definitely a
+         * hypervisor bug, whereas -ENOMEM for allocating the load/save list
+         * is simply unlucky (and shouldn't occur with sensible management by
+         * the toolstack).
          *
          * Either way, there is nothing we can do right now to recover, and
          * the guest won't execute correctly either.  Simply crash the domain
@@ -3563,14 +3573,7 @@ static int cf_check vmx_msr_write_intercept(
         if ( !(v->arch.hvm.vmx.lbr_flags & LBR_MSRS_INSERTED) &&
              (msr_content & IA32_DEBUGCTLMSR_LBR) )
         {
-            const struct lbr_info *lbr = last_branch_msr_get();
-
-            if ( unlikely(!lbr) )
-            {
-                gprintk(XENLOG_ERR, "Unknown Host LBR MSRs\n");
-                domain_crash(v->domain);
-                return X86EMUL_OKAY;
-            }
+            const struct lbr_info *lbr = model_specific_lbr;
 
             for ( ; lbr->count; lbr++ )
             {
