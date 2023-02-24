@@ -1,3 +1,9 @@
+xen (4.17.0+46-gaaf74a532c-1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.17.0+46-gaaf74a532c.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Fri, 24 Feb 2023 18:06:42 +0100
+
 xen (4.17.0+24-g2f8851c37f-2) unstable; urgency=medium
 
   * Upload to unstable now, since we got message from the OCaml team that we
