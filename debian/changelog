@@ -1,6 +1,13 @@
-xen (4.17.0+46-gaaf74a532c-1) UNRELEASED; urgency=medium
+xen (4.17.0+46-gaaf74a532c-1) unstable; urgency=medium
 
-  * Update to new upstream version 4.17.0+46-gaaf74a532c.
+  * Update to new upstream version 4.17.0+46-gaaf74a532c, which also contains
+    security fixes for the following issues:
+     - x86: Cross-Thread Return Address Predictions
+       XSA-426 CVE-2022-27672
+       (Closes: #1031567)
+  * debian/shuffle-boot-files: fix typo
+  * debian/changelog: Fix bug number typo.
+  * debian/changelog: Remove duplicate 'Note that'
 
  -- Hans van Kranenburg <hans@knorrie.org>  Fri, 24 Feb 2023 18:06:42 +0100
 
