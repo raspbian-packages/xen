@@ -1,8 +1,15 @@
-xen (4.17.0+74-g3eac216e6e-1) UNRELEASED; urgency=medium
+xen (4.17.0+74-g3eac216e6e-1) unstable; urgency=medium
 
-  * Update to new upstream version 4.17.0+74-g3eac216e6e.
+  * Update to new upstream version 4.17.0+74-g3eac216e6e, which also contains
+    security fixes for the following issues: (Closes: #1033297)
+    - x86 shadow plus log-dirty mode use-after-free
+      XSA-427 CVE-2022-42332
+    - x86/HVM pinned cache attributes mis-handling
+      XSA-428 CVE-2022-42333 CVE-2022-42334
+    - x86: speculative vulnerability in 32bit SYSCALL path
+      XSA-429 CVE-2022-42331
 
- -- Maximilian Engelhardt <maxi@daemonizer.de>  Thu, 23 Mar 2023 22:21:38 +0100
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Thu, 23 Mar 2023 22:22:48 +0100
 
 xen (4.17.0+46-gaaf74a532c-1) unstable; urgency=medium
 
