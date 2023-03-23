@@ -287,9 +287,14 @@ can be maintained with the pv-shim mechanism.
     protection.
 
     The option is available when `CONFIG_XEN_SHSTK` is compiled in, and
-    defaults to `true` on hardware supporting CET-SS.  Specifying
+    generally defaults to `true` on hardware supporting CET-SS.  Specifying
     `cet=no-shstk` will cause Xen not to use Shadow Stacks even when support
     is available in hardware.
+
+    Some hardware suffers from an issue known as Supervisor Shadow Stack
+    Fracturing.  On such hardware, Xen will default to not using Shadow Stacks
+    when virtualised.  Specifying `cet=shstk` will override this heuristic and
+    enable Shadow Stacks unilaterally.
 
 *   The `ibt=` boolean controls whether Xen uses Indirect Branch Tracking for
     its own protection.
@@ -720,6 +725,11 @@ Available alternatives, with their meaning, are:
 * `node`: one runqueue per each NUMA node of the host;
 * `all`: just one runqueue shared by all the logical pCPUs of
          the host
+
+Regardless of the above choice, Xen attempts to respect
+`sched_credit2_max_cpus_runqueue` limit, which may mean more than one runqueue
+for the `all` value. If that isn't intended, raise
+the `sched_credit2_max_cpus_runqueue` value.
 
 ### dbgp
 > `= ehci[ <integer> | @pci<bus>:<slot>.<func> ]`
@@ -2623,6 +2633,17 @@ guest will notify Xen that it has failed to acquire a spinlock.
 
 <major>, <minor> and <build> must be integers. The values will be
 encoded in guest CPUID 0x40000002 if viridian enlightenments are enabled.
+
+### vm-notify-window (Intel)
+> `= <integer>`
+
+> Default: `0`
+
+Specify the value of the VM Notify window used to detect locked VMs. Set to -1
+to disable the feature.  Value is in units of crystal clock cycles.
+
+Note the hardware might add a threshold to the provided value in order to make
+it safe, and hence using 0 is fine.
 
 ### vpid (Intel)
 > `= <boolean>`
