@@ -1,3 +1,9 @@
+xen (4.14.5+94-ge49571868d-1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.14.5+94-ge49571868d.
+
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Thu, 23 Mar 2023 20:37:21 +0100
+
 xen (4.14.5+86-g1c354767d5-1) bullseye-security; urgency=medium
 
   * Update to new upstream version 4.14.5+86-g1c354767d5, which also contains
