@@ -1,8 +1,21 @@
-xen (4.14.5+94-ge49571868d-1) UNRELEASED; urgency=medium
+xen (4.14.5+94-ge49571868d-1) bullseye-security; urgency=medium
 
-  * Update to new upstream version 4.14.5+94-ge49571868d.
+  * Update to new upstream version 4.14.5+94-ge49571868d, which also contains
+    security fixes for the following issues: (Closes: #1033297)
+    - x86: Multiple speculative security issues
+      XSA-422 CVE-2022-23824
+    - x86 shadow plus log-dirty mode use-after-free
+      XSA-427 CVE-2022-42332
+    - x86/HVM pinned cache attributes mis-handling
+      XSA-428 CVE-2022-42333 CVE-2022-42334
+    - x86: speculative vulnerability in 32bit SYSCALL path
+      XSA-429 CVE-2022-42331
+  * Note that the following XSA are not listed, because...
+    - XSA-423 and XSA-424 have patches for the Linux kernel.
+    - XSA-425 only applies to Xen 4.17 and newer
+    - XSA-426 only applies to Xen 4.16 and newer
 
- -- Maximilian Engelhardt <maxi@daemonizer.de>  Thu, 23 Mar 2023 20:37:21 +0100
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Thu, 23 Mar 2023 20:40:49 +0100
 
 xen (4.14.5+86-g1c354767d5-1) bullseye-security; urgency=medium
 
