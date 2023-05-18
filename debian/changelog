@@ -1,8 +1,14 @@
-xen (4.17.1+2-gb773c48e36-1) UNRELEASED; urgency=medium
+xen (4.17.1+2-gb773c48e36-1) unstable; urgency=medium
 
-  * Update to new upstream version 4.17.1+2-gb773c48e36.
+  * Update to new upstream version 4.17.1+2-gb773c48e36, which also contains
+    security fixes for the following issues:
+    - x86 shadow paging arbitrary pointer dereference
+      XSA-430 CVE-2022-42335
+      (Closes: #1034842)
+    - Mishandling of guest SSBD selection on AMD hardware
+      XSA-431 CVE-2022-42336
 
- -- Maximilian Engelhardt <maxi@daemonizer.de>  Thu, 18 May 2023 21:24:46 +0200
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Thu, 18 May 2023 21:26:30 +0200
 
 xen (4.17.0+74-g3eac216e6e-1) unstable; urgency=medium
 
