@@ -738,7 +738,7 @@ void vmx_update_exception_bitmap(struct vcpu *v)
 
 static void cf_check vmx_cpuid_policy_changed(struct vcpu *v)
 {
-    const struct cpuid_policy *cp = v->domain->arch.cpuid;
+    const struct cpu_policy *cp = v->domain->arch.cpu_policy;
     int rc = 0;
 
     if ( opt_hvm_fep ||
@@ -2808,8 +2808,6 @@ static void __init ler_to_fixup_check(void);
  */
 static bool __init has_if_pschange_mc(void)
 {
-    uint64_t caps = 0;
-
     /*
      * If we are virtualised, there is nothing we can do.  Our EPT tables are
      * shadowed by our hypervisor, and not walked by hardware.
@@ -2817,10 +2815,8 @@ static bool __init has_if_pschange_mc(void)
     if ( cpu_has_hypervisor )
         return false;
 
-    if ( cpu_has_arch_caps )
-        rdmsrl(MSR_ARCH_CAPABILITIES, caps);
-
-    if ( caps & ARCH_CAPS_IF_PSCHANGE_MC_NO )
+    /* Hardware reports itself as fixed. */
+    if ( cpu_has_if_pschange_mc_no )
         return false;
 
     /*
@@ -3465,7 +3461,7 @@ static int cf_check vmx_msr_write_intercept(
     unsigned int msr, uint64_t msr_content)
 {
     struct vcpu *v = current;
-    const struct cpuid_policy *cp = v->domain->arch.cpuid;
+    const struct cpu_policy *cp = v->domain->arch.cpu_policy;
 
     HVM_DBG_LOG(DBG_LEVEL_MSR, "ecx=%#x, msr_value=%#"PRIx64, msr, msr_content);
 
