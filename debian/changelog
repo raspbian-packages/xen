@@ -1,8 +1,19 @@
-xen (4.17.2-1) UNRELEASED; urgency=medium
+xen (4.17.2-1) unstable; urgency=medium
 
-  * Update to new upstream version 4.17.2.
+  * Update to new upstream version 4.17.2, which also contains
+    security fixes for the following issues: (Closes: #1042102)
+    - x86/AMD: Zenbleed
+      XSA-433 CVE-2023-20593
+    - x86/AMD: Speculative Return Stack Overflow
+      XSA-434 CVE-2023-20569
+    - x86/Intel: Gather Data Sampling
+      XSA-435 CVE-2022-40982
+    - arm: Guests can trigger a deadlock on Cortex-A77
+      XSA-436 CVE-2023-34320
+  * Note that the following XSA are not listed, because...
+    - XSA-432 has patches for the Linux kernel.
 
- -- Maximilian Engelhardt <maxi@daemonizer.de>  Sun, 20 Aug 2023 15:34:40 +0200
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Sun, 20 Aug 2023 16:08:59 +0200
 
 xen (4.17.1+2-gb773c48e36-1) unstable; urgency=medium
 
