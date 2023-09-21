@@ -77,7 +77,6 @@
 #include <public/memory.h>
 #include <public/vm_event.h>
 #include <public/arch-x86/cpuid.h>
-#include <asm/cpuid.h>
 
 #include <compat/hvm/hvm_op.h>
 
@@ -937,7 +936,7 @@ const char *hvm_efer_valid(const struct vcpu *v, uint64_t value,
                            signed int cr0_pg)
 {
     const struct domain *d = v->domain;
-    const struct cpuid_policy *p = d->arch.cpuid;
+    const struct cpu_policy *p = d->arch.cpu_policy;
 
     if ( value & ~EFER_KNOWN_MASK )
         return "Unknown bits set";
@@ -974,7 +973,7 @@ const char *hvm_efer_valid(const struct vcpu *v, uint64_t value,
 /* These bits in CR4 can be set by the guest. */
 unsigned long hvm_cr4_guest_valid_bits(const struct domain *d, bool restore)
 {
-    const struct cpuid_policy *p = d->arch.cpuid;
+    const struct cpu_policy *p = d->arch.cpu_policy;
     bool mce, vmxe;
 
     /* Logic broken out simply to aid readability below. */

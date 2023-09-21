@@ -628,12 +628,14 @@ static inline uint8_t get_cpu_family(uint32_t raw, uint8_t *model,
     return fam;
 }
 
-extern int8_t opt_tsx, cpu_has_tsx_ctrl;
+extern int8_t opt_tsx;
 extern bool rtm_disabled;
 void tsx_init(void);
 
 void update_mcu_opt_ctrl(void);
 void set_in_mcu_opt_ctrl(uint32_t mask, uint32_t val);
+
+void amd_check_zenbleed(void);
 
 #endif /* !__ASSEMBLY__ */
 
