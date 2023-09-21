@@ -1,6 +1,19 @@
-xen (4.14.6-1) UNRELEASED; urgency=medium
+xen (4.14.6-1) bullseye; urgency=medium
 
-  * Update to new upstream version 4.14.6.
+  * Update to new upstream version 4.14.6, which also contains
+    security fixes for the following issues:
+    - x86/AMD: Zenbleed
+      XSA-433 CVE-2023-20593
+    - x86/AMD: Speculative Return Stack Overflow
+      XSA-434 CVE-2023-20569
+    - x86/Intel: Gather Data Sampling
+      XSA-435 CVE-2022-40982
+  * Note that the following XSA are not listed, because...
+    - XSA-430 and XSA-431 only apply to Xen 4.17
+    - XSA-432 has patches for the Linux kernel.
+  * Also, note that upstream security support for Xen 4.14 has ended with this
+    release. This also means that Xen security support for Debian Bullseye has
+    ended.
 
  -- Hans van Kranenburg <hans@knorrie.org>  Thu, 21 Sep 2023 16:55:59 +0200
 
