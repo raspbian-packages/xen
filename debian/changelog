@@ -1,6 +1,23 @@
-xen (4.17.2+55-g0b56bed864-1) UNRELEASED; urgency=medium
+xen (4.17.2+55-g0b56bed864-1) unstable; urgency=medium
 
-  * Update to new upstream version 4.17.2+55-g0b56bed864.
+  * Update to new upstream version 4.17.2+55-g0b56bed864, which also contains
+    security fixes for the following issues:
+    - arm32: The cache may not be properly cleaned/invalidated
+      XSA-437 CVE-2023-34321
+    - top-level shadow reference dropped too early for 64-bit PV guests
+      XSA-438 CVE-2023-34322
+    - x86/AMD: Divide speculative information leak
+      XSA-439 CVE-2023-20588
+    - xenstored: A transaction conflict can crash C Xenstored
+      XSA-440 CVE-2023-34323
+    - x86/AMD: missing IOMMU TLB flushing
+      XSA-442 CVE-2023-34326
+    - Multiple vulnerabilities in libfsimage disk handling
+      XSA-443 CVE-2023-34325
+    - x86/AMD: Debug Mask handling
+      XSA-444 CVE-2023-34327 CVE-2023-34328
+  * Note that the following XSA are not listed, because...
+    - XSA-441 has patches for the Linux kernel.
 
  -- Hans van Kranenburg <hans@knorrie.org>  Thu, 12 Oct 2023 19:25:55 +0200
 
