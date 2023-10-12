@@ -2281,6 +2281,11 @@ void activate_debugregs(const struct vcpu *curr)
     if ( curr->arch.dr7 & DR7_ACTIVE_MASK )
         write_debugreg(7, curr->arch.dr7);
 
+    /*
+     * Both the PV and HVM paths leave stale DR_MASK values in hardware on
+     * context-switch-out.  If we're activating %dr7 for the guest, we must
+     * sync the DR_MASKs too, whether or not the guest can see them.
+     */
     if ( boot_cpu_has(X86_FEATURE_DBEXT) )
     {
         wrmsrl(MSR_AMD64_DR0_ADDRESS_MASK, curr->arch.msrs->dr_mask[0]);
@@ -2314,6 +2319,19 @@ void asm_domain_crash_synchronous(unsigned long addr)
     for ( ; ; )
         do_softirq();
 }
+
+#ifdef CONFIG_DEBUG
+void check_ist_exit(const struct cpu_user_regs *regs, bool ist_exit)
+{
+    const unsigned int ist_mask =
+        (1U << X86_EXC_NMI) | (1U << X86_EXC_DB) |
+        (1U << X86_EXC_DF)  | (1U << X86_EXC_MC);
+    uint8_t ev = regs->entry_vector;
+    bool is_ist = (ev < TRAP_nr) && ((1U << ev) & ist_mask);
+
+    ASSERT(is_ist == ist_exit);
+}
+#endif
 
 /*
  * Local variables:
