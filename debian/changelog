@@ -1,3 +1,9 @@
+xen (4.17.2+55-g0b56bed864-1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.17.2+55-g0b56bed864.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Thu, 12 Oct 2023 19:25:55 +0200
+
 xen (4.17.2-1) unstable; urgency=medium
 
   * Update to new upstream version 4.17.2, which also contains
