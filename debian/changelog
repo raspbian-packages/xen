@@ -1,3 +1,9 @@
+xen (4.17.2+76-ge1f9cb16e2-1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.17.2+76-ge1f9cb16e2.
+
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Wed, 29 Nov 2023 20:15:02 +0100
+
 xen (4.17.2+55-g0b56bed864-1) unstable; urgency=medium
 
   * Update to new upstream version 4.17.2+55-g0b56bed864, which also contains
