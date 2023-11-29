@@ -1,0 +1,25 @@
+From: Ian Jackson <ian.jackson@citrix.com>
+Date: Thu, 20 Sep 2018 18:10:14 +0100
+X-Dgit-Generated: 4.17.2+76-ge1f9cb16e2-1 54044c6c9e5242860f57f70079d083b772a28aed
+Subject: Do not build the instruction emulator
+
+Signed-off-by: Ian Jackson <ian.jackson@citrix.com>
+
+---
+
+diff --git a/tools/fuzz/Makefile b/tools/fuzz/Makefile
+index 85213dc8959f..6b7970b1316b 100644
+--- a/tools/fuzz/Makefile
++++ b/tools/fuzz/Makefile
+@@ -3,7 +3,10 @@ include $(XEN_ROOT)/tools/Rules.mk
+ 
+ SUBDIRS-y :=
+ SUBDIRS-y += libelf
+-SUBDIRS-y += x86_instruction_emulator
++
++#SUBDIRS-y += x86_instruction_emulator
++# This does not compile with Debian's userland compile options,
++# which include fortify etc.
+ 
+ .PHONY: all clean distclean install uninstall
+ all clean distclean install uninstall: %: subdirs-%

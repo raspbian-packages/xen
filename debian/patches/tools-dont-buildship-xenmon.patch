@@ -1,0 +1,29 @@
+From: Hans van Kranenburg <hans@knorrie.org>
+Date: Sat, 5 Sep 2020 22:43:19 +0200
+X-Dgit-Generated: 4.17.2+76-ge1f9cb16e2-1 f28d0fd5eaf959ff63f9c9c04adebce39439fb17
+Subject: tools: don't build/ship xenmon
+
+This is something that hasn't been touched (except for making it Python
+3 compatible, which failed) since 2007. Don't build or ship it.
+
+    -# xenmon
+      File "/usr/sbin/xenmon", line 680
+	stop_cmd = "/usr/bin/pkill -INT -z global xenbaked"
+    TabError: inconsistent use of tabs and spaces in indentation
+
+Signed-off-by: Hans van Kranenburg <hans@knorrie.org>
+
+---
+
+diff --git a/tools/Makefile b/tools/Makefile
+index 4906fdbc237c..6bfe198fed16 100644
+--- a/tools/Makefile
++++ b/tools/Makefile
+@@ -16,7 +16,6 @@ SUBDIRS-y += xentrace
+ SUBDIRS-$(CONFIG_XCUTILS) += xcutils
+ SUBDIRS-$(CONFIG_X86) += firmware
+ SUBDIRS-y += console
+-SUBDIRS-y += xenmon
+ SUBDIRS-$(XENSTAT_XENTOP) += xentop
+ SUBDIRS-y += libfsimage
+ SUBDIRS-$(CONFIG_Linux) += vchan

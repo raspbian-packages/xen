@@ -1,0 +1,26 @@
+From: Bastian Blank <waldi@debian.org>
+Date: Sat, 5 Jul 2014 11:47:30 +0200
+X-Dgit-Generated: 4.17.2+76-ge1f9cb16e2-1 bcb26b921f32b4281b2e833cb531502754cf8a3e
+Subject: Do not ship COPYING into /usr/include
+
+This is not wanted in Debian.  COPYING ends up in
+/usr/share/doc/xen-*copyright.
+
+Patch-Name: tools-include-no-COPYING.diff
+
+Signed-off-by: Ian Jackson <ian.jackson@citrix.com>
+
+---
+
+diff --git a/tools/include/Makefile b/tools/include/Makefile
+index d69aeb54bf1d..73c6a6cf1240 100644
+--- a/tools/include/Makefile
++++ b/tools/include/Makefile
+@@ -64,7 +64,6 @@ install: all
+ 	$(INSTALL_DIR) $(DESTDIR)$(includedir)/xen/io
+ 	$(INSTALL_DIR) $(DESTDIR)$(includedir)/xen/sys
+ 	$(INSTALL_DIR) $(DESTDIR)$(includedir)/xen/xsm
+-	$(INSTALL_DATA) xen/COPYING $(DESTDIR)$(includedir)/xen
+ 	$(INSTALL_DATA) xen/*.h $(DESTDIR)$(includedir)/xen
+ 	$(INSTALL_DATA) xen/arch-x86/*.h $(DESTDIR)$(includedir)/xen/arch-x86
+ 	$(INSTALL_DATA) xen/arch-x86/hvm/*.h $(DESTDIR)$(includedir)/xen/arch-x86/hvm
