@@ -1,3 +1,11 @@
+xen (4.17.2+76-ge1f9cb16e2-1~deb12u1) bookworm; urgency=medium
+
+  * Rebuild for bookworm to address the security issues since
+    4.17.1+2-gb773c48e36-1 listed below.
+  * d/salsa-ci.yml: Set RELEASE variable to bookworm
+
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Sat, 02 Dec 2023 17:58:08 +0100
+
 xen (4.17.2+76-ge1f9cb16e2-1) unstable; urgency=medium
 
   * Update to new upstream version 4.17.2-76-ge1f9cb16e2, which also contains
