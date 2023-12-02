@@ -20,7 +20,7 @@ variables:
   # disable shallow cloning of git repository. This is needed for git-debrebase
   GIT_DEPTH: 0
 
-  RELEASE: 'unstable'
+  RELEASE: 'bookworm'
 
   # xen currently does not enable hardening when building the hypervisor so
   # disable blhc.
