@@ -19,7 +19,7 @@ Build-Depends:
    gcc-multilib [amd64],
    libext2fs-dev,
    iasl,
-   seabios (>= 1.7.4-2~) [amd64],
+   seabios [amd64],
    libaio-dev,
    libfdt-dev [armhf arm64],
    libglib2.0-dev,
@@ -43,8 +43,6 @@ Package: xenstore-utils
 Architecture: amd64 arm64 armhf
 Section: admin
 Depends: ${shlibs:Depends}, ${misc:Depends}
-Replaces: xen-utils-common (<= 4.11.1~pre+1.733450b39b-1~)
-Breaks: xen-utils-common (<= 4.11.1~pre+1.733450b39b-1~)
 Suggests: xen-doc
 Description: Xenstore command line utilities for Xen
  This package contains command line utilities for interacting with
@@ -62,10 +60,8 @@ Description: Xenstore command line utilities for Xen
 Package: xen-utils-common
 Section: admin
 Architecture: amd64 armhf arm64
-Depends: sysvinit-utils (>= 3.05-4~) | lsb-base, udev, xenstore-utils,
+Depends: udev, xenstore-utils,
     ${shlibs:Depends}, ${python3:Depends}, ${misc:Depends}
-# The "| lsb-base" is needed for backporting to bullseye. It can be removed
-# once backporting to bullseye is no longer needed.
 Replaces: xenstore-utils (<< 4.19.0+14-g0918434e0f-1~)
 Breaks: xenstore-utils (<< 4.19.0+14-g0918434e0f-1~)
 Suggests: xen-doc
@@ -80,7 +76,6 @@ Package: xen-hypervisor-common
 Section: kernel
 Architecture: amd64 armhf arm64
 Depends: ${misc:Depends}
-Replaces: xen-hypervisor-4.8-amd64, xen-hypervisor-4.8-arm64, xen-hypervisor-4.8-armhf
 Description: Xen Hypervisor - common files
  The configuration which arranges for an installed hypervisor to be booted
  as default, with the right command line arguments passed to both
@@ -107,7 +102,7 @@ Section: admin
 Architecture: amd64 arm64 armhf
 Provides: xen-utils
 Depends: ${shlibs:Depends}, ${misc:Depends}, ${python3:Depends}, xen-utils-common (>= ${source:Version})
-Recommends: bridge-utils, xen-hypervisor-4.19, qemu-system-xen (>> 1:7.0+dfsg-6~) [amd64], grub-xen-host [amd64]
+Recommends: bridge-utils, xen-hypervisor-4.19, qemu-system-xen [amd64], grub-xen-host [amd64]
 Suggests: qemu-utils [amd64], seabios [amd64], ovmf
 Description: Xen administrative tools
  The userspace tools to manage a system virtualized through the Xen virtual
