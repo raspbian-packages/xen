@@ -5,6 +5,12 @@
 
 SHELL    := bash -e
 
+# support parallel build
+ifneq (,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
+    NUMJOBS = $(patsubst parallel=%,%,$(filter parallel=%,$(DEB_BUILD_OPTIONS)))
+    MAKEFLAGS += -j$(NUMJOBS)
+endif
+
 # This gives us DEB_VERSION_UPSTREAM and DEB_VERSION (used by our delta queue)
 include /usr/share/dpkg/pkg-info.mk
 export DEB_VERSION
@@ -213,7 +219,9 @@ override_dh_auto_configure:
 # do it separately.
 override_dh_auto_build:
 	$(MAKE) $(make_args_xen) xen
-	$(MAKE) $(make_args_tools) tools docs CONFIG_PV_SHIM=n
+	$(MAKE) $(make_args_tools) tools CONFIG_PV_SHIM=n
+	# The docs fail on parallel build, so build linear
+	$(MAKE) $(make_args_tools) docs CONFIG_PV_SHIM=n -j1
 	case $(flavour) in \
 	amd64) \
 		$(MAKE) $(make_args_xen) -C tools/firmware/xen-dir ;; \
