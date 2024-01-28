@@ -118,6 +118,7 @@ templated-files: $(TEMPLATED_FILES)
 # it exports these.  This is a problem because we need to pass different
 # options to the hypervisor build - the default options from dpkg
 # et al are suitable for dom0 binaries but not for the hypervisor.
+# This is still needed post bookworm.
 undefine CFLAGS
 undefine CXXFLAGS
 undefine FFLAGS
@@ -147,6 +148,7 @@ make_args_common := \
 # Additionally passing -fdebug-prefix-map in necessary to work around a gcc bug
 # where -ffile-prefix-map is ignored with assembly files. See
 # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=93371
+# This should be fixed with gcc-13, i.e. trixie onwards
 make_args_xen := $(make_args_common) \
 	XEN_TARGET_ARCH=$(xen_arch_$(flavour)) \
 	EXTRA_CFLAGS_XEN_CORE='-ffile-prefix-map=$(shell pwd)=. -fdebug-prefix-map=$(shell pwd)=.'
