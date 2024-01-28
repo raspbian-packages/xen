@@ -173,15 +173,6 @@ export VGABIOS_REL_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%d
 %:
 	dh $@ --with=python3
 
-# Without this, something on stretch passes CFLAGS in the environment
-# to the Xen build system, which then (with 4.11) chokes printing
-#   /bin/sh: 1: Syntax error: Unterminated quoted string
-# probably because the CFLAGS value contains multiple options and
-# therefore spaces.  See also the note by `undefine CFLAGS', above.
-override_dh_auto_clean:
-	rm -f debian/xen-tools-built.stamp
-	$(MAKE) -j1 distclean
-
 # To avoid that the build dirties the tree, our delta queue deletes
 # config.sub and config.guess.  dh_update_autotools_config can get
 # us fresh ones for each build, but it expects to find some there
