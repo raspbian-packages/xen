@@ -233,7 +233,7 @@ override_dh_auto_install: $(TEMPLATED_FILES)
 	@# need to pass it the make_args_xen settings.
 	@# Luckily this target, unlike the build, is a noop on
 	@# shimless arches, so it does not need to be conditional.
-	$(MAKE) $(make_args_xen) DESTDIR=$t $(make_args_xen) \
+	$(MAKE) $(make_args_xen) DESTDIR=$t \
 		-C tools/firmware install-shim
 	:
 	@# Inexplicably, upstream puts the efi binares in usr/lib64
