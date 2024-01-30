@@ -11,7 +11,7 @@ else
 DATE		:= $(shell date "$(DATE_FMT)")
 endif
 
-DOC_ARCHES      := arm x86_32 x86_64
+DOC_ARCHES      := arm ppc riscv x86_32 x86_64
 MAN_SECTIONS    := 1 5 7 8
 
 # Documentation sources to build
