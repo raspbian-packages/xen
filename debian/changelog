@@ -1,8 +1,20 @@
-xen (4.17.3+10-g091466ba55-1) UNRELEASED; urgency=medium
+xen (4.17.3+10-g091466ba55-1) unstable; urgency=medium
 
-  * Update to new upstream version 4.17.3+10-g091466ba55.
+  * Update to new upstream version 4.17.3+10-g091466ba55, which also contains
+    security fixes for the following issues:
+    - arm32: The cache may not be properly cleaned/invalidated (take two)
+      XSA-447 CVE-2023-46837
+    - pci: phantom functions assigned to incorrect contexts
+      XSA-449 CVE-2023-46839
+    - VT-d: Failure to quarantine devices in !HVM builds
+      XSA-450 CVE-2023-46840
+  * Note that the following XSA are not listed, because...
+    - XSA-448 has patches for the Linux kernel.
+  * Compilation with Python 3.12 has been fixed in upstream commit 4000522008
+    ("Only compile the hypervisor with -Wdeclaration-after-statement")
+    (Closes: #1062048)
 
- -- Hans van Kranenburg <hans.van.kranenburg@mendix.com>  Sun, 04 Feb 2024 13:43:41 +0100
+ -- Hans van Kranenburg <hans@knorrie.org>  Sun, 04 Feb 2024 13:45:17 +0100
 
 xen (4.17.2+76-ge1f9cb16e2-1) unstable; urgency=medium
 
