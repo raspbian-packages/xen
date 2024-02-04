@@ -1,3 +1,9 @@
+xen (4.17.3+10-g091466ba55-1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.17.3+10-g091466ba55.
+
+ -- Hans van Kranenburg <hans.van.kranenburg@mendix.com>  Sun, 04 Feb 2024 13:43:41 +0100
+
 xen (4.17.2+76-ge1f9cb16e2-1) unstable; urgency=medium
 
   * Update to new upstream version 4.17.2-76-ge1f9cb16e2, which also contains
