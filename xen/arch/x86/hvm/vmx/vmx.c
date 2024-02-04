@@ -1499,7 +1499,13 @@ static void cf_check vmx_set_nonreg_state(struct vcpu *v,
 {
     vmx_vmcs_enter(v);
 
-    __vmwrite(GUEST_ACTIVITY_STATE, nrs->vmx.activity_state);
+    if ( nrs->vmx.activity_state )
+    {
+        printk("Attempt to set %pv activity_state %#lx\n",
+               v, nrs->vmx.activity_state);
+        domain_crash(v->domain);
+    }
+
     __vmwrite(GUEST_INTERRUPTIBILITY_INFO, nrs->vmx.interruptibility_info);
     __vmwrite(GUEST_PENDING_DBG_EXCEPTIONS, nrs->vmx.pending_dbg);
 
@@ -4037,7 +4043,7 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
 
     case EXIT_REASON_INIT:
         printk(XENLOG_ERR "Error: INIT received - ignoring\n");
-        return; /* Renter the guest without further processing */
+        break;
     }
 
     /* Now enable interrupts so it's safe to take locks. */
@@ -4323,6 +4329,7 @@ void vmx_vmexit_handler(struct cpu_user_regs *regs)
         break;
     }
     case EXIT_REASON_EXTERNAL_INTERRUPT:
+    case EXIT_REASON_INIT:
         /* Already handled above. */
         break;
     case EXIT_REASON_TRIPLE_FAULT:
