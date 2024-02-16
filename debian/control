@@ -27,7 +27,7 @@ Build-Depends:
    libncurses-dev,
    libpixman-1-dev,
    libyajl-dev,
-   pkg-config,
+   pkgconf,
    uuid-dev,
    zlib1g-dev,
    libzstd-dev,
