@@ -11,7 +11,7 @@ version="$1"; shift
 # We first have to figure out what libraries the binary is linked
 # against.  We then match against the libraries listed for inclusion
 # here:
-list=debian/libxenmiscVt64.install.vsn-in
+list=debian/libxenmiscV.install.vsn-in
 
 t=debian/tmp
 vd="/usr/lib/xen-$version/bin"

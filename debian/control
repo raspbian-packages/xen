@@ -4,7 +4,7 @@ Maintainer: Debian Xen Team <pkg-xen-devel@lists.alioth.debian.org>
 Uploaders: Ian Jackson <iwj@xenproject.org>, Hans van Kranenburg <hans@knorrie.org>
 Section: admin
 Standards-Version: 4.6.2
-Build-Depends: dpkg-dev (>= 1.22.5),
+Build-Depends:
    debhelper-compat (= 13),
    dh-exec,
    dpkg-dev (>= 1.16.0~),
@@ -212,16 +212,16 @@ Package: libxen-dev
 Section: libdevel
 Architecture: amd64 arm64 armhf
 Depends: ${shlibs:Depends}, ${misc:Depends},
-	 libxenmisc4.17t64 (= ${binary:Version}),
-	 libxencall1t64 (= ${binary:Version}),
-	 libxendevicemodel1t64 (= ${binary:Version}),
-	 libxenevtchn1t64 (= ${binary:Version}),
-	 libxenforeignmemory1t64 (= ${binary:Version}),
-	 libxengnttab1t64 (= ${binary:Version}),
-	 libxenstore4t64 (= ${binary:Version}),
-	 libxentoolcore1t64 (= ${binary:Version}),
-	 libxentoollog1t64 (= ${binary:Version}),
-	 libxenhypfs1t64 (= ${binary:Version}),
+	 libxenmisc4.17 (= ${binary:Version}),
+	 libxencall1 (= ${binary:Version}),
+	 libxendevicemodel1 (= ${binary:Version}),
+	 libxenevtchn1 (= ${binary:Version}),
+	 libxenforeignmemory1 (= ${binary:Version}),
+	 libxengnttab1 (= ${binary:Version}),
+	 libxenstore4 (= ${binary:Version}),
+	 libxentoolcore1 (= ${binary:Version}),
+	 libxentoollog1 (= ${binary:Version}),
+	 libxenhypfs1 (= ${binary:Version}),
 Description: Public headers and libs for Xen
  This package contains the public headers and static libraries for Xen.
  .
@@ -236,10 +236,7 @@ Description: Public headers and libs for Xen
  Most of the other included libraries are internal, and intended for
  use by the Xen toolstack, rather than directly.
 
-Package: libxenmisc4.17t64
-Provides: ${t64:Provides}
-Replaces: libxenmisc4.17
-Breaks: libxenmisc4.17 (<< ${source:Version})
+Package: libxenmisc4.17
 Section: libs
 Architecture: amd64 arm64 armhf
 Depends: ${shlibs:Depends}, ${misc:Depends}
@@ -250,10 +247,7 @@ Description: Xen runtime libraries - miscellaneous, versioned ABI
  knowledge of hypervisor-version-specific hypercall ABIs.
 Multi-Arch: same
 
-Package: libxencall1t64
-Provides: ${t64:Provides}
-Replaces: libxencall1
-Breaks: libxencall1 (<< ${source:Version})
+Package: libxencall1
 Section: libs
 Architecture: amd64 arm64 armhf
 Depends: ${shlibs:Depends}, ${misc:Depends}
@@ -261,10 +255,7 @@ Description: Xen runtime library - libxencall
  Shared library for Xen utilities.
 Multi-Arch: same
 
-Package: libxendevicemodel1t64
-Provides: ${t64:Provides}
-Replaces: libxendevicemodel1
-Breaks: libxendevicemodel1 (<< ${source:Version})
+Package: libxendevicemodel1
 Section: libs
 Architecture: amd64 arm64 armhf
 Depends: ${shlibs:Depends}, ${misc:Depends}
@@ -272,10 +263,7 @@ Description: Xen runtime libraries - libxendevicemodel
  Shared library for Xen utilities.
 Multi-Arch: same
 
-Package: libxenevtchn1t64
-Provides: ${t64:Provides}
-Replaces: libxenevtchn1
-Breaks: libxenevtchn1 (<< ${source:Version})
+Package: libxenevtchn1
 Section: libs
 Architecture: amd64 arm64 armhf
 Depends: ${shlibs:Depends}, ${misc:Depends}
@@ -283,10 +271,7 @@ Description: Xen runtime libraries - libxenevtchn
  Shared library for Xen utilities.
 Multi-Arch: same
 
-Package: libxenforeignmemory1t64
-Provides: ${t64:Provides}
-Replaces: libxenforeignmemory1
-Breaks: libxenforeignmemory1 (<< ${source:Version})
+Package: libxenforeignmemory1
 Section: libs
 Architecture: amd64 arm64 armhf
 Depends: ${shlibs:Depends}, ${misc:Depends}
@@ -294,10 +279,7 @@ Description: Xen runtime libraries - libxenforeignmemory
  Shared library for Xen utilities.
 Multi-Arch: same
 
-Package: libxengnttab1t64
-Provides: ${t64:Provides}
-Replaces: libxengnttab1
-Breaks: libxengnttab1 (<< ${source:Version})
+Package: libxengnttab1
 Section: libs
 Architecture: amd64 arm64 armhf
 Depends: ${shlibs:Depends}, ${misc:Depends}
@@ -305,10 +287,7 @@ Description: Xen runtime libraries - libxengnttab
  Shared library for Xen utilities.
 Multi-Arch: same
 
-Package: libxenstore4t64
-Provides: ${t64:Provides}
-Replaces: libxenstore4
-Breaks: libxenstore4 (<< ${source:Version})
+Package: libxenstore4
 Section: libs
 Architecture: amd64 arm64 armhf
 Depends: ${shlibs:Depends}, ${misc:Depends}
@@ -316,10 +295,7 @@ Description: Xen runtime libraries - libxenstore
  Shared library for Xen utilities.
 Multi-Arch: same
 
-Package: libxentoolcore1t64
-Provides: ${t64:Provides}
-Replaces: libxentoolcore1
-Breaks: libxentoolcore1 (<< ${source:Version})
+Package: libxentoolcore1
 Section: libs
 Architecture: amd64 arm64 armhf
 Depends: ${shlibs:Depends}, ${misc:Depends}
@@ -327,10 +303,7 @@ Description: Xen runtime libraries - libxentoolcore
  Shared library for Xen utilities.
 Multi-Arch: same
 
-Package: libxentoollog1t64
-Provides: ${t64:Provides}
-Replaces: libxentoollog1
-Breaks: libxentoollog1 (<< ${source:Version})
+Package: libxentoollog1
 Section: libs
 Architecture: amd64 arm64 armhf
 Depends: ${shlibs:Depends}, ${misc:Depends}
@@ -338,10 +311,7 @@ Description: Xen runtime libraries - libxentoollog
  Shared library for Xen utilities.
 Multi-Arch: same
 
-Package: libxenhypfs1t64
-Provides: ${t64:Provides}
-Replaces: libxenhypfs1
-Breaks: libxenhypfs1 (<< ${source:Version})
+Package: libxenhypfs1
 Section: libs
 Architecture: amd64 arm64 armhf
 Depends: ${shlibs:Depends}, ${misc:Depends}
