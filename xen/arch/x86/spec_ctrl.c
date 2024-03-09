@@ -62,7 +62,8 @@ int8_t __initdata opt_psfd = -1;
 int8_t __ro_after_init opt_ibpb_ctxt_switch = -1;
 int8_t __read_mostly opt_eager_fpu = -1;
 int8_t __read_mostly opt_l1d_flush = -1;
-static bool __initdata opt_branch_harden = true;
+static bool __initdata opt_branch_harden =
+    IS_ENABLED(CONFIG_SPECULATIVE_HARDEN_BRANCH);
 
 bool __initdata bsp_delay_spec_ctrl;
 uint8_t __read_mostly default_xen_spec_ctrl;
@@ -252,7 +253,12 @@ static int __init cf_check parse_spec_ctrl(const char *s)
         {
             s += 10;
 
-            if ( !cmdline_strcmp(s, "retpoline") )
+            if ( !IS_ENABLED(CONFIG_INDIRECT_THUNK) )
+            {
+                no_config_param("INDIRECT_THUNK", "spec-ctrl", s - 10, ss);
+                rc = -EINVAL;
+            }
+            else if ( !cmdline_strcmp(s, "retpoline") )
                 opt_thunk = THUNK_RETPOLINE;
             else if ( !cmdline_strcmp(s, "lfence") )
                 opt_thunk = THUNK_LFENCE;
@@ -280,7 +286,16 @@ static int __init cf_check parse_spec_ctrl(const char *s)
         else if ( (val = parse_boolean("l1d-flush", s, ss)) >= 0 )
             opt_l1d_flush = val;
         else if ( (val = parse_boolean("branch-harden", s, ss)) >= 0 )
-            opt_branch_harden = val;
+        {
+            if ( IS_ENABLED(CONFIG_SPECULATIVE_HARDEN_BRANCH) )
+                opt_branch_harden = val;
+            else
+            {
+                no_config_param("SPECULATIVE_HARDEN_BRANCH", "spec-ctrl", s,
+                                ss);
+                rc = -EINVAL;
+            }
+        }
         else if ( (val = parse_boolean("srb-lock", s, ss)) >= 0 )
             opt_srb_lock = val;
         else if ( (val = parse_boolean("unpriv-mmio", s, ss)) >= 0 )
@@ -478,7 +493,10 @@ static void __init print_details(enum ind_thunk thunk)
            (e21a & cpufeat_mask(X86_FEATURE_SBPB))           ? " SBPB"           : "");
 
     /* Compiled-in support which pertains to mitigations. */
-    if ( IS_ENABLED(CONFIG_INDIRECT_THUNK) || IS_ENABLED(CONFIG_SHADOW_PAGING) )
+    if ( IS_ENABLED(CONFIG_INDIRECT_THUNK) || IS_ENABLED(CONFIG_SHADOW_PAGING) ||
+         IS_ENABLED(CONFIG_SPECULATIVE_HARDEN_ARRAY) ||
+         IS_ENABLED(CONFIG_SPECULATIVE_HARDEN_BRANCH) ||
+         IS_ENABLED(CONFIG_SPECULATIVE_HARDEN_GUEST_ACCESS) )
         printk("  Compiled-in support:"
 #ifdef CONFIG_INDIRECT_THUNK
                " INDIRECT_THUNK"
@@ -486,14 +504,24 @@ static void __init print_details(enum ind_thunk thunk)
 #ifdef CONFIG_SHADOW_PAGING
                " SHADOW_PAGING"
 #endif
+#ifdef CONFIG_SPECULATIVE_HARDEN_ARRAY
+               " HARDEN_ARRAY"
+#endif
+#ifdef CONFIG_SPECULATIVE_HARDEN_BRANCH
+               " HARDEN_BRANCH"
+#endif
+#ifdef CONFIG_SPECULATIVE_HARDEN_GUEST_ACCESS
+               " HARDEN_GUEST_ACCESS"
+#endif
                "\n");
 
     /* Settings for Xen's protection, irrespective of guests. */
-    printk("  Xen settings: BTI-Thunk %s, SPEC_CTRL: %s%s%s%s%s, Other:%s%s%s%s%s%s\n",
-           thunk == THUNK_NONE      ? "N/A" :
-           thunk == THUNK_RETPOLINE ? "RETPOLINE" :
-           thunk == THUNK_LFENCE    ? "LFENCE" :
-           thunk == THUNK_JMP       ? "JMP" : "?",
+    printk("  Xen settings: %s%sSPEC_CTRL: %s%s%s%s%s, Other:%s%s%s%s%s%s\n",
+           thunk != THUNK_NONE      ? "BTI-Thunk: " : "",
+           thunk == THUNK_NONE      ? "" :
+           thunk == THUNK_RETPOLINE ? "RETPOLINE, " :
+           thunk == THUNK_LFENCE    ? "LFENCE, " :
+           thunk == THUNK_JMP       ? "JMP, " : "?, ",
            (!boot_cpu_has(X86_FEATURE_IBRSB) &&
             !boot_cpu_has(X86_FEATURE_IBRS))         ? "No" :
            (default_xen_spec_ctrl & SPEC_CTRL_IBRS)  ? "IBRS+" :  "IBRS-",
