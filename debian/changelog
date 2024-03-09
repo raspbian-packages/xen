@@ -1,8 +1,15 @@
-xen (4.17.3+36-g54dacb5c02-1) UNRELEASED; urgency=medium
+xen (4.17.3+36-g54dacb5c02-1) unstable; urgency=medium
 
-  * Update to new upstream version 4.17.3+36-g54dacb5c02.
+  * Update to new upstream version 4.17.3+36-g54dacb5c02, which also contains
+    security fixes for the following issues:
+    - x86: shadow stack vs exceptions from emulation stubs
+      XSA-451 CVE-2023-46841
+  * Properly incorporate NMU changes.
+  * Pick upstream commit b33a5c5929 ("tools/xenstore/xenstored_control.c:
+    correctly print time_t") to fix a FTBFS on armhf with 64 bits time_t.
+    (Closes: #1065794)
 
- -- Hans van Kranenburg <hans.van.kranenburg@mendix.com>  Sat, 09 Mar 2024 22:01:53 +0100
+ -- Hans van Kranenburg <hans@knorrie.org>  Sat, 09 Mar 2024 22:03:11 +0100
 
 xen (4.17.3+10-g091466ba55-1.1) unstable; urgency=medium
 
