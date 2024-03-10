@@ -4,10 +4,10 @@ Maintainer: Debian Xen Team <pkg-xen-devel@lists.alioth.debian.org>
 Uploaders: Ian Jackson <iwj@xenproject.org>, Hans van Kranenburg <hans@knorrie.org>
 Section: admin
 Standards-Version: 4.6.2
-Build-Depends: dpkg-dev (>= 1.22.5),
+Build-Depends:
    debhelper-compat (= 13),
    dh-exec,
-   dpkg-dev (>= 1.16.0~),
+   dpkg-dev (>= 1.22.5),
    file,
    rdfind,
    lsb-release,
