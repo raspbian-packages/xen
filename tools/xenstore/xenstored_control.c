@@ -643,10 +643,10 @@ static const char *lu_reject_reason(const void *ctx)
 	list_for_each_entry(conn, &connections, list) {
 		if (conn->ta_start_time &&
 		    (now - conn->ta_start_time >= lu_status->timeout)) {
-			ret = talloc_asprintf(ctx, "%s\nDomain %u: %ld s",
+			ret = talloc_asprintf(ctx, "%s\nDomain %u: %lld s",
 					      ret ? : "Domains with long running transactions:",
 					      conn->id,
-					      now - conn->ta_start_time);
+					      (long long)(now - conn->ta_start_time));
 		}
 	}
 
