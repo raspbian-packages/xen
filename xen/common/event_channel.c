@@ -62,7 +62,7 @@
  * just assume the event channel is free or unbound at the moment when the
  * evtchn_read_trylock() returns false.
  */
-static inline void evtchn_write_lock(struct evtchn *evtchn)
+static always_inline void evtchn_write_lock(struct evtchn *evtchn)
 {
     write_lock(&evtchn->lock);
 
@@ -364,7 +364,8 @@ int evtchn_alloc_unbound(evtchn_alloc_unbound_t *alloc, evtchn_port_t port)
     return rc;
 }
 
-static void double_evtchn_lock(struct evtchn *lchn, struct evtchn *rchn)
+static always_inline void double_evtchn_lock(struct evtchn *lchn,
+                                             struct evtchn *rchn)
 {
     ASSERT(lchn != rchn);
 
@@ -617,7 +618,9 @@ static int evtchn_bind_pirq(evtchn_bind_pirq_t *bind)
     if ( rc != 0 )
     {
         info->evtchn = 0;
+#ifdef CONFIG_X86
         pirq_cleanup_check(info, d);
+#endif
         goto out;
     }
 
@@ -679,10 +682,15 @@ int evtchn_close(struct domain *d1, int port1, bool guest)
             if ( !is_hvm_domain(d1) )
                 pirq_guest_unbind(d1, pirq);
             pirq->evtchn = 0;
-            pirq_cleanup_check(pirq, d1);
 #ifdef CONFIG_X86
-            if ( is_hvm_domain(d1) && domain_pirq_to_irq(d1, pirq->pirq) > 0 )
-                unmap_domain_pirq_emuirq(d1, pirq->pirq);
+            if ( !is_hvm_domain(d1) ||
+                 domain_pirq_to_irq(d1, pirq->pirq) <= 0 ||
+                 unmap_domain_pirq_emuirq(d1, pirq->pirq) < 0 )
+                /*
+                 * The successful path of unmap_domain_pirq_emuirq() will have
+                 * called pirq_cleanup_check() already.
+                 */
+                pirq_cleanup_check(pirq, d1);
 #endif
         }
         unlink_pirq_port(chn1, d1->vcpu[chn1->notify_vcpu_id]);

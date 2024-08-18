@@ -70,27 +70,6 @@ extern bool opt_noirqbalance;
 
 extern int opt_irq_vector_map;
 
-/*
- * Per-cpu current frame pointer - the location of the last exception frame on
- * the stack
- */
-DECLARE_PER_CPU(struct cpu_user_regs *, __irq_regs);
-
-static inline struct cpu_user_regs *get_irq_regs(void)
-{
-	return this_cpu(__irq_regs);
-}
-
-static inline struct cpu_user_regs *set_irq_regs(struct cpu_user_regs *new_regs)
-{
-	struct cpu_user_regs *old_regs, **pp_regs = &this_cpu(__irq_regs);
-
-	old_regs = *pp_regs;
-	*pp_regs = new_regs;
-	return old_regs;
-}
-
-
 #define platform_legacy_irq(irq)	((irq) < 16)
 
 void cf_check event_check_interrupt(struct cpu_user_regs *regs);
@@ -157,7 +136,7 @@ void free_domain_pirqs(struct domain *d);
 int map_domain_emuirq_pirq(struct domain *d, int pirq, int irq);
 int unmap_domain_pirq_emuirq(struct domain *d, int pirq);
 
-/* Reset irq affinities to match the given CPU mask. */
+/* Evacuate interrupts assigned to CPUs not present in the input CPU mask. */
 void fixup_irqs(const cpumask_t *mask, bool verbose);
 void fixup_eoi(void);
 
@@ -178,6 +157,7 @@ void cf_check irq_complete_move(struct irq_desc *);
 
 extern struct irq_desc *irq_desc;
 
+/* Not speculation safe, only used for AP bringup. */
 void lock_vector_lock(void);
 void unlock_vector_lock(void);
 

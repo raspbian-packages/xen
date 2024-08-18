@@ -1669,6 +1669,7 @@ const struct hvm_function_table * __init start_svm(void)
 
     if ( _svm_cpu_up(true) )
     {
+        setup_clear_cpu_cap(X86_FEATURE_SVM);
         printk("SVM: failed to initialise.\n");
         return NULL;
     }
@@ -2625,7 +2626,8 @@ void svm_vmexit_handler(struct cpu_user_regs *regs)
     regs->rsp = vmcb->rsp;
     regs->rflags = vmcb->rflags;
 
-    hvm_invalidate_regs_fields(regs);
+    hvm_sanitize_regs_fields(
+        regs, !(vmcb_get_efer(vmcb) & EFER_LMA) || !(vmcb->cs.l));
 
     if ( paging_mode_hap(v->domain) )
         v->arch.hvm.guest_cr[3] = v->arch.hvm.hw_cr[3] = vmcb_get_cr3(vmcb);

@@ -348,23 +348,28 @@ uint64_t get_cpu_idle_time(unsigned int cpu)
  * This avoids dead- or live-locks when this code is running on both
  * cpus at the same time.
  */
-static void sched_spin_lock_double(spinlock_t *lock1, spinlock_t *lock2,
-                                   unsigned long *flags)
+static always_inline void sched_spin_lock_double(
+    spinlock_t *lock1, spinlock_t *lock2, unsigned long *flags)
 {
+    /*
+     * In order to avoid extra overhead, use the locking primitives without the
+     * speculation barrier, and introduce a single barrier here.
+     */
     if ( lock1 == lock2 )
     {
-        spin_lock_irqsave(lock1, *flags);
+        *flags = _spin_lock_irqsave(lock1);
     }
     else if ( lock1 < lock2 )
     {
-        spin_lock_irqsave(lock1, *flags);
-        spin_lock(lock2);
+        *flags = _spin_lock_irqsave(lock1);
+        _spin_lock(lock2);
     }
     else
     {
-        spin_lock_irqsave(lock2, *flags);
-        spin_lock(lock1);
+        *flags = _spin_lock_irqsave(lock2);
+        _spin_lock(lock1);
     }
+    block_lock_speculation();
 }
 
 static void sched_spin_unlock_double(spinlock_t *lock1, spinlock_t *lock2,
@@ -2755,6 +2760,36 @@ static struct sched_resource *sched_alloc_res(void)
     return sr;
 }
 
+static void cf_check sched_res_free(struct rcu_head *head)
+{
+    struct sched_resource *sr = container_of(head, struct sched_resource, rcu);
+
+    free_cpumask_var(sr->cpus);
+    if ( sr->sched_unit_idle )
+        sched_free_unit_mem(sr->sched_unit_idle);
+    xfree(sr);
+}
+
+static void cpu_schedule_down(unsigned int cpu)
+{
+    struct sched_resource *sr;
+
+    rcu_read_lock(&sched_res_rculock);
+
+    sr = get_sched_res(cpu);
+
+    kill_timer(&sr->s_timer);
+
+    cpumask_clear_cpu(cpu, &sched_res_mask);
+    set_sched_res(cpu, NULL);
+
+    /* Keep idle unit. */
+    sr->sched_unit_idle = NULL;
+    call_rcu(&sr->rcu, sched_res_free);
+
+    rcu_read_unlock(&sched_res_rculock);
+}
+
 static int cpu_schedule_up(unsigned int cpu)
 {
     struct sched_resource *sr;
@@ -2794,7 +2829,10 @@ static int cpu_schedule_up(unsigned int cpu)
         idle_vcpu[cpu]->sched_unit->res = sr;
 
     if ( idle_vcpu[cpu] == NULL )
+    {
+        cpu_schedule_down(cpu);
         return -ENOMEM;
+    }
 
     idle_vcpu[cpu]->sched_unit->rendezvous_in_cnt = 0;
 
@@ -2810,36 +2848,6 @@ static int cpu_schedule_up(unsigned int cpu)
     sr->sched_priv = NULL;
 
     return 0;
-}
-
-static void cf_check sched_res_free(struct rcu_head *head)
-{
-    struct sched_resource *sr = container_of(head, struct sched_resource, rcu);
-
-    free_cpumask_var(sr->cpus);
-    if ( sr->sched_unit_idle )
-        sched_free_unit_mem(sr->sched_unit_idle);
-    xfree(sr);
-}
-
-static void cpu_schedule_down(unsigned int cpu)
-{
-    struct sched_resource *sr;
-
-    rcu_read_lock(&sched_res_rculock);
-
-    sr = get_sched_res(cpu);
-
-    kill_timer(&sr->s_timer);
-
-    cpumask_clear_cpu(cpu, &sched_res_mask);
-    set_sched_res(cpu, NULL);
-
-    /* Keep idle unit. */
-    sr->sched_unit_idle = NULL;
-    call_rcu(&sr->rcu, sched_res_free);
-
-    rcu_read_unlock(&sched_res_rculock);
 }
 
 void sched_rm_cpu(unsigned int cpu)
@@ -3174,6 +3182,8 @@ int schedule_cpu_add(unsigned int cpu, struct cpupool *c)
 
     sr->scheduler = new_ops;
     sr->sched_priv = ppriv;
+    sr->granularity = cpupool_get_granularity(c);
+    sr->cpupool = c;
 
     /*
      * Reroute the lock to the per pCPU lock as /last/ thing. In fact,
@@ -3186,8 +3196,6 @@ int schedule_cpu_add(unsigned int cpu, struct cpupool *c)
     /* _Not_ pcpu_schedule_unlock(): schedule_lock has changed! */
     spin_unlock_irqrestore(old_lock, flags);
 
-    sr->granularity = cpupool_get_granularity(c);
-    sr->cpupool = c;
     /* The  cpu is added to a pool, trigger it to go pick up some work */
     cpu_raise_softirq(cpu, SCHEDULE_SOFTIRQ);
 

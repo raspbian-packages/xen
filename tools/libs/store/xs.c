@@ -40,6 +40,14 @@
 
 #include <xentoolcore_internal.h>
 
+#ifndef O_CLOEXEC
+#define O_CLOEXEC 0
+#endif
+
+#ifndef SOCK_CLOEXEC
+#define SOCK_CLOEXEC 0
+#endif
+
 struct xs_stored_msg {
 	struct list_head list;
 	struct xsd_sockmsg hdr;
@@ -172,13 +180,37 @@ static bool setnonblock(int fd, int nonblock) {
 	return true;
 }
 
+static bool set_cloexec(int fd)
+{
+	int flags = fcntl(fd, F_GETFD);
+
+	if (flags < 0)
+		return false;
+
+	return fcntl(fd, F_SETFD, flags | FD_CLOEXEC) >= 0;
+}
+
+static int pipe_cloexec(int fds[2])
+{
+#if HAVE_PIPE2
+	return pipe2(fds, O_CLOEXEC);
+#else
+	if (pipe(fds) < 0)
+		return -1;
+	/* Best effort to set CLOEXEC.  Racy. */
+	set_cloexec(fds[0]);
+	set_cloexec(fds[1]);
+	return 0;
+#endif
+}
+
 int xs_fileno(struct xs_handle *h)
 {
 	char c = 0;
 
 	mutex_lock(&h->watch_mutex);
 
-	if ((h->watch_pipe[0] == -1) && (pipe(h->watch_pipe) != -1)) {
+	if ((h->watch_pipe[0] == -1) && (pipe_cloexec(h->watch_pipe) != -1)) {
 		/* Kick things off if the watch list is already non-empty. */
 		if (!list_empty(&h->watch_list))
 			while (write(h->watch_pipe[1], &c, 1) != 1)
@@ -193,16 +225,14 @@ int xs_fileno(struct xs_handle *h)
 static int get_socket(const char *connect_to)
 {
 	struct sockaddr_un addr;
-	int sock, saved_errno, flags;
+	int sock, saved_errno;
 
-	sock = socket(PF_UNIX, SOCK_STREAM, 0);
+	sock = socket(PF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
 	if (sock < 0)
 		return -1;
 
-	if ((flags = fcntl(sock, F_GETFD)) < 0)
-		goto error;
-	flags |= FD_CLOEXEC;
-	if (fcntl(sock, F_SETFD, flags) < 0)
+	/* Compat for non-SOCK_CLOEXEC environments.  Racy. */
+	if (!SOCK_CLOEXEC && !set_cloexec(sock))
 		goto error;
 
 	addr.sun_family = AF_UNIX;
@@ -226,8 +256,24 @@ error:
 
 static int get_dev(const char *connect_to)
 {
-	/* We cannot open read-only because requests are writes */
-	return open(connect_to, O_RDWR);
+	int fd, saved_errno;
+
+	fd = open(connect_to, O_RDWR | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+
+	/* Compat for non-O_CLOEXEC environments.  Racy. */
+	if (!O_CLOEXEC && !set_cloexec(fd))
+		goto error;
+
+	return fd;
+
+error:
+	saved_errno = errno;
+	close(fd);
+	errno = saved_errno;
+
+	return -1;
 }
 
 static int all_restrict_cb(Xentoolcore__Active_Handle *ah, domid_t domid) {

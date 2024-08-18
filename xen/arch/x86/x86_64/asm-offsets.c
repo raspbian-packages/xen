@@ -51,6 +51,31 @@ void __dummy__(void)
     OFFSET(UREGS_kernel_sizeof, struct cpu_user_regs, es);
     BLANK();
 
+    /*
+     * EFRAME_* is for the entry/exit logic where %rsp is pointing at
+     * UREGS_error_code and GPRs are still/already guest values.
+     */
+#define OFFSET_EF(sym, mem, ...)                                        \
+    DEFINE(sym, offsetof(struct cpu_user_regs, mem) -                   \
+                offsetof(struct cpu_user_regs, error_code) __VA_ARGS__)
+
+    OFFSET_EF(EFRAME_entry_vector,    entry_vector);
+    OFFSET_EF(EFRAME_rip,             rip);
+    OFFSET_EF(EFRAME_cs,              cs);
+    OFFSET_EF(EFRAME_eflags,          eflags);
+
+    /*
+     * These aren't real fields.  They're spare space, used by the IST
+     * exit-to-xen path.
+     */
+    OFFSET_EF(EFRAME_shadow_scf,      eflags, +4);
+    OFFSET_EF(EFRAME_shadow_sel,      eflags, +6);
+
+    OFFSET_EF(EFRAME_rsp,             rsp);
+    BLANK();
+
+#undef OFFSET_EF
+
     OFFSET(VCPU_processor, struct vcpu, processor);
     OFFSET(VCPU_domain, struct vcpu, domain);
     OFFSET(VCPU_vcpu_info, struct vcpu, vcpu_info);
@@ -118,6 +143,8 @@ void __dummy__(void)
 #endif
 
     OFFSET(CPUINFO_guest_cpu_user_regs, struct cpu_info, guest_cpu_user_regs);
+    OFFSET(CPUINFO_error_code, struct cpu_info, guest_cpu_user_regs.error_code);
+    OFFSET(CPUINFO_rip, struct cpu_info, guest_cpu_user_regs.rip);
     OFFSET(CPUINFO_verw_sel, struct cpu_info, verw_sel);
     OFFSET(CPUINFO_current_vcpu, struct cpu_info, current_vcpu);
     OFFSET(CPUINFO_per_cpu_offset, struct cpu_info, per_cpu_offset);
@@ -127,7 +154,7 @@ void __dummy__(void)
     OFFSET(CPUINFO_shadow_spec_ctrl, struct cpu_info, shadow_spec_ctrl);
     OFFSET(CPUINFO_xen_spec_ctrl, struct cpu_info, xen_spec_ctrl);
     OFFSET(CPUINFO_last_spec_ctrl, struct cpu_info, last_spec_ctrl);
-    OFFSET(CPUINFO_spec_ctrl_flags, struct cpu_info, spec_ctrl_flags);
+    OFFSET(CPUINFO_scf, struct cpu_info, scf);
     OFFSET(CPUINFO_root_pgt_changed, struct cpu_info, root_pgt_changed);
     OFFSET(CPUINFO_use_pv_cr3, struct cpu_info, use_pv_cr3);
     DEFINE(CPUINFO_sizeof, sizeof(struct cpu_info));

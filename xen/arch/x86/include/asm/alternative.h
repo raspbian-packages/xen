@@ -167,9 +167,32 @@ extern void alternative_branches(void);
 #define ALT_CALL_arg5 "r8"
 #define ALT_CALL_arg6 "r9"
 
+#ifdef CONFIG_CC_IS_CLANG
+/*
+ * Clang doesn't follow the psABI and doesn't truncate parameter values at the
+ * callee.  This can lead to bad code being generated when using alternative
+ * calls.
+ *
+ * Workaround it by using a temporary intermediate variable that's zeroed
+ * before being assigned the parameter value, as that forces clang to zero the
+ * register at the caller.
+ *
+ * This has been reported upstream:
+ * https://github.com/llvm/llvm-project/issues/12579
+ * https://github.com/llvm/llvm-project/issues/82598
+ */
+#define ALT_CALL_ARG(arg, n)                                            \
+    register unsigned long a ## n ## _ asm ( ALT_CALL_arg ## n ) = ({   \
+        unsigned long tmp = 0;                                          \
+        BUILD_BUG_ON(sizeof(arg) > sizeof(unsigned long));              \
+        *(typeof(arg) *)&tmp = (arg);                                   \
+        tmp;                                                            \
+    })
+#else
 #define ALT_CALL_ARG(arg, n) \
     register typeof(arg) a ## n ## _ asm ( ALT_CALL_arg ## n ) = \
         ({ BUILD_BUG_ON(sizeof(arg) > sizeof(void *)); (arg); })
+#endif
 #define ALT_CALL_NO_ARG(n) \
     register unsigned long a ## n ## _ asm ( ALT_CALL_arg ## n )
 
@@ -228,21 +251,24 @@ extern void alternative_branches(void);
 })
 
 #define alternative_vcall1(func, arg) ({           \
-    ALT_CALL_ARG(arg, 1);                          \
+    typeof(arg) v1_ = (arg);                       \
+    ALT_CALL_ARG(v1_, 1);                          \
     ALT_CALL_NO_ARG2;                              \
     (void)sizeof(func(arg));                       \
     (void)alternative_callN(1, int, func);         \
 })
 
 #define alternative_call1(func, arg) ({            \
-    ALT_CALL_ARG(arg, 1);                          \
+    typeof(arg) v1_ = (arg);                       \
+    ALT_CALL_ARG(v1_, 1);                          \
     ALT_CALL_NO_ARG2;                              \
     alternative_callN(1, typeof(func(arg)), func); \
 })
 
 #define alternative_vcall2(func, arg1, arg2) ({           \
+    typeof(arg1) v1_ = (arg1);                            \
     typeof(arg2) v2_ = (arg2);                            \
-    ALT_CALL_ARG(arg1, 1);                                \
+    ALT_CALL_ARG(v1_, 1);                                 \
     ALT_CALL_ARG(v2_, 2);                                 \
     ALT_CALL_NO_ARG3;                                     \
     (void)sizeof(func(arg1, arg2));                       \
@@ -250,17 +276,19 @@ extern void alternative_branches(void);
 })
 
 #define alternative_call2(func, arg1, arg2) ({            \
+    typeof(arg1) v1_ = (arg1);                            \
     typeof(arg2) v2_ = (arg2);                            \
-    ALT_CALL_ARG(arg1, 1);                                \
+    ALT_CALL_ARG(v1_, 1);                                 \
     ALT_CALL_ARG(v2_, 2);                                 \
     ALT_CALL_NO_ARG3;                                     \
     alternative_callN(2, typeof(func(arg1, arg2)), func); \
 })
 
 #define alternative_vcall3(func, arg1, arg2, arg3) ({    \
+    typeof(arg1) v1_ = (arg1);                           \
     typeof(arg2) v2_ = (arg2);                           \
     typeof(arg3) v3_ = (arg3);                           \
-    ALT_CALL_ARG(arg1, 1);                               \
+    ALT_CALL_ARG(v1_, 1);                                \
     ALT_CALL_ARG(v2_, 2);                                \
     ALT_CALL_ARG(v3_, 3);                                \
     ALT_CALL_NO_ARG4;                                    \
@@ -269,9 +297,10 @@ extern void alternative_branches(void);
 })
 
 #define alternative_call3(func, arg1, arg2, arg3) ({     \
+    typeof(arg1) v1_ = (arg1);                            \
     typeof(arg2) v2_ = (arg2);                           \
     typeof(arg3) v3_ = (arg3);                           \
-    ALT_CALL_ARG(arg1, 1);                               \
+    ALT_CALL_ARG(v1_, 1);                                \
     ALT_CALL_ARG(v2_, 2);                                \
     ALT_CALL_ARG(v3_, 3);                                \
     ALT_CALL_NO_ARG4;                                    \
@@ -280,10 +309,11 @@ extern void alternative_branches(void);
 })
 
 #define alternative_vcall4(func, arg1, arg2, arg3, arg4) ({ \
+    typeof(arg1) v1_ = (arg1);                              \
     typeof(arg2) v2_ = (arg2);                              \
     typeof(arg3) v3_ = (arg3);                              \
     typeof(arg4) v4_ = (arg4);                              \
-    ALT_CALL_ARG(arg1, 1);                                  \
+    ALT_CALL_ARG(v1_, 1);                                   \
     ALT_CALL_ARG(v2_, 2);                                   \
     ALT_CALL_ARG(v3_, 3);                                   \
     ALT_CALL_ARG(v4_, 4);                                   \
@@ -293,10 +323,11 @@ extern void alternative_branches(void);
 })
 
 #define alternative_call4(func, arg1, arg2, arg3, arg4) ({  \
+    typeof(arg1) v1_ = (arg1);                              \
     typeof(arg2) v2_ = (arg2);                              \
     typeof(arg3) v3_ = (arg3);                              \
     typeof(arg4) v4_ = (arg4);                              \
-    ALT_CALL_ARG(arg1, 1);                                  \
+    ALT_CALL_ARG(v1_, 1);                                   \
     ALT_CALL_ARG(v2_, 2);                                   \
     ALT_CALL_ARG(v3_, 3);                                   \
     ALT_CALL_ARG(v4_, 4);                                   \
@@ -307,11 +338,12 @@ extern void alternative_branches(void);
 })
 
 #define alternative_vcall5(func, arg1, arg2, arg3, arg4, arg5) ({ \
+    typeof(arg1) v1_ = (arg1);                                    \
     typeof(arg2) v2_ = (arg2);                                    \
     typeof(arg3) v3_ = (arg3);                                    \
     typeof(arg4) v4_ = (arg4);                                    \
     typeof(arg5) v5_ = (arg5);                                    \
-    ALT_CALL_ARG(arg1, 1);                                        \
+    ALT_CALL_ARG(v1_, 1);                                         \
     ALT_CALL_ARG(v2_, 2);                                         \
     ALT_CALL_ARG(v3_, 3);                                         \
     ALT_CALL_ARG(v4_, 4);                                         \
@@ -322,11 +354,12 @@ extern void alternative_branches(void);
 })
 
 #define alternative_call5(func, arg1, arg2, arg3, arg4, arg5) ({  \
+    typeof(arg1) v1_ = (arg1);                                    \
     typeof(arg2) v2_ = (arg2);                                    \
     typeof(arg3) v3_ = (arg3);                                    \
     typeof(arg4) v4_ = (arg4);                                    \
     typeof(arg5) v5_ = (arg5);                                    \
-    ALT_CALL_ARG(arg1, 1);                                        \
+    ALT_CALL_ARG(v1_, 1);                                         \
     ALT_CALL_ARG(v2_, 2);                                         \
     ALT_CALL_ARG(v3_, 3);                                         \
     ALT_CALL_ARG(v4_, 4);                                         \
@@ -338,12 +371,13 @@ extern void alternative_branches(void);
 })
 
 #define alternative_vcall6(func, arg1, arg2, arg3, arg4, arg5, arg6) ({ \
+    typeof(arg1) v1_ = (arg1);                                          \
     typeof(arg2) v2_ = (arg2);                                          \
     typeof(arg3) v3_ = (arg3);                                          \
     typeof(arg4) v4_ = (arg4);                                          \
     typeof(arg5) v5_ = (arg5);                                          \
     typeof(arg6) v6_ = (arg6);                                          \
-    ALT_CALL_ARG(arg1, 1);                                              \
+    ALT_CALL_ARG(v1_, 1);                                               \
     ALT_CALL_ARG(v2_, 2);                                               \
     ALT_CALL_ARG(v3_, 3);                                               \
     ALT_CALL_ARG(v4_, 4);                                               \
@@ -354,12 +388,13 @@ extern void alternative_branches(void);
 })
 
 #define alternative_call6(func, arg1, arg2, arg3, arg4, arg5, arg6) ({  \
+    typeof(arg1) v1_ = (arg1);                                          \
     typeof(arg2) v2_ = (arg2);                                          \
     typeof(arg3) v3_ = (arg3);                                          \
     typeof(arg4) v4_ = (arg4);                                          \
     typeof(arg5) v5_ = (arg5);                                          \
     typeof(arg6) v6_ = (arg6);                                          \
-    ALT_CALL_ARG(arg1, 1);                                              \
+    ALT_CALL_ARG(v1_, 1);                                               \
     ALT_CALL_ARG(v2_, 2);                                               \
     ALT_CALL_ARG(v3_, 3);                                               \
     ALT_CALL_ARG(v4_, 4);                                               \

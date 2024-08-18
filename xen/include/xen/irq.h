@@ -130,6 +130,27 @@ void cf_check irq_actor_none(struct irq_desc *);
 #define irq_disable_none irq_actor_none
 #define irq_enable_none irq_actor_none
 
+/*
+ * Per-cpu interrupted context register state - the inner-most interrupt frame
+ * on the stack.
+ */
+DECLARE_PER_CPU(struct cpu_user_regs *, irq_regs);
+
+static inline struct cpu_user_regs *get_irq_regs(void)
+{
+	return this_cpu(irq_regs);
+}
+
+static inline struct cpu_user_regs *set_irq_regs(struct cpu_user_regs *new_regs)
+{
+	struct cpu_user_regs *old_regs, **pp_regs = &this_cpu(irq_regs);
+
+	old_regs = *pp_regs;
+	*pp_regs = new_regs;
+
+	return old_regs;
+}
+
 struct domain;
 struct vcpu;
 
@@ -158,7 +179,7 @@ extern struct pirq *pirq_get_info(struct domain *, int pirq);
 void pirq_cleanup_check(struct pirq *, struct domain *);
 
 #define pirq_cleanup_check(pirq, d) \
-    ((pirq)->evtchn ? pirq_cleanup_check(pirq, d) : (void)0)
+    (!(pirq)->evtchn ? pirq_cleanup_check(pirq, d) : (void)0)
 
 extern void pirq_guest_eoi(struct pirq *);
 extern void desc_guest_eoi(struct irq_desc *, struct pirq *);
@@ -173,8 +194,9 @@ extern irq_desc_t *pirq_spin_lock_irq_desc(
 
 unsigned int set_desc_affinity(struct irq_desc *, const cpumask_t *);
 
+/* When passed a system domain, this returns the maximum permissible value. */
 #ifndef arch_hwdom_irqs
-unsigned int arch_hwdom_irqs(domid_t);
+unsigned int arch_hwdom_irqs(const struct domain *);
 #endif
 
 #ifndef arch_evtchn_bind_pirq

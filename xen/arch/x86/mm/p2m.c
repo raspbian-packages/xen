@@ -292,9 +292,8 @@ mfn_t p2m_get_gfn_type_access(struct p2m_domain *p2m, gfn_t gfn,
     if ( q & P2M_UNSHARE )
         q |= P2M_ALLOC;
 
-    if ( locked )
-        /* Grab the lock here, don't release until put_gfn */
-        gfn_lock(p2m, gfn, 0);
+    /* Grab the lock here, don't release until put_gfn */
+    gfn_lock_if(locked, p2m, gfn, 0);
 
     mfn = p2m->get_entry(p2m, gfn, t, a, q, page_order, NULL);
 
@@ -1266,9 +1265,11 @@ int p2m_remove_identity_entry(struct domain *d, unsigned long gfn_l)
     else
     {
         gfn_unlock(p2m, gfn, 0);
-        printk(XENLOG_G_WARNING
-               "non-identity map d%d:%lx not cleared (mapped to %lx)\n",
-               d->domain_id, gfn_l, mfn_x(mfn));
+        if ( (p2mt != p2m_invalid && p2mt != p2m_mmio_dm) ||
+             a != p2m_access_n || !mfn_eq(mfn, INVALID_MFN) )
+           printk(XENLOG_G_WARNING
+                  "non-identity map %pd:%lx not cleared (mapped to %lx)\n",
+                  d, gfn_l, mfn_x(mfn));
         ret = 0;
     }
 

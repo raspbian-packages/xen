@@ -124,7 +124,7 @@ static io_emul_stub_t *io_emul_stub_setup(struct priv_op_ctxt *ctxt, u8 opcode,
     /* Some platforms might need to quirk the stub for specific inputs. */
     if ( unlikely(ioemul_handle_quirk) )
     {
-        quirk_bytes = ioemul_handle_quirk(opcode, p, ctxt->ctxt.regs);
+        quirk_bytes = ioemul_handle_proliant_quirk(opcode, p, ctxt->ctxt.regs);
         p += quirk_bytes;
     }
 
@@ -357,6 +357,8 @@ static unsigned int check_guest_io_breakpoint(struct vcpu *v,
         case DR_LEN_4: width = 4; break;
         case DR_LEN_8: width = 8; break;
         }
+
+        start &= ~(width - 1UL);
 
         if ( (start < (port + len)) && ((start + width) > port) )
             match |= 1u << i;

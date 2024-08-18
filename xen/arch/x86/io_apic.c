@@ -1692,7 +1692,8 @@ static void cf_check mask_and_ack_level_ioapic_irq(struct irq_desc *desc)
        !io_apic_level_ack_pending(desc->irq))
         move_masked_irq(desc);
 
-    if ( !(v & (1 << (i & 0x1f))) ) {
+    if ( !(v & (1U << (i & 0x1f))) )
+    {
         spin_lock(&ioapic_lock);
         __edge_IO_APIC_irq(desc->irq);
         __level_IO_APIC_irq(desc->irq);
@@ -1756,7 +1757,8 @@ static void cf_check end_level_ioapic_irq_new(struct irq_desc *desc, u8 vector)
          !io_apic_level_ack_pending(desc->irq) )
         move_native_irq(desc);
 
-    if (!(v & (1 << (i & 0x1f)))) {
+    if ( !(v & (1U << (i & 0x1f))) )
+    {
         spin_lock(&ioapic_lock);
         __mask_IO_APIC_irq(desc->irq);
         __edge_IO_APIC_irq(desc->irq);
@@ -2659,18 +2661,21 @@ void __init ioapic_init(void)
            nr_irqs_gsi, nr_irqs - nr_irqs_gsi);
 }
 
-unsigned int arch_hwdom_irqs(domid_t domid)
+unsigned int __hwdom_init arch_hwdom_irqs(const struct domain *d)
 {
     unsigned int n = fls(num_present_cpus());
+    /* Bounding by the domain pirq EOI bitmap capacity. */
+    const unsigned int max_irqs = min_t(unsigned int, nr_irqs,
+                                        PAGE_SIZE * BITS_PER_BYTE);
 
-    if ( !domid )
+    if ( is_system_domain(d) )
+        return max_irqs;
+
+    if ( !d->domain_id )
         n = min(n, dom0_max_vcpus());
-    n = min(nr_irqs_gsi + n * NR_DYNAMIC_VECTORS, nr_irqs);
+    n = min(nr_irqs_gsi + n * NR_DYNAMIC_VECTORS, max_irqs);
 
-    /* Bounded by the domain pirq eoi bitmap gfn. */
-    n = min_t(unsigned int, n, PAGE_SIZE * BITS_PER_BYTE);
-
-    printk("Dom%d has maximum %u PIRQs\n", domid, n);
+    printk("%pd has maximum %u PIRQs\n", d, n);
 
     return n;
 }

@@ -622,6 +622,10 @@ static void noreturn init_done(void)
 
     system_state = SYS_STATE_active;
 
+    /* Re-run stub recovery self-tests with CET-SS active. */
+    if ( IS_ENABLED(CONFIG_DEBUG) && cpu_has_xen_shstk )
+        stub_selftest();
+
     domain_unpause_by_systemcontroller(dom0);
 
     /* MUST be done prior to removing .init data. */
@@ -1984,7 +1988,7 @@ void __init noreturn __start_xen(unsigned long mbi_p)
 
     if ( bsp_delay_spec_ctrl )
     {
-        info->spec_ctrl_flags &= ~SCF_use_shadow;
+        info->scf &= ~SCF_use_shadow;
         barrier();
         wrmsrl(MSR_SPEC_CTRL, default_xen_spec_ctrl);
         info->last_spec_ctrl = default_xen_spec_ctrl;

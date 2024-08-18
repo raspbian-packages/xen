@@ -11,26 +11,22 @@
 
 static struct virtual_region core = {
     .list = LIST_HEAD_INIT(core.list),
-    .start = _stext,
-    .end = _etext,
+    .text_start = _stext,
+    .text_end = _etext,
+    .rodata_start = _srodata,
+    .rodata_end = _erodata,
 };
 
 /* Becomes irrelevant when __init sections are cleared. */
 static struct virtual_region core_init __initdata = {
     .list = LIST_HEAD_INIT(core_init.list),
-    .start = _sinittext,
-    .end = _einittext,
+    .text_start = _sinittext,
+    .text_end = _einittext,
 };
 
 /*
- * RCU locking. Additions are done either at startup (when there is only
- * one CPU) or when all CPUs are running without IRQs.
- *
- * Deletions are bit tricky. We do it when Live Patch (all CPUs running
- * without IRQs) or during bootup (when clearing the init).
- *
- * Hence we use list_del_rcu (which sports an memory fence) and a spinlock
- * on deletion.
+ * RCU locking. Modifications to the list must be done in exclusive mode, and
+ * hence need to hold the spinlock.
  *
  * All readers of virtual_region_list MUST use list_for_each_entry_rcu.
  */
@@ -45,7 +41,8 @@ const struct virtual_region *find_text_region(unsigned long addr)
     rcu_read_lock(&rcu_virtual_region_lock);
     list_for_each_entry_rcu( region, &virtual_region_list, list )
     {
-        if ( (void *)addr >= region->start && (void *)addr < region->end )
+        if ( (void *)addr >= region->text_start &&
+             (void *)addr <  region->text_end )
         {
             rcu_read_unlock(&rcu_virtual_region_lock);
             return region;
@@ -58,50 +55,51 @@ const struct virtual_region *find_text_region(unsigned long addr)
 
 void register_virtual_region(struct virtual_region *r)
 {
-    ASSERT(!local_irq_is_enabled());
+    unsigned long flags;
 
+    spin_lock_irqsave(&virtual_region_lock, flags);
     list_add_tail_rcu(&r->list, &virtual_region_list);
+    spin_unlock_irqrestore(&virtual_region_lock, flags);
 }
 
-static void remove_virtual_region(struct virtual_region *r)
+/*
+ * Suggest inline so when !CONFIG_LIVEPATCH the function is not left
+ * unreachable after init code is removed.
+ */
+static void inline remove_virtual_region(struct virtual_region *r)
 {
     unsigned long flags;
 
     spin_lock_irqsave(&virtual_region_lock, flags);
     list_del_rcu(&r->list);
     spin_unlock_irqrestore(&virtual_region_lock, flags);
-    /*
-     * We do not need to invoke call_rcu.
-     *
-     * This is due to the fact that on the deletion we have made sure
-     * to use spinlocks (to guard against somebody else calling
-     * unregister_virtual_region) and list_deletion spiced with
-     * memory barrier.
-     *
-     * That protects us from corrupting the list as the readers all
-     * use list_for_each_entry_rcu which is safe against concurrent
-     * deletions.
-     */
 }
 
+#ifdef CONFIG_LIVEPATCH
 void unregister_virtual_region(struct virtual_region *r)
 {
-    /* Expected to be called from Live Patch - which has IRQs disabled. */
-    ASSERT(!local_irq_is_enabled());
-
     remove_virtual_region(r);
+
+    /* Assert that no CPU might be using the removed region. */
+    rcu_barrier();
 }
 
-#if defined(CONFIG_LIVEPATCH) && defined(CONFIG_X86)
+#ifdef CONFIG_X86
 void relax_virtual_region_perms(void)
 {
     const struct virtual_region *region;
 
     rcu_read_lock(&rcu_virtual_region_lock);
     list_for_each_entry_rcu( region, &virtual_region_list, list )
-        modify_xen_mappings_lite((unsigned long)region->start,
-                                 ROUNDUP((unsigned long)region->end, PAGE_SIZE),
+    {
+        modify_xen_mappings_lite((unsigned long)region->text_start,
+                                 PAGE_ALIGN((unsigned long)region->text_end),
                                  PAGE_HYPERVISOR_RWX);
+        if ( region->rodata_start )
+            modify_xen_mappings_lite((unsigned long)region->rodata_start,
+                                     PAGE_ALIGN((unsigned long)region->rodata_end),
+                                     PAGE_HYPERVISOR_RW);
+    }
     rcu_read_unlock(&rcu_virtual_region_lock);
 }
 
@@ -111,12 +109,19 @@ void tighten_virtual_region_perms(void)
 
     rcu_read_lock(&rcu_virtual_region_lock);
     list_for_each_entry_rcu( region, &virtual_region_list, list )
-        modify_xen_mappings_lite((unsigned long)region->start,
-                                 ROUNDUP((unsigned long)region->end, PAGE_SIZE),
+    {
+        modify_xen_mappings_lite((unsigned long)region->text_start,
+                                 PAGE_ALIGN((unsigned long)region->text_end),
                                  PAGE_HYPERVISOR_RX);
+        if ( region->rodata_start )
+            modify_xen_mappings_lite((unsigned long)region->rodata_start,
+                                     PAGE_ALIGN((unsigned long)region->rodata_end),
+                                     PAGE_HYPERVISOR_RO);
+    }
     rcu_read_unlock(&rcu_virtual_region_lock);
 }
-#endif
+#endif /* CONFIG_X86 */
+#endif /* CONFIG_LIVEPATCH */
 
 void __init unregister_init_virtual_region(void)
 {

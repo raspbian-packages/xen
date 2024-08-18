@@ -36,13 +36,14 @@
  * caller in schedule_work.
  */
 static DEFINE_SPINLOCK(payload_lock);
+/*
+ * Need RCU in case we crash (and then traps code would iterate via
+ * payload_list) when adding entries on the list.
+ */
+static DEFINE_RCU_READ_LOCK(rcu_payload_lock);
 static LIST_HEAD(payload_list);
 
-/*
- * Patches which have been applied. Need RCU in case we crash (and then
- * traps code would iterate via applied_list) when adding entries on the list.
- */
-static DEFINE_RCU_READ_LOCK(rcu_applied_lock);
+/* Patches which have been applied. Only modified from stop machine context. */
 static LIST_HEAD(applied_list);
 
 static unsigned int payload_cnt;
@@ -111,12 +112,8 @@ bool_t is_patch(const void *ptr)
     const struct payload *data;
     bool_t r = 0;
 
-    /*
-     * Only RCU locking since this list is only ever changed during apply
-     * or revert context. And in case it dies there we need an safe list.
-     */
-    rcu_read_lock(&rcu_applied_lock);
-    list_for_each_entry_rcu ( data, &applied_list, applied_list )
+    rcu_read_lock(&rcu_payload_lock);
+    list_for_each_entry_rcu ( data, &payload_list, list )
     {
         if ( (ptr >= data->rw_addr &&
               ptr < (data->rw_addr + data->rw_size)) ||
@@ -130,7 +127,7 @@ bool_t is_patch(const void *ptr)
         }
 
     }
-    rcu_read_unlock(&rcu_applied_lock);
+    rcu_read_unlock(&rcu_payload_lock);
 
     return r;
 }
@@ -166,12 +163,8 @@ static const char *cf_check livepatch_symbols_lookup(
     const void *va = (const void *)addr;
     const char *n = NULL;
 
-    /*
-     * Only RCU locking since this list is only ever changed during apply
-     * or revert context. And in case it dies there we need an safe list.
-     */
-    rcu_read_lock(&rcu_applied_lock);
-    list_for_each_entry_rcu ( data, &applied_list, applied_list )
+    rcu_read_lock(&rcu_payload_lock);
+    list_for_each_entry_rcu ( data, &payload_list, list )
     {
         if ( va < data->text_addr ||
              va >= (data->text_addr + data->text_size) )
@@ -200,7 +193,7 @@ static const char *cf_check livepatch_symbols_lookup(
         n = data->symtab[best].name;
         break;
     }
-    rcu_read_unlock(&rcu_applied_lock);
+    rcu_read_unlock(&rcu_payload_lock);
 
     return n;
 }
@@ -792,8 +785,14 @@ static int prepare_payload(struct payload *payload,
     region = &payload->region;
 
     region->symbols_lookup = livepatch_symbols_lookup;
-    region->start = payload->text_addr;
-    region->end = payload->text_addr + payload->text_size;
+    region->text_start = payload->text_addr;
+    region->text_end = payload->text_addr + payload->text_size;
+
+    if ( payload->ro_size )
+    {
+        region->rodata_start = payload->ro_addr;
+        region->rodata_end = payload->ro_addr + payload->ro_size;
+    }
 
     /* Optional sections. */
     for ( i = 0; i < BUGFRAME_NR; i++ )
@@ -817,28 +816,84 @@ static int prepare_payload(struct payload *payload,
     if ( sec )
     {
 #ifdef CONFIG_HAS_ALTERNATIVE
+        /*
+         * (As of April 2023), Alternatives are formed of:
+         * - An .altinstructions section with an array of struct alt_instr's.
+         * - An .altinstr_replacement section containing instructions.
+         *
+         * An individual alt_instr contains:
+         * - An orig reference, pointing into .text with a nonzero length
+         * - A repl reference, pointing into .altinstr_replacement
+         *
+         * It is legal to have zero-length replacements, meaning it is legal
+         * for the .altinstr_replacement section to be empty too.  An
+         * implementation detail means that a zero-length replacement's repl
+         * reference will still be in the .altinstr_replacement section.
+         */
+        const struct livepatch_elf_sec *repl_sec;
         struct alt_instr *a, *start, *end;
 
         if ( !section_ok(elf, sec, sizeof(*a)) )
             return -EINVAL;
+
+        /* Tolerate an empty .altinstructions section... */
+        if ( sec->sec->sh_size == 0 )
+            goto alt_done;
+
+        /* ... but otherwise, there needs to be something to alter... */
+        if ( payload->text_size == 0 )
+        {
+            printk(XENLOG_ERR LIVEPATCH "%s Alternatives provided, but no .text\n",
+                   elf->name);
+            return -EINVAL;
+        }
+
+        /* ... and something to be altered to. */
+        repl_sec = livepatch_elf_sec_by_name(elf, ".altinstr_replacement");
+        if ( !repl_sec )
+        {
+            printk(XENLOG_ERR LIVEPATCH "%s .altinstructions provided, but no .altinstr_replacement\n",
+                   elf->name);
+            return -EINVAL;
+        }
 
         start = sec->load_addr;
         end = sec->load_addr + sec->sec->sh_size;
 
         for ( a = start; a < end; a++ )
         {
-            const void *instr = ALT_ORIG_PTR(a);
-            const void *replacement = ALT_REPL_PTR(a);
+            const void *orig = ALT_ORIG_PTR(a);
+            const void *repl = ALT_REPL_PTR(a);
 
-            if ( (instr < region->start && instr >= region->end) ||
-                 (replacement < region->start && replacement >= region->end) )
+            /* orig must be fully within .text. */
+            if ( orig               < payload->text_addr ||
+                 a->orig_len        > payload->text_size ||
+                 orig + a->orig_len > payload->text_addr + payload->text_size )
             {
-                printk(XENLOG_ERR LIVEPATCH "%s Alt patching outside payload: %p\n",
-                       elf->name, instr);
+                printk(XENLOG_ERR LIVEPATCH
+                       "%s Alternative orig %p+%#x outside payload text %p+%#zx\n",
+                       elf->name, orig, a->orig_len,
+                       payload->text_addr, payload->text_size);
+                return -EINVAL;
+            }
+
+            /*
+             * repl must be fully within .altinstr_replacement, even if the
+             * replacement and the section happen to both have zero length.
+             */
+            if ( repl               < repl_sec->load_addr ||
+                 a->repl_len        > repl_sec->sec->sh_size ||
+                 repl + a->repl_len > repl_sec->load_addr + repl_sec->sec->sh_size )
+            {
+                printk(XENLOG_ERR LIVEPATCH
+                       "%s Alternative repl %p+%#x outside .altinstr_replacement %p+%#"PRIxElfWord"\n",
+                       elf->name, repl, a->repl_len,
+                       repl_sec->load_addr, repl_sec->sec->sh_size);
                 return -EINVAL;
             }
         }
         apply_alternatives(start, end);
+    alt_done:;
 #else
         printk(XENLOG_ERR LIVEPATCH "%s: We don't support alternative patching\n",
                elf->name);
@@ -1015,7 +1070,9 @@ static int build_symbol_table(struct payload *payload,
 static void free_payload(struct payload *data)
 {
     ASSERT(spin_is_locked(&payload_lock));
-    list_del(&data->list);
+    unregister_virtual_region(&data->region);
+    list_del_rcu(&data->list);
+    rcu_barrier();
     payload_cnt--;
     payload_version++;
     free_payload_data(data);
@@ -1114,7 +1171,8 @@ static int livepatch_upload(struct xen_sysctl_livepatch_upload *upload)
         INIT_LIST_HEAD(&data->list);
         INIT_LIST_HEAD(&data->applied_list);
 
-        list_add_tail(&data->list, &payload_list);
+        register_virtual_region(&data->region);
+        list_add_tail_rcu(&data->list, &payload_list);
         payload_cnt++;
         payload_version++;
     }
@@ -1314,7 +1372,22 @@ static int apply_payload(struct payload *data)
     ASSERT(!local_irq_is_enabled());
 
     for ( i = 0; i < data->nfuncs; i++ )
-        common_livepatch_apply(&data->funcs[i], &data->fstate[i]);
+    {
+        const struct livepatch_func *func = &data->funcs[i];
+        struct livepatch_fstate *state = &data->fstate[i];
+
+        /* If the action has been already executed on this function, do nothing. */
+        if ( state->applied == LIVEPATCH_FUNC_APPLIED )
+        {
+            printk(XENLOG_WARNING LIVEPATCH
+                   "%s: %s has been already applied before\n",
+                   __func__, func->name);
+            continue;
+        }
+
+        arch_livepatch_apply(func, state);
+        state->applied = LIVEPATCH_FUNC_APPLIED;
+    }
 
     arch_livepatch_revive();
 
@@ -1325,17 +1398,12 @@ static int apply_payload(struct payload *data)
 
 static inline void apply_payload_tail(struct payload *data)
 {
-    /*
-     * We need RCU variant (which has barriers) in case we crash here.
-     * The applied_list is iterated by the trap code.
-     */
-    list_add_tail_rcu(&data->applied_list, &applied_list);
-    register_virtual_region(&data->region);
+    list_add_tail(&data->applied_list, &applied_list);
 
     data->state = LIVEPATCH_STATE_APPLIED;
 }
 
-static int revert_payload(struct payload *data)
+int revert_payload(struct payload *data)
 {
     unsigned int i;
     int rc;
@@ -1350,7 +1418,25 @@ static int revert_payload(struct payload *data)
     }
 
     for ( i = 0; i < data->nfuncs; i++ )
-        common_livepatch_revert(&data->funcs[i], &data->fstate[i]);
+    {
+        const struct livepatch_func *func = &data->funcs[i];
+        struct livepatch_fstate *state = &data->fstate[i];
+
+        /*
+         * If the apply action hasn't been executed on this function, do
+         * nothing.
+         */
+        if ( !func->old_addr || state->applied == LIVEPATCH_FUNC_NOT_APPLIED )
+        {
+            printk(XENLOG_WARNING LIVEPATCH
+                   "%s: %s has not been applied before\n",
+                   __func__, func->name);
+            continue;
+        }
+
+        arch_livepatch_revert(func, state);
+        state->applied = LIVEPATCH_FUNC_NOT_APPLIED;
+    }
 
     /*
      * Since we are running with IRQs disabled and the hooks may call common
@@ -1368,15 +1454,9 @@ static int revert_payload(struct payload *data)
     return 0;
 }
 
-static inline void revert_payload_tail(struct payload *data)
+void revert_payload_tail(struct payload *data)
 {
-
-    /*
-     * We need RCU variant (which has barriers) in case we crash here.
-     * The applied_list is iterated by the trap code.
-     */
-    list_del_rcu(&data->applied_list);
-    unregister_virtual_region(&data->region);
+    list_del(&data->applied_list);
 
     data->reverted = true;
     data->state = LIVEPATCH_STATE_CHECKED;

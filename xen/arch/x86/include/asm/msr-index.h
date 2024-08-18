@@ -88,6 +88,8 @@
 #define  ARCH_CAPS_PBRSB_NO                 (_AC(1, ULL) << 24)
 #define  ARCH_CAPS_GDS_CTRL                 (_AC(1, ULL) << 25)
 #define  ARCH_CAPS_GDS_NO                   (_AC(1, ULL) << 26)
+#define  ARCH_CAPS_RFDS_NO                  (_AC(1, ULL) << 27)
+#define  ARCH_CAPS_RFDS_CLEAR               (_AC(1, ULL) << 28)
 
 #define MSR_FLUSH_CMD                       0x0000010b
 #define  FLUSH_CMD_L1D                      (_AC(1, ULL) <<  0)
@@ -325,6 +327,7 @@
 #define MSR_IA32_VMX_TRUE_EXIT_CTLS             0x48f
 #define MSR_IA32_VMX_TRUE_ENTRY_CTLS            0x490
 #define MSR_IA32_VMX_VMFUNC                     0x491
+#define MSR_IA32_VMX_PROCBASED_CTLS3            0x492
 
 /* K7/K8 MSRs. Not complete. See the architecture manual for a more
    complete list. */

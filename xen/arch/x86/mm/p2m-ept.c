@@ -512,12 +512,6 @@ int epte_get_entry_emt(struct domain *d, gfn_t gfn, mfn_t mfn,
         return -1;
     }
 
-    if ( !mfn_valid(mfn) )
-    {
-        *ipat = true;
-        return MTRR_TYPE_UNCACHABLE;
-    }
-
     /*
      * Conditional must be kept in sync with the code in
      * {iomem,ioports}_{permit,deny}_access().
@@ -530,8 +524,12 @@ int epte_get_entry_emt(struct domain *d, gfn_t gfn, mfn_t mfn,
     }
 
     for ( special_pgs = i = 0; i < (1ul << order); i++ )
-        if ( is_special_page(mfn_to_page(mfn_add(mfn, i))) )
+    {
+        mfn_t cur = mfn_add(mfn, i);
+
+        if ( mfn_valid(cur) && is_special_page(mfn_to_page(cur)) )
             special_pgs++;
+    }
 
     if ( special_pgs )
     {
@@ -657,6 +655,8 @@ static int cf_check resolve_misconfig(struct p2m_domain *p2m, unsigned long gfn)
 
             if ( e.emt != MTRR_NUM_TYPES )
                 break;
+
+            ASSERT(is_epte_present(&e));
 
             if ( level == 0 )
             {
@@ -923,17 +923,6 @@ ept_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
 
     if ( mfn_valid(mfn) || p2m_allows_invalid_mfn(p2mt) )
     {
-        bool ipat;
-        int emt = epte_get_entry_emt(p2m->domain, _gfn(gfn), mfn,
-                                     i * EPT_TABLE_ORDER, &ipat,
-                                     p2mt);
-
-        if ( emt >= 0 )
-            new_entry.emt = emt;
-        else /* ept_handle_misconfig() will need to take care of this. */
-            new_entry.emt = MTRR_NUM_TYPES;
-
-        new_entry.ipat = ipat;
         new_entry.sp = !!i;
         new_entry.sa_p2mt = p2mt;
         new_entry.access = p2ma;
@@ -949,6 +938,22 @@ ept_set_entry(struct p2m_domain *p2m, gfn_t gfn_, mfn_t mfn,
             need_modify_vtd_table = 0;
 
         ept_p2m_type_to_flags(p2m, &new_entry);
+
+        if ( is_epte_present(&new_entry) )
+        {
+            bool ipat;
+            int emt = epte_get_entry_emt(p2m->domain, _gfn(gfn), mfn,
+                                         i * EPT_TABLE_ORDER, &ipat,
+                                         p2mt);
+
+            BUG_ON(mfn_eq(mfn, INVALID_MFN));
+
+            if ( emt >= 0 )
+                new_entry.emt = emt;
+            else /* ept_handle_misconfig() will need to take care of this. */
+                new_entry.emt = MTRR_NUM_TYPES;
+            new_entry.ipat = ipat;
+        }
     }
 
     if ( sve != -1 )

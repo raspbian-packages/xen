@@ -637,7 +637,7 @@ static long cf_check microcode_update_helper(void *data)
                    "microcode: couldn't find any newer%s revision in the provided blob!\n",
                    opt_ucode_allow_same ? " (or the same)" : "");
             microcode_free_patch(patch);
-            ret = -ENOENT;
+            ret = -EEXIST;
 
             goto put;
         }
@@ -818,6 +818,8 @@ int __init early_microcode_init(void)
     }
 
     alternative_vcall(ucode_ops.collect_cpu_info);
+
+    printk(XENLOG_INFO "BSP microcode revision: 0x%08x\n", this_cpu(cpu_sig).rev);
 
     if ( ucode_mod.mod_end || ucode_blob.size )
         rc = early_microcode_update_cpu();
