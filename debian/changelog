@@ -1,3 +1,9 @@
+xen (4.17.5-1~deb12u1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.17.5.
+
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Sun, 18 Aug 2024 20:30:36 +0200
+
 xen (4.17.3+10-g091466ba55-1~deb12u1) bookworm; urgency=medium
 
   * Rebuild 4.17.3+10-g091466ba55-1 for Bookworm to address the security
