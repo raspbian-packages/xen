@@ -1,8 +1,30 @@
-xen (4.17.5-1~deb12u1) UNRELEASED; urgency=medium
+xen (4.17.5-1~deb12u1) bookworm; urgency=medium
 
-  * Update to new upstream version 4.17.5.
+  * Update to new upstream version 4.17.5, which also contains
+    security fixes for the following issues:
+    - x86: shadow stack vs exceptions from emulation stubs
+      XSA-451 CVE-2023-46841
+    - x86: Register File Data Sampling
+      XSA-452 CVE-2023-28746
+    - GhostRace: Speculative Race Conditions
+      XSA-453 CVE-2024-2193
+    - x86 HVM hypercalls may trigger Xen bug check
+      XSA-454 CVE-2023-46842
+    - x86: Incorrect logic for BTC/SRSO mitigations
+      XSA-455 CVE-2024-31142
+    - x86: Native Branch History Injection
+      XSA-456 CVE-2024-2201
+    - double unlock in x86 guest IRQ handling
+      XSA-458 CVE-2024-31143
+    - error handling in x86 IOMMU identity mapping
+      XSA-460 CVE-2024-31145
+    - PCI device pass-through with shared resources
+      XSA-461 CVE-2024-31146
+  * Note that the following XSA are not listed, because...
+    - XSA-457 has patches for the Linux kernel.
+    - XSA-459 is within Xapi which is not shipped by this package.
 
- -- Maximilian Engelhardt <maxi@daemonizer.de>  Sun, 18 Aug 2024 20:30:36 +0200
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Sun, 18 Aug 2024 20:33:38 +0200
 
 xen (4.17.3+10-g091466ba55-1~deb12u1) bookworm; urgency=medium
 
