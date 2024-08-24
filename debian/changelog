@@ -1,3 +1,9 @@
+xen (4.19.0+14-g0918434e0f-1~exp1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.19.0+14-g0918434e0f.
+
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Sat, 24 Aug 2024 13:58:58 +0200
+
 xen (4.17.3+36-g54dacb5c02-1) unstable; urgency=medium
 
   * Update to new upstream version 4.17.3+36-g54dacb5c02, which also contains
