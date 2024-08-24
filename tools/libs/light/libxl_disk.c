@@ -56,7 +56,9 @@ static void disk_eject_xswatch_callback(libxl__egc *egc, libxl__ev_xswatch *w,
             "/local/domain/%d/backend/%" TOSTRING(BACKEND_STRING_SIZE)
            "[a-z]/%*d/%*d",
            &disk->backend_domid, backend_type);
-    if (!strcmp(backend_type, "tap") || !strcmp(backend_type, "vbd")) {
+    if (!strcmp(backend_type, "tap") ||
+        !strcmp(backend_type, "vbd") ||
+        !strcmp(backend_type, "vbd3")) {
         disk->backend = LIBXL_DISK_BACKEND_TAP;
     } else if (!strcmp(backend_type, "qdisk")) {
         disk->backend = LIBXL_DISK_BACKEND_QDISK;
@@ -181,6 +183,9 @@ static int libxl__device_disk_setdefault(libxl__gc *gc, uint32_t domid,
             return ERROR_INVAL;
         }
         disk->transport = LIBXL_DISK_TRANSPORT_MMIO;
+
+        libxl_defbool_setdefault(&disk->grant_usage,
+                                 disk->backend_domid != LIBXL_TOOLSTACK_DOMID);
     }
 
     if (hotplug && disk->specification == LIBXL_DISK_SPECIFICATION_VIRTIO) {
@@ -188,15 +193,44 @@ static int libxl__device_disk_setdefault(libxl__gc *gc, uint32_t domid,
         return ERROR_FAIL;
     }
 
-    /* Force Qdisk backend for CDROM devices of guests with a device model. */
+    /* Only allow Qdisk or Phy for CDROM devices. */
     if (disk->is_cdrom != 0 &&
         libxl__domain_type(gc, domid) == LIBXL_DOMAIN_TYPE_HVM) {
+        if (disk->backend == LIBXL_DISK_BACKEND_UNKNOWN)
+            disk->backend = LIBXL_DISK_BACKEND_QDISK;
+
         if (!(disk->backend == LIBXL_DISK_BACKEND_QDISK ||
-              disk->backend == LIBXL_DISK_BACKEND_UNKNOWN)) {
-            LOGD(ERROR, domid, "Backend for CD devices on HVM guests must be Qdisk");
+              disk->backend == LIBXL_DISK_BACKEND_PHY)) {
+            LOGD(ERROR, domid,
+                 "Backend for CD devices on HVM guests must be Qdisk or Phy");
             return ERROR_FAIL;
         }
-        disk->backend = LIBXL_DISK_BACKEND_QDISK;
+    }
+
+    if (disk->is_cdrom &&
+        disk->format == LIBXL_DISK_FORMAT_EMPTY &&
+        disk->backend == LIBXL_DISK_BACKEND_PHY &&
+        disk->backend_domid == LIBXL_TOOLSTACK_DOMID) {
+        uint32_t target_domid;
+        int fd;
+
+        if (libxl_is_stubdom(CTX, domid, &target_domid)) {
+            LOGED(DEBUG, domid, "Using target_domid %u", target_domid);
+        } else {
+            target_domid = domid;
+        }
+        free(disk->pdev_path);
+        disk->pdev_path =
+            libxl__sprintf(NOGC, LIBXL_STUBDOM_EMPTY_CDROM ".%u",
+                           target_domid);
+        fd = creat(disk->pdev_path, 0400);
+        if (fd < 0) {
+            LOGED(ERROR, domid, "Failed to create empty cdrom \"%s\"",
+                  disk->pdev_path);
+            return ERROR_FAIL;
+        }
+
+        close(fd);
     }
 
     rc = libxl__device_disk_set_backend(gc, disk);
@@ -224,7 +258,7 @@ static int libxl__device_from_disk(libxl__gc *gc, uint32_t domid,
             device->backend_kind = LIBXL__DEVICE_KIND_VBD;
             break;
         case LIBXL_DISK_BACKEND_TAP:
-            device->backend_kind = LIBXL__DEVICE_KIND_VBD;
+            device->backend_kind = LIBXL__DEVICE_KIND_VBD3;
             break;
         case LIBXL_DISK_BACKEND_QDISK:
             device->backend_kind = LIBXL__DEVICE_KIND_QDISK;
@@ -368,9 +402,17 @@ static void device_disk_add(libxl__egc *egc, uint32_t domid,
                 assert(device->backend_kind == LIBXL__DEVICE_KIND_VIRTIO_DISK);
                 break;
             case LIBXL_DISK_BACKEND_TAP:
-                LOG(ERROR, "blktap is not supported");
-                rc = ERROR_FAIL;
-                goto out;
+                flexarray_append(back, "params");
+                flexarray_append(back, GCSPRINTF("%s:%s",
+                              libxl__device_disk_string_of_format(disk->format),
+                              disk->pdev_path ? : ""));
+
+                script = libxl__abs_path(gc, disk->script?: "block-tap",
+                                         libxl__xen_script_dir_path());
+                flexarray_append_pair(back, "script", script);
+
+                assert(device->backend_kind == LIBXL__DEVICE_KIND_VBD3);
+                break;
             case LIBXL_DISK_BACKEND_QDISK:
                 flexarray_append(back, "params");
                 flexarray_append(back, GCSPRINTF("%s:%s",
@@ -429,6 +471,8 @@ static void device_disk_add(libxl__egc *egc, uint32_t domid,
             flexarray_append(back, libxl__device_disk_string_of_transport(disk->transport));
             flexarray_append_pair(back, "base", GCSPRINTF("%"PRIu64, disk->base));
             flexarray_append_pair(back, "irq", GCSPRINTF("%u", disk->irq));
+            flexarray_append_pair(back, "grant_usage",
+                                  libxl_defbool_val(disk->grant_usage) ? "1" : "0");
         }
 
         flexarray_append(front, "backend-id");
@@ -623,6 +667,14 @@ static int libxl__disk_from_xenstore(libxl__gc *gc, const char *libxl_path,
             goto cleanup;
         }
         disk->irq = strtoul(tmp, NULL, 10);
+
+        tmp = libxl__xs_read(gc, XBT_NULL,
+                             GCSPRINTF("%s/grant_usage", libxl_path));
+        if (!tmp)
+            libxl_defbool_set(&disk->grant_usage,
+                              disk->backend_domid != LIBXL_TOOLSTACK_DOMID);
+        else
+            libxl_defbool_set(&disk->grant_usage, strtoul(tmp, NULL, 0));
     }
 
     disk->vdev = xs_read(ctx->xsh, XBT_NULL,
@@ -988,7 +1040,7 @@ static void cdrom_insert_ejected(libxl__egc *egc,
     empty = flexarray_make(gc, 4, 1);
     flexarray_append_pair(empty, "type",
                           libxl__device_disk_string_of_backend(disk->backend));
-    flexarray_append_pair(empty, "params", "");
+    flexarray_append_pair(empty, "params", disk->pdev_path ?: "");
 
     for (;;) {
         rc = libxl__xs_transaction_start(gc, &t);
@@ -1164,13 +1216,15 @@ static void cdrom_insert_inserted(libxl__egc *egc,
     insert = flexarray_make(gc, 4, 1);
     flexarray_append_pair(insert, "type",
                       libxl__device_disk_string_of_backend(disk->backend));
-    if (disk->format != LIBXL_DISK_FORMAT_EMPTY)
+    if (disk->backend == LIBXL_DISK_BACKEND_QDISK &&
+        disk->format != LIBXL_DISK_FORMAT_EMPTY) {
         flexarray_append_pair(insert, "params",
                     GCSPRINTF("%s:%s",
                         libxl__device_disk_string_of_format(disk->format),
                         disk->pdev_path));
-    else
-        flexarray_append_pair(insert, "params", "");
+    } else {
+        flexarray_append_pair(insert, "params", disk->pdev_path ?: "");
+    }
 
     for (;;) {
         rc = libxl__xs_transaction_start(gc, &t);
@@ -1307,7 +1361,8 @@ char *libxl__device_disk_find_local_path(libxl__gc *gc,
      * If the format isn't raw and / or we're using a script, then see
      * if the script has written a path to the "cooked" node
      */
-    if (disk->script && guest_domid != INVALID_DOMID) {
+    if ((disk->script && guest_domid != INVALID_DOMID) ||
+        disk->backend == LIBXL_DISK_BACKEND_TAP) {
         libxl__device device;
         char *be_path, *pdpath;
         int rc;
@@ -1327,10 +1382,19 @@ char *libxl__device_disk_find_local_path(libxl__gc *gc,
         LOGD(DEBUG, guest_domid, "Attempting to read node %s", pdpath);
         path = libxl__xs_read(gc, XBT_NULL, pdpath);
 
-        if (path)
+        if (path) {
             LOGD(DEBUG, guest_domid, "Accessing cooked block device %s", path);
-        else
-            LOGD(DEBUG, guest_domid, "No physical-device-path, can't access locally.");
+
+            /* tapdisk exposes disks locally over UNIX socket NBD. */
+            if (disk->backend == LIBXL_DISK_BACKEND_TAP) {
+                path = libxl__sprintf(gc, "nbd+unix:///?socket=%s", path);
+                LOGD(DEBUG, guest_domid,
+                     "Directly accessing local TAP target %s", path);
+            }
+        } else {
+            LOGD(DEBUG, guest_domid,
+                "No physical-device-path, can't access locally.");
+        }
 
         goto out;
     }

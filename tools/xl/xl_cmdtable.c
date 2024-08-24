@@ -15,7 +15,7 @@
 #include <string.h>
 
 #include <libxl.h>
-#include <xen-tools/libs.h>
+#include <xen-tools/common-macros.h>
 
 #include "xl.h"
 
@@ -141,7 +141,8 @@ const struct cmd_spec cmd_table[] = {
       "Attach to domain's console",
       "[options] <Domain>\n"
       "-t <type>       console type, pv , serial or vuart\n"
-      "-n <number>     console number"
+      "-n <number>     console number\n"
+      "-e <escape>     escape character"
     },
     { "vncviewer",
       &main_vncviewer, 0, 0,
@@ -630,6 +631,14 @@ const struct cmd_spec cmd_table[] = {
       "Issue a qemu monitor command to the device model of a domain",
       "<Domain> <Command>",
     },
+#ifdef LIBXL_HAVE_DT_OVERLAY
+    { "dt-overlay",
+      &main_dt_overlay, 0, 1,
+      "Add/Remove a device tree overlay to Xen device tree, attach/detach the device to a domain",
+      "<operation=add|remove> <.dtbo> OR <operation=attach> <.dtbo> <Domain>",
+      "-h print this help\n"
+    },
+#endif
 };
 
 const int cmdtable_len = ARRAY_SIZE(cmd_table);

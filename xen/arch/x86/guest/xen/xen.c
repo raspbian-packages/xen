@@ -1,20 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /******************************************************************************
  * arch/x86/guest/xen.c
  *
  * Support for detecting and running under Xen.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; If not, see <http://www.gnu.org/licenses/>.
  *
  * Copyright (c) 2017 Citrix Systems Ltd.
  */
@@ -170,7 +158,7 @@ static void __init init_memmap(void)
     }
 }
 
-static void cf_check xen_evtchn_upcall(struct cpu_user_regs *regs)
+static void cf_check xen_evtchn_upcall(void)
 {
     struct vcpu_info *vcpu_info = this_cpu(vcpu_info);
     unsigned long pending;
@@ -180,20 +168,20 @@ static void cf_check xen_evtchn_upcall(struct cpu_user_regs *regs)
 
     while ( pending )
     {
-        unsigned int l1 = find_first_set_bit(pending);
+        unsigned int l1 = ffsl(pending) - 1;
         unsigned long evtchn = xchg(&XEN_shared_info->evtchn_pending[l1], 0);
 
         __clear_bit(l1, &pending);
         evtchn &= ~XEN_shared_info->evtchn_mask[l1];
         while ( evtchn )
         {
-            unsigned int port = find_first_set_bit(evtchn);
+            unsigned int port = ffsl(evtchn) - 1;
 
             __clear_bit(port, &evtchn);
             port += l1 * BITS_PER_LONG;
 
             if ( pv_console && port == pv_console_evtchn() )
-                pv_console_rx(regs);
+                pv_console_rx();
             else if ( pv_shim )
                 pv_shim_inject_evtchn(port);
         }
@@ -318,10 +306,10 @@ static void cf_check resume(void)
         pv_console_init();
 }
 
-static void __init cf_check e820_fixup(struct e820map *e820)
+static void __init cf_check e820_fixup(void)
 {
     if ( pv_shim )
-        pv_shim_fixup_e820(e820);
+        pv_shim_fixup_e820();
 }
 
 static int cf_check flush_tlb(
@@ -330,7 +318,7 @@ static int cf_check flush_tlb(
     return xen_hypercall_hvm_op(HVMOP_flush_tlbs, NULL);
 }
 
-static const struct hypervisor_ops __initconstrel ops = {
+static const struct hypervisor_ops __initconst_cf_clobber ops = {
     .name = "Xen",
     .setup = setup,
     .ap_setup = ap_setup,

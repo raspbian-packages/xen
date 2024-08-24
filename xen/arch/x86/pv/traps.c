@@ -1,20 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /******************************************************************************
  * arch/x86/pv/traps.c
  *
  * PV low level entry points.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; If not, see <http://www.gnu.org/licenses/>.
  *
  * Copyright (c) 2017 Citrix Systems Ltd.
  */
@@ -43,7 +31,7 @@ void pv_inject_event(const struct x86_event *event)
     if ( event->type == X86_EVENTTYPE_HW_EXCEPTION )
     {
         ASSERT(vector < 32);
-        use_error_code = TRAP_HAVE_EC & (1u << vector);
+        use_error_code = X86_EXC_HAVE_EC & (1u << vector);
     }
     else
     {
@@ -63,7 +51,7 @@ void pv_inject_event(const struct x86_event *event)
     tb->eip   = ti->address;
 
     if ( event->type == X86_EVENTTYPE_HW_EXCEPTION &&
-         vector == TRAP_page_fault )
+         vector == X86_EXC_PF )
     {
         curr->arch.pv.ctrlreg[2] = event->cr2;
         arch_set_cr2(curr, event->cr2);
@@ -93,7 +81,7 @@ void pv_inject_event(const struct x86_event *event)
                 "Unhandled: vec %u, %s[%04x]\n",
                 vector, vector_name(vector), error_code);
 
-        if ( vector == TRAP_page_fault )
+        if ( vector == X86_EXC_PF )
             show_page_walk(event->cr2);
     }
 }
@@ -107,7 +95,7 @@ bool set_guest_machinecheck_trapbounce(void)
     struct vcpu *curr = current;
     struct trap_bounce *tb = &curr->arch.pv.trap_bounce;
 
-    pv_inject_hw_exception(TRAP_machine_check, X86_EVENT_NO_EC);
+    pv_inject_hw_exception(X86_EXC_MC, X86_EVENT_NO_EC);
     tb->flags &= ~TBF_EXCEPTION; /* not needed for MCE delivery path */
 
     return !null_trap_bounce(curr, tb);
@@ -122,7 +110,7 @@ bool set_guest_nmi_trapbounce(void)
     struct vcpu *curr = current;
     struct trap_bounce *tb = &curr->arch.pv.trap_bounce;
 
-    pv_inject_hw_exception(TRAP_nmi, X86_EVENT_NO_EC);
+    pv_inject_hw_exception(X86_EXC_NMI, X86_EVENT_NO_EC);
     tb->flags &= ~TBF_EXCEPTION; /* not needed for NMI delivery path */
 
     return !null_trap_bounce(curr, tb);
@@ -144,6 +132,9 @@ static void cf_check nmi_softirq(void)
     *v_ptr = NULL;
 }
 
+void nocall entry_int80(void);
+void nocall entry_int82(void);
+
 void __init pv_trap_init(void)
 {
 #ifdef CONFIG_PV32
@@ -154,7 +145,7 @@ void __init pv_trap_init(void)
 
     /* Fast trap for int80 (faster than taking the #GP-fixup path). */
     _set_gate(idt_table + LEGACY_SYSCALL_VECTOR, SYS_DESC_irq_gate, 3,
-              &int80_direct_trap);
+              &entry_int80);
 
     open_softirq(NMI_SOFTIRQ, nmi_softirq);
 }

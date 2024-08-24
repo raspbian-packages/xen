@@ -1,18 +1,6 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /******************************************************************************
  * alternative.c
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/delay.h>
@@ -167,10 +155,10 @@ void init_or_livepatch add_nops(void *insns, unsigned int len)
  * "noinline" to cause control flow change and thus invalidate I$ and
  * cause refetch after modification.
  */
-static void *init_or_livepatch noinline
+static void init_or_livepatch noinline
 text_poke(void *addr, const void *opcode, size_t len)
 {
-    return memcpy(addr, opcode, len);
+    memcpy(addr, opcode, len);
 }
 
 extern void *const __initdata_cf_clobber_start[];
@@ -338,7 +326,7 @@ static void init_or_livepatch _apply_alternatives(struct alt_instr *start,
      * Clobber endbr64 instructions now that altcall has finished optimising
      * all indirect branches to direct ones.
      */
-    if ( force && cpu_has_xen_ibt )
+    if ( force && cpu_has_xen_ibt && system_state < SYS_STATE_active )
     {
         void *const *val;
         unsigned int clobbered = 0;
@@ -370,11 +358,12 @@ static void init_or_livepatch _apply_alternatives(struct alt_instr *start,
     }
 }
 
-void init_or_livepatch apply_alternatives(struct alt_instr *start,
-                                          struct alt_instr *end)
+#ifdef CONFIG_LIVEPATCH
+void apply_alternatives(struct alt_instr *start, struct alt_instr *end)
 {
     _apply_alternatives(start, end, true);
 }
+#endif
 
 static unsigned int __initdata alt_todo;
 static unsigned int __initdata alt_done;

@@ -6,7 +6,7 @@
 struct test {
     const char *mnemonic;
     unsigned int opc:8;
-    unsigned int spc:2;
+    unsigned int spc:3;
     unsigned int pfx:2;
     unsigned int vsz:3;
     unsigned int esz:4;
@@ -19,6 +19,10 @@ enum spc {
     SPC_0f,
     SPC_0f38,
     SPC_0f3a,
+    SPC_unused4,
+    SPC_map5,
+    SPC_map6,
+    SPC_unused7,
 };
 
 enum pfx {
@@ -76,6 +80,7 @@ enum esz {
     ESZ_b,
     ESZ_w,
     ESZ_bw,
+    ESZ_fp16,
 };
 
 #ifndef __i386__
@@ -601,6 +606,120 @@ static const struct test avx512_vpopcntdq_all[] = {
     INSN(popcnt, 66, 0f38, 55, vl, dq, vl)
 };
 
+static const struct test avx512_fp16_all[] = {
+    INSN(addph,           , map5, 58,    vl, fp16, vl),
+    INSN(addsh,         f3, map5, 58,    el, fp16, el),
+    INSN(cmpph,           , 0f3a, c2,    vl, fp16, vl),
+    INSN(cmpsh,         f3, 0f3a, c2,    el, fp16, el),
+    INSN(comish,          , map5, 2f,    el, fp16, el),
+    INSN(cvtdq2ph,        , map5, 5b,    vl,    d, vl),
+    INSN(cvtpd2ph,      66, map5, 5a,    vl,    q, vl),
+    INSN(cvtph2dq,      66, map5, 5b,  vl_2, fp16, vl),
+    INSN(cvtph2pd,        , map5, 5a,  vl_4, fp16, vl),
+    INSN(cvtph2psx,     66, map6, 13,  vl_2, fp16, vl),
+    INSN(cvtph2qq,      66, map5, 7b,  vl_4, fp16, vl),
+    INSN(cvtph2udq,       , map5, 79,  vl_2, fp16, vl),
+    INSN(cvtph2uqq,     66, map5, 79,  vl_4, fp16, vl),
+    INSN(cvtph2uw,        , map5, 7d,    vl, fp16, vl),
+    INSN(cvtph2w,       66, map5, 7d,    vl, fp16, vl),
+    INSN(cvtps2phx,     66, map5, 1d,    vl,    d, vl),
+    INSN(cvtqq2ph,        , map5, 5b,    vl,    q, vl),
+    INSN(cvtsd2sh,      f2, map5, 5a,    el,    q, el),
+    INSN(cvtsh2sd,      f3, map5, 5a,    el, fp16, el),
+    INSN(cvtsh2si,      f3, map5, 2d,    el, fp16, el),
+    INSN(cvtsh2ss,        , map6, 13,    el, fp16, el),
+    INSN(cvtsh2usi,     f3, map5, 79,    el, fp16, el),
+    INSN(cvtsi2sh,      f3, map5, 2a,    el, dq64, el),
+    INSN(cvtss2sh,        , map5, 1d,    el,    d, el),
+    INSN(cvttph2dq,     f3, map5, 5b,  vl_2, fp16, vl),
+    INSN(cvttph2qq,     66, map5, 7a,  vl_4, fp16, vl),
+    INSN(cvttph2udq,      , map5, 78,  vl_2, fp16, vl),
+    INSN(cvttph2uqq,    66, map5, 78,  vl_4, fp16, vl),
+    INSN(cvttph2uw,       , map5, 7c,    vl, fp16, vl),
+    INSN(cvttph2w,      66, map5, 7c,    vl, fp16, vl),
+    INSN(cvttsh2si,     f3, map5, 2c,    el, fp16, el),
+    INSN(cvttsh2usi,    f3, map5, 78,    el, fp16, el),
+    INSN(cvtudq2ph,     f2, map5, 7a,    vl,    d, vl),
+    INSN(cvtuqq2ph,     f2, map5, 7a,    vl,    q, vl),
+    INSN(cvtusi2sh,     f3, map5, 7b,    el, dq64, el),
+    INSN(cvtuw2ph,      f2, map5, 7d,    vl, fp16, vl),
+    INSN(cvtw2ph,       f3, map5, 7d,    vl, fp16, vl),
+    INSN(divph,           , map5, 5e,    vl, fp16, vl),
+    INSN(divsh,         f3, map5, 5e,    el, fp16, el),
+    INSNX(fcmaddcph,    f2, map6, 56, 1, vl,    d, vl),
+    INSNX(fcmaddcsh,    f2, map6, 57, 1, el,    d, el),
+    INSNX(fcmulcph,     f2, map6, d6, 1, vl,    d, vl),
+    INSNX(fcmulcsh,     f2, map6, d7, 1, el,    d, el),
+    INSN(fmadd132ph,    66, map6, 98,    vl, fp16, vl),
+    INSN(fmadd132sh,    66, map6, 99,    el, fp16, el),
+    INSN(fmadd213ph,    66, map6, a8,    vl, fp16, vl),
+    INSN(fmadd213sh,    66, map6, a9,    el, fp16, el),
+    INSN(fmadd231ph,    66, map6, b8,    vl, fp16, vl),
+    INSN(fmadd231sh,    66, map6, b9,    el, fp16, el),
+    INSNX(fmaddcph,     f3, map6, 56, 1, vl,    d, vl),
+    INSNX(fmaddcsh,     f3, map6, 57, 1, el,    d, el),
+    INSN(fmaddsub132ph, 66, map6, 96,    vl, fp16, vl),
+    INSN(fmaddsub213ph, 66, map6, a6,    vl, fp16, vl),
+    INSN(fmaddsub231ph, 66, map6, b6,    vl, fp16, vl),
+    INSN(fmsub132ph,    66, map6, 9a,    vl, fp16, vl),
+    INSN(fmsub132sh,    66, map6, 9b,    el, fp16, el),
+    INSN(fmsub213ph,    66, map6, aa,    vl, fp16, vl),
+    INSN(fmsub213sh,    66, map6, ab,    el, fp16, el),
+    INSN(fmsub231ph,    66, map6, ba,    vl, fp16, vl),
+    INSN(fmsub231sh,    66, map6, bb,    el, fp16, el),
+    INSN(fmsubadd132ph, 66, map6, 97,    vl, fp16, vl),
+    INSN(fmsubadd213ph, 66, map6, a7,    vl, fp16, vl),
+    INSN(fmsubadd231ph, 66, map6, b7,    vl, fp16, vl),
+    INSNX(fmulcph,      f3, map6, d6, 1, vl,    d, vl),
+    INSNX(fmulcsh,      f3, map6, d7, 1, el,    d, el),
+    INSN(fnmadd132ph,   66, map6, 9c,    vl, fp16, vl),
+    INSN(fnmadd132sh,   66, map6, 9d,    el, fp16, el),
+    INSN(fnmadd213ph,   66, map6, ac,    vl, fp16, vl),
+    INSN(fnmadd213sh,   66, map6, ad,    el, fp16, el),
+    INSN(fnmadd231ph,   66, map6, bc,    vl, fp16, vl),
+    INSN(fnmadd231sh,   66, map6, bd,    el, fp16, el),
+    INSN(fnmsub132ph,   66, map6, 9e,    vl, fp16, vl),
+    INSN(fnmsub132sh,   66, map6, 9f,    el, fp16, el),
+    INSN(fnmsub213ph,   66, map6, ae,    vl, fp16, vl),
+    INSN(fnmsub213sh,   66, map6, af,    el, fp16, el),
+    INSN(fnmsub231ph,   66, map6, be,    vl, fp16, vl),
+    INSN(fnmsub231sh,   66, map6, bf,    el, fp16, el),
+    INSN(fpclassph,       , 0f3a, 66,    vl, fp16, vl),
+    INSN(fpclasssh,       , 0f3a, 67,    el, fp16, el),
+    INSN(getexpph,      66, map6, 42,    vl, fp16, vl),
+    INSN(getexpsh,      66, map6, 43,    el, fp16, el),
+    INSN(getmantph,       , 0f3a, 26,    vl, fp16, vl),
+    INSN(getmantsh,       , 0f3a, 27,    el, fp16, el),
+    INSN(maxph,           , map5, 5f,    vl, fp16, vl),
+    INSN(maxsh,         f3, map5, 5f,    el, fp16, el),
+    INSN(minph,           , map5, 5d,    vl, fp16, vl),
+    INSN(minsh,         f3, map5, 5d,    el, fp16, el),
+    INSN(movsh,         f3, map5, 10,    el, fp16, el),
+    INSN(movsh,         f3, map5, 11,    el, fp16, el),
+    INSN(mulph,           , map5, 59,    vl, fp16, vl),
+    INSN(mulsh,         f3, map5, 59,    el, fp16, el),
+    INSN(rcpph,         66, map6, 4c,    vl, fp16, vl),
+    INSN(rcpsh,         66, map6, 4d,    el, fp16, el),
+    INSN(reduceph,        , 0f3a, 56,    vl, fp16, vl),
+    INSN(reducesh,        , 0f3a, 57,    el, fp16, el),
+    INSN(rndscaleph,      , 0f3a, 08,    vl, fp16, vl),
+    INSN(rndscalesh,      , 0f3a, 0a,    el, fp16, el),
+    INSN(rsqrtph,       66, map6, 4e,    vl, fp16, vl),
+    INSN(rsqrtsh,       66, map6, 4f,    el, fp16, el),
+    INSN(scalefph,      66, map6, 2c,    vl, fp16, vl),
+    INSN(scalefsh,      66, map6, 2d,    el, fp16, el),
+    INSN(sqrtph,          , map5, 51,    vl, fp16, vl),
+    INSN(sqrtsh,        f3, map5, 51,    el, fp16, el),
+    INSN(subph,           , map5, 5c,    vl, fp16, vl),
+    INSN(subsh,         f3, map5, 5c,    el, fp16, el),
+    INSN(ucomish,         , map5, 2e,    el, fp16, el),
+};
+
+static const struct test avx512_fp16_128[] = {
+    INSN(movw, 66, map5, 6e, el, fp16, el),
+    INSN(movw, 66, map5, 7e, el, fp16, el),
+};
+
 static const struct test gfni_all[] = {
     INSN(gf2p8affineinvqb, 66, 0f3a, cf, vl, q, vl),
     INSN(gf2p8affineqb,    66, 0f3a, ce, vl, q, vl),
@@ -699,8 +818,8 @@ static void test_one(const struct test *test, enum vl vl,
     union evex {
         uint8_t raw[3];
         struct {
-            uint8_t opcx:2;
-            uint8_t mbz:2;
+            uint8_t opcx:3;
+            uint8_t mbz:1;
             uint8_t R:1;
             uint8_t b:1;
             uint8_t x:1;
@@ -728,8 +847,10 @@ static void test_one(const struct test *test, enum vl vl,
         break;
 
     case ESZ_w:
-        esz = 2;
         evex.w = 1;
+        /* fall through */
+    case ESZ_fp16:
+        esz = 2;
         break;
 
 #ifdef __i386__
@@ -845,7 +966,7 @@ static void test_one(const struct test *test, enum vl vl,
     case ESZ_b: case ESZ_w: case ESZ_bw:
         return;
 
-    case ESZ_d: case ESZ_q:
+    case ESZ_d: case ESZ_q: case ESZ_fp16:
         break;
 
     default:
@@ -1002,6 +1123,8 @@ void evex_disp8_test(void *instr, struct x86_emulate_ctxt *ctxt,
     RUN(avx512_vnni, all);
     RUN(avx512_vp2intersect, all);
     RUN(avx512_vpopcntdq, all);
+    RUN(avx512_fp16, all);
+    RUN(avx512_fp16, 128);
 
     if ( cpu_has_avx512f )
     {

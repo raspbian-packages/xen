@@ -37,7 +37,7 @@ struct hpet_event_channel
     s_time_t      next_event;
     cpumask_var_t cpumask;
     spinlock_t    lock;
-    void          (*event_handler)(struct hpet_event_channel *);
+    void          (*event_handler)(struct hpet_event_channel *ch);
 
     unsigned int idx;   /* physical channel idx */
     unsigned int cpu;   /* msi target */
@@ -49,7 +49,7 @@ static struct hpet_event_channel *__read_mostly hpet_events;
 /* msi hpet channels used for broadcast */
 static unsigned int __read_mostly num_hpets_used;
 
-DEFINE_PER_CPU(struct hpet_event_channel *, cpu_bc_channel);
+static DEFINE_PER_CPU(struct hpet_event_channel *, cpu_bc_channel);
 
 unsigned long __initdata hpet_address;
 int8_t __initdata opt_hpet_legacy_replacement = -1;
@@ -237,8 +237,7 @@ again:
     }
 }
 
-static void cf_check hpet_interrupt_handler(
-    int irq, void *data, struct cpu_user_regs *regs)
+static void cf_check hpet_interrupt_handler(int irq, void *data)
 {
     struct hpet_event_channel *ch = data;
 
@@ -279,7 +278,7 @@ static int hpet_msi_write(struct hpet_event_channel *ch, struct msi_msg *msg)
 {
     ch->msi.msg = *msg;
 
-    if ( iommu_intremap )
+    if ( iommu_intremap != iommu_intremap_off )
     {
         int rc = iommu_update_ire_from_msi(&ch->msi, msg);
 
@@ -353,7 +352,7 @@ static int __init hpet_setup_msi_irq(struct hpet_event_channel *ch)
     u32 cfg = hpet_read32(HPET_Tn_CFG(ch->idx));
     irq_desc_t *desc = irq_to_desc(ch->msi.irq);
 
-    if ( iommu_intremap )
+    if ( iommu_intremap != iommu_intremap_off )
     {
         ch->msi.hpet_id = hpet_blockid;
         ret = iommu_setup_hpet_msi(&ch->msi);
@@ -372,7 +371,7 @@ static int __init hpet_setup_msi_irq(struct hpet_event_channel *ch)
         ret = __hpet_setup_msi_irq(desc);
     if ( ret < 0 )
     {
-        if ( iommu_intremap )
+        if ( iommu_intremap != iommu_intremap_off )
             iommu_update_ire_from_msi(&ch->msi, NULL);
         return ret;
     }
@@ -458,11 +457,7 @@ static struct hpet_event_channel *hpet_get_channel(unsigned int cpu)
     if ( num_hpets_used >= nr_cpu_ids )
         return &hpet_events[cpu];
 
-    do {
-        next = next_channel;
-        if ( (i = next + 1) == num_hpets_used )
-            i = 0;
-    } while ( cmpxchg(&next_channel, next, i) != next );
+    next = arch_fetch_and_add(&next_channel, 1) % num_hpets_used;
 
     /* try unused channel first */
     for ( i = next; i < next + num_hpets_used; i++ )
@@ -563,7 +558,7 @@ static void cf_check handle_rtc_once(uint8_t index, uint8_t value)
     }
 }
 
-void __init cf_check hpet_broadcast_init(void)
+void __init hpet_broadcast_init(void)
 {
     u64 hpet_rate = hpet_setup();
     u32 hpet_id, cfg;
@@ -619,7 +614,7 @@ void __init cf_check hpet_broadcast_init(void)
          * math multiplication factor for nanosecond to hpet tick conversion.
          */
         hpet_events[i].mult = div_sc((unsigned long)hpet_rate,
-                                     1000000000ul, 32);
+                                     1000000000UL, 32);
         hpet_events[i].shift = 32;
         hpet_events[i].next_event = STIME_MAX;
         spin_lock_init(&hpet_events[i].lock);
@@ -634,7 +629,7 @@ void __init cf_check hpet_broadcast_init(void)
         hpet_events->flags = HPET_EVT_LEGACY;
 }
 
-void cf_check hpet_broadcast_resume(void)
+void hpet_broadcast_resume(void)
 {
     u32 cfg;
     unsigned int i, n;
@@ -906,7 +901,7 @@ u64 __init hpet_setup(void)
     return hpet_rate;
 }
 
-void hpet_resume(u32 *boot_cfg)
+void hpet_resume(uint32_t *boot_cfg)
 {
     static u32 system_reset_latch;
     u32 hpet_id, cfg;

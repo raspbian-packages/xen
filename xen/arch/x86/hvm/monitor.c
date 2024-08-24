@@ -178,8 +178,6 @@ int hvm_monitor_debug(unsigned long rip, enum hvm_monitor_debug_type type,
         break;
 
     case HVM_MONITOR_SINGLESTEP_BREAKPOINT:
-        if ( !ad->monitor.singlestep_enabled )
-            return 0;
         if ( curr->arch.hvm.fast_single_step.enabled )
         {
             p2m_altp2m_check(curr, curr->arch.hvm.fast_single_step.p2midx);
@@ -188,6 +186,8 @@ int hvm_monitor_debug(unsigned long rip, enum hvm_monitor_debug_type type,
             curr->arch.hvm.fast_single_step.p2midx = 0;
             return 0;
         }
+        if ( !ad->monitor.singlestep_enabled )
+            return 0;
         req.reason = VM_EVENT_REASON_SINGLESTEP;
         req.u.singlestep.gfn = gfn_of_rip(rip);
         sync = true;
@@ -344,6 +344,27 @@ int hvm_monitor_vmexit(unsigned long exit_reason,
     set_npt_base(curr, &req);
 
     return monitor_traps(curr, ad->monitor.vmexit_sync, &req);
+}
+
+int hvm_monitor_io(unsigned int port, unsigned int bytes,
+                   bool in, bool str)
+{
+    struct vcpu *curr = current;
+    struct arch_domain *ad = &curr->domain->arch;
+    vm_event_request_t req = {
+        .reason = VM_EVENT_REASON_IO_INSTRUCTION,
+        .u.io.bytes = bytes,
+        .u.io.port = port,
+        .u.io.in = in,
+        .u.io.str = str,
+    };
+
+    if ( !ad->monitor.io_enabled )
+        return 0;
+
+    set_npt_base(curr, &req);
+
+    return monitor_traps(curr, true, &req);
 }
 
 /*

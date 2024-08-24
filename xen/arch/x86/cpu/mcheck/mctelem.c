@@ -64,8 +64,6 @@ struct mctelem_ent {
 
 #define MC_NENT (MC_URGENT_NENT + MC_NONURGENT_NENT)
 
-#define	MC_NCLASSES		(MC_NONURGENT + 1)
-
 #define	COOKIE2MCTE(c)		((struct mctelem_ent *)(c))
 #define	MCTE2COOKIE(tep)	((mctelem_cookie_t)(tep))
 
@@ -210,7 +208,7 @@ void mctelem_defer(mctelem_cookie_t cookie, bool lmce)
  *  @lmce: indicate which pending list on @cpu is handled
  */
 void mctelem_process_deferred(unsigned int cpu,
-			      int (*fn)(mctelem_cookie_t),
+			      int (*fn)(mctelem_cookie_t mctc),
 			      bool lmce)
 {
 	struct mctelem_ent *tep;

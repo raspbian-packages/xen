@@ -138,6 +138,9 @@ int main_shutdown(int argc, char **argv);
 int main_reboot(int argc, char **argv);
 int main_list(int argc, char **argv);
 int main_vm_list(int argc, char **argv);
+#ifdef LIBXL_HAVE_DT_OVERLAY
+int main_dt_overlay(int argc, char **argv);
+#endif
 int main_create(int argc, char **argv);
 int main_config_update(int argc, char **argv);
 int main_button_press(int argc, char **argv);
@@ -285,6 +288,7 @@ extern libxl_bitmap global_vm_affinity_mask;
 extern libxl_bitmap global_hvm_affinity_mask;
 extern libxl_bitmap global_pv_affinity_mask;
 extern libxl_domid domid_policy;
+extern libxl_defbool bootloader_restrict;
 
 enum output_format {
     OUTPUT_FORMAT_JSON,

@@ -6,12 +6,12 @@
 #include <xen/smp.h>
 #include <xen/softirq.h>
 #include <xen/pci.h>
+#include <xen/sched.h>
 #include <xen/warning.h>
 #include <asm/io.h>
 #include <asm/msr.h>
 #include <asm/processor.h>
 #include <asm/amd.h>
-#include <asm/hvm/support.h>
 #include <asm/spec_ctrl.h>
 #include <asm/acpi.h>
 #include <asm/apic.h>
@@ -258,6 +258,11 @@ static void cf_check amd_ctxt_switch_masking(const struct vcpu *next)
 #undef LAZY
 }
 
+#ifdef CONFIG_XEN_IBT /* Announce the function to ENDBR clobbering logic. */
+static const typeof(ctxt_switch_masking) __initconst_cf_clobber __used csm =
+    amd_ctxt_switch_masking;
+#endif
+
 /*
  * Mask the features and extended features returned by CPUID.  Parameters are
  * set from the boot line via two methods:
@@ -276,8 +281,24 @@ static void __init noinline amd_init_levelling(void)
 {
 	const struct cpuidmask *m = NULL;
 
-	if (probe_cpuid_faulting())
+	/*
+	 * If there's support for CpuidUserDis or CPUID faulting then
+	 * we can skip levelling because CPUID accesses are trapped anyway.
+	 *
+	 * CPUID faulting is an Intel feature analogous to CpuidUserDis, so
+	 * that can only be present when Xen is itself virtualized (because
+	 * it can be emulated).
+	 *
+	 * Note that probing for the Intel feature _first_ isn't a mistake,
+	 * but a means to ensure MSR_INTEL_PLATFORM_INFO is read and added
+	 * to the raw CPU policy if present.
+	 */
+	if ((cpu_has_hypervisor && probe_cpuid_faulting()) ||
+	    boot_cpu_has(X86_FEATURE_CPUID_USER_DIS)) {
+		expected_levelling_cap |= LCAP_faulting;
+		levelling_caps |= LCAP_faulting;
 		return;
+	}
 
 	probe_masking_msrs();
 
@@ -366,6 +387,20 @@ static void __init noinline amd_init_levelling(void)
 
 	if (levelling_caps)
 		ctxt_switch_masking = amd_ctxt_switch_masking;
+}
+
+void amd_set_cpuid_user_dis(bool enable)
+{
+	const uint64_t bit = K8_HWCR_CPUID_USER_DIS;
+	uint64_t val;
+
+	rdmsrl(MSR_K8_HWCR, val);
+
+	if (!!(val & bit) == enable)
+		return;
+
+	val ^= bit;
+	wrmsrl(MSR_K8_HWCR, val);
 }
 
 /*
@@ -468,7 +503,6 @@ void amd_check_disable_c1e(unsigned int port, u8 value)
 static void check_syscfg_dram_mod_en(void)
 {
 	uint64_t syscfg;
-	static bool_t printed = 0;
 
 	if (!((boot_cpu_data.x86_vendor == X86_VENDOR_AMD) &&
 		(boot_cpu_data.x86 >= 0x0f)))
@@ -478,9 +512,7 @@ static void check_syscfg_dram_mod_en(void)
 	if (!(syscfg & SYSCFG_MTRR_FIX_DRAM_MOD_EN))
 		return;
 
-	if (!test_and_set_bool(printed))
-		printk(KERN_ERR "MTRR: SYSCFG[MtrrFixDramModEn] not "
-			"cleared by BIOS, clearing this bit\n");
+        printk_once(KERN_ERR "MTRR: SYSCFG[MtrrFixDramModEn] found set; clearing\n");
 
 	syscfg &= ~SYSCFG_MTRR_FIX_DRAM_MOD_EN;
 	wrmsrl(MSR_K8_SYSCFG, syscfg);
@@ -1197,25 +1229,19 @@ static void cf_check init_amd(struct cpuinfo_x86 *c)
 
 		rdmsrl(MSR_AMD64_LS_CFG, value);
 		if (!(value & (1 << 15))) {
-			static bool_t warned;
-
-			if (c == &boot_cpu_data || opt_cpu_info ||
-			    !test_and_set_bool(warned))
-				printk(KERN_WARNING
-				       "CPU%u: Applying workaround for erratum 793\n",
-				       smp_processor_id());
+			if (c == &boot_cpu_data || opt_cpu_info)
+				printk_once(XENLOG_WARNING
+					    "CPU%u: Applying workaround for erratum 793\n",
+					    smp_processor_id());
 			wrmsrl(MSR_AMD64_LS_CFG, value | (1 << 15));
 		}
 	} else if (c->x86 == 0x12) {
 		rdmsrl(MSR_AMD64_DE_CFG, value);
 		if (!(value & (1U << 31))) {
-			static bool warned;
-
-			if (c == &boot_cpu_data || opt_cpu_info ||
-			    !test_and_set_bool(warned))
-				printk(KERN_WARNING
-				       "CPU%u: Applying workaround for erratum 665\n",
-				       smp_processor_id());
+			if (c == &boot_cpu_data || opt_cpu_info)
+				printk_once(XENLOG_WARNING
+					    "CPU%u: Applying workaround for erratum 665\n",
+					    smp_processor_id());
 			wrmsrl(MSR_AMD64_DE_CFG, value | (1U << 31));
 		}
 	}
@@ -1281,7 +1307,7 @@ static void cf_check init_amd(struct cpuinfo_x86 *c)
 	amd_log_freq(c);
 }
 
-const struct cpu_dev amd_cpu_dev = {
+const struct cpu_dev __initconst_cf_clobber amd_cpu_dev = {
 	.c_early_init	= early_init_amd,
 	.c_init		= init_amd,
 };

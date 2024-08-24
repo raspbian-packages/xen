@@ -16,7 +16,7 @@
 #include "libxl_arch.h"
 #include <xen/hvm/hvm_info_table.h>
 #include <xen/hvm/e820.h>
-#include "libacpi/libacpi.h"
+#include "libacpi.h"
 
  /* Number of pages holding ACPI tables */
 #define NUM_ACPI_PAGES 16
@@ -87,16 +87,16 @@ static int init_acpi_config(libxl__gc *gc,
 {
     xc_interface *xch = dom->xch;
     uint32_t domid = dom->guest_domid;
-    xc_dominfo_t info;
+    xc_domaininfo_t info;
     struct hvm_info_table *hvminfo;
-    int i, r, rc;
+    int r, rc;
 
     config->dsdt_anycpu = config->dsdt_15cpu = dsdt_pvh;
     config->dsdt_anycpu_len = config->dsdt_15cpu_len = dsdt_pvh_len;
 
-    r = xc_domain_getinfo(xch, domid, 1, &info);
+    r = xc_domain_getinfo_single(xch, domid, &info);
     if (r < 0) {
-        LOG(ERROR, "getdomaininfo failed (rc=%d)", r);
+        LOGED(ERROR, domid, "getdomaininfo failed");
         rc = ERROR_FAIL;
         goto out;
     }
@@ -138,8 +138,8 @@ static int init_acpi_config(libxl__gc *gc,
         hvminfo->nr_vcpus = info.max_vcpu_id + 1;
     }
 
-    for (i = 0; i < hvminfo->nr_vcpus; i++)
-        hvminfo->vcpu_online[i / 8] |= 1 << (i & 7);
+    memcpy(hvminfo->vcpu_online, b_info->avail_vcpus.map,
+           b_info->avail_vcpus.size);
 
     config->hvminfo = hvminfo;
 

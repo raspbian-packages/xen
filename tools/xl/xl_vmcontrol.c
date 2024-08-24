@@ -643,7 +643,7 @@ static void autoconnect_console(libxl_ctx *ctx_ignored,
     postfork();
 
     sleep(1);
-    libxl_primary_console_exec(ctx, bldomid, notify_fd);
+    libxl_primary_console_exec(ctx, bldomid, notify_fd, NULL);
     /* Do not return. xl continued in child process */
     perror("xl: unable to exec console client");
     _exit(1);
@@ -1264,6 +1264,76 @@ int main_create(int argc, char **argv)
     free(dom_info.extra_config);
     return 0;
 }
+
+#ifdef LIBXL_HAVE_DT_OVERLAY
+int main_dt_overlay(int argc, char **argv)
+{
+    const char *overlay_config_file = NULL;
+    void *overlay_dtb = NULL;
+    int rc;
+    uint8_t op;
+    int overlay_dtb_size = 0;
+    uint32_t domain_id = 0;
+    bool domain_op = false;
+
+    if (argc < 2) {
+        help("dt-overlay");
+        return EXIT_FAILURE;
+    }
+
+    if (strcmp(argv[optind], "add") == 0)
+        op = LIBXL_DT_OVERLAY_ADD;
+    else if (strcmp(argv[optind], "remove") == 0)
+        op = LIBXL_DT_OVERLAY_REMOVE;
+    else if (strcmp(argv[optind], "attach") == 0) {
+        op = LIBXL_DT_OVERLAY_DOMAIN_ATTACH;
+        domain_op = true;
+    } else {
+        fprintf(stderr, "Invalid dt overlay operation\n");
+        return EXIT_FAILURE;
+    }
+
+    overlay_config_file = argv[optind+1];
+
+    if (domain_op) {
+        if (argc <= optind + 2) {
+            fprintf(stderr, "Missing domain ID\n");
+            help("dt-overlay");
+            return EXIT_FAILURE;
+        } else {
+            domain_id = find_domain(argv[optind+2]);
+        }
+    }
+
+    if (overlay_config_file) {
+        rc = libxl_read_file_contents(ctx, overlay_config_file,
+                                      &overlay_dtb, &overlay_dtb_size);
+
+        if (rc) {
+            fprintf(stderr, "failed to read the overlay device tree file %s\n",
+                    overlay_config_file);
+            free(overlay_dtb);
+            return EXIT_FAILURE;
+        }
+    } else {
+        fprintf(stderr, "overlay dtbo file not provided\n");
+        return EXIT_FAILURE;
+    }
+
+    if (!domain_op)
+        rc = libxl_dt_overlay(ctx, overlay_dtb, overlay_dtb_size, op);
+    else
+        rc = libxl_dt_overlay_domain(ctx, domain_id, overlay_dtb,
+                                     overlay_dtb_size, op);
+
+    free(overlay_dtb);
+
+    if (rc)
+        return EXIT_FAILURE;
+
+    return rc;
+}
+#endif
 
 /*
  * Local variables:

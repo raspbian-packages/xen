@@ -20,9 +20,8 @@
 #define likely(x)     __builtin_expect(!!(x),1)
 #define unlikely(x)   __builtin_expect(!!(x),0)
 
-#define inline        __inline__
-#define always_inline __inline__ __attribute__ ((__always_inline__))
-#define gnu_inline    __inline__ __attribute__ ((__gnu_inline__))
+#define always_inline inline __attribute__((__always_inline__))
+#define gnu_inline    inline __attribute__((__gnu_inline__))
 #define noinline      __attribute__((__noinline__))
 
 #define noreturn      __attribute__((__noreturn__))
@@ -31,7 +30,7 @@
 
 #define __weak        __attribute__((__weak__))
 
-#if !defined(__clang__)
+#if !defined(CONFIG_CC_IS_CLANG) || CONFIG_CLANG_VERSION >= 140000
 # define nocall       __attribute__((__error__("Nonstandard ABI")))
 #else
 # define nocall
@@ -83,10 +82,12 @@
  * inline functions not expanded inline get placed in .init.text.
  */
 #include <xen/init.h>
-#define __inline__ __inline__ __init
+/* SAF-3-safe MISRA C Rule 20.4: allow section checks to pass when not inlined */
+#define inline inline __init
 #endif
 
-#define __attribute_pure__  __attribute__((__pure__))
+#define __constructor       __attribute__((__constructor__)) cf_check
+#define __pure              __attribute__((__pure__))
 #define __attribute_const__ __attribute__((__const__))
 #define __transparent__     __attribute__((__transparent_union__))
 
@@ -108,14 +109,6 @@
 #define __nonnull(...) __attribute__((__nonnull__(__VA_ARGS__)))
 
 #define offsetof(a,b) __builtin_offsetof(a,b)
-
-/**
- * sizeof_field(TYPE, MEMBER)
- *
- * @TYPE: The structure containing the field of interest
- * @MEMBER: The field to return the size of
- */
-#define sizeof_field(TYPE, MEMBER) sizeof((((TYPE *)0)->MEMBER))
 
 #if !defined(__STDC_VERSION__) || __STDC_VERSION__ < 201112L
 #define alignof __alignof__
@@ -146,7 +139,8 @@
     __asm__ ("" : "=r"(__ptr) : "0"(ptr));      \
     (typeof(ptr)) (__ptr + (off)); })
 
-#if CONFIG_GCC_VERSION >= 110000 /* See gcc bug 100680. */
+/* See gcc bug 100680. */
+#if CONFIG_GCC_VERSION >= 110000 && CONFIG_GCC_VERSION < 110300
 # define gcc11_wrap(x) RELOC_HIDE(x, 0)
 #else
 # define gcc11_wrap(x) (x)
@@ -156,6 +150,11 @@
 # define ASM_FLAG_OUT(yes, no) yes
 #else
 # define ASM_FLAG_OUT(yes, no) no
+#endif
+
+/* Mark a function or variable as being used only to interface with asm */
+#ifndef asmlinkage
+#define asmlinkage
 #endif
 
 /*

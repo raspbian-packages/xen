@@ -1,21 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * hvm/dom0_build.c
  *
  * Dom0 builder for PVH guest.
  *
  * Copyright (C) 2017 Citrix Systems R&D
- *
- * This program is free software; you can redistribute it and/or
- * modify it under the terms and conditions of the GNU General Public
- * License, version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * General Public License for more details.
- *
- * You should have received a copy of the GNU General Public
- * License along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/acpi.h>
@@ -150,7 +139,7 @@ static int __init pvh_populate_memory_range(struct domain *d,
         order = get_order_from_pages(end - start + 1);
         order = min(order ? order - 1 : 0, max_order);
         /* The order allocated and populated must be aligned to the address. */
-        order = min(order, start ? find_first_set_bit(start) : MAX_ORDER);
+        order = min(order, start ? ffsl(start) - 1U : MAX_ORDER + 0U);
         page = alloc_domheap_pages(d, order, dom0_memflags | MEMF_no_scrub);
         if ( page == NULL )
         {
@@ -526,29 +515,142 @@ static paddr_t __init find_memory(
 
         ASSERT(IS_ALIGNED(start, PAGE_SIZE) && IS_ALIGNED(end, PAGE_SIZE));
 
+        /*
+         * NB: Even better would be to use rangesets to determine a suitable
+         * range, in particular in case a kernel requests multiple heavily
+         * discontiguous regions (which right now we fold all into one big
+         * region).
+         */
         if ( end <= kernel_start || start >= kernel_end )
-            ; /* No overlap, nothing to do. */
+        {
+            /* No overlap, just check whether the region is large enough. */
+            if ( end - start >= size )
+                return start;
+        }
         /* Deal with the kernel already being loaded in the region. */
-        else if ( kernel_start - start > end - kernel_end )
-            end = kernel_start;
-        else
-            start = kernel_end;
-
-        if ( end - start >= size )
+        else if ( kernel_start > start && kernel_start - start >= size )
             return start;
+        else if ( kernel_end < end && end - kernel_end >= size )
+            return kernel_end;
     }
 
     return INVALID_PADDR;
 }
 
+static bool __init check_load_address(
+    const struct domain *d, const struct elf_binary *elf)
+{
+    paddr_t kernel_start = (uintptr_t)elf->dest_base;
+    paddr_t kernel_end = kernel_start + elf->dest_size;
+    unsigned int i;
+
+    /* Relies on a sorted memory map with adjacent entries merged. */
+    for ( i = 0; i < d->arch.nr_e820; i++ )
+    {
+        paddr_t start = d->arch.e820[i].addr;
+        paddr_t end = start + d->arch.e820[i].size;
+
+        if ( start >= kernel_end )
+            return false;
+
+        if ( d->arch.e820[i].type == E820_RAM &&
+             start <= kernel_start &&
+             end >= kernel_end )
+            return true;
+    }
+
+    return false;
+}
+
+/* Find an e820 RAM region that fits the kernel at a suitable alignment. */
+static paddr_t __init find_kernel_memory(
+    const struct domain *d, struct elf_binary *elf,
+    const struct elf_dom_parms *parms)
+{
+    paddr_t kernel_size = elf->dest_size;
+    unsigned int align;
+    unsigned int i;
+
+    if ( parms->phys_align != UNSET_ADDR32 )
+        align = parms->phys_align;
+    else if ( elf->palign >= PAGE_SIZE )
+        align = elf->palign;
+    else
+        align = MB(2);
+
+    /* Search backwards to find the highest address. */
+    for ( i = d->arch.nr_e820; i--; )
+    {
+        paddr_t start = d->arch.e820[i].addr;
+        paddr_t end = start + d->arch.e820[i].size;
+        paddr_t kstart, kend;
+
+        if ( d->arch.e820[i].type != E820_RAM ||
+             d->arch.e820[i].size < kernel_size )
+            continue;
+
+        if ( start > parms->phys_max )
+            continue;
+
+        if ( end - 1 > parms->phys_max )
+            end = parms->phys_max + 1;
+
+        kstart = (end - kernel_size) & ~(align - 1);
+        kend = kstart + kernel_size;
+
+        if ( kstart < parms->phys_min )
+            return 0;
+
+        if ( kstart >= start && kend <= end )
+            return kstart;
+    }
+
+    return 0;
+}
+
+/* Check the kernel load address, and adjust if necessary and possible. */
+static bool __init check_and_adjust_load_address(
+    const struct domain *d, struct elf_binary *elf, struct elf_dom_parms *parms)
+{
+    paddr_t reloc_base;
+
+    if ( check_load_address(d, elf) )
+        return true;
+
+    if ( !parms->phys_reloc )
+    {
+        printk("%pd kernel: Address conflict and not relocatable\n", d);
+        return false;
+    }
+
+    reloc_base = find_kernel_memory(d, elf, parms);
+    if ( !reloc_base )
+    {
+        printk("%pd kernel: Failed find a load address\n", d);
+        return false;
+    }
+
+    if ( opt_dom0_verbose )
+        printk("%pd kernel: Moving [%p, %p] -> [%"PRIpaddr", %"PRIpaddr"]\n", d,
+               elf->dest_base, elf->dest_base + elf->dest_size - 1,
+               reloc_base, reloc_base + elf->dest_size - 1);
+
+    parms->phys_entry =
+        reloc_base + (parms->phys_entry - (uintptr_t)elf->dest_base);
+    elf->dest_base = (char *)reloc_base;
+
+    return true;
+}
+
 static int __init pvh_load_kernel(struct domain *d, const module_t *image,
                                   unsigned long image_headroom,
                                   module_t *initrd, void *image_base,
-                                  char *cmdline, paddr_t *entry,
+                                  const char *cmdline, paddr_t *entry,
                                   paddr_t *start_info_addr)
 {
     void *image_start = image_base + image_headroom;
     unsigned long image_len = image->mod_end;
+    unsigned long initrd_len = initrd ? initrd->mod_end : 0;
     struct elf_binary elf;
     struct elf_dom_parms parms;
     paddr_t last_addr;
@@ -568,13 +670,14 @@ static int __init pvh_load_kernel(struct domain *d, const module_t *image,
         printk("Unable to init ELF\n");
         return rc;
     }
-#ifdef VERBOSE
-    elf_set_verbose(&elf);
-#endif
+    if ( opt_dom0_verbose )
+        elf_set_verbose(&elf);
     elf_parse_binary(&elf);
     if ( (rc = elf_xen_parse(&elf, &parms, true)) != 0 )
     {
         printk("Unable to parse kernel for ELFNOTES\n");
+        if ( elf_check_broken(&elf) )
+            printk("%pd kernel: broken ELF: %s\n", d, elf_check_broken(&elf));
         return rc;
     }
 
@@ -588,12 +691,16 @@ static int __init pvh_load_kernel(struct domain *d, const module_t *image,
     elf.dest_base = (void *)(parms.virt_kstart - parms.virt_base);
     elf.dest_size = parms.virt_kend - parms.virt_kstart;
 
+    if ( !check_and_adjust_load_address(d, &elf, &parms) )
+        return -ENOSPC;
+
     elf_set_vcpu(&elf, v);
     rc = elf_load_binary(&elf);
     if ( rc < 0 )
     {
         printk("Failed to load kernel: %d\n", rc);
-        printk("Xen dom0 kernel broken ELF: %s\n", elf_check_broken(&elf));
+        if ( elf_check_broken(&elf) )
+            printk("%pd kernel: broken ELF: %s\n", d, elf_check_broken(&elf));
         return rc;
     }
 
@@ -604,7 +711,7 @@ static int __init pvh_load_kernel(struct domain *d, const module_t *image,
      * simplify it.
      */
     last_addr = find_memory(d, &elf, sizeof(start_info) +
-                            (initrd ? ROUNDUP(initrd->mod_end, PAGE_SIZE) +
+                            (initrd ? ROUNDUP(initrd_len, PAGE_SIZE) +
                                       sizeof(mod)
                                     : 0) +
                             (cmdline ? ROUNDUP(strlen(cmdline) + 1,
@@ -619,7 +726,7 @@ static int __init pvh_load_kernel(struct domain *d, const module_t *image,
     if ( initrd != NULL )
     {
         rc = hvm_copy_to_guest_phys(last_addr, mfn_to_virt(initrd->mod_start),
-                                    initrd->mod_end, v);
+                                    initrd_len, v);
         if ( rc )
         {
             printk("Unable to copy initrd to guest\n");
@@ -627,8 +734,8 @@ static int __init pvh_load_kernel(struct domain *d, const module_t *image,
         }
 
         mod.paddr = last_addr;
-        mod.size = initrd->mod_end;
-        last_addr += ROUNDUP(initrd->mod_end, elf_64bit(&elf) ? 8 : 4);
+        mod.size = initrd_len;
+        last_addr += ROUNDUP(initrd_len, elf_64bit(&elf) ? 8 : 4);
         if ( initrd->string )
         {
             char *str = __va(initrd->string);
@@ -724,13 +831,6 @@ static int __init pvh_setup_cpus(struct domain *d, paddr_t entry,
     if ( rc )
     {
         printk("Unable to setup Dom0 BSP context: %d\n", rc);
-        return rc;
-    }
-
-    rc = dom0_setup_permissions(d);
-    if ( rc )
-    {
-        panic("Unable to setup Dom0 permissions: %d\n", rc);
         return rc;
     }
 
@@ -893,6 +993,7 @@ static bool __init pvh_acpi_table_allowed(const char *sig,
         ACPI_SIG_DSDT, ACPI_SIG_FADT, ACPI_SIG_FACS, ACPI_SIG_PSDT,
         ACPI_SIG_SSDT, ACPI_SIG_SBST, ACPI_SIG_MCFG, ACPI_SIG_SLIC,
         ACPI_SIG_MSDM, ACPI_SIG_WDAT, ACPI_SIG_FPDT, ACPI_SIG_S3PT,
+        ACPI_SIG_VFCT,
     };
     unsigned int i;
 
@@ -1155,8 +1256,7 @@ static int __init pvh_setup_acpi(struct domain *d, paddr_t start_info)
     rc = hvm_copy_to_guest_phys(start_info +
                                 offsetof(struct hvm_start_info, rsdp_paddr),
                                 &rsdp_paddr,
-                                sizeof(((struct hvm_start_info *)
-                                        0)->rsdp_paddr),
+                                sizeof_field(struct hvm_start_info, rsdp_paddr),
                                 d->vcpu[0]);
     if ( rc )
     {
@@ -1188,12 +1288,26 @@ static void __hwdom_init pvh_setup_mmcfg(struct domain *d)
 int __init dom0_construct_pvh(struct domain *d, const module_t *image,
                               unsigned long image_headroom,
                               module_t *initrd,
-                              char *cmdline)
+                              const char *cmdline)
 {
     paddr_t entry, start_info;
     int rc;
 
     printk(XENLOG_INFO "*** Building a PVH Dom%d ***\n", d->domain_id);
+
+    if ( is_hardware_domain(d) )
+    {
+        /*
+         * Setup permissions early so that calls to add MMIO regions to the
+         * p2m as part of vPCI setup don't fail due to permission checks.
+         */
+        rc = dom0_setup_permissions(d);
+        if ( rc )
+        {
+            printk("%pd unable to setup permissions: %d\n", d, rc);
+            return rc;
+        }
+    }
 
     /*
      * NB: MMCFG initialization needs to be performed before iommu
@@ -1246,7 +1360,6 @@ int __init dom0_construct_pvh(struct domain *d, const module_t *image,
         print_e820_memory_map(d->arch.e820, d->arch.nr_e820);
     }
 
-    printk("WARNING: PVH is an experimental mode with limited functionality\n");
     return 0;
 }
 

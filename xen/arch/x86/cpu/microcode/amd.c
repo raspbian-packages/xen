@@ -222,12 +222,15 @@ static int cf_check apply_microcode(const struct microcode_patch *patch)
     uint32_t rev, old_rev = sig->rev;
     enum microcode_match_result result = microcode_fits(patch);
 
+    if ( result == MIS_UCODE )
+        return -EINVAL;
+
     /*
      * Allow application of the same revision to pick up SMT-specific changes
      * even if the revision of the other SMT thread is already up-to-date.
      */
-    if ( result != NEW_UCODE && result != SAME_UCODE )
-        return -EINVAL;
+    if ( result == OLD_UCODE )
+        return -EEXIST;
 
     if ( check_final_patch_levels(sig) )
     {
@@ -307,7 +310,7 @@ static int scan_equiv_cpu_table(const struct container_equiv_table *et)
 }
 
 static struct microcode_patch *cf_check cpu_request_microcode(
-    const void *buf, size_t size)
+    const void *buf, size_t size, bool make_copy)
 {
     const struct microcode_patch *saved = NULL;
     struct microcode_patch *patch = NULL;
@@ -418,9 +421,14 @@ static struct microcode_patch *cf_check cpu_request_microcode(
 
     if ( saved )
     {
-        patch = xmemdup_bytes(saved, saved_size);
-        if ( !patch )
-            error = -ENOMEM;
+        if ( make_copy )
+        {
+            patch = xmemdup_bytes(saved, saved_size);
+            if ( !patch )
+                error = -ENOMEM;
+        }
+        else
+            patch = (struct microcode_patch *)saved;
     }
 
     if ( error && !patch )
@@ -429,9 +437,17 @@ static struct microcode_patch *cf_check cpu_request_microcode(
     return patch;
 }
 
-const struct microcode_ops __initconst_cf_clobber amd_ucode_ops = {
+static const struct microcode_ops __initconst_cf_clobber amd_ucode_ops = {
     .cpu_request_microcode            = cpu_request_microcode,
     .collect_cpu_info                 = collect_cpu_info,
     .apply_microcode                  = apply_microcode,
     .compare_patch                    = compare_patch,
 };
+
+void __init ucode_probe_amd(struct microcode_ops *ops)
+{
+    if ( boot_cpu_data.x86 < 0x10 )
+        return;
+
+    *ops = amd_ucode_ops;
+}

@@ -207,7 +207,7 @@ struct IO_APIC_route_entry **alloc_ioapic_entries(void)
 
     ioapic_entries = xmalloc_array(struct IO_APIC_route_entry *, nr_ioapics);
     if (!ioapic_entries)
-        return 0;
+        return NULL;
 
     for (apic = 0; apic < nr_ioapics; apic++) {
         ioapic_entries[apic] =
@@ -224,7 +224,7 @@ nomem:
         xfree(ioapic_entries[apic]);
     xfree(ioapic_entries);
 
-    return 0;
+    return NULL;
 }
 
 union entry_union {
@@ -1692,7 +1692,8 @@ static void cf_check mask_and_ack_level_ioapic_irq(struct irq_desc *desc)
        !io_apic_level_ack_pending(desc->irq))
         move_masked_irq(desc);
 
-    if ( !(v & (1 << (i & 0x1f))) ) {
+    if ( !(v & (1U << (i & 0x1f))) )
+    {
         spin_lock(&ioapic_lock);
         __edge_IO_APIC_irq(desc->irq);
         __level_IO_APIC_irq(desc->irq);
@@ -1756,7 +1757,8 @@ static void cf_check end_level_ioapic_irq_new(struct irq_desc *desc, u8 vector)
          !io_apic_level_ack_pending(desc->irq) )
         move_native_irq(desc);
 
-    if (!(v & (1 << (i & 0x1f)))) {
+    if ( !(v & (1U << (i & 0x1f))) )
+    {
         spin_lock(&ioapic_lock);
         __mask_IO_APIC_irq(desc->irq);
         __edge_IO_APIC_irq(desc->irq);
@@ -1964,6 +1966,9 @@ static void __init check_timer(void)
 
             if ( timer_irq_works() )
             {
+                printk(XENLOG_DEBUG
+                       "IRQ test with HPET Legacy Replacement Mode worked - disabling it again\n");
+                hpet_disable_legacy_replacement_mode();
                 local_irq_restore(flags);
                 return;
             }
@@ -2000,11 +2005,6 @@ static void __init check_timer(void)
         clear_IO_APIC_pin(apic2, pin2);
     }
     printk(" failed.\n");
-
-    if (nmi_watchdog == NMI_IO_APIC) {
-        printk(KERN_WARNING "timer doesn't work through the IO-APIC - disabling NMI Watchdog!\n");
-        nmi_watchdog = 0;
-    }
 
     printk(KERN_INFO "...trying to set up timer as Virtual Wire IRQ...");
 
@@ -2586,10 +2586,11 @@ static void __init ioapic_init_mappings(void)
         union IO_APIC_reg_01 reg_01;
         paddr_t ioapic_phys = mp_ioapics[i].mpc_apicaddr;
 
-        if ( !ioapic_phys )
+        if ( !ioapic_phys || !IS_ALIGNED(ioapic_phys, KB(1)) )
         {
             printk(KERN_ERR
-                   "WARNING: bogus zero IO-APIC address found in MPTABLE, disabling IO/APIC support!\n");
+                   "WARNING: bogus IO-APIC address %08lx found in MPTABLE, disabling IO-APIC support\n",
+                   ioapic_phys);
             smp_found_config = false;
             skip_ioapic_setup = true;
             break;
@@ -2659,18 +2660,25 @@ void __init ioapic_init(void)
            nr_irqs_gsi, nr_irqs - nr_irqs_gsi);
 }
 
-unsigned int arch_hwdom_irqs(domid_t domid)
+unsigned int __hwdom_init arch_hwdom_irqs(const struct domain *d)
 {
     unsigned int n = fls(num_present_cpus());
+    /* Bounding by the domain pirq EOI bitmap capacity. */
+    const unsigned int max_irqs = min_t(unsigned int, nr_irqs,
+                                        PAGE_SIZE * BITS_PER_BYTE);
 
-    if ( !domid )
+    if ( is_system_domain(d) )
+        return max_irqs;
+
+    /* PVH (generally: HVM) can't use PHYSDEVOP_pirq_eoi_gmfn_v{1,2}. */
+    if ( is_hvm_domain(d) )
+        return nr_irqs;
+
+    if ( !d->domain_id )
         n = min(n, dom0_max_vcpus());
-    n = min(nr_irqs_gsi + n * NR_DYNAMIC_VECTORS, nr_irqs);
+    n = min(nr_irqs_gsi + n * NR_DYNAMIC_VECTORS, max_irqs);
 
-    /* Bounded by the domain pirq eoi bitmap gfn. */
-    n = min_t(unsigned int, n, PAGE_SIZE * BITS_PER_BYTE);
-
-    printk("Dom%d has maximum %u PIRQs\n", domid, n);
+    printk("%pd has maximum %u PIRQs\n", d, n);
 
     return n;
 }

@@ -268,10 +268,12 @@ static void *dbc_sys_map_xhc(uint64_t phys, size_t size)
 {
     size_t i;
 
-    if ( size != MAX_XHCI_PAGES * PAGE_SIZE )
+    if ( size > MAX_XHCI_PAGES * PAGE_SIZE )
         return NULL;
 
-    for ( i = FIX_XHCI_END; i >= FIX_XHCI_BEGIN; i-- )
+    size >>= PAGE_SHIFT;
+
+    for ( i = FIX_XHCI_END; i > FIX_XHCI_END - size; i-- )
     {
         set_fixmap_nocache(i, phys);
         phys += PAGE_SIZE;
@@ -1174,9 +1176,10 @@ static void cf_check dbc_uart_poll(void *data)
     }
 
     while ( dbc_work_ring_size(&dbc->dbc_iwork) )
-        serial_rx_interrupt(port, guest_cpu_user_regs());
+        serial_rx_interrupt(port);
 
-    serial_tx_interrupt(port, guest_cpu_user_regs());
+    serial_tx_interrupt(port);
+
     set_timer(&uart->timer, NOW() + MICROSECS(DBC_POLL_INTERVAL));
 }
 
@@ -1418,7 +1421,8 @@ void __init xhci_dbc_uart_init(void)
         iommu_add_extra_reserved_device_memory(
                 PFN_DOWN(virt_to_maddr(&dbc_dma_bufs)),
                 PFN_UP(sizeof(dbc_dma_bufs)),
-                uart->dbc.sbdf);
+                uart->dbc.sbdf,
+                "XHCI console");
         serial_register_uart(SERHND_XHCI, &dbc_uart_driver, &dbc_uart);
     }
 }

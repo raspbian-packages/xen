@@ -183,6 +183,7 @@ static void free_intremap_entry(const struct amd_iommu *iommu,
                                 unsigned int bdf, unsigned int index)
 {
     union irte_ptr entry = get_intremap_entry(iommu, bdf, index);
+    struct ivrs_mappings *ivrs = get_ivrs_mappings(iommu->seg);
 
     if ( iommu->ctrl.ga_en )
     {
@@ -201,7 +202,7 @@ static void free_intremap_entry(const struct amd_iommu *iommu,
     else
         ACCESS_ONCE(entry.ptr32->raw) = 0;
 
-    __clear_bit(index, get_ivrs_mappings(iommu->seg)[bdf].intremap_inuse);
+    __clear_bit(index, ivrs[bdf].intremap_inuse);
 }
 
 static void update_intremap_entry(const struct amd_iommu *iommu,
@@ -321,8 +322,7 @@ static int update_intremap_entry_from_ioapic(
 void cf_check amd_iommu_ioapic_update_ire(
     unsigned int apic, unsigned int pin, uint64_t rte)
 {
-    struct IO_APIC_route_entry old_rte;
-    struct IO_APIC_route_entry new_rte = { .raw = rte };
+    struct IO_APIC_route_entry old_rte, new_rte;
     int seg, bdf, rc;
     struct amd_iommu *iommu;
     unsigned int idx;
@@ -330,6 +330,9 @@ void cf_check amd_iommu_ioapic_update_ire(
     idx = ioapic_id_to_index(IO_APIC_ID(apic));
     if ( idx == MAX_IO_APICS )
         return;
+
+    /* Not the initializer, for old gcc to cope. */
+    new_rte.raw = rte;
 
     /* get device id of ioapic devices */
     bdf = ioapic_sbdf[idx].bdf;

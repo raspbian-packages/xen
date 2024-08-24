@@ -1,21 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /******************************************************************************
  * arch/x86/mm.c
  *
  * Copyright (c) 2002-2005 K A Fraser
  * Copyright (c) 2004 Christian Limpach
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 /*
@@ -156,13 +144,7 @@
 l1_pgentry_t __section(".bss.page_aligned") __aligned(PAGE_SIZE)
     l1_fixmap[L1_PAGETABLE_ENTRIES];
 l1_pgentry_t __section(".bss.page_aligned") __aligned(PAGE_SIZE)
-    l1_fixmap_x[L1_PAGETABLE_ENTRIES];
-
-paddr_t __read_mostly mem_hotplug;
-
-/* Frame table size in pages. */
-unsigned long max_page;
-unsigned long total_pages;
+    l1_fixmap_x[L1_PAGETABLE_ENTRIES]; /* SAF-1-safe */
 
 bool __read_mostly machine_to_phys_mapping_valid;
 
@@ -180,7 +162,7 @@ static uint32_t base_disallow_mask;
 #define L4_DISALLOW_MASK (base_disallow_mask)
 
 #define l1_disallow_mask(d)                                     \
-    ((d != dom_io) &&                                           \
+    (((d) != dom_io) &&                                         \
      (rangeset_is_empty((d)->iomem_caps) &&                     \
       rangeset_is_empty((d)->arch.ioport_caps) &&               \
       !has_arch_pdevs(d) &&                                     \
@@ -500,7 +482,7 @@ void share_xen_page_with_guest(struct page_info *page, struct domain *d,
 
     set_gpfn_from_mfn(mfn_x(page_to_mfn(page)), INVALID_M2P_ENTRY);
 
-    spin_lock(&d->page_alloc_lock);
+    nrspin_lock(&d->page_alloc_lock);
 
     /* The incremented type count pins as writable or read-only. */
     page->u.inuse.type_info =
@@ -520,7 +502,7 @@ void share_xen_page_with_guest(struct page_info *page, struct domain *d,
         page_list_add_tail(page, &d->xenpage_list);
     }
 
-    spin_unlock(&d->page_alloc_lock);
+    nrspin_unlock(&d->page_alloc_lock);
 }
 
 void make_cr3(struct vcpu *v, mfn_t mfn)
@@ -593,8 +575,7 @@ static inline void set_tlbflush_timestamp(struct page_info *page)
      *  2. Shadow mode reuses this field for shadowed page tables to store
      *     flags info -- we don't want to conflict with that.
      */
-    if ( !(page->count_info & PGC_page_table) ||
-         !shadow_mode_enabled(page_get_owner(page)) )
+    if ( !(page->count_info & PGC_shadowed_pt) )
         page_set_tlbflush_timestamp(page);
 }
 
@@ -959,14 +940,17 @@ get_page_from_l1e(
             flip = _PAGE_RW;
         }
 
-        switch ( l1f & PAGE_CACHE_ATTRS )
+        switch ( 0xFF & (XEN_MSR_PAT >> (8 * pte_flags_to_cacheattr(l1f))) )
         {
-        case 0: /* WB */
-            flip |= _PAGE_PWT | _PAGE_PCD;
+        case X86_MT_UC:
+        case X86_MT_UCM:
+        case X86_MT_WC:
+            /* not cacheable, allow */
             break;
-        case _PAGE_PWT: /* WT */
-        case _PAGE_PWT | _PAGE_PAT: /* WP */
-            flip |= _PAGE_PCD | (l1f & _PAGE_PAT);
+
+        default:
+            /* potentially cacheable, force to UC */
+            flip |= ((l1f & PAGE_CACHE_ATTRS) ^ _PAGE_UC);
             break;
         }
 
@@ -1232,7 +1216,7 @@ void put_page_from_l1e(l1_pgentry_t l1e, struct domain *l1e_owner)
         gprintk(XENLOG_WARNING,
                 "Attempt to implicitly unmap %pd's grant PTE %" PRIpte "\n",
                 l1e_owner, l1e_get_intpte(l1e));
-        pv_inject_hw_exception(TRAP_gp_fault, 0);
+        pv_inject_hw_exception(X86_EXC_GP, 0);
     }
 #endif
 
@@ -1519,6 +1503,23 @@ static int promote_l3_table(struct page_info *page)
     int            rc = 0;
     unsigned int   partial_flags = page->partial_flags;
     l3_pgentry_t   l3e = l3e_empty();
+
+    /*
+     * PAE pgdirs above 4GB are unacceptable if a 32-bit guest does not
+     * understand the weird 'extended cr3' format for dealing with high-order
+     * address bits. We cut some slack for control tools (before vcpu0 is
+     * initialised).
+     */
+    if ( is_pv_32bit_domain(d) &&
+         unlikely(!VM_ASSIST(d, pae_extended_cr3)) &&
+         mfn_x(l3mfn) >= PFN_DOWN(GB(4)) &&
+         d->vcpu[0] && d->vcpu[0]->is_initialised )
+    {
+        gdprintk(XENLOG_WARNING,
+                 "PAE pgd must be below 4GB (%#lx >= 0x100000)",
+                 mfn_x(l3mfn));
+        return -ERANGE;
+    }
 
     pl3e = map_domain_page(l3mfn);
 
@@ -2033,7 +2034,7 @@ static inline bool current_locked_page_ne_check(struct page_info *page) {
 #define current_locked_page_ne_check(x) true
 #endif
 
-int page_lock(struct page_info *page)
+int page_lock_unsafe(struct page_info *page)
 {
     unsigned long x, nx;
 
@@ -2094,7 +2095,7 @@ void page_unlock(struct page_info *page)
  * l3t_lock(), so to avoid deadlock we must avoid grabbing them in
  * reverse order.
  */
-static void l3t_lock(struct page_info *page)
+static always_inline void l3t_lock(struct page_info *page)
 {
     unsigned long x, nx;
 
@@ -2103,6 +2104,8 @@ static void l3t_lock(struct page_info *page)
             cpu_relax();
         nx = x | PGT_locked;
     } while ( cmpxchg(&page->u.inuse.type_info, x, nx) != x );
+
+    block_lock_speculation();
 }
 
 static void l3t_unlock(struct page_info *page)
@@ -3068,10 +3071,10 @@ static int _get_page_type(struct page_info *page, unsigned long type,
 
             if ( (x & PGT_type_mask) == PGT_writable_page )
                 rc = iommu_legacy_unmap(d, _dfn(mfn_x(mfn)),
-                                        1ul << PAGE_ORDER_4K);
+                                        1UL << PAGE_ORDER_4K);
             else
                 rc = iommu_legacy_map(d, _dfn(mfn_x(mfn)), mfn,
-                                      1ul << PAGE_ORDER_4K,
+                                      1UL << PAGE_ORDER_4K,
                                       IOMMUF_readable | IOMMUF_writable);
 
             if ( unlikely(rc) )
@@ -3421,7 +3424,7 @@ static int vcpumask_to_pcpumask(
         {
             unsigned int cpu;
 
-            vcpu_id = find_first_set_bit(vmask);
+            vcpu_id = ffsl(vmask) - 1;
             vmask &= ~(1UL << vcpu_id);
             vcpu_id += vcpu_bias;
             if ( (vcpu_id >= d->max_vcpus) )
@@ -3600,11 +3603,11 @@ long do_mmuext_op(
             {
                 bool drop_ref;
 
-                spin_lock(&pg_owner->page_alloc_lock);
+                nrspin_lock(&pg_owner->page_alloc_lock);
                 drop_ref = (pg_owner->is_dying &&
                             test_and_clear_bit(_PGT_pinned,
                                                &page->u.inuse.type_info));
-                spin_unlock(&pg_owner->page_alloc_lock);
+                nrspin_unlock(&pg_owner->page_alloc_lock);
                 if ( drop_ref )
                 {
         pin_drop:
@@ -4427,7 +4430,7 @@ int steal_page(
      * that it might be upon return from alloc_domheap_pages with
      * MEMF_no_owner set.
      */
-    spin_lock(&d->page_alloc_lock);
+    nrspin_lock(&d->page_alloc_lock);
 
     BUG_ON(page->u.inuse.type_info & (PGT_count_mask | PGT_locked |
                                       PGT_pinned));
@@ -4439,7 +4442,7 @@ int steal_page(
     if ( !(memflags & MEMF_no_refcount) && !domain_adjust_tot_pages(d, -1) )
         drop_dom_ref = true;
 
-    spin_unlock(&d->page_alloc_lock);
+    nrspin_unlock(&d->page_alloc_lock);
 
     if ( unlikely(drop_dom_ref) )
         put_domain(d);
@@ -4740,7 +4743,7 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         spin_unlock(&d->arch.e820_lock);
 
         rcu_unlock_domain(d);
-        return rc;
+        break;
     }
 
     case XENMEM_memory_map:
@@ -4834,7 +4837,7 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         if ( __copy_to_guest(arg, &ctxt.map, 1) )
             return -EFAULT;
 
-        return 0;
+        break;
     }
 
     case XENMEM_machphys_mapping:
@@ -4896,7 +4899,7 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         }
 
         rcu_unlock_domain(d);
-        return rc;
+        break;
     }
 #endif
 
@@ -4904,7 +4907,7 @@ long arch_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         return subarch_memory_op(cmd, arg);
     }
 
-    return 0;
+    return rc;
 }
 
 int cf_check mmio_ro_emulated_write(
@@ -5021,8 +5024,7 @@ static l3_pgentry_t *virt_to_xen_l3e(unsigned long v)
         if ( !l3t )
             return NULL;
         UNMAP_DOMAIN_PAGE(l3t);
-        if ( locking )
-            spin_lock(&map_pgdir_lock);
+        spin_lock_if(locking, &map_pgdir_lock);
         if ( !(l4e_get_flags(*pl4e) & _PAGE_PRESENT) )
         {
             l4_pgentry_t l4e = l4e_from_mfn(l3mfn, __PAGE_HYPERVISOR);
@@ -5059,8 +5061,7 @@ static l2_pgentry_t *virt_to_xen_l2e(unsigned long v)
             return NULL;
         }
         UNMAP_DOMAIN_PAGE(l2t);
-        if ( locking )
-            spin_lock(&map_pgdir_lock);
+        spin_lock_if(locking, &map_pgdir_lock);
         if ( !(l3e_get_flags(*pl3e) & _PAGE_PRESENT) )
         {
             l3e_write(pl3e, l3e_from_mfn(l2mfn, __PAGE_HYPERVISOR));
@@ -5098,8 +5099,7 @@ l1_pgentry_t *virt_to_xen_l1e(unsigned long v)
             return NULL;
         }
         UNMAP_DOMAIN_PAGE(l1t);
-        if ( locking )
-            spin_lock(&map_pgdir_lock);
+        spin_lock_if(locking, &map_pgdir_lock);
         if ( !(l2e_get_flags(*pl2e) & _PAGE_PRESENT) )
         {
             l2e_write(pl2e, l2e_from_mfn(l1mfn, __PAGE_HYPERVISOR));
@@ -5130,6 +5130,8 @@ l1_pgentry_t *virt_to_xen_l1e(unsigned long v)
     do {                      \
         if ( locking )        \
             l3t_lock(page);   \
+        else                            \
+            block_lock_speculation();   \
     } while ( false )
 
 #define L3T_UNLOCK(page)                           \
@@ -5345,8 +5347,7 @@ int map_pages_to_xen(
             if ( l3e_get_flags(ol3e) & _PAGE_GLOBAL )
                 flush_flags |= FLUSH_TLB_GLOBAL;
 
-            if ( locking )
-                spin_lock(&map_pgdir_lock);
+            spin_lock_if(locking, &map_pgdir_lock);
             if ( (l3e_get_flags(*pl3e) & _PAGE_PRESENT) &&
                  (l3e_get_flags(*pl3e) & _PAGE_PSE) )
             {
@@ -5450,8 +5451,7 @@ int map_pages_to_xen(
                 if ( l2e_get_flags(*pl2e) & _PAGE_GLOBAL )
                     flush_flags |= FLUSH_TLB_GLOBAL;
 
-                if ( locking )
-                    spin_lock(&map_pgdir_lock);
+                spin_lock_if(locking, &map_pgdir_lock);
                 if ( (l2e_get_flags(*pl2e) & _PAGE_PRESENT) &&
                      (l2e_get_flags(*pl2e) & _PAGE_PSE) )
                 {
@@ -5492,8 +5492,7 @@ int map_pages_to_xen(
                 unsigned long base_mfn;
                 const l1_pgentry_t *l1t;
 
-                if ( locking )
-                    spin_lock(&map_pgdir_lock);
+                spin_lock_if(locking, &map_pgdir_lock);
 
                 ol2e = *pl2e;
                 /*
@@ -5547,8 +5546,7 @@ int map_pages_to_xen(
             unsigned long base_mfn;
             const l2_pgentry_t *l2t;
 
-            if ( locking )
-                spin_lock(&map_pgdir_lock);
+            spin_lock_if(locking, &map_pgdir_lock);
 
             ol3e = *pl3e;
             /*
@@ -5599,7 +5597,7 @@ int map_pages_to_xen(
     return rc;
 }
 
-int populate_pt_range(unsigned long virt, unsigned long nr_mfns)
+int __init populate_pt_range(unsigned long virt, unsigned long nr_mfns)
 {
     return map_pages_to_xen(virt, INVALID_MFN, nr_mfns, MAP_SMALL_PAGES);
 }
@@ -5692,8 +5690,7 @@ int modify_xen_mappings(unsigned long s, unsigned long e, unsigned int nf)
                                        l3e_get_flags(*pl3e)));
             UNMAP_DOMAIN_PAGE(l2t);
 
-            if ( locking )
-                spin_lock(&map_pgdir_lock);
+            spin_lock_if(locking, &map_pgdir_lock);
             if ( (l3e_get_flags(*pl3e) & _PAGE_PRESENT) &&
                  (l3e_get_flags(*pl3e) & _PAGE_PSE) )
             {
@@ -5752,8 +5749,7 @@ int modify_xen_mappings(unsigned long s, unsigned long e, unsigned int nf)
                                            l2e_get_flags(*pl2e) & ~_PAGE_PSE));
                 UNMAP_DOMAIN_PAGE(l1t);
 
-                if ( locking )
-                    spin_lock(&map_pgdir_lock);
+                spin_lock_if(locking, &map_pgdir_lock);
                 if ( (l2e_get_flags(*pl2e) & _PAGE_PRESENT) &&
                      (l2e_get_flags(*pl2e) & _PAGE_PSE) )
                 {
@@ -5797,8 +5793,7 @@ int modify_xen_mappings(unsigned long s, unsigned long e, unsigned int nf)
              */
             if ( (nf & _PAGE_PRESENT) || ((v != e) && (l1_table_offset(v) != 0)) )
                 continue;
-            if ( locking )
-                spin_lock(&map_pgdir_lock);
+            spin_lock_if(locking, &map_pgdir_lock);
 
             /*
              * L2E may be already cleared, or set to a superpage, by
@@ -5845,8 +5840,7 @@ int modify_xen_mappings(unsigned long s, unsigned long e, unsigned int nf)
         if ( (nf & _PAGE_PRESENT) ||
              ((v != e) && (l2_table_offset(v) + l1_table_offset(v) != 0)) )
             continue;
-        if ( locking )
-            spin_lock(&map_pgdir_lock);
+        spin_lock_if(locking, &map_pgdir_lock);
 
         /*
          * L3E may be already cleared, or set to a superpage, by
@@ -5912,24 +5906,25 @@ int destroy_xen_mappings(unsigned long s, unsigned long e)
  *
  * Must be limited to XEN_VIRT_{START,END}, i.e. over l2_xenmap[].
  * Must be called with present flags, and over present mappings.
- * It is the callers responsibility to not pass s or e in the middle of
- * superpages if changing the permission on the whole superpage is going to be
- * a problem.
+ * Must be called with 's' on a page/superpage boundary.
+ *
+ * 'e' has no alignment requirements, but the whole page/superpage containing
+ * the non-inclusive boundary will be updated.
  */
 void init_or_livepatch modify_xen_mappings_lite(
-    unsigned long s, unsigned long e, unsigned int _nf)
+    unsigned long s, unsigned long e, unsigned int nf)
 {
-    unsigned long v = s, fm, nf;
+    unsigned long v = s, fm, flags;
 
     /* Set of valid PTE bits which may be altered. */
 #define FLAGS_MASK (_PAGE_NX|_PAGE_DIRTY|_PAGE_ACCESSED|_PAGE_RW|_PAGE_PRESENT)
     fm = put_pte_flags(FLAGS_MASK);
-    nf = put_pte_flags(_nf & FLAGS_MASK);
+    flags = put_pte_flags(nf & FLAGS_MASK);
 #undef FLAGS_MASK
 
-    ASSERT(nf & _PAGE_PRESENT);
+    ASSERT(flags & _PAGE_PRESENT);
     ASSERT(IS_ALIGNED(s, PAGE_SIZE) && s >= XEN_VIRT_START);
-    ASSERT(IS_ALIGNED(e, PAGE_SIZE) && e <= XEN_VIRT_END);
+    ASSERT(e <= XEN_VIRT_END);
 
     while ( v < e )
     {
@@ -5941,7 +5936,9 @@ void init_or_livepatch modify_xen_mappings_lite(
 
         if ( l2e_get_flags(l2e) & _PAGE_PSE )
         {
-            l2e_write_atomic(pl2e, l2e_from_intpte((l2e.l2 & ~fm) | nf));
+            ASSERT(IS_ALIGNED(v, 1UL << L2_PAGETABLE_SHIFT));
+
+            l2e_write_atomic(pl2e, l2e_from_intpte((l2e.l2 & ~fm) | flags));
 
             v += 1UL << L2_PAGETABLE_SHIFT;
             continue;
@@ -5959,11 +5956,12 @@ void init_or_livepatch modify_xen_mappings_lite(
 
                 ASSERT(l1f & _PAGE_PRESENT);
 
-                l1e_write_atomic(pl1e, l1e_from_intpte((l1e.l1 & ~fm) | nf));
+                l1e_write_atomic(pl1e,
+                                 l1e_from_intpte((l1e.l1 & ~fm) | flags));
 
                 v += 1UL << L1_PAGETABLE_SHIFT;
 
-                if ( l2_table_offset(v) == 0 )
+                if ( l1_table_offset(v) == 0 )
                     break;
             }
 
@@ -6290,13 +6288,6 @@ void memguard_unguard_stack(void *p)
     map_pages_to_xen((unsigned long)p, virt_to_mfn(p), 1, PAGE_HYPERVISOR_RW);
 }
 
-void arch_dump_shared_mem_info(void)
-{
-    printk("Shared frames %u -- Saved frames %u\n",
-            mem_sharing_get_nr_shared_mfns(),
-            mem_sharing_get_nr_saved_mfns());
-}
-
 const struct platform_bad_page *__init get_platform_badpages(unsigned int *array_size)
 {
     u32 igd_id;
@@ -6365,6 +6356,17 @@ unsigned long get_upper_mfn_bound(void)
     max_mfn = min(max_mfn, 1UL << 32);
 #endif
     return min(max_mfn, 1UL << (paddr_bits - PAGE_SHIFT)) - 1;
+}
+
+static void __init __maybe_unused build_assertions(void)
+{
+    /*
+     * If this trips, any guests that blindly rely on the public API in xen.h
+     * (instead of reading the PAT from Xen, as Linux 3.19+ does) will be
+     * broken.  Furthermore, live migration of PV guests between Xen versions
+     * using different PATs will not work.
+     */
+    BUILD_BUG_ON(XEN_MSR_PAT != 0x050100070406ULL);
 }
 
 /*

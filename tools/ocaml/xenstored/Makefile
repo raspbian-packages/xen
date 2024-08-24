@@ -4,8 +4,7 @@ include $(OCAML_TOPLEVEL)/common.make
 
 # Include configure output (config.h)
 CFLAGS += -include $(XEN_ROOT)/tools/config.h
-CFLAGS-$(CONFIG_SYSTEMD)  += $(SYSTEMD_CFLAGS)
-LDFLAGS-$(CONFIG_SYSTEMD) += $(SYSTEMD_LIBS)
+CFLAGS-$(CONFIG_SYSTEMD)  += $(CFLAGS_xeninclude)
 
 CFLAGS  += $(CFLAGS-y)
 CFLAGS  += $(APPEND_CFLAGS)
@@ -72,7 +71,11 @@ XENSTOREDLIBS = \
 PROGRAMS = oxenstored
 
 oxenstored_LIBS = $(XENSTOREDLIBS)
-oxenstored_OBJS = $(OBJS)
+# use ocamldep to figure out link order, otherwise the Makefile would have
+# to be continously adjusted for security patches that introduce new
+# dependencies between files
+oxenstored_MLSORTED = $(shell $(OCAMLDEP) -sort $(OBJS:=.ml))
+oxenstored_OBJS = $(oxenstored_MLSORTED:.ml=)
 
 OCAML_PROGRAM = oxenstored
 

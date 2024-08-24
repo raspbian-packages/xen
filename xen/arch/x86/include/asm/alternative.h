@@ -35,19 +35,19 @@ extern void alternative_branches(void);
 #define alt_repl_e(num)    ".LXEN%=_repl_e"#num
 #define alt_repl_len(num)  "(" alt_repl_e(num) " - " alt_repl_s(num) ")"
 
-/* GAS's idea of true is -1, while Clang's idea is 1. */
-#ifdef HAVE_AS_NEGATIVE_TRUE
-# define AS_TRUE "-"
-#else
-# define AS_TRUE ""
-#endif
+/*
+ * GAS's idea of true is sometimes 1 and sometimes -1, while Clang's idea
+ * was consistently 1 up to 6.x (it matches GAS's now).  Transform it to
+ * uniformly 1.
+ */
+#define AS_TRUE(x) "((" x ") & 1)"
 
-#define as_max(a, b) "(("a") ^ ((("a") ^ ("b")) & -("AS_TRUE"(("a") < ("b")))))"
+#define as_max(a, b) "(("a") ^ ((("a") ^ ("b")) & -("AS_TRUE("("a") < ("b")")")))"
 
 #define OLDINSTR(oldinstr, padding)                              \
     ".LXEN%=_orig_s:\n\t" oldinstr "\n .LXEN%=_orig_e:\n\t"      \
     ".LXEN%=_diff = " padding "\n\t"                             \
-    "mknops ("AS_TRUE"(.LXEN%=_diff > 0) * .LXEN%=_diff)\n\t"    \
+    "mknops ("AS_TRUE(".LXEN%=_diff > 0")" * .LXEN%=_diff)\n\t"  \
     ".LXEN%=_orig_p:\n\t"
 
 #define OLDINSTR_1(oldinstr, n1)                                 \
@@ -169,27 +169,25 @@ extern void alternative_branches(void);
 
 #ifdef CONFIG_CC_IS_CLANG
 /*
- * Use a union with an unsigned long in order to prevent clang from
- * skipping a possible truncation of the value.  By using the union any
- * truncation is carried before the call instruction, in turn covering
- * for ABI-non-compliance in that the necessary clipping / extension of
- * the value is supposed to be carried out in the callee.
+ * Clang doesn't follow the psABI and doesn't truncate parameter values at the
+ * callee.  This can lead to bad code being generated when using alternative
+ * calls.
  *
- * Note this behavior is not mandated by the standard, and hence could
- * stop being a viable workaround, or worse, could cause a different set
- * of code-generation issues in future clang versions.
+ * Workaround it by using a temporary intermediate variable that's zeroed
+ * before being assigned the parameter value, as that forces clang to zero the
+ * register at the caller.
  *
  * This has been reported upstream:
  * https://github.com/llvm/llvm-project/issues/12579
  * https://github.com/llvm/llvm-project/issues/82598
  */
 #define ALT_CALL_ARG(arg, n)                                            \
-    register union {                                                    \
-        typeof(arg) e;                                                  \
-        unsigned long r;                                                \
-    } a ## n ## _ asm ( ALT_CALL_arg ## n ) = {                         \
-        .e = ({ BUILD_BUG_ON(sizeof(arg) > sizeof(void *)); (arg); })   \
-    }
+    register unsigned long a ## n ## _ asm ( ALT_CALL_arg ## n ) = ({   \
+        unsigned long tmp = 0;                                          \
+        BUILD_BUG_ON(sizeof(arg) > sizeof(unsigned long));              \
+        *(typeof(arg) *)&tmp = (arg);                                   \
+        tmp;                                                            \
+    })
 #else
 #define ALT_CALL_ARG(arg, n) \
     register typeof(arg) a ## n ## _ asm ( ALT_CALL_arg ## n ) = \

@@ -4,10 +4,6 @@ include $(XEN_ROOT)/tools/Rules.mk
 SUBDIRS := libs
 SUBDIRS += xenstored
 
-ifeq ($(CONFIG_TESTS),y)
-SUBDIRS += test
-endif
-
 .NOTPARALLEL:
 # targets here must be run in order, otherwise we can try
 # to build programs before the libraries are done
@@ -34,3 +30,7 @@ build-tools-oxenstored:
 	$(MAKE) -s -C libs/xb
 	$(MAKE) -s -C libs/xc
 	$(MAKE) -C xenstored
+
+.PHONY: format
+format:
+	git ls-files '*.ml' '*.mli' | xargs -n1 ocp-indent -i

@@ -39,7 +39,7 @@
 #define PERFSTATUS       PERFCOUNTER
 #define PERFSTATUS_ARRAY PERFCOUNTER_ARRAY
 
-enum perfcounter {
+enum {
 #include <xen/perfc_defn.h>
 	NUM_PERFCOUNTERS
 };
@@ -94,7 +94,7 @@ DECLARE_PER_CPU(perfc_t[NUM_PERFCOUNTERS], perfcounters);
 #endif
 
 struct xen_sysctl_perfc_op;
-int perfc_control(struct xen_sysctl_perfc_op *);
+int perfc_control(struct xen_sysctl_perfc_op *pc);
 
 extern void cf_check perfc_printall(unsigned char key);
 extern void cf_check perfc_reset(unsigned char key);

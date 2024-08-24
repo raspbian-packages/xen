@@ -1,3 +1,6 @@
+#ifndef X86_EMULATE_H
+#define X86_EMULATE_H
+
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -37,14 +40,14 @@
 #include <xen/asm/x86-defns.h>
 #include <xen/asm/x86-vendors.h>
 
-#include <xen-tools/libs.h>
+#include <xen-tools/common-macros.h>
 
 #define BUG() abort()
 #define ASSERT assert
 #define ASSERT_UNREACHABLE() assert(!__LINE__)
 
-#define MASK_EXTR(v, m) (((v) & (m)) / ((m) & -(m)))
-#define MASK_INSR(v, m) (((v) * ((m) & -(m))) & (m))
+#define DEFINE_PER_CPU(type, var) type per_cpu_##var
+#define this_cpu(var) per_cpu_##var
 
 #define __init
 #define __maybe_unused __attribute__((__unused__))
@@ -54,13 +57,11 @@
 
 #define cf_check /* No Control Flow Integriy checking */
 
-#define container_of(ptr, type, member) ({             \
-    typeof(((type *)0)->member) *mptr__ = (ptr);       \
-    (type *)((char *)mptr__ - offsetof(type, member)); \
-})
-
-#define AC_(n,t) (n##t)
-#define _AC(n,t) AC_(n,t)
+#ifdef __GCC_ASM_FLAG_OUTPUTS__
+# define ASM_FLAG_OUT(yes, no) yes
+#else
+# define ASM_FLAG_OUT(yes, no) no
+#endif
 
 #define hweight32 __builtin_popcount
 #define hweight64 __builtin_popcountll
@@ -76,6 +77,8 @@ bool emul_test_init(void);
 /* Must save and restore FPU state between any call into libc. */
 void emul_save_fpu_state(void);
 void emul_restore_fpu_state(void);
+
+struct x86_fxsr *get_fpu_save_area(void);
 
 /*
  * In order to reasonably use the above, wrap library calls we use and which we
@@ -127,6 +130,9 @@ static inline bool xcr0_mask(uint64_t mask)
     return cpu_has_xsave && ((xgetbv(0) & mask) == mask);
 }
 
+unsigned int rdpkru(void);
+void wrpkru(unsigned int val);
+
 #define cache_line_size() (cp.basic.clflush_size * 8)
 #define cpu_has_fpu        cp.basic.fpu
 #define cpu_has_mmx        cp.basic.mmx
@@ -169,8 +175,16 @@ static inline bool xcr0_mask(uint64_t mask)
 #define cpu_has_avx512_4fmaps (cp.feat.avx512_4fmaps && xcr0_mask(0xe6))
 #define cpu_has_avx512_vp2intersect (cp.feat.avx512_vp2intersect && xcr0_mask(0xe6))
 #define cpu_has_serialize  cp.feat.serialize
+#define cpu_has_avx512_fp16 (cp.feat.avx512_fp16 && xcr0_mask(0xe6))
+#define cpu_has_sha512     (cp.feat.sha512 && xcr0_mask(6))
+#define cpu_has_sm3        (cp.feat.sm3 && xcr0_mask(6))
+#define cpu_has_sm4        (cp.feat.sm4 && xcr0_mask(6))
 #define cpu_has_avx_vnni   (cp.feat.avx_vnni && xcr0_mask(6))
 #define cpu_has_avx512_bf16 (cp.feat.avx512_bf16 && xcr0_mask(0xe6))
+#define cpu_has_avx_ifma   (cp.feat.avx_ifma && xcr0_mask(6))
+#define cpu_has_avx_vnni_int8 (cp.feat.avx_vnni_int8 && xcr0_mask(6))
+#define cpu_has_avx_ne_convert (cp.feat.avx_ne_convert && xcr0_mask(6))
+#define cpu_has_avx_vnni_int16 (cp.feat.avx_vnni_int16 && xcr0_mask(6))
 
 #define cpu_has_xgetbv1   (cpu_has_xsave && cp.xstate.xgetbv1)
 
@@ -204,3 +218,5 @@ void emul_test_put_fpu(
     struct x86_emulate_ctxt *ctxt,
     enum x86_emulate_fpu_type backout,
     const struct x86_emul_fpu_aux *aux);
+
+#endif /* X86_EMULATE_H */

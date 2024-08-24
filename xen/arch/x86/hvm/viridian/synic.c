@@ -13,13 +13,12 @@
 
 #include <asm/apic.h>
 #include <asm/guest/hyperv-tlfs.h>
-#include <asm/hvm/support.h>
 #include <asm/hvm/vlapic.h>
 
 #include "private.h"
 
 
-void __init __maybe_unused build_assertions(void)
+static void __init __maybe_unused build_assertions(void)
 {
     BUILD_BUG_ON(sizeof(struct hv_message) != HV_MESSAGE_SIZE);
 }
@@ -234,7 +233,7 @@ int viridian_synic_rdmsr(const struct vcpu *v, uint32_t idx, uint64_t *val)
          * should be set to. Assume everything but the bottom bit
          * should be zero.
          */
-        *val = 1ul;
+        *val = 1UL;
         break;
 
     case HV_X64_MSR_SIEFP:

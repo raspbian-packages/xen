@@ -10,10 +10,10 @@
 #include <asm/x86_64/uaccess.h>
 
 unsigned int copy_to_guest_pv(void __user *to, const void *from,
-                              unsigned int len);
-unsigned int clear_guest_pv(void __user *to, unsigned int len);
+                              unsigned int n);
+unsigned int clear_guest_pv(void __user *to, unsigned int n);
 unsigned int copy_from_guest_pv(void *to, const void __user *from,
-                                unsigned int len);
+                                unsigned int n);
 
 /* Handles exceptions in both to and from, but doesn't do access_ok */
 unsigned int copy_to_guest_ll(void __user*to, const void *from, unsigned int n);
@@ -21,8 +21,8 @@ unsigned int copy_from_guest_ll(void *to, const void __user *from, unsigned int 
 unsigned int copy_to_unsafe_ll(void *to, const void *from, unsigned int n);
 unsigned int copy_from_unsafe_ll(void *to, const void *from, unsigned int n);
 
-extern long __get_user_bad(void);
-extern void __put_user_bad(void);
+void noreturn __get_user_bad(void);
+void noreturn __put_user_bad(void);
 
 #define UA_KEEP(args...) args
 #define UA_DROP(args...)

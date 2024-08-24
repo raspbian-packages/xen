@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #include <xen/percpu.h>
 #include <xen/cpu.h>
 #include <xen/init.h>
@@ -68,7 +69,7 @@ static int cpu_percpu_callback(
         break;
     }
 
-    return !rc ? NOTIFY_DONE : notifier_from_errno(rc);
+    return notifier_from_errno(rc);
 }
 
 static struct notifier_block cpu_percpu_nfb = {

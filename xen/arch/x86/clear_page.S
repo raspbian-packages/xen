@@ -1,8 +1,9 @@
         .file __FILE__
 
+#include <xen/linkage.h>
 #include <asm/page.h>
 
-ENTRY(clear_page_sse2)
+FUNC(clear_page_sse2)
         mov     $PAGE_SIZE/32, %ecx
         xor     %eax,%eax
 
@@ -16,3 +17,4 @@ ENTRY(clear_page_sse2)
 
         sfence
         ret
+END(clear_page_sse2)

@@ -26,7 +26,7 @@ struct efi_rs_state {
 };
 
 struct efi_rs_state efi_rs_enter(void);
-void efi_rs_leave(struct efi_rs_state *);
+void efi_rs_leave(struct efi_rs_state *state);
 
 #ifndef COMPAT
 
@@ -698,7 +698,7 @@ int efi_runtime_call(struct xenpf_efi_runtime_call *op)
 #ifndef COMPAT
     op->status = status;
 #else
-    op->status = (status & 0x3fffffff) | ((status >> 32) & 0xc0000000);
+    op->status = (status & 0x3fffffffU) | ((status >> 32) & 0xc0000000U);
 #endif
 
     return rc;

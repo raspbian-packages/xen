@@ -1,23 +1,12 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * vpmu.c: PMU virtualization for HVM domain.
+ * vpmu_amd.c: AMD specific PMU virtualization.
  *
  * Copyright (c) 2010, Advanced Micro Devices, Inc.
  * Parts of this code are Copyright (c) 2007, Intel Corporation
  *
  * Author: Wei Wang <wei.wang2@amd.com>
  * Tested by: Suravee Suthikulpanit <Suravee.Suthikulpanit@amd.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; If not, see <http://www.gnu.org/licenses/>.
  *
  */
 
@@ -36,13 +25,13 @@
 
 #define is_guest_mode(msr) ((msr) & (1ULL << MSR_F10H_EVNTSEL_GO_SHIFT))
 #define is_pmu_enabled(msr) ((msr) & (1ULL << MSR_F10H_EVNTSEL_EN_SHIFT))
-#define set_guest_mode(msr) (msr |= (1ULL << MSR_F10H_EVNTSEL_GO_SHIFT))
-#define is_overflowed(msr) (!((msr) & (1ULL << (MSR_F10H_COUNTER_LENGTH-1))))
+#define set_guest_mode(msr) ((msr) |= (1ULL << MSR_F10H_EVNTSEL_GO_SHIFT))
+#define is_overflowed(msr) (!((msr) & (1ULL << (MSR_F10H_COUNTER_LENGTH - 1))))
 
 static unsigned int __read_mostly num_counters;
 static const u32 __read_mostly *counters;
 static const u32 __read_mostly *ctrls;
-static bool_t __read_mostly k7_counters_mirrored;
+static bool __read_mostly k7_counters_mirrored;
 
 #define F10H_NUM_COUNTERS   4
 #define F15H_NUM_COUNTERS   6
@@ -186,7 +175,7 @@ static void amd_vpmu_unset_msr_bitmap(struct vcpu *v)
     msr_bitmap_off(vpmu);
 }
 
-static int cf_check amd_vpmu_do_interrupt(struct cpu_user_regs *regs)
+static int cf_check amd_vpmu_do_interrupt(void)
 {
     return 1;
 }
@@ -228,7 +217,7 @@ static int cf_check amd_vpmu_load(struct vcpu *v, bool from_guest)
 
     if ( from_guest )
     {
-        bool_t is_running = 0;
+        bool is_running = false;
         struct xen_pmu_amd_ctxt *guest_ctxt = &vpmu->xenpmu_data->pmu.c.amd;
 
         ASSERT(!has_vlapic(v->domain));
@@ -480,7 +469,7 @@ static void cf_check amd_vpmu_dump(const struct vcpu *v)
     }
 }
 
-static int cf_check svm_vpmu_initialise(struct vcpu *v)
+static int cf_check amd_vpmu_initialise(struct vcpu *v)
 {
     struct xen_pmu_amd_ctxt *ctxt;
     struct vpmu_struct *vpmu = vcpu_vpmu(v);
@@ -527,7 +516,7 @@ static int cf_check amd_allocate_context(struct vcpu *v)
 #endif
 
 static const struct arch_vpmu_ops __initconst_cf_clobber amd_vpmu_ops = {
-    .initialise = svm_vpmu_initialise,
+    .initialise = amd_vpmu_initialise,
     .do_wrmsr = amd_vpmu_do_wrmsr,
     .do_rdmsr = amd_vpmu_do_rdmsr,
     .do_interrupt = amd_vpmu_do_interrupt,

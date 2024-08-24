@@ -39,6 +39,18 @@ static inline void wrmsrl(unsigned int msr, __u64 val)
         wrmsr(msr, lo, hi);
 }
 
+/* Non-serialising WRMSR, when available.  Falls back to a serialising WRMSR. */
+static inline void wrmsr_ns(uint32_t msr, uint32_t lo, uint32_t hi)
+{
+    /*
+     * WRMSR is 2 bytes.  WRMSRNS is 3 bytes.  Pad WRMSR with a redundant CS
+     * prefix to avoid a trailing NOP.
+     */
+    alternative_input(".byte 0x2e; wrmsr",
+                      ".byte 0x0f,0x01,0xc6", X86_FEATURE_WRMSRNS,
+                      "c" (msr), "a" (lo), "d" (hi));
+}
+
 /* rdmsr with exception handling */
 #define rdmsr_safe(msr,val) ({\
     int rc_; \
@@ -290,8 +302,11 @@ struct vcpu_msrs
      * For PV guests, this holds the guest kernel value.  It is accessed on
      * every entry/exit path.
      *
-     * For VT-x guests, the guest value is held in the MSR guest load/save
-     * list.
+     * For VT-x guests, one of two situations exist:
+     *
+     * - If hardware supports virtualized MSR_SPEC_CTRL, it is active by
+     *   default and the guest value lives in the VMCS.
+     * - Otherwise, the guest value is held in the MSR load/save list.
      *
      * For SVM, the guest value lives in the VMCB, and hardware saves/restores
      * the host value automatically.  However, guests run with the OR of the
@@ -354,6 +369,15 @@ struct vcpu_msrs
             };
         };
     } rtit;
+
+    /*
+     * 0x000006e1 - MSR_PKRS - Protection Key Supervisor.
+     *
+     * Exposed R/W to guests.  Xen doesn't use PKS yet, so only context
+     * switched per vcpu.  When in current context, live value is in hardware,
+     * and this value is stale.
+     */
+    uint32_t pkrs;
 
     /* 0x00000da0 - MSR_IA32_XSS */
     struct {

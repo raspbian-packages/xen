@@ -97,6 +97,22 @@ search_exception_table(const struct cpu_user_regs *regs, unsigned long *stub_ra)
         return search_one_extable(region->ex, region->ex_end, regs->rip);
     }
 
+    /*
+     * Emulation stubs (which are per-CPU) are constructed with a RET at the
+     * end, and are CALLed by the invoking code.
+     *
+     * An exception in the stubs may occur anywhere, so we first match any
+     * %rip in the correct stub, with a sanity check on %rsp too.  But, an
+     * entry in ex_table[] needs to be compile-time constant, so we register
+     * the fixup address using the invoking CALL's return address.
+     *
+     * To recover, we:
+     * 1) Emulate a pseudo-RET to get out of the stub.  We POP the return
+     *    address off the stack(s), use it to look up the fixup address, and
+     *    JMP there, then
+     * 2) Emulate a PUSH of 'token' onto the data stack to pass information
+     *    about the exception back to the invoking code.
+     */
     if ( regs->rip >= stub + STUB_BUF_SIZE / 2 &&
          regs->rip < stub + STUB_BUF_SIZE &&
          regs->rsp > (unsigned long)regs &&
@@ -128,10 +144,11 @@ search_exception_table(const struct cpu_user_regs *regs, unsigned long *stub_ra)
     return 0;
 }
 
-#ifndef NDEBUG
+#ifdef CONFIG_SELF_TESTS
+#include <asm/setup.h>
 #include <asm/traps.h>
 
-static int __init cf_check stub_selftest(void)
+int __init cf_check stub_selftest(void)
 {
     static const struct {
         uint8_t opc[8];
@@ -140,22 +157,23 @@ static int __init cf_check stub_selftest(void)
     } tests[] __initconst = {
 #define endbr64 0xf3, 0x0f, 0x1e, 0xfa
         { .opc = { endbr64, 0x0f, 0xb9, 0xc3, 0xc3 }, /* ud1 */
-          .res.fields.trapnr = TRAP_invalid_op },
+          .res.fields.trapnr = X86_EXC_UD },
         { .opc = { endbr64, 0x90, 0x02, 0x00, 0xc3 }, /* nop; add (%rax),%al */
           .rax = 0x0123456789abcdef,
-          .res.fields.trapnr = TRAP_gp_fault },
+          .res.fields.trapnr = X86_EXC_GP },
         { .opc = { endbr64, 0x02, 0x04, 0x04, 0xc3 }, /* add (%rsp,%rax),%al */
-          .rax = 0xfedcba9876543210,
-          .res.fields.trapnr = TRAP_stack_error },
+          .rax = 0xfedcba9876543210UL,
+          .res.fields.trapnr = X86_EXC_SS },
         { .opc = { endbr64, 0xcc, 0xc3, 0xc3, 0xc3 }, /* int3 */
-          .res.fields.trapnr = TRAP_int3 },
+          .res.fields.trapnr = X86_EXC_BP },
 #undef endbr64
     };
     unsigned long addr = this_cpu(stubs.addr) + STUB_BUF_SIZE / 2;
     unsigned int i;
     bool fail = false;
 
-    printk("Running stub recovery selftests...\n");
+    printk("%s stub recovery selftests...\n",
+           system_state < SYS_STATE_active ? "Running" : "Re-running");
 
     for ( i = 0; i < ARRAY_SIZE(tests); ++i )
     {
@@ -196,10 +214,9 @@ static int __init cf_check stub_selftest(void)
     return 0;
 }
 __initcall(stub_selftest);
-#endif
+#endif /* CONFIG_SELF_TESTS */
 
-unsigned long
-search_pre_exception_table(struct cpu_user_regs *regs)
+unsigned long asmlinkage search_pre_exception_table(struct cpu_user_regs *regs)
 {
     unsigned long addr = regs->rip;
     unsigned long fixup = search_one_extable(

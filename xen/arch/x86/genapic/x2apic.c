@@ -1,19 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * x2APIC driver.
  *
  * Copyright (c) 2008, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/init.h>
@@ -169,7 +158,7 @@ static void cf_check send_IPI_mask_x2apic_cluster(
     local_irq_restore(flags);
 }
 
-static const struct genapic __initconstrel apic_x2apic_phys = {
+static const struct genapic __initconst_cf_clobber apic_x2apic_phys = {
     APIC_INIT("x2apic_phys", NULL),
     .int_delivery_mode = dest_Fixed,
     .int_dest_mode = 0 /* physical delivery */,
@@ -180,7 +169,7 @@ static const struct genapic __initconstrel apic_x2apic_phys = {
     .send_IPI_self = send_IPI_self_x2apic
 };
 
-static const struct genapic __initconstrel apic_x2apic_cluster = {
+static const struct genapic __initconst_cf_clobber apic_x2apic_cluster = {
     APIC_INIT("x2apic_cluster", NULL),
     .int_delivery_mode = dest_LowestPrio,
     .int_dest_mode = 1 /* logical delivery */,
@@ -198,7 +187,7 @@ static const struct genapic __initconstrel apic_x2apic_cluster = {
  * IPIs to be more efficiently delivered by not having to perform an ICR write
  * for each target CPU.
  */
-static const struct genapic __initconstrel apic_x2apic_mixed = {
+static const struct genapic __initconst_cf_clobber apic_x2apic_mixed = {
     APIC_INIT("x2apic_mixed", NULL),
 
     /*
@@ -251,7 +240,7 @@ static int cf_check update_clusterinfo(
         break;
     }
 
-    return !err ? NOTIFY_DONE : notifier_from_errno(err);
+    return notifier_from_errno(err);
 }
 
 static struct notifier_block x2apic_cpu_nfb = {

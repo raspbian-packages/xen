@@ -1,4 +1,5 @@
-FROM arm64v8/debian:unstable
+# syntax=docker/dockerfile:1
+FROM --platform=linux/arm64/v8 debian:bookworm
 LABEL maintainer.name="The Xen Project" \
       maintainer.email="xen-devel@lists.xenproject.org"
 
@@ -13,7 +14,6 @@ WORKDIR /build
 RUN apt-get update && \
     apt-get --quiet --yes install \
         build-essential \
-        libssl-dev \
         bc \
         curl \
         flex \

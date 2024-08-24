@@ -34,9 +34,21 @@ void __init vm_init_type(enum vmap_region type, void *start, void *end)
 
     for ( i = 0, va = (unsigned long)vm_bitmap(type); i < nr; ++i, va += PAGE_SIZE )
     {
-        struct page_info *pg = alloc_domheap_page(NULL, 0);
+        mfn_t mfn;
+        int rc;
 
-        map_pages_to_xen(va, page_to_mfn(pg), 1, PAGE_HYPERVISOR);
+        if ( system_state == SYS_STATE_early_boot )
+            mfn = alloc_boot_pages(1, 1);
+        else
+        {
+            struct page_info *pg = alloc_domheap_page(NULL, 0);
+
+            BUG_ON(!pg);
+            mfn = page_to_mfn(pg);
+        }
+        rc = map_pages_to_xen(va, mfn, 1, PAGE_HYPERVISOR);
+        BUG_ON(rc);
+
         clear_page((void *)va);
     }
     bitmap_fill(vm_bitmap(type), vm_low[type]);
@@ -53,7 +65,7 @@ static void *vm_alloc(unsigned int nr, unsigned int align,
     if ( !align )
         align = 1;
     else if ( align & (align - 1) )
-        align &= -align;
+        align = ISOLATE_LSB(align);
 
     ASSERT((t >= VMAP_DEFAULT) && (t < VMAP_REGION_NR));
     if ( !vm_base[t] )
@@ -62,7 +74,7 @@ static void *vm_alloc(unsigned int nr, unsigned int align,
     spin_lock(&vm_lock);
     for ( ; ; )
     {
-        struct page_info *pg;
+        mfn_t mfn;
 
         ASSERT(vm_low[t] == vm_top[t] || !test_bit(vm_low[t], vm_bitmap(t)));
         for ( start = vm_low[t]; start < vm_top[t]; )
@@ -97,9 +109,16 @@ static void *vm_alloc(unsigned int nr, unsigned int align,
         if ( vm_top[t] >= vm_end[t] )
             return NULL;
 
-        pg = alloc_domheap_page(NULL, 0);
-        if ( !pg )
-            return NULL;
+        if ( system_state == SYS_STATE_early_boot )
+            mfn = alloc_boot_pages(1, 1);
+        else
+        {
+            struct page_info *pg = alloc_domheap_page(NULL, 0);
+
+            if ( !pg )
+                return NULL;
+            mfn = page_to_mfn(pg);
+        }
 
         spin_lock(&vm_lock);
 
@@ -107,7 +126,7 @@ static void *vm_alloc(unsigned int nr, unsigned int align,
         {
             unsigned long va = (unsigned long)vm_bitmap(t) + vm_top[t] / 8;
 
-            if ( !map_pages_to_xen(va, page_to_mfn(pg), 1, PAGE_HYPERVISOR) )
+            if ( !map_pages_to_xen(va, mfn, 1, PAGE_HYPERVISOR) )
             {
                 clear_page((void *)va);
                 vm_top[t] += PAGE_SIZE * 8;
@@ -117,7 +136,10 @@ static void *vm_alloc(unsigned int nr, unsigned int align,
             }
         }
 
-        free_domheap_page(pg);
+        if ( system_state == SYS_STATE_early_boot )
+            init_boot_pages(mfn_to_maddr(mfn), mfn_to_maddr(mfn) + PAGE_SIZE);
+        else
+            free_domheap_page(mfn_to_page(mfn));
 
         if ( start >= vm_top[t] )
         {
@@ -223,13 +245,25 @@ void *vmap(const mfn_t *mfn, unsigned int nr)
     return __vmap(mfn, 1, nr, 1, PAGE_HYPERVISOR, VMAP_DEFAULT);
 }
 
-void vunmap(const void *va)
+void *vmap_contig(mfn_t mfn, unsigned int nr)
 {
-    unsigned long addr = (unsigned long)va;
+    return __vmap(&mfn, nr, 1, 1, PAGE_HYPERVISOR, VMAP_DEFAULT);
+}
+
+unsigned int vmap_size(const void *va)
+{
     unsigned int pages = vm_size(va, VMAP_DEFAULT);
 
     if ( !pages )
         pages = vm_size(va, VMAP_XEN);
+
+    return pages;
+}
+
+void vunmap(const void *va)
+{
+    unsigned long addr = (unsigned long)va;
+    unsigned pages = vmap_size(va);
 
 #ifndef _PAGE_NONE
     destroy_xen_mappings(addr, addr + PAGE_SIZE * pages);
@@ -306,17 +340,11 @@ void vfree(void *va)
     unsigned int i, pages;
     struct page_info *pg;
     PAGE_LIST_HEAD(pg_list);
-    enum vmap_region type = VMAP_DEFAULT;
 
     if ( !va )
         return;
 
-    pages = vm_size(va, type);
-    if ( !pages )
-    {
-        type = VMAP_XEN;
-        pages = vm_size(va, type);
-    }
+    pages = vmap_size(va);
     ASSERT(pages);
 
     for ( i = 0; i < pages; i++ )

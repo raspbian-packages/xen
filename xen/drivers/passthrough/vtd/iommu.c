@@ -54,9 +54,6 @@
                                  ? dom_iommu(d)->arch.vtd.pgd_maddr \
                                  : (pdev)->arch.vtd.pgd_maddr)
 
-/* Possible unfiltered LAPIC/MSI messages from untrusted sources? */
-bool __read_mostly untrusted_msi;
-
 bool __read_mostly iommu_igfx = true;
 bool __read_mostly iommu_qinval = true;
 #ifndef iommu_snoop
@@ -441,7 +438,7 @@ static paddr_t domain_pgd_maddr(struct domain *d, paddr_t pgd_maddr,
 
     if ( pgd_maddr )
         /* nothing */;
-    else if ( IS_ENABLED(CONFIG_HVM) && iommu_use_hap_pt(d) )
+    else if ( iommu_use_hap_pt(d) )
     {
         pagetable_t pgt = p2m_get_pagetable(p2m_get_hostp2m(d));
 
@@ -645,8 +642,8 @@ static int __must_check iommu_flush_iotlb_global(struct vtd_iommu *iommu,
 }
 
 static int __must_check iommu_flush_iotlb_dsi(struct vtd_iommu *iommu, u16 did,
-                                              bool_t flush_non_present_entry,
-                                              bool_t flush_dev_iotlb)
+                                              bool flush_non_present_entry,
+                                              bool flush_dev_iotlb)
 {
     int status;
 
@@ -664,8 +661,8 @@ static int __must_check iommu_flush_iotlb_dsi(struct vtd_iommu *iommu, u16 did,
 
 static int __must_check iommu_flush_iotlb_psi(struct vtd_iommu *iommu, u16 did,
                                               u64 addr, unsigned int order,
-                                              bool_t flush_non_present_entry,
-                                              bool_t flush_dev_iotlb)
+                                              bool flush_non_present_entry,
+                                              bool flush_dev_iotlb)
 {
     int status;
 
@@ -695,7 +692,7 @@ static int __must_check iommu_flush_all(void)
 {
     struct acpi_drhd_unit *drhd;
     struct vtd_iommu *iommu;
-    bool_t flush_dev_iotlb;
+    bool flush_dev_iotlb;
     int rc = 0;
 
     flush_local(FLUSH_CACHE);
@@ -737,7 +734,7 @@ static int __must_check cf_check iommu_flush_iotlb(struct domain *d, dfn_t dfn,
     struct domain_iommu *hd = dom_iommu(d);
     struct acpi_drhd_unit *drhd;
     struct vtd_iommu *iommu;
-    bool_t flush_dev_iotlb;
+    bool flush_dev_iotlb;
     int iommu_domid;
     int ret = 0;
 
@@ -1120,8 +1117,7 @@ static void cf_check do_iommu_page_fault(void *unused)
         __do_iommu_page_fault(drhd->iommu);
 }
 
-static void cf_check iommu_page_fault(
-    int irq, void *dev_id, struct cpu_user_regs *regs)
+static void cf_check iommu_page_fault(int irq, void *dev_id)
 {
     /*
      * Just flag the tasklet as runnable. This is fine, according to VT-d
@@ -1491,7 +1487,7 @@ int domain_context_mapping_one(
     uint16_t seg = iommu->drhd->segment, prev_did = 0;
     struct domain *prev_dom = NULL;
     int rc, ret;
-    bool_t flush_dev_iotlb;
+    bool flush_dev_iotlb;
 
     if ( QUARANTINE_SKIP(domain, pgd_maddr) )
         return 0;
@@ -1885,7 +1881,7 @@ int domain_context_unmap_one(
     struct context_entry *context, *context_entries;
     u64 maddr;
     int iommu_domid, rc, ret;
-    bool_t flush_dev_iotlb;
+    bool flush_dev_iotlb;
 
     ASSERT(pcidevs_locked());
     spin_lock(&iommu->lock);
@@ -2544,7 +2540,7 @@ static int __must_check init_vtd_hw(bool resume)
     /*
      * Enable interrupt remapping
      */  
-    if ( iommu_intremap )
+    if ( iommu_intremap != iommu_intremap_off )
     {
         int apic;
         for ( apic = 0; apic < nr_ioapics; apic++ )
@@ -2560,7 +2556,7 @@ static int __must_check init_vtd_hw(bool resume)
             }
         }
     }
-    if ( iommu_intremap )
+    if ( iommu_intremap != iommu_intremap_off )
     {
         for_each_drhd_unit ( drhd )
         {
@@ -2758,9 +2754,6 @@ static int __init cf_check vtd_setup(void)
 
  error:
     iommu_enabled = 0;
-#ifndef iommu_snoop
-    iommu_snoop = false;
-#endif
     iommu_hwdom_passthrough = false;
     iommu_qinval = 0;
     iommu_intremap = iommu_intremap_off;
@@ -2782,6 +2775,7 @@ static int cf_check reassign_device_ownership(
         if ( !has_arch_pdevs(target) )
             vmx_pi_hooks_assign(target);
 
+#ifdef CONFIG_PV
         /*
          * Devices assigned to untrusted domains (here assumed to be any domU)
          * can attempt to send arbitrary LAPIC/MSI messages. We are unprotected
@@ -2790,6 +2784,7 @@ static int cf_check reassign_device_ownership(
         if ( !iommu_intremap && !is_hardware_domain(target) &&
              !is_system_domain(target) )
             untrusted_msi = true;
+#endif
 
         ret = domain_context_mapping(target, devfn, pdev);
 
@@ -2818,8 +2813,15 @@ static int cf_check reassign_device_ownership(
 
     if ( devfn == pdev->devfn && pdev->domain != target )
     {
-        list_move(&pdev->domain_list, &target->pdev_list);
+        write_lock(&source->pci_lock);
+        list_del(&pdev->domain_list);
+        write_unlock(&source->pci_lock);
+
         pdev->domain = target;
+
+        write_lock(&target->pci_lock);
+        list_add(&pdev->domain_list, &target->pdev_list);
+        write_unlock(&target->pci_lock);
     }
 
     if ( !has_arch_pdevs(source) )
@@ -2885,7 +2887,7 @@ static int cf_check intel_iommu_assign_device(
         if ( rmrr->segment == seg && bdf == PCI_BDF(bus, devfn) &&
              rmrr->scope.devices_cnt > 1 )
         {
-            bool_t relaxed = !!(flag & XEN_DOMCTL_DEV_RDM_RELAXED);
+            bool relaxed = flag & XEN_DOMCTL_DEV_RDM_RELAXED;
 
             printk(XENLOG_GUEST "%s" VTDPREFIX
                    " It's %s to assign %pp"
@@ -3164,7 +3166,7 @@ static int cf_check intel_iommu_quarantine_init(struct pci_dev *pdev,
 {
     struct domain_iommu *hd = dom_iommu(dom_io);
     struct page_info *pg;
-    unsigned int agaw = width_to_agaw(DEFAULT_DOMAIN_ADDRESS_WIDTH);
+    unsigned int agaw = hd->arch.vtd.agaw;
     unsigned int level = agaw_to_level(agaw);
     const struct acpi_drhd_unit *drhd;
     const struct acpi_rmrr_unit *rmrr;

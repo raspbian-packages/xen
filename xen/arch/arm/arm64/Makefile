@@ -1,4 +1,5 @@
 obj-y += lib/
+obj-$(CONFIG_MMU) += mmu/
 
 obj-y += cache.o
 obj-y += cpufeature.o
@@ -12,6 +13,7 @@ obj-y += insn.o
 obj-$(CONFIG_LIVEPATCH) += livepatch.o
 obj-y += smc.o
 obj-y += smpboot.o
+obj-$(CONFIG_ARM64_SVE) += sve.o sve-asm.o
 obj-y += traps.o
 obj-y += vfp.o
 obj-y += vsysreg.o

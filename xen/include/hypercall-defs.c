@@ -60,6 +60,13 @@
  * are possible.
  */
 
+/*
+ * Cppcheck thinks this file needs to be analysed because it is preprocessed by
+ * the compiler, but it gets confused because this file does not contains C
+ * code. Hence protect the code when CPPCHECK is used.
+ */
+#ifndef CPPCHECK
+
 #ifdef CONFIG_HVM
 #define PREFIX_hvm hvm
 #else
@@ -238,7 +245,7 @@ multicall                          compat:2 do:2     compat   do       do
 update_va_mapping                  compat   do       -        -        -
 set_timer_op                       compat   do       compat   do       -
 event_channel_op_compat            do       do       -        -        dep
-xen_version                        compat   do       compat   do       do
+xen_version                        do       do       do       do       do
 console_io                         do       do       do       do       do
 physdev_op_compat                  compat   do       -        -        dep
 #if defined(CONFIG_GRANT_TABLE)
@@ -288,3 +295,5 @@ mca                                do       do       -        -        -
 #ifndef CONFIG_PV_SHIM_EXCLUSIVE
 paging_domctl_cont                 do       do       do       do       -
 #endif
+
+#endif /* !CPPCHECK */

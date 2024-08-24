@@ -56,8 +56,8 @@ struct livepatch_work
                                     check_for_livepatch_work. */
     uint32_t timeout;            /* Timeout to do the operation. */
     struct payload *data;        /* The payload on which to act. */
-    volatile bool_t do_work;     /* Signals work to do. */
-    volatile bool_t ready;       /* Signals all CPUs synchronized. */
+    volatile bool do_work;       /* Signals work to do. */
+    volatile bool ready;         /* Signals all CPUs synchronized. */
     unsigned int cmd;            /* Action request: LIVEPATCH_ACTION_* */
 };
 
@@ -70,7 +70,7 @@ static struct livepatch_work livepatch_work;
  * would hammer a global livepatch_work structure on every guest VMEXIT.
  * Having an per-cpu lessens the load.
  */
-static DEFINE_PER_CPU(bool_t, work_to_do);
+static DEFINE_PER_CPU(bool, work_to_do);
 static DEFINE_PER_CPU(struct tasklet, livepatch_tasklet);
 
 static int get_name(const struct xen_livepatch_name *name, char *n)
@@ -107,10 +107,10 @@ static int verify_payload(const struct xen_sysctl_livepatch_upload *upload, char
     return 0;
 }
 
-bool_t is_patch(const void *ptr)
+bool is_patch(const void *ptr)
 {
     const struct payload *data;
-    bool_t r = 0;
+    bool r = false;
 
     rcu_read_lock(&rcu_payload_lock);
     list_for_each_entry_rcu ( data, &payload_list, list )
@@ -785,8 +785,14 @@ static int prepare_payload(struct payload *payload,
     region = &payload->region;
 
     region->symbols_lookup = livepatch_symbols_lookup;
-    region->start = payload->text_addr;
-    region->end = payload->text_addr + payload->text_size;
+    region->text_start = payload->text_addr;
+    region->text_end = payload->text_addr + payload->text_size;
+
+    if ( payload->ro_size )
+    {
+        region->rodata_start = payload->ro_addr;
+        region->rodata_end = payload->ro_addr + payload->ro_size;
+    }
 
     /* Optional sections. */
     for ( i = 0; i < BUGFRAME_NR; i++ )
@@ -798,40 +804,95 @@ static int prepare_payload(struct payload *payload,
         if ( !sec )
             continue;
 
-        if ( !section_ok(elf, sec, sizeof(*region->frame[i].bugs)) )
+        if ( !section_ok(elf, sec, sizeof(*region->frame[i].start)) )
             return -EINVAL;
 
-        region->frame[i].bugs = sec->load_addr;
-        region->frame[i].n_bugs = sec->sec->sh_size /
-                                  sizeof(*region->frame[i].bugs);
+        region->frame[i].start = sec->load_addr;
+        region->frame[i].stop  = sec->load_addr + sec->sec->sh_size;
     }
 
     sec = livepatch_elf_sec_by_name(elf, ".altinstructions");
     if ( sec )
     {
 #ifdef CONFIG_HAS_ALTERNATIVE
+        /*
+         * (As of April 2023), Alternatives are formed of:
+         * - An .altinstructions section with an array of struct alt_instr's.
+         * - An .altinstr_replacement section containing instructions.
+         *
+         * An individual alt_instr contains:
+         * - An orig reference, pointing into .text with a nonzero length
+         * - A repl reference, pointing into .altinstr_replacement
+         *
+         * It is legal to have zero-length replacements, meaning it is legal
+         * for the .altinstr_replacement section to be empty too.  An
+         * implementation detail means that a zero-length replacement's repl
+         * reference will still be in the .altinstr_replacement section.
+         */
+        const struct livepatch_elf_sec *repl_sec;
         struct alt_instr *a, *start, *end;
 
         if ( !section_ok(elf, sec, sizeof(*a)) )
             return -EINVAL;
+
+        /* Tolerate an empty .altinstructions section... */
+        if ( sec->sec->sh_size == 0 )
+            goto alt_done;
+
+        /* ... but otherwise, there needs to be something to alter... */
+        if ( payload->text_size == 0 )
+        {
+            printk(XENLOG_ERR LIVEPATCH "%s Alternatives provided, but no .text\n",
+                   elf->name);
+            return -EINVAL;
+        }
+
+        /* ... and something to be altered to. */
+        repl_sec = livepatch_elf_sec_by_name(elf, ".altinstr_replacement");
+        if ( !repl_sec )
+        {
+            printk(XENLOG_ERR LIVEPATCH "%s .altinstructions provided, but no .altinstr_replacement\n",
+                   elf->name);
+            return -EINVAL;
+        }
 
         start = sec->load_addr;
         end = sec->load_addr + sec->sec->sh_size;
 
         for ( a = start; a < end; a++ )
         {
-            const void *instr = ALT_ORIG_PTR(a);
-            const void *replacement = ALT_REPL_PTR(a);
+            const void *orig = ALT_ORIG_PTR(a);
+            const void *repl = ALT_REPL_PTR(a);
 
-            if ( (instr < region->start && instr >= region->end) ||
-                 (replacement < region->start && replacement >= region->end) )
+            /* orig must be fully within .text. */
+            if ( orig               < payload->text_addr ||
+                 a->orig_len        > payload->text_size ||
+                 orig + a->orig_len > payload->text_addr + payload->text_size )
             {
-                printk(XENLOG_ERR LIVEPATCH "%s Alt patching outside payload: %p\n",
-                       elf->name, instr);
+                printk(XENLOG_ERR LIVEPATCH
+                       "%s Alternative orig %p+%#x outside payload text %p+%#zx\n",
+                       elf->name, orig, a->orig_len,
+                       payload->text_addr, payload->text_size);
+                return -EINVAL;
+            }
+
+            /*
+             * repl must be fully within .altinstr_replacement, even if the
+             * replacement and the section happen to both have zero length.
+             */
+            if ( repl               < repl_sec->load_addr ||
+                 a->repl_len        > repl_sec->sec->sh_size ||
+                 repl + a->repl_len > repl_sec->load_addr + repl_sec->sec->sh_size )
+            {
+                printk(XENLOG_ERR LIVEPATCH
+                       "%s Alternative repl %p+%#x outside .altinstr_replacement %p+%#"PRIxElfWord"\n",
+                       elf->name, repl, a->repl_len,
+                       repl_sec->load_addr, repl_sec->sec->sh_size);
                 return -EINVAL;
             }
         }
         apply_alternatives(start, end);
+    alt_done:;
 #else
         printk(XENLOG_ERR LIVEPATCH "%s: We don't support alternative patching\n",
                elf->name);
@@ -882,8 +943,8 @@ static int prepare_payload(struct payload *payload,
     return 0;
 }
 
-static bool_t is_payload_symbol(const struct livepatch_elf *elf,
-                                const struct livepatch_elf_sym *sym)
+static bool is_payload_symbol(const struct livepatch_elf *elf,
+                              const struct livepatch_elf_sym *sym)
 {
     if ( sym->sym->st_shndx == SHN_UNDEF ||
          sym->sym->st_shndx >= elf->hdr->e_shnum )
@@ -964,7 +1025,7 @@ static int build_symbol_table(struct payload *payload,
 
     for ( i = 0; i < nsyms; i++ )
     {
-        bool_t found = 0;
+        bool found = 0;
 
         for ( j = 0; j < payload->nfuncs; j++ )
         {
@@ -1191,7 +1252,7 @@ static int livepatch_list(struct xen_sysctl_livepatch_list *list)
     list->metadata_total_size = 0;
     if ( list->nr )
     {
-        uint64_t name_offset = 0, metadata_offset = 0;
+        size_t name_offset = 0, metadata_offset = 0;
 
         list_for_each_entry( data, &payload_list, list )
         {
@@ -1548,7 +1609,7 @@ static void livepatch_do_action(void)
     data->rc = rc;
 }
 
-static bool_t is_work_scheduled(const struct payload *data)
+static bool is_work_scheduled(const struct payload *data)
 {
     ASSERT(spin_is_locked(&payload_lock));
 
@@ -1655,7 +1716,7 @@ static int livepatch_spin(atomic_t *counter, s_time_t timeout,
  * The main function which manages the work of quiescing the system and
  * patching code.
  */
-void check_for_livepatch_work(void)
+static void noinline do_livepatch_work(void)
 {
 #define ACTION(x) [LIVEPATCH_ACTION_##x] = #x
     static const char *const names[] = {
@@ -1671,10 +1732,6 @@ void check_for_livepatch_work(void)
     /* Only do any work when invoked in truly idle state. */
     if ( system_state != SYS_STATE_active ||
          !is_idle_domain(current->sched_unit->domain) )
-        return;
-
-    /* Fast path: no work to do. */
-    if ( !per_cpu(work_to_do, cpu ) )
         return;
 
     smp_rmb();
@@ -1826,6 +1883,17 @@ void check_for_livepatch_work(void)
     }
 }
 
+void check_for_livepatch_work(void)
+{
+    unsigned int cpu = smp_processor_id();
+
+    /* Fast path: no work to do. */
+    if ( likely(!per_cpu(work_to_do, cpu)) )
+        return;
+
+    do_livepatch_work();
+}
+
 /*
  * Only allow dependent payload is applied on top of the correct
  * build-id.
@@ -1836,7 +1904,7 @@ void check_for_livepatch_work(void)
  * Unless the 'internal' parameter is used - in which case we only
  * check against the hypervisor.
  */
-static int build_id_dep(struct payload *payload, bool_t internal)
+static int build_id_dep(struct payload *payload, bool internal)
 {
     const void *id = NULL;
     unsigned int len = 0;
@@ -2057,7 +2125,8 @@ int livepatch_op(struct xen_sysctl_livepatch_op *livepatch)
 {
     int rc;
 
-    if ( livepatch->pad )
+    if ( (livepatch->flags & ~LIVEPATCH_FLAGS_MASK) &&
+         !(livepatch->flags & LIVEPATCH_FLAG_FORCE) )
         return -EINVAL;
 
     switch ( livepatch->cmd )

@@ -15,38 +15,30 @@ extern uint64_t boot_tsc_stamp;
 
 extern void *stack_start;
 
-void early_cpu_init(void);
+void early_cpu_init(bool verbose);
 void early_time_init(void);
 
 void set_nr_cpu_ids(unsigned int max_cpus);
 
-void numa_initmem_init(unsigned long start_pfn, unsigned long end_pfn);
 void arch_init_memory(void);
 void subarch_init_memory(void);
 
 void init_IRQ(void);
 
-#ifdef CONFIG_VIDEO
-void vesa_init(void);
-#else
-static inline void vesa_init(void) {};
-#endif
-
 int construct_dom0(
     struct domain *d,
-    const module_t *kernel, unsigned long kernel_headroom,
+    const module_t *image, unsigned long image_headroom,
     module_t *initrd,
-    char *cmdline);
+    const char *cmdline);
 void setup_io_bitmap(struct domain *d);
 
 unsigned long initial_images_nrpages(nodeid_t node);
 void discard_initial_images(void);
 void *bootstrap_map(const module_t *mod);
 
-int xen_in_range(unsigned long mfn);
+int remove_xen_ranges(struct rangeset *r);
 
-void microcode_grab_module(
-    unsigned long *, const multiboot_info_t *);
+int cf_check stub_selftest(void);
 
 extern uint8_t kbd_shift_flags;
 
@@ -56,7 +48,11 @@ extern uint8_t kbd_shift_flags;
 extern unsigned long highmem_start;
 #endif
 
+extern unsigned int i8259A_alias_mask;
+extern unsigned int pit_alias_mask;
+
 extern int8_t opt_smt;
+extern int8_t opt_probe_port_aliases;
 
 #ifdef CONFIG_SHADOW_PAGING
 extern bool opt_dom0_shadow;

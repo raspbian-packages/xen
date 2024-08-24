@@ -21,7 +21,6 @@
 #include <asm/flushtlb.h>
 #include <asm/hardirq.h>
 #include <asm/hpet.h>
-#include <asm/hvm/support.h>
 #include <asm/setup.h>
 #include <irq_vectors.h>
 #include <mach_apic.h>
@@ -89,7 +88,7 @@ void send_IPI_mask(const cpumask_t *mask, int vector)
      * the system have been accounted for.
      */
     if ( system_state > SYS_STATE_smp_boot &&
-         !unaccounted_cpus && !disabled_cpus &&
+         !unaccounted_cpus && !disabled_cpus && !cpu_in_hotplug_context() &&
          /* NB: get_cpu_maps lock requires enabled interrupts. */
          local_irq_is_enabled() && (cpus_locked = get_cpu_maps()) &&
          (park_offline_cpus ||
@@ -246,7 +245,7 @@ static cpumask_t flush_cpumask;
 static const void *flush_va;
 static unsigned int flush_flags;
 
-void cf_check invalidate_interrupt(struct cpu_user_regs *regs)
+void cf_check invalidate_interrupt(void)
 {
     unsigned int flags = flush_flags;
     ack_APIC_irq();
@@ -388,14 +387,14 @@ void smp_send_nmi_allbutself(void)
     send_IPI_mask(&cpu_online_map, APIC_DM_NMI);
 }
 
-void cf_check event_check_interrupt(struct cpu_user_regs *regs)
+void cf_check event_check_interrupt(void)
 {
     ack_APIC_irq();
     perfc_incr(ipis);
     this_cpu(irq_count)++;
 }
 
-void cf_check call_function_interrupt(struct cpu_user_regs *regs)
+void cf_check call_function_interrupt(void)
 {
     ack_APIC_irq();
     perfc_incr(ipis);

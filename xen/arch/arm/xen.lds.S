@@ -31,8 +31,13 @@ SECTIONS
   . = XEN_VIRT_START;
   _start = .;
   .text : {
-        _stext = .;            /* Text section */
+       _stext = .;             /* Text section */
+       _idmap_start = .;
        *(.text.header)
+       *(.text.idmap)
+       *(.rodata.idmap)
+       *(.data.idmap)
+       _idmap_end = .;
 
        *(.text.cold)
        *(.text.unlikely .text.*_unlikely .text.unlikely.*)
@@ -50,21 +55,15 @@ SECTIONS
   . = ALIGN(PAGE_SIZE);
   .rodata : {
         _srodata = .;          /* Read-only data */
-        /* Bug frames table */
-       __start_bug_frames = .;
-       *(.bug_frames.0)
-       __stop_bug_frames_0 = .;
-       *(.bug_frames.1)
-       __stop_bug_frames_1 = .;
-       *(.bug_frames.2)
-       __stop_bug_frames_2 = .;
-       *(.bug_frames.3)
-       __stop_bug_frames_3 = .;
+
+        BUGFRAMES
+
        *(.rodata)
        *(.rodata.*)
        *(.data.rel.ro)
        *(.data.rel.ro.*)
 
+       . = ALIGN(4);
        __proc_info_start = .;
        *(.proc.info)
        __proc_info_end = .;
@@ -132,12 +131,14 @@ SECTIONS
       _edevice = .;
   } :text
 
+#ifdef CONFIG_ACPI
   . = ALIGN(8);
   .adev.info : {
       _asdevice = .;
       *(.adev.info)
       _aedevice = .;
   } :text
+#endif
 
   . = ALIGN(8);
   .teemediator.info : {
@@ -196,7 +197,6 @@ SECTIONS
   .bss : {                     /* BSS */
        __bss_start = .;
        *(.bss.stack_aligned)
-       . = ALIGN(PAGE_SIZE);
        *(.bss.page_aligned)
        . = ALIGN(PAGE_SIZE);
        __per_cpu_start = .;
@@ -210,6 +210,7 @@ SECTIONS
        . = ALIGN(POINTER_ALIGN);
        __bss_end = .;
   } :text
+  . = ALIGN(PAGE_SIZE);
   _end = . ;
 
   /* Section for the device tree blob (if any). */
@@ -225,13 +226,26 @@ SECTIONS
 }
 
 /*
- * We require that Xen is loaded at a 4K boundary, so this ensures that any
- * code running on the boot time identity map cannot cross a section boundary.
+ * The assembly code use _start and XEN_VIRT_START interchangeably to
+ * match the context.
  */
-ASSERT( _end_boot - start <= PAGE_SIZE, "Boot code is larger than 4K")
+ASSERT(_start == XEN_VIRT_START, "_start != XEN_VIRT_START")
+
+/*
+ * We require that Xen is loaded at a page boundary, so this ensures that any
+ * code running on the identity map cannot cross a section boundary.
+ */
+ASSERT(IS_ALIGNED(_idmap_start, PAGE_SIZE), "_idmap_start should be page-aligned")
+ASSERT(_idmap_end - _idmap_start <= PAGE_SIZE, "Identity mapped code is larger than a page size")
+
 /*
  * __init_[begin|end] MUST be at word size boundary otherwise we cannot
  * write fault instructions in the space properly.
  */
 ASSERT(IS_ALIGNED(__init_begin,     4), "__init_begin is misaligned")
 ASSERT(IS_ALIGNED(__init_end,       4), "__init_end is misaligned")
+ASSERT(IS_ALIGNED(__bss_start,      POINTER_ALIGN), "__bss_start is misaligned")
+ASSERT(IS_ALIGNED(__bss_end,        POINTER_ALIGN), "__bss_end is misaligned")
+/* To simplify the logic in head.S, we want to _end to be page aligned */
+ASSERT(IS_ALIGNED(_end,             PAGE_SIZE), "_end is not page aligned")
+ASSERT((_end - _start) <= XEN_VIRT_SIZE, "Xen is too big")

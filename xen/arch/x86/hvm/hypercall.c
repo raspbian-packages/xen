@@ -1,20 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /******************************************************************************
  * arch/hvm/hypercall.c
  *
  * HVM hypercall dispatching routines
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; If not, see <http://www.gnu.org/licenses/>.
  *
  * Copyright (c) 2017 Citrix Systems Ltd.
  */
@@ -37,7 +25,6 @@ long hvm_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 
     switch ( cmd & MEMOP_CMD_MASK )
     {
-    case XENMEM_machine_memory_map:
     case XENMEM_machphys_mapping:
         return -ENOSYS;
     }
@@ -131,17 +118,17 @@ int hvm_hypercall(struct cpu_user_regs *regs)
             (mode == 8 ? regs->rdi : regs->ebx) == HVMOP_guest_request_vm_event )
             break;
 
-        if ( unlikely(hvm_get_cpl(curr)) )
-        {
+        if ( likely(!hvm_get_cpl(curr)) )
+            break;
+        fallthrough;
     default:
-            regs->rax = -EPERM;
-            return HVM_HCALL_completed;
-        }
+        regs->rax = -EPERM;
+        return HVM_HCALL_completed;
     case 0:
         break;
     }
 
-    if ( (eax & 0x80000000) && is_viridian_domain(currd) )
+    if ( (eax & 0x80000000U) && is_viridian_domain(currd) )
     {
         int ret;
 

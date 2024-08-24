@@ -16,7 +16,6 @@
 #include <asm/paging.h>
 #include <asm/p2m.h>
 #include <asm/apic.h>
-#include <asm/hvm/support.h>
 #include <public/sched.h>
 #include <public/hvm/hvm_op.h>
 
@@ -292,7 +291,7 @@ static void enable_hypercall_page(struct domain *d)
      * calling convention) to differentiate Xen and Viridian hypercalls.
      */
     *(u8  *)(p + 0) = 0x0d; /* orl $0x80000000, %eax */
-    *(u32 *)(p + 1) = 0x80000000;
+    *(u32 *)(p + 1) = 0x80000000U;
     *(u8  *)(p + 5) = 0x0f; /* vmcall/vmmcall */
     *(u8  *)(p + 6) = 0x01;
     *(u8  *)(p + 7) = (cpu_has_vmx ? 0xc1 : 0xd9);
@@ -1146,7 +1145,7 @@ static int cf_check viridian_load_domain_ctxt(
     return 0;
 }
 
-HVM_REGISTER_SAVE_RESTORE(VIRIDIAN_DOMAIN, viridian_save_domain_ctxt,
+HVM_REGISTER_SAVE_RESTORE(VIRIDIAN_DOMAIN, viridian_save_domain_ctxt, NULL,
                           viridian_load_domain_ctxt, 1, HVMSR_PER_DOM);
 
 static int cf_check viridian_save_vcpu_ctxt(
@@ -1189,7 +1188,7 @@ static int cf_check viridian_load_vcpu_ctxt(
     return 0;
 }
 
-HVM_REGISTER_SAVE_RESTORE(VIRIDIAN_VCPU, viridian_save_vcpu_ctxt,
+HVM_REGISTER_SAVE_RESTORE(VIRIDIAN_VCPU, viridian_save_vcpu_ctxt, NULL,
                           viridian_load_vcpu_ctxt, 1, HVMSR_PER_VCPU);
 
 static int __init cf_check parse_viridian_version(const char *arg)

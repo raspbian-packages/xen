@@ -1,19 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
- * vpmu_core2.c: CORE 2 specific PMU virtualization for HVM domain.
+ * vpmu_intel.c: CORE 2 specific PMU virtualization.
  *
  * Copyright (c) 2007, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; If not, see <http://www.gnu.org/licenses/>.
  *
  * Author: Haitao Shan <haitao.shan@intel.com>
  */
@@ -23,13 +12,11 @@
 #include <xen/xenoprof.h>
 #include <asm/system.h>
 #include <asm/regs.h>
-#include <asm/types.h>
 #include <asm/apic.h>
 #include <asm/traps.h>
 #include <asm/msr.h>
 #include <asm/msr-index.h>
 #include <asm/vpmu.h>
-#include <asm/hvm/support.h>
 #include <asm/hvm/vlapic.h>
 #include <asm/hvm/vmx/vmx.h>
 #include <asm/hvm/vmx/vmcs.h>
@@ -65,7 +52,7 @@
 
 /* Alias registers (0x4c1) for full-width writes to PMCs */
 #define MSR_PMC_ALIAS_MASK       (~(MSR_IA32_PERFCTR0 ^ MSR_IA32_A_PERFCTR0))
-static bool_t __read_mostly full_width_write;
+static bool __read_mostly full_width_write;
 
 /*
  * MSR_CORE_PERF_FIXED_CTR_CTRL contains the configuration of all fixed
@@ -103,22 +90,14 @@ static const unsigned int regs_off =
  * 1 (or another value != 0) into it.
  * There exist no errata and the real cause of this behaviour is unknown.
  */
-bool_t __read_mostly is_pmc_quirk;
-
-static void check_pmc_quirk(void)
-{
-    if ( current_cpu_data.x86 == 6 )
-        is_pmc_quirk = 1;
-    else
-        is_pmc_quirk = 0;    
-}
+static bool __ro_after_init pmc_quirk;
 
 static void handle_pmc_quirk(u64 msr_content)
 {
     int i;
     u64 val;
 
-    if ( !is_pmc_quirk )
+    if ( !pmc_quirk )
         return;
 
     val = msr_content;
@@ -628,7 +607,7 @@ static int cf_check core2_vpmu_do_wrmsr(unsigned int msr, uint64_t msr_content)
         tmp = msr - MSR_P6_EVNTSEL(0);
         if ( tmp >= 0 && tmp < arch_pmc_cnt )
         {
-            bool_t blocked = 0;
+            bool blocked = false;
             uint64_t umaskevent = msr_content & MSR_IA32_CMT_EVTSEL_UE_MASK;
             struct xen_pmu_cntr_pair *xen_pmu_cntr_pair =
                 vpmu_reg_pointer(core2_vpmu_cxt, arch_counters);
@@ -793,7 +772,7 @@ static void cf_check core2_vpmu_dump(const struct vcpu *v)
     }
 }
 
-static int cf_check core2_vpmu_do_interrupt(struct cpu_user_regs *regs)
+static int cf_check core2_vpmu_do_interrupt(void)
 {
     struct vcpu *v = current;
     u64 msr_content;
@@ -803,8 +782,9 @@ static int cf_check core2_vpmu_do_interrupt(struct cpu_user_regs *regs)
     rdmsrl(MSR_CORE_PERF_GLOBAL_STATUS, msr_content);
     if ( msr_content )
     {
-        if ( is_pmc_quirk )
+        if ( pmc_quirk )
             handle_pmc_quirk(msr_content);
+
         core2_vpmu_cxt->global_status |= msr_content;
         msr_content &= ~global_ovf_ctrl_mask;
         wrmsrl(MSR_CORE_PERF_GLOBAL_OVF_CTRL, msr_content);
@@ -834,11 +814,11 @@ static void cf_check core2_vpmu_destroy(struct vcpu *v)
     vpmu_clear(vpmu);
 }
 
-static int cf_check vmx_vpmu_initialise(struct vcpu *v)
+static int cf_check core2_vpmu_initialise(struct vcpu *v)
 {
     struct vpmu_struct *vpmu = vcpu_vpmu(v);
     u64 msr_content;
-    static bool_t ds_warned;
+    static bool ds_warned;
 
     if ( v->domain->arch.cpuid->basic.pmu_version <= 1 ||
          v->domain->arch.cpuid->basic.pmu_version >= 6 )
@@ -899,7 +879,7 @@ static int cf_check vmx_vpmu_initialise(struct vcpu *v)
 }
 
 static const struct arch_vpmu_ops __initconst_cf_clobber core2_vpmu_ops = {
-    .initialise = vmx_vpmu_initialise,
+    .initialise = core2_vpmu_initialise,
     .do_wrmsr = core2_vpmu_do_wrmsr,
     .do_rdmsr = core2_vpmu_do_rdmsr,
     .do_interrupt = core2_vpmu_do_interrupt,
@@ -965,7 +945,7 @@ const struct arch_vpmu_ops *__init core2_vpmu_init(void)
     fixed_counters_mask = ~((1ull << core2_get_bitwidth_fix_count()) - 1);
     global_ctrl_mask = ~((((1ULL << fixed_pmc_cnt) - 1) << 32) |
                          ((1ULL << arch_pmc_cnt) - 1));
-    global_ovf_ctrl_mask = ~(0xC000000000000000 |
+    global_ovf_ctrl_mask = ~(0xC000000000000000ULL |
                              (((1ULL << fixed_pmc_cnt) - 1) << 32) |
                              ((1ULL << arch_pmc_cnt) - 1));
     if ( version > 2 )
@@ -979,7 +959,8 @@ const struct arch_vpmu_ops *__init core2_vpmu_init(void)
               sizeof(uint64_t) * fixed_pmc_cnt +
               sizeof(struct xen_pmu_cntr_pair) * arch_pmc_cnt;
 
-    check_pmc_quirk();
+    /* TODO: It's clearly incorrect for this to quirk all Intel Fam6 CPUs. */
+    pmc_quirk = current_cpu_data.x86 == 6;
 
     if ( sizeof(struct xen_pmu_data) + sizeof(uint64_t) * fixed_pmc_cnt +
          sizeof(struct xen_pmu_cntr_pair) * arch_pmc_cnt > PAGE_SIZE )

@@ -426,6 +426,7 @@
 #define HSR_EC_HVC64                0x16
 #define HSR_EC_SMC64                0x17
 #define HSR_EC_SYSREG               0x18
+#define HSR_EC_SVE                  0x19
 #endif
 #define HSR_EC_INSTR_ABORT_LOWER_EL 0x20
 #define HSR_EC_INSTR_ABORT_CURR_EL  0x21
@@ -520,9 +521,9 @@ extern register_t __cpu_logical_map[];
 #define CNTKCTL_EL1_EL0PTEN  (1u<<9) /* Expose phys timer registers to EL0 */
 
 /* Timer control registers */
-#define CNTx_CTL_ENABLE   (1ul<<0)  /* Enable timer */
-#define CNTx_CTL_MASK     (1ul<<1)  /* Mask IRQ */
-#define CNTx_CTL_PENDING  (1ul<<2)  /* IRQ pending */
+#define CNTx_CTL_ENABLE   (1UL<<0)  /* Enable timer */
+#define CNTx_CTL_MASK     (1UL<<1)  /* Mask IRQ */
+#define CNTx_CTL_PENDING  (1UL<<2)  /* IRQ pending */
 
 /* Timer frequency mask */
 #define CNTFRQ_MASK       GENMASK(31, 0)
@@ -557,7 +558,6 @@ extern register_t __cpu_logical_map[];
 #ifndef __ASSEMBLY__
 void panic_PAR(uint64_t par);
 
-void show_execution_state(const struct cpu_user_regs *regs);
 /* Debugging functions are declared with external linkage to aid development. */
 void show_registers(const struct cpu_user_regs *regs);
 void show_stack(const struct cpu_user_regs *regs);
@@ -582,6 +582,8 @@ void do_trap_hyp_serror(struct cpu_user_regs *regs);
 void do_trap_guest_serror(struct cpu_user_regs *regs);
 
 register_t get_default_hcr_flags(void);
+
+register_t get_default_cptr_flags(void);
 
 /*
  * Synchronize SError unless the feature is selected.

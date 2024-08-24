@@ -405,41 +405,9 @@ static int __init parse_ivmd_block(const struct acpi_ivrs_memory *ivmd_block)
         return 0;
     }
 
-    if ( !e820_all_mapped(base, limit + PAGE_SIZE, E820_RESERVED) )
-    {
-        paddr_t addr;
-
-        AMD_IOMMU_WARN("IVMD: [%lx,%lx) is not (entirely) in reserved memory\n",
-                       base, limit + PAGE_SIZE);
-
-        for ( addr = base; addr <= limit; addr += PAGE_SIZE )
-        {
-            unsigned int type = page_get_ram_type(maddr_to_mfn(addr));
-
-            if ( type == RAM_TYPE_UNKNOWN )
-            {
-                if ( e820_add_range(&e820, addr, addr + PAGE_SIZE,
-                                    E820_RESERVED) )
-                    continue;
-                AMD_IOMMU_ERROR("IVMD: page at %lx couldn't be reserved\n",
-                                addr);
-                return -EIO;
-            }
-
-            /*
-             * Types which aren't RAM are considered good enough.
-             * Note that a page being partially RESERVED, ACPI or UNUSABLE will
-             * force Xen into assuming the whole page as having that type in
-             * practice.
-             */
-            if ( type & (RAM_TYPE_RESERVED | RAM_TYPE_ACPI |
-                         RAM_TYPE_UNUSABLE) )
-                continue;
-
-            AMD_IOMMU_ERROR("IVMD: page at %lx can't be converted\n", addr);
-            return -EIO;
-        }
-    }
+    if ( !iommu_unity_region_ok("IVMD", maddr_to_mfn(base),
+                                maddr_to_mfn(limit)) )
+        return -EIO;
 
     if ( ivmd_block->header.flags & ACPI_IVMD_EXCLUSION_RANGE )
         exclusion = true;
@@ -1068,14 +1036,14 @@ static unsigned int __initdata nr_ivmd;
 #define to_ivmd_block(hdr) \
     container_of(hdr, const struct acpi_ivrs_memory, header)
 
-static inline bool_t is_ivhd_block(u8 type)
+static inline bool is_ivhd_block(u8 type)
 {
     return (type == ACPI_IVRS_TYPE_HARDWARE ||
             ((amd_iommu_acpi_info & ACPI_IVRS_EFR_SUP) &&
              type == ACPI_IVRS_TYPE_HARDWARE_11H));
 }
 
-static inline bool_t is_ivmd_block(u8 type)
+static inline bool is_ivmd_block(u8 type)
 {
     return (type == ACPI_IVRS_TYPE_MEMORY_ALL ||
             type == ACPI_IVRS_TYPE_MEMORY_ONE ||
@@ -1107,7 +1075,7 @@ static int __init cf_check parse_ivrs_table(struct acpi_table_header *table)
     const struct acpi_ivrs_header *ivrs_block;
     unsigned long length;
     unsigned int apic, i;
-    bool_t sb_ioapic = !iommu_intremap;
+    bool sb_ioapic = !iommu_intremap;
     int error = 0;
 
     BUG_ON(!table);
@@ -1237,7 +1205,7 @@ static int __init get_last_bdf_ivhd(
     while ( ivhd_block->header.length >=
             (block_length + sizeof(struct acpi_ivrs_de_header)) )
     {
-        ivhd_device = (const void *)((u8 *)ivhd_block + block_length);
+        ivhd_device = (const void *)ivhd_block + block_length;
 
         switch ( ivhd_device->header.type )
         {

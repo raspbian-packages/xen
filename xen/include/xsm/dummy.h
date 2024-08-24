@@ -58,7 +58,7 @@ void __xsm_action_mismatch_detected(void);
 
 #define XSM_DEFAULT_ARG /* */
 #define XSM_DEFAULT_VOID void
-#define XSM_ASSERT_ACTION(def) xsm_default_t action = def; (void)action
+#define XSM_ASSERT_ACTION(def) xsm_default_t action = (def); (void)action
 
 #else /* CONFIG_XSM */
 
@@ -71,7 +71,7 @@ void __xsm_action_mismatch_detected(void);
 #define XSM_INLINE always_inline
 #define XSM_DEFAULT_ARG xsm_default_t action,
 #define XSM_DEFAULT_VOID xsm_default_t action
-#define XSM_ASSERT_ACTION(def) LINKER_BUG_ON(def != action)
+#define XSM_ASSERT_ACTION(def) LINKER_BUG_ON((def) != action)
 
 #endif /* CONFIG_XSM */
 
@@ -83,17 +83,17 @@ static always_inline int xsm_default_action(
         return 0;
     case XSM_TARGET:
         if ( evaluate_nospec(src == target) )
-        {
             return 0;
+        fallthrough;
     case XSM_XS_PRIV:
-            if ( evaluate_nospec(is_xenstore_domain(src)) )
-                return 0;
-        }
-        /* fall through */
+        if ( action == XSM_XS_PRIV &&
+             evaluate_nospec(is_xenstore_domain(src)) )
+            return 0;
+        fallthrough;
     case XSM_DM_PRIV:
         if ( target && evaluate_nospec(src->target == target) )
             return 0;
-        /* fall through */
+        fallthrough;
     case XSM_PRIV:
         if ( is_control_domain(src) )
             return 0;
@@ -162,7 +162,7 @@ static XSM_INLINE int cf_check xsm_set_target(
 }
 
 static XSM_INLINE int cf_check xsm_domctl(
-    XSM_DEFAULT_ARG struct domain *d, int cmd)
+    XSM_DEFAULT_ARG struct domain *d, unsigned int cmd, uint32_t ssidref)
 {
     XSM_ASSERT_ACTION(XSM_OTHER);
     switch ( cmd )

@@ -27,10 +27,11 @@ asm (
     );
 
 #include "defs.h"
-#include "../../../include/xen/multiboot.h"
-#include "../../../include/xen/multiboot2.h"
 
-#include "../../../include/xen/kconfig.h"
+#include <xen/kconfig.h>
+#include <xen/multiboot.h>
+#include <xen/multiboot2.h>
+
 #include <public/arch-x86/hvm/start_info.h>
 
 #ifdef CONFIG_VIDEO
@@ -66,7 +67,7 @@ struct vesa_mode_info {
 };
 #endif /* CONFIG_VIDEO */
 
-#define get_mb2_data(tag, type, member)   (((multiboot2_tag_##type##_t *)(tag))->member)
+#define get_mb2_data(tag, type, member)   (((const multiboot2_tag_##type##_t *)(tag))->member)
 #define get_mb2_string(tag, type, member) ((u32)get_mb2_data(tag, type, member))
 
 static u32 alloc;
@@ -229,6 +230,7 @@ static multiboot_info_t *mbi2_reloc(uint32_t mbi_in, uint32_t video_out)
     /* Put all needed data into mbi_out. */
     for ( tag = _p(ptr); (u32)tag - mbi_in < mbi_fix->total_size;
           tag = _p(ALIGN_UP((u32)tag + tag->size, MULTIBOOT2_TAG_ALIGN)) )
+    {
         switch ( tag->type )
         {
         case MULTIBOOT2_TAG_TYPE_BOOT_LOADER_NAME:
@@ -299,8 +301,8 @@ static multiboot_info_t *mbi2_reloc(uint32_t mbi_in, uint32_t video_out)
                 const struct vesa_mode_info *mi;
 
                 video = _p(video_out);
-                ci = (void *)get_mb2_data(tag, vbe, vbe_control_info);
-                mi = (void *)get_mb2_data(tag, vbe, vbe_mode_info);
+                ci = (const void *)get_mb2_data(tag, vbe, vbe_control_info);
+                mi = (const void *)get_mb2_data(tag, vbe, vbe_mode_info);
 
                 if ( ci->version >= 0x0200 && (mi->attrib & 0x9b) == 0x9b )
                 {
@@ -331,11 +333,12 @@ static multiboot_info_t *mbi2_reloc(uint32_t mbi_in, uint32_t video_out)
 #endif /* CONFIG_VIDEO */
 
         case MULTIBOOT2_TAG_TYPE_END:
-            goto end; /* Cannot "break;" here. */
+            goto end;
 
         default:
             break;
         }
+    }
 
  end:
 
@@ -347,6 +350,7 @@ static multiboot_info_t *mbi2_reloc(uint32_t mbi_in, uint32_t video_out)
     return mbi_out;
 }
 
+/* SAF-1-safe */
 void *__stdcall reloc(uint32_t magic, uint32_t in, uint32_t trampoline,
                       uint32_t video_info)
 {

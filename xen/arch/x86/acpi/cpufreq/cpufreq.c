@@ -35,7 +35,6 @@
 #include <xen/sched.h>
 #include <xen/timer.h>
 #include <xen/xmalloc.h>
-#include <asm/bug.h>
 #include <asm/msr.h>
 #include <asm/io.h>
 #include <asm/processor.h>
@@ -55,17 +54,6 @@ struct acpi_cpufreq_data *cpufreq_drv_data[NR_CPUS];
 
 static bool __read_mostly acpi_pstate_strict;
 boolean_param("acpi_pstate_strict", acpi_pstate_strict);
-
-static int check_est_cpu(unsigned int cpuid)
-{
-    struct cpuinfo_x86 *cpu = &cpu_data[cpuid];
-
-    if (cpu->x86_vendor != X86_VENDOR_INTEL ||
-        !cpu_has(cpu, X86_FEATURE_EIST))
-        return 0;
-
-    return 1;
-}
 
 static unsigned extract_io(u32 value, struct acpi_cpufreq_data *data)
 {
@@ -317,7 +305,7 @@ unsigned int get_measured_perf(unsigned int cpu, unsigned int flag)
     else
         perf_percent = 0;
 
-    return policy->cpuinfo.max_freq * perf_percent / 100;
+    return policy->cpuinfo.perf_freq * perf_percent / 100;
 }
 
 static unsigned int cf_check get_cur_freq_on_cpu(unsigned int cpu)
@@ -340,9 +328,8 @@ static unsigned int cf_check get_cur_freq_on_cpu(unsigned int cpu)
     return extract_freq(get_cur_val(cpumask_of(cpu)), data);
 }
 
-static void cf_check feature_detect(void *info)
+void intel_feature_detect(struct cpufreq_policy *policy)
 {
-    struct cpufreq_policy *policy = info;
     unsigned int eax;
 
     eax = cpuid_eax(6);
@@ -352,6 +339,11 @@ static void cf_check feature_detect(void *info)
             printk(XENLOG_INFO "CPU%u: Turbo Mode detected and enabled\n",
                    smp_processor_id());
     }
+}
+
+static void cf_check feature_detect(void *info)
+{
+    intel_feature_detect(info);
 }
 
 static unsigned int check_freqs(const cpumask_t *mask, unsigned int freq,
@@ -527,7 +519,7 @@ static int cf_check acpi_cpufreq_cpu_init(struct cpufreq_policy *policy)
         if (cpufreq_verbose)
             printk("xen_pminfo: @acpi_cpufreq_cpu_init,"
                    "HARDWARE addr space\n");
-        if (!check_est_cpu(cpu)) {
+        if (!cpu_has(c, X86_FEATURE_EIST)) {
             result = -ENODEV;
             goto err_unreg;
         }
@@ -622,12 +614,14 @@ static int cf_check acpi_cpufreq_cpu_exit(struct cpufreq_policy *policy)
     return 0;
 }
 
-static const struct cpufreq_driver __initconstrel acpi_cpufreq_driver = {
+static const struct cpufreq_driver __initconst_cf_clobber
+acpi_cpufreq_driver = {
     .name   = "acpi-cpufreq",
     .verify = acpi_cpufreq_verify,
     .target = acpi_cpufreq_target,
     .init   = acpi_cpufreq_cpu_init,
     .exit   = acpi_cpufreq_cpu_exit,
+    .get    = get_cur_freq_on_cpu,
 };
 
 static int __init cf_check cpufreq_driver_init(void)
@@ -639,7 +633,26 @@ static int __init cf_check cpufreq_driver_init(void)
         switch ( boot_cpu_data.x86_vendor )
         {
         case X86_VENDOR_INTEL:
-            ret = cpufreq_register_driver(&acpi_cpufreq_driver);
+            ret = -ENOENT;
+
+            for ( unsigned int i = 0; i < cpufreq_xen_cnt; i++ )
+            {
+                switch ( cpufreq_xen_opts[i] )
+                {
+                case CPUFREQ_xen:
+                    ret = cpufreq_register_driver(&acpi_cpufreq_driver);
+                    break;
+                case CPUFREQ_hwp:
+                    ret = hwp_register_driver();
+                    break;
+                case CPUFREQ_none:
+                    ret = 0;
+                    break;
+                }
+
+                if ( ret != -ENODEV )
+                    break;
+            }
             break;
 
         case X86_VENDOR_AMD:
@@ -653,15 +666,25 @@ static int __init cf_check cpufreq_driver_init(void)
 }
 presmp_initcall(cpufreq_driver_init);
 
-int cpufreq_cpu_init(unsigned int cpuid)
+static int __init cf_check cpufreq_driver_late_init(void)
 {
-    int ret;
+    /*
+     * While acpi_cpufreq_driver wants to unconditionally have all hooks
+     * populated for __initconst_cf_clobber to have as much of an effect as
+     * possible, zap the .get hook here (but not in cpufreq_driver_init()),
+     * until acpi_cpufreq_cpu_init() knows whether it's wanted / needed.
+     */
+    cpufreq_driver.get = NULL;
+    return 0;
+}
+__initcall(cpufreq_driver_late_init);
 
+int cpufreq_cpu_init(unsigned int cpu)
+{
     /* Currently we only handle Intel, AMD and Hygon processor */
     if ( boot_cpu_data.x86_vendor &
          (X86_VENDOR_INTEL | X86_VENDOR_AMD | X86_VENDOR_HYGON) )
-        ret = cpufreq_add_cpu(cpuid);
-    else
-        ret = -EFAULT;
-    return ret;
+        return cpufreq_add_cpu(cpu);
+
+    return -EOPNOTSUPP;
 }

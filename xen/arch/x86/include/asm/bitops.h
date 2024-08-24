@@ -401,73 +401,98 @@ static always_inline unsigned int __scanbit(unsigned long val, unsigned int max)
     r__;                                                                    \
 })
 
-/**
- * find_first_set_bit - find the first set bit in @word
- * @word: the word to search
- * 
- * Returns the bit-number of the first set bit. The input must *not* be zero.
- */
-static inline unsigned int find_first_set_bit(unsigned long word)
+static always_inline unsigned int arch_ffs(unsigned int x)
 {
-    asm ( "rep; bsf %1,%0" : "=r" (word) : "rm" (word) );
-    return (unsigned int)word;
-}
+    unsigned int r;
 
-/**
- * ffs - find first bit set
- * @x: the word to search
- *
- * This is defined the same way as the libc and compiler builtin ffs routines.
- */
-static inline int ffsl(unsigned long x)
-{
-    long r;
+    if ( __builtin_constant_p(x > 0) && x > 0 )
+    {
+        /*
+         * A common code pattern is:
+         *
+         *     while ( bits )
+         *     {
+         *         bit = ffs(bits);
+         *         ...
+         *
+         * and the optimiser really can work with the knowledge of x being
+         * non-zero without knowing it's exact value, in which case we don't
+         * need to compensate for BSF's corner cases.  Otherwise...
+         */
+        asm ( "bsf %[val], %[res]"
+              : [res] "=r" (r)
+              : [val] "rm" (x) );
+    }
+    else
+    {
+        /*
+         * ... the AMD manual states that BSF won't modify the destination
+         * register if x=0.  The Intel manual states that the result is
+         * undefined, but the architects have said that the register is
+         * written back with it's old value (zero extended as normal).
+         */
+        asm ( "bsf %[val], %[res]"
+              : [res] "=r" (r)
+              : [val] "rm" (x), "[res]" (-1) );
+    }
 
-    asm ( "bsf %1,%0\n\t"
-          "jnz 1f\n\t"
-          "mov $-1,%0\n"
-          "1:" : "=r" (r) : "rm" (x));
-    return (int)r+1;
-}
-
-static inline int ffs(unsigned int x)
-{
-    int r;
-
-    asm ( "bsf %1,%0\n\t"
-          "jnz 1f\n\t"
-          "mov $-1,%0\n"
-          "1:" : "=r" (r) : "rm" (x));
     return r + 1;
 }
+#define arch_ffs arch_ffs
 
-/**
- * fls - find last bit set
- * @x: the word to search
- *
- * This is defined the same way as ffs.
- */
-static inline int flsl(unsigned long x)
+static always_inline unsigned int arch_ffsl(unsigned long x)
 {
-    long r;
+    unsigned int r;
 
-    asm ( "bsr %1,%0\n\t"
-          "jnz 1f\n\t"
-          "mov $-1,%0\n"
-          "1:" : "=r" (r) : "rm" (x));
-    return (int)r+1;
-}
+    /* See arch_ffs() for safety discussions. */
+    if ( __builtin_constant_p(x > 0) && x > 0 )
+        asm ( "bsf %[val], %q[res]"
+              : [res] "=r" (r)
+              : [val] "rm" (x) );
+    else
+        asm ( "bsf %[val], %q[res]"
+              : [res] "=r" (r)
+              : [val] "rm" (x), "[res]" (-1) );
 
-static inline int fls(unsigned int x)
-{
-    int r;
-
-    asm ( "bsr %1,%0\n\t"
-          "jnz 1f\n\t"
-          "mov $-1,%0\n"
-          "1:" : "=r" (r) : "rm" (x));
     return r + 1;
 }
+#define arch_ffsl arch_ffsl
+
+static always_inline unsigned int arch_fls(unsigned int x)
+{
+    unsigned int r;
+
+    /* See arch_ffs() for safety discussions. */
+    if ( __builtin_constant_p(x > 0) && x > 0 )
+        asm ( "bsr %[val], %[res]"
+              : [res] "=r" (r)
+              : [val] "rm" (x) );
+    else
+        asm ( "bsr %[val], %[res]"
+              : [res] "=r" (r)
+              : [val] "rm" (x), "[res]" (-1) );
+
+    return r + 1;
+}
+#define arch_fls arch_fls
+
+static always_inline unsigned int arch_flsl(unsigned long x)
+{
+    unsigned int r;
+
+    /* See arch_ffs() for safety discussions. */
+    if ( __builtin_constant_p(x > 0) && x > 0 )
+        asm ( "bsr %[val], %q[res]"
+              : [res] "=r" (r)
+              : [val] "rm" (x) );
+    else
+        asm ( "bsr %[val], %q[res]"
+              : [res] "=r" (r)
+              : [val] "rm" (x), "[res]" (-1) );
+
+    return r + 1;
+}
+#define arch_flsl arch_flsl
 
 /**
  * hweightN - returns the hamming weight of a N-bit word

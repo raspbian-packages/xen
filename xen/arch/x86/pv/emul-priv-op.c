@@ -1,22 +1,10 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /******************************************************************************
  * arch/x86/pv/emul-priv-op.c
  *
  * Emulate privileged instructions for PV guests
  *
  * Modifications to Linux original are copyright (c) 2002-2004, K A Fraser
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/domain_page.h>
@@ -124,7 +112,7 @@ static io_emul_stub_t *io_emul_stub_setup(struct priv_op_ctxt *ctxt, u8 opcode,
     /* Some platforms might need to quirk the stub for specific inputs. */
     if ( unlikely(ioemul_handle_quirk) )
     {
-        quirk_bytes = ioemul_handle_quirk(opcode, p, ctxt->ctxt.regs);
+        quirk_bytes = ioemul_handle_proliant_quirk(opcode, p, ctxt->ctxt.regs);
         p += quirk_bytes;
     }
 
@@ -220,7 +208,7 @@ static bool admin_io_okay(unsigned int port, unsigned int bytes,
         return false;
 
     /* We also never permit direct access to the RTC/CMOS registers. */
-    if ( port <= RTC_PORT(1) && port + bytes > RTC_PORT(0) )
+    if ( is_cmos_port(port, bytes, d) )
         return false;
 
     return ioports_access_permitted(d, port, port + bytes - 1);
@@ -290,7 +278,7 @@ static uint32_t guest_io_read(unsigned int port, unsigned int bytes,
         {
             sub_data = pv_pit_handler(port, 0, 0);
         }
-        else if ( port == RTC_PORT(0) || port == RTC_PORT(1) )
+        else if ( is_cmos_port(port, 1, currd) )
         {
             sub_data = rtc_guest_read(port);
         }
@@ -357,6 +345,8 @@ static unsigned int check_guest_io_breakpoint(struct vcpu *v,
         case DR_LEN_4: width = 4; break;
         case DR_LEN_8: width = 8; break;
         }
+
+        start &= ~(width - 1UL);
 
         if ( (start < (port + len)) && ((start + width) > port) )
             match |= 1u << i;
@@ -436,7 +426,7 @@ static void guest_io_write(unsigned int port, unsigned int bytes,
         {
             pv_pit_handler(port, (uint8_t)data, 1);
         }
-        else if ( port == RTC_PORT(0) || port == RTC_PORT(1) )
+        else if ( is_cmos_port(port, 1, currd) )
         {
             rtc_guest_write(port, data);
         }
@@ -609,8 +599,7 @@ static int pv_emul_virt_to_linear(unsigned long base, unsigned long offset,
         rc = X86EMUL_EXCEPTION;
 
     if ( unlikely(rc == X86EMUL_EXCEPTION) )
-        x86_emul_hw_exception(seg != x86_seg_ss ? TRAP_gp_fault
-                                                : TRAP_stack_error,
+        x86_emul_hw_exception(seg != x86_seg_ss ? X86_EXC_GP : X86_EXC_SS,
                               0, ctxt);
 
     return rc;
@@ -645,7 +634,7 @@ static int cf_check rep_ins(
          (sreg.type & (_SEGMENT_CODE >> 8)) ||
          !(sreg.type & (_SEGMENT_WR >> 8)) )
     {
-        x86_emul_hw_exception(TRAP_gp_fault, 0, ctxt);
+        x86_emul_hw_exception(X86_EXC_GP, 0, ctxt);
         return X86EMUL_EXCEPTION;
     }
 
@@ -711,8 +700,7 @@ static int cf_check rep_outs(
          ((sreg.type & (_SEGMENT_CODE >> 8)) &&
           !(sreg.type & (_SEGMENT_WR >> 8))) )
     {
-        x86_emul_hw_exception(seg != x86_seg_ss ? TRAP_gp_fault
-                                                : TRAP_stack_error,
+        x86_emul_hw_exception(seg != x86_seg_ss ? X86_EXC_GP : X86_EXC_SS,
                               0, ctxt);
         return X86EMUL_EXCEPTION;
     }
@@ -867,8 +855,8 @@ static uint64_t guest_efer(const struct domain *d)
 {
     uint64_t val;
 
-    /* Hide unknown bits, and unconditionally hide SVME from guests. */
-    val = read_efer() & EFER_KNOWN_MASK & ~EFER_SVME;
+    /* Hide unknown bits, and unconditionally hide SVME and AIBRSE from guests. */
+    val = read_efer() & EFER_KNOWN_MASK & ~(EFER_SVME | EFER_AIBRSE);
     /*
      * Hide the 64-bit features from 32-bit guests.  SCE has
      * vendor-dependent behaviour.
@@ -893,7 +881,7 @@ static int cf_check read_msr(
     if ( (ret = guest_rdmsr(curr, reg, val)) != X86EMUL_UNHANDLEABLE )
     {
         if ( ret == X86EMUL_EXCEPTION )
-            x86_emul_hw_exception(TRAP_gp_fault, 0, ctxt);
+            x86_emul_hw_exception(X86_EXC_GP, 0, ctxt);
 
         goto done;
     }
@@ -1041,7 +1029,7 @@ static int cf_check write_msr(
     if ( (ret = guest_wrmsr(curr, reg, val)) != X86EMUL_UNHANDLEABLE )
     {
         if ( ret == X86EMUL_EXCEPTION )
-            x86_emul_hw_exception(TRAP_gp_fault, 0, ctxt);
+            x86_emul_hw_exception(X86_EXC_GP, 0, ctxt);
 
         return ret;
     }
@@ -1372,14 +1360,17 @@ int pv_emulate_privileged_op(struct cpu_user_regs *regs)
     switch ( rc )
     {
     case X86EMUL_OKAY:
+        ASSERT(!curr->arch.pv.trap_bounce.flags);
+
         if ( ctxt.ctxt.retire.singlestep )
             ctxt.bpmatch |= DR_STEP;
+
         if ( ctxt.bpmatch )
         {
             curr->arch.dr6 |= ctxt.bpmatch | DR_STATUS_RESERVED_ONE;
-            if ( !(curr->arch.pv.trap_bounce.flags & TBF_EXCEPTION) )
-                pv_inject_hw_exception(TRAP_debug, X86_EVENT_NO_EC);
+            pv_inject_hw_exception(X86_EXC_DB, X86_EVENT_NO_EC);
         }
+
         /* fall through */
     case X86EMUL_RETRY:
         return EXCRET_fault_fixed;

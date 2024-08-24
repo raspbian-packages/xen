@@ -234,7 +234,7 @@ struct xen_add_to_physmap {
 
     unsigned int space; /* => enum phys_map_space */
 
-#define XENMAPIDX_grant_table_status 0x80000000
+#define XENMAPIDX_grant_table_status 0x80000000U
 
     /* Index into space being mapped. */
     xen_ulong_t idx;
@@ -485,7 +485,7 @@ DEFINE_XEN_GUEST_HANDLE(xen_mem_access_op_t);
 #define XENMEM_SHARING_OP_FIELD_IS_GREF_FLAG   (xen_mk_ullong(1) << 62)
 
 #define XENMEM_SHARING_OP_FIELD_MAKE_GREF(field, val)  \
-    (field) = (XENMEM_SHARING_OP_FIELD_IS_GREF_FLAG | val)
+    (field) = (XENMEM_SHARING_OP_FIELD_IS_GREF_FLAG | (val))
 #define XENMEM_SHARING_OP_FIELD_IS_GREF(field)         \
     ((field) & XENMEM_SHARING_OP_FIELD_IS_GREF_FLAG)
 #define XENMEM_SHARING_OP_FIELD_GET_GREF(field)        \

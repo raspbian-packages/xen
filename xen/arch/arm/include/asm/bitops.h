@@ -9,6 +9,8 @@
 #ifndef _ARM_BITOPS_H
 #define _ARM_BITOPS_H
 
+#include <xen/macros.h>
+
 #include <asm/asm_defns.h>
 
 /*
@@ -138,37 +140,10 @@ static inline int test_bit(int nr, const volatile void *addr)
         return 1UL & (p[BITOP_WORD(nr)] >> (nr & (BITOP_BITS_PER_WORD-1)));
 }
 
-/*
- * On ARMv5 and above those functions can be implemented around
- * the clz instruction for much better code efficiency.
- */
-
-static inline int fls(unsigned int x)
-{
-        int ret;
-
-        if (__builtin_constant_p(x))
-               return generic_fls(x);
-
-        asm("clz\t%"__OP32"0, %"__OP32"1" : "=r" (ret) : "r" (x));
-        return 32 - ret;
-}
-
-
-#define ffs(x) ({ unsigned int __t = (x); fls(__t & -__t); })
-#define ffsl(x) ({ unsigned long __t = (x); flsl(__t & -__t); })
-
-/**
- * find_first_set_bit - find the first set bit in @word
- * @word: the word to search
- *
- * Returns the bit-number of the first set bit (first bit being 0).
- * The input must *not* be zero.
- */
-static inline unsigned int find_first_set_bit(unsigned long word)
-{
-        return ffsl(word) - 1;
-}
+#define arch_ffs(x)  ((x) ? 1 + __builtin_ctz(x) : 0)
+#define arch_ffsl(x) ((x) ? 1 + __builtin_ctzl(x) : 0)
+#define arch_fls(x)  ((x) ? 32 - __builtin_clz(x) : 0)
+#define arch_flsl(x) ((x) ? BITS_PER_LONG - __builtin_clzl(x) : 0)
 
 /**
  * hweightN - returns the hamming weight of a N-bit word

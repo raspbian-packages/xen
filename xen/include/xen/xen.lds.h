@@ -6,6 +6,16 @@
  */
 
 /*
+ * Declare a section whose load address is based at PA 0 rather than
+ * Xen's virtual base address.
+ */
+#ifdef CONFIG_LD_IS_GNU
+# define DECL_SECTION(x) x : AT(ADDR(#x) - __XEN_VIRT_START)
+#else
+# define DECL_SECTION(x) x : AT(ADDR(x) - __XEN_VIRT_START)
+#endif
+
+/*
  * To avoid any confusion, please note that the EFI macro does not correspond
  * to EFI support and is used when linking a native EFI (i.e. PE/COFF) binary,
  * hence its usage in this header.
@@ -103,6 +113,23 @@
   }
 
 /* List of constructs other than *_SECTIONS in alphabetical order. */
+
+#define BUGFRAMES                               \
+    __start_bug_frames_0 = .;                   \
+    *(.bug_frames.0)                            \
+    __stop_bug_frames_0 = .;                    \
+                                                \
+    __start_bug_frames_1 = .;                   \
+    *(.bug_frames.1)                            \
+    __stop_bug_frames_1 = .;                    \
+                                                \
+    __start_bug_frames_2 = .;                   \
+    *(.bug_frames.2)                            \
+    __stop_bug_frames_2 = .;                    \
+                                                \
+    __start_bug_frames_3 = .;                   \
+    *(.bug_frames.3)                            \
+    __stop_bug_frames_3 = .;
 
 #ifdef CONFIG_HYPFS
 #define HYPFS_PARAM              \

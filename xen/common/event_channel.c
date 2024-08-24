@@ -36,23 +36,6 @@
 #include <asm/guest.h>
 #endif
 
-#define ERROR_EXIT(_errno)                                          \
-    do {                                                            \
-        gdprintk(XENLOG_WARNING,                                    \
-                "EVTCHNOP failure: error %d\n",                     \
-                (_errno));                                          \
-        rc = (_errno);                                              \
-        goto out;                                                   \
-    } while ( 0 )
-#define ERROR_EXIT_DOM(_errno, _dom)                                \
-    do {                                                            \
-        gdprintk(XENLOG_WARNING,                                    \
-                "EVTCHNOP failure: domain %d, error %d\n",          \
-                (_dom)->domain_id, (_errno));                       \
-        rc = (_errno);                                              \
-        goto out;                                                   \
-    } while ( 0 )
-
 #define consumer_is_xen(e) (!!(e)->xen_consumer)
 
 /*
@@ -62,7 +45,7 @@
  * just assume the event channel is free or unbound at the moment when the
  * evtchn_read_trylock() returns false.
  */
-static inline void evtchn_write_lock(struct evtchn *evtchn)
+static always_inline void evtchn_write_lock(struct evtchn *evtchn)
 {
     write_lock(&evtchn->lock);
 
@@ -336,8 +319,10 @@ int evtchn_alloc_unbound(evtchn_alloc_unbound_t *alloc, evtchn_port_t port)
 
     port = rc = evtchn_get_port(d, port);
     if ( rc < 0 )
-        ERROR_EXIT(rc);
-    rc = 0;
+    {
+        gdprintk(XENLOG_WARNING, "EVTCHNOP failure: error %d\n", rc);
+        goto out;
+    }
 
     chn = evtchn_from_port(d, port);
 
@@ -364,7 +349,8 @@ int evtchn_alloc_unbound(evtchn_alloc_unbound_t *alloc, evtchn_port_t port)
     return rc;
 }
 
-static void double_evtchn_lock(struct evtchn *lchn, struct evtchn *rchn)
+static always_inline void double_evtchn_lock(struct evtchn *lchn,
+                                             struct evtchn *rchn)
 {
     ASSERT(lchn != rchn);
 
@@ -412,17 +398,30 @@ int evtchn_bind_interdomain(evtchn_bind_interdomain_t *bind, struct domain *ld,
 
     lport = rc = evtchn_get_port(ld, lport);
     if ( rc < 0 )
-        ERROR_EXIT(rc);
+    {
+        gdprintk(XENLOG_WARNING, "EVTCHNOP failure: error %d\n", rc);
+        goto out;
+    }
+
     rc = 0;
 
     lchn = evtchn_from_port(ld, lport);
 
     rchn = _evtchn_from_port(rd, rport);
     if ( !rchn )
-        ERROR_EXIT_DOM(-EINVAL, rd);
+    {
+        rc = -EINVAL;
+        gdprintk(XENLOG_WARNING, "EVTCHNOP failure: %pd, error %d\n", rd, rc);
+        goto out;
+    }
+
     if ( (rchn->state != ECS_UNBOUND) ||
          (rchn->u.unbound.remote_domid != ld->domain_id) )
-        ERROR_EXIT_DOM(-EINVAL, rd);
+    {
+        rc = -EINVAL;
+        gdprintk(XENLOG_WARNING, "EVTCHNOP failure: %pd, error %d\n", rd, rc);
+        goto out;
+    }
 
     rc = xsm_evtchn_interdomain(XSM_HOOK, ld, lchn, rd, rchn);
     if ( rc )
@@ -487,11 +486,19 @@ int evtchn_bind_virq(evtchn_bind_virq_t *bind, evtchn_port_t port)
     write_lock(&d->event_lock);
 
     if ( read_atomic(&v->virq_to_evtchn[virq]) )
-        ERROR_EXIT(-EEXIST);
+    {
+        rc = -EEXIST;
+        gdprintk(XENLOG_WARNING, "EVTCHNOP failure: error %d\n", rc);
+        goto out;
+    }
 
     port = rc = evtchn_get_port(d, port);
     if ( rc < 0 )
-        ERROR_EXIT(rc);
+    {
+        gdprintk(XENLOG_WARNING, "EVTCHNOP failure: error %d\n", rc);
+        goto out;
+    }
+
     rc = 0;
 
     chn = evtchn_from_port(d, port);
@@ -535,7 +542,11 @@ static int evtchn_bind_ipi(evtchn_bind_ipi_t *bind)
     write_lock(&d->event_lock);
 
     if ( (port = get_free_port(d)) < 0 )
-        ERROR_EXIT(port);
+    {
+        rc = port;
+        gdprintk(XENLOG_WARNING, "EVTCHNOP failure: error %d\n", rc);
+        goto out;
+    }
 
     chn = evtchn_from_port(d, port);
 
@@ -555,6 +566,7 @@ static int evtchn_bind_ipi(evtchn_bind_ipi_t *bind)
     return rc;
 }
 
+#ifdef CONFIG_HAS_PIRQ
 
 static void link_pirq_port(int port, struct evtchn *chn, struct vcpu *v)
 {
@@ -580,9 +592,11 @@ static void unlink_pirq_port(struct evtchn *chn, struct vcpu *v)
             chn->u.pirq.prev_port;
 }
 
+#endif /* CONFIG_HAS_PIRQ */
 
 static int evtchn_bind_pirq(evtchn_bind_pirq_t *bind)
 {
+#ifdef CONFIG_HAS_PIRQ
     struct evtchn *chn;
     struct domain *d = current->domain;
     struct vcpu   *v = d->vcpu[0];
@@ -599,16 +613,29 @@ static int evtchn_bind_pirq(evtchn_bind_pirq_t *bind)
     write_lock(&d->event_lock);
 
     if ( pirq_to_evtchn(d, pirq) != 0 )
-        ERROR_EXIT(-EEXIST);
+    {
+        rc = -EEXIST;
+        gdprintk(XENLOG_WARNING, "EVTCHNOP failure: error %d\n", rc);
+        goto out;
+    }
 
     if ( (port = get_free_port(d)) < 0 )
-        ERROR_EXIT(port);
+    {
+        rc = port;
+        gdprintk(XENLOG_WARNING, "EVTCHNOP failure: error %d\n", rc);
+        goto out;
+    }
 
     chn = evtchn_from_port(d, port);
 
     info = pirq_get_info(d, pirq);
     if ( !info )
-        ERROR_EXIT(-ENOMEM);
+    {
+        rc = -ENOMEM;
+        gdprintk(XENLOG_WARNING, "EVTCHNOP failure: error %d\n", rc);
+        goto out;
+    }
+
     info->evtchn = port;
     rc = (!is_hvm_domain(d)
           ? pirq_guest_bind(v, info,
@@ -639,6 +666,9 @@ static int evtchn_bind_pirq(evtchn_bind_pirq_t *bind)
     write_unlock(&d->event_lock);
 
     return rc;
+#else /* !CONFIG_HAS_PIRQ */
+    return -EOPNOTSUPP;
+#endif
 }
 
 
@@ -671,6 +701,7 @@ int evtchn_close(struct domain *d1, int port1, bool guest)
     case ECS_UNBOUND:
         break;
 
+#ifdef CONFIG_HAS_PIRQ
     case ECS_PIRQ: {
         struct pirq *pirq = pirq_info(d1, chn1->u.pirq.irq);
 
@@ -679,15 +710,19 @@ int evtchn_close(struct domain *d1, int port1, bool guest)
             if ( !is_hvm_domain(d1) )
                 pirq_guest_unbind(d1, pirq);
             pirq->evtchn = 0;
-            pirq_cleanup_check(pirq, d1);
-#ifdef CONFIG_X86
-            if ( is_hvm_domain(d1) && domain_pirq_to_irq(d1, pirq->pirq) > 0 )
-                unmap_domain_pirq_emuirq(d1, pirq->pirq);
-#endif
+            if ( !is_hvm_domain(d1) ||
+                 domain_pirq_to_irq(d1, pirq->pirq) <= 0 ||
+                 unmap_domain_pirq_emuirq(d1, pirq->pirq) < 0 )
+                /*
+                 * The successful path of unmap_domain_pirq_emuirq() will have
+                 * called pirq_cleanup_check() already.
+                 */
+                pirq_cleanup_check(pirq, d1);
         }
         unlink_pirq_port(chn1, d1->vcpu[chn1->notify_vcpu_id]);
         break;
     }
+#endif
 
     case ECS_VIRQ: {
         struct vcpu *v;
@@ -823,6 +858,7 @@ int evtchn_send(struct domain *ld, unsigned int lport)
         break;
     default:
         ret = -EINVAL;
+        break;
     }
 
 out:
@@ -1010,12 +1046,6 @@ int evtchn_status(evtchn_status_t *status)
 
     read_lock(&d->event_lock);
 
-    if ( consumer_is_xen(chn) )
-    {
-        rc = -EACCES;
-        goto out;
-    }
-
     rc = xsm_evtchn_status(XSM_TARGET, d, chn);
     if ( rc )
         goto out;
@@ -1097,6 +1127,8 @@ int evtchn_bind_vcpu(evtchn_port_t port, unsigned int vcpu_id)
     case ECS_INTERDOMAIN:
         chn->notify_vcpu_id = v->vcpu_id;
         break;
+
+#ifdef CONFIG_HAS_PIRQ
     case ECS_PIRQ:
         if ( chn->notify_vcpu_id == v->vcpu_id )
             break;
@@ -1106,6 +1138,8 @@ int evtchn_bind_vcpu(evtchn_port_t port, unsigned int vcpu_id)
                           cpumask_of(v->processor));
         link_pirq_port(port, chn, v);
         break;
+#endif
+
     default:
         rc = -EINVAL;
         break;

@@ -31,6 +31,7 @@ dt_irq_xlate_func dt_irq_xlate;
 struct dt_device_node *dt_host;
 /* Interrupt controller node*/
 const struct dt_device_node *dt_interrupt_controller;
+DEFINE_RWLOCK(dt_host_lock);
 
 /**
  * struct dt_alias_prop - Alias property in 'aliases' node
@@ -77,7 +78,7 @@ struct dt_bus
 {
     const char *name;
     const char *addresses;
-    bool_t (*match)(const struct dt_device_node *node);
+    bool (*match)(const struct dt_device_node *node);
     void (*count_cells)(const struct dt_device_node *child,
                         int *addrc, int *sizec);
     u64 (*map)(__be32 *addr, const __be32 *range, int na, int ns, int pna);
@@ -85,11 +86,11 @@ struct dt_bus
     unsigned int (*get_flags)(const __be32 *addr);
 };
 
-void dt_get_range(const __be32 **cell, const struct dt_device_node *np,
+void dt_get_range(const __be32 **cellp, const struct dt_device_node *np,
                   u64 *address, u64 *size)
 {
-    *address = dt_next_cell(dt_n_addr_cells(np), cell);
-    *size = dt_next_cell(dt_n_size_cells(np), cell);
+    *address = dt_next_cell(dt_n_addr_cells(np), cellp);
+    *size = dt_next_cell(dt_n_size_cells(np), cellp);
 }
 
 void dt_set_cell(__be32 **cellp, int size, u64 val)
@@ -161,8 +162,8 @@ const void *dt_get_property(const struct dt_device_node *np,
     return pp ? pp->value : NULL;
 }
 
-bool_t dt_property_read_u32(const struct dt_device_node *np,
-                         const char *name, u32 *out_value)
+bool dt_property_read_u32(const struct dt_device_node *np,
+                          const char *name, u32 *out_value)
 {
     u32 len;
     const __be32 *val;
@@ -177,8 +178,8 @@ bool_t dt_property_read_u32(const struct dt_device_node *np,
 }
 
 
-bool_t dt_property_read_u64(const struct dt_device_node *np,
-                         const char *name, u64 *out_value)
+bool dt_property_read_u64(const struct dt_device_node *np,
+                          const char *name, u64 *out_value)
 {
     u32 len;
     const __be32 *val;
@@ -296,8 +297,8 @@ int dt_property_match_string(const struct dt_device_node *np,
     return -ENODATA;
 }
 
-bool_t dt_device_is_compatible(const struct dt_device_node *device,
-                               const char *compat)
+bool dt_device_is_compatible(const struct dt_device_node *device,
+                             const char *compat)
 {
     const char* cp;
     u32 cplen, l;
@@ -317,10 +318,10 @@ bool_t dt_device_is_compatible(const struct dt_device_node *device,
     return 0;
 }
 
-bool_t dt_machine_is_compatible(const char *compat)
+bool dt_machine_is_compatible(const char *compat)
 {
     const struct dt_device_node *root;
-    bool_t rc = 0;
+    bool rc = false;
 
     root = dt_find_node_by_path("/");
     if ( root )
@@ -358,11 +359,12 @@ struct dt_device_node *dt_find_node_by_type(struct dt_device_node *from,
     return np;
 }
 
-struct dt_device_node *dt_find_node_by_path(const char *path)
+struct dt_device_node *dt_find_node_by_path_from(struct dt_device_node *from,
+                                                 const char *path)
 {
     struct dt_device_node *np;
 
-    dt_for_each_device_node(dt_host, np)
+    dt_for_each_device_node(from, np)
         if ( np->full_name && (dt_node_cmp(np->full_name, path) == 0) )
             break;
 
@@ -406,9 +408,9 @@ dt_match_node(const struct dt_device_match *matches,
         return NULL;
 
     while ( matches->path || matches->type ||
-            matches->compatible || matches->not_available || matches->prop)
+            matches->compatible || matches->not_available || matches->prop )
     {
-        bool_t match = 1;
+        bool match = true;
 
         if ( matches->path )
             match &= dt_node_path_is_equal(node, matches->path);
@@ -479,7 +481,7 @@ dt_find_matching_node(struct dt_device_node *from,
     return NULL;
 }
 
-static int __dt_n_addr_cells(const struct dt_device_node *np, bool_t parent)
+static int __dt_n_addr_cells(const struct dt_device_node *np, bool parent)
 {
     const __be32 *ip;
 
@@ -496,7 +498,7 @@ static int __dt_n_addr_cells(const struct dt_device_node *np, bool_t parent)
     return DT_ROOT_NODE_ADDR_CELLS_DEFAULT;
 }
 
-static int __dt_n_size_cells(const struct dt_device_node *np, bool_t parent)
+static int __dt_n_size_cells(const struct dt_device_node *np, bool parent)
 {
     const __be32 *ip;
 
@@ -556,7 +558,7 @@ int dt_child_n_size_cells(const struct dt_device_node *parent)
 /*
  * Default translator (generic bus)
  */
-static bool_t dt_bus_default_match(const struct dt_device_node *node)
+static bool dt_bus_default_match(const struct dt_device_node *node)
 {
     /* Root node doesn't have "ranges" property */
     if ( node->parent == NULL )
@@ -634,7 +636,7 @@ static bool dt_node_is_pci(const struct dt_device_node *np)
     return is_pci;
 }
 
-static bool_t dt_bus_pci_match(const struct dt_device_node *np)
+static bool dt_bus_pci_match(const struct dt_device_node *np)
 {
     /*
      * "pciex" is PCI Express "vci" is for the /chaos bridge on 1st-gen PCI
@@ -955,11 +957,47 @@ int dt_device_get_address(const struct dt_device_node *dev, unsigned int index,
     return 0;
 }
 
+int dt_device_get_paddr(const struct dt_device_node *dev, unsigned int index,
+                        paddr_t *addr, paddr_t *size)
+{
+    uint64_t dt_addr, dt_size;
+    int ret;
+
+    ret = dt_device_get_address(dev, index, &dt_addr, &dt_size);
+    if ( ret )
+        return ret;
+
+    if ( !addr )
+        return -EINVAL;
+
+    if ( dt_addr != (paddr_t)dt_addr )
+    {
+        printk("Error: Physical address 0x%"PRIx64" for node=%s is greater than max width (%zu bytes) supported\n",
+               dt_addr, dev->name, sizeof(paddr_t));
+        return -ERANGE;
+    }
+
+    *addr = dt_addr;
+
+    if ( size )
+    {
+        if ( dt_size != (paddr_t)dt_size )
+        {
+            printk("Error: Physical size 0x%"PRIx64" for node=%s is greater than max width (%zu bytes) supported\n",
+                   dt_size, dev->name, sizeof(paddr_t));
+            return -ERANGE;
+        }
+
+        *size = dt_size;
+    }
+
+    return ret;
+}
 
 int dt_for_each_range(const struct dt_device_node *dev,
-                      int (*cb)(const struct dt_device_node *,
-                                u64 addr, u64 length,
-                                void *),
+                      int (*cb)(const struct dt_device_node *dev,
+                                uint64_t addr, uint64_t length,
+                                void *data),
                       void *data)
 {
     const struct dt_device_node *parent = NULL;
@@ -1021,7 +1059,7 @@ int dt_for_each_range(const struct dt_device_node *dev,
 
     for ( ; rlen >= rone; rlen -= rone, ranges += rone )
     {
-        u64 a, s;
+        uint64_t a, s;
         int ret;
 
         memcpy(addr, ranges + na, 4 * pna);
@@ -1161,9 +1199,9 @@ unsigned int dt_number_of_address(const struct dt_device_node *dev)
 }
 
 int dt_for_each_irq_map(const struct dt_device_node *dev,
-                        int (*cb)(const struct dt_device_node *,
-                                  const struct dt_irq *,
-                                  void *),
+                        int (*cb)(const struct dt_device_node *dev,
+                                  const struct dt_irq *dt_irq,
+                                  void *data),
                         void *data)
 {
     const struct dt_device_node *ipar, *tnode, *old = NULL;
@@ -1624,7 +1662,7 @@ int dt_device_get_irq(const struct dt_device_node *device, unsigned int index,
     return dt_irq_translate(&raw, out_irq);
 }
 
-bool_t dt_device_is_available(const struct dt_device_node *device)
+bool dt_device_is_available(const struct dt_device_node *device)
 {
     const char *status;
     u32 statlen;
@@ -1642,7 +1680,7 @@ bool_t dt_device_is_available(const struct dt_device_node *device)
     return 0;
 }
 
-bool_t dt_device_for_passthrough(const struct dt_device_node *device)
+bool dt_device_for_passthrough(const struct dt_device_node *device)
 {
     return (dt_find_property(device, "xen,passthrough", NULL) != NULL);
 
@@ -1811,12 +1849,12 @@ int dt_count_phandle_with_args(const struct dt_device_node *np,
  * @allnextpp: pointer to ->allnext from last allocated device_node
  * @fpsize: Size of the node path up at the current depth.
  */
-static unsigned long __init unflatten_dt_node(const void *fdt,
-                                              unsigned long mem,
-                                              unsigned long *p,
-                                              struct dt_device_node *dad,
-                                              struct dt_device_node ***allnextpp,
-                                              unsigned long fpsize)
+static unsigned long unflatten_dt_node(const void *fdt,
+                                       unsigned long mem,
+                                       unsigned long *p,
+                                       struct dt_device_node *dad,
+                                       struct dt_device_node ***allnextpp,
+                                       unsigned long fpsize)
 {
     struct dt_device_node *np;
     struct dt_property *pp, **prev_pp = NULL;
@@ -2046,18 +2084,7 @@ static unsigned long __init unflatten_dt_node(const void *fdt,
     return mem;
 }
 
-/**
- * __unflatten_device_tree - create tree of device_nodes from flat blob
- *
- * unflattens a device-tree, creating the
- * tree of struct device_node. It also fills the "name" and "type"
- * pointers of the nodes so the normal device-tree walking functions
- * can be used.
- * @fdt: The fdt to expand
- * @mynodes: The device_node tree created by the call
- */
-static void __init __unflatten_device_tree(const void *fdt,
-                                           struct dt_device_node **mynodes)
+int unflatten_device_tree(const void *fdt, struct dt_device_node **mynodes)
 {
     unsigned long start, mem, size;
     struct dt_device_node **allnextp = mynodes;
@@ -2072,14 +2099,19 @@ static void __init __unflatten_device_tree(const void *fdt,
     /* First pass, scan for size */
     start = ((unsigned long)fdt) + fdt_off_dt_struct(fdt);
     size = unflatten_dt_node(fdt, 0, &start, NULL, NULL, 0);
+    if ( !size )
+        return -EINVAL;
+
     size = (size | 3) + 1;
 
     dt_dprintk("  size is %#lx allocating...\n", size);
 
     /* Allocate memory for the expanded device tree */
     mem = (unsigned long)_xmalloc (size + 4, __alignof__(struct dt_device_node));
+    if ( !mem )
+        return -ENOMEM;
 
-    ((__be32 *)mem)[size / 4] = cpu_to_be32(0xdeadbeef);
+    ((__be32 *)mem)[size / 4] = cpu_to_be32(0xdeadbeefU);
 
     dt_dprintk("  unflattening %lx...\n", mem);
 
@@ -2087,14 +2119,26 @@ static void __init __unflatten_device_tree(const void *fdt,
     start = ((unsigned long)fdt) + fdt_off_dt_struct(fdt);
     unflatten_dt_node(fdt, mem, &start, NULL, &allnextp, 0);
     if ( be32_to_cpup((__be32 *)start) != FDT_END )
-        printk(XENLOG_WARNING "Weird tag at end of tree: %08x\n",
+    {
+        printk(XENLOG_ERR "Weird tag at end of tree: %08x\n",
                   *((u32 *)start));
-    if ( be32_to_cpu(((__be32 *)mem)[size / 4]) != 0xdeadbeef )
-        printk(XENLOG_WARNING "End of tree marker overwritten: %08x\n",
+        xfree((void *)mem);
+        return -EINVAL;
+    }
+
+    if ( be32_to_cpu(((__be32 *)mem)[size / 4]) != 0xdeadbeefU )
+    {
+        printk(XENLOG_ERR "End of tree marker overwritten: %08x\n",
                   be32_to_cpu(((__be32 *)mem)[size / 4]));
+        xfree((void *)mem);
+        return -EINVAL;
+    }
+
     *allnextp = NULL;
 
     dt_dprintk(" <- unflatten_device_tree()\n");
+
+    return 0;
 }
 
 static void dt_alias_add(struct dt_alias_prop *ap,
@@ -2179,7 +2223,11 @@ dt_find_interrupt_controller(const struct dt_device_match *matches)
 
 void __init dt_unflatten_host_device_tree(void)
 {
-    __unflatten_device_tree(device_tree_flattened, &dt_host);
+    int error = unflatten_device_tree(device_tree_flattened, &dt_host);
+
+    if ( error )
+        panic("unflatten_device_tree failed with error %d\n", error);
+
     dt_alias_scan();
 }
 

@@ -12,6 +12,7 @@
 
 #define FORMAT "pei-x86-64"
 #undef __XEN_VIRT_START
+#undef DECL_SECTION
 #define __XEN_VIRT_START __image_base__
 #define DECL_SECTION(x) x :
 
@@ -20,11 +21,6 @@ ENTRY(efi_start)
 #else /* !EFI */
 
 #define FORMAT "elf64-x86-64"
-#ifdef CONFIG_LD_IS_GNU
-# define DECL_SECTION(x) x : AT(ADDR(#x) - __XEN_VIRT_START)
-#else
-# define DECL_SECTION(x) x : AT(ADDR(x) - __XEN_VIRT_START)
-#endif
 
 ENTRY(start_pa)
 
@@ -131,16 +127,7 @@ SECTIONS
        . = ALIGN(PAGE_SIZE);
        __ro_after_init_end = .;
 
-       /* Bug frames table */
-       __start_bug_frames = .;
-       *(.bug_frames.0)
-       __stop_bug_frames_0 = .;
-       *(.bug_frames.1)
-       __stop_bug_frames_1 = .;
-       *(.bug_frames.2)
-       __stop_bug_frames_2 = .;
-       *(.bug_frames.3)
-       __stop_bug_frames_3 = .;
+       BUGFRAMES
 
        *(.rodata)
        *(.rodata.*)

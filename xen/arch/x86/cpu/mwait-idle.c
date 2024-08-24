@@ -1,20 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * mwait_idle.c - native hardware idle loop for modern processors
  *
  * Copyright (c) 2013, Intel Corporation.
  * Len Brown <len.brown@intel.com>
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 /*
@@ -973,7 +962,7 @@ static void cf_check mwait_idle(void)
 		lapic_timer_off();
 
 	before = alternative_call(cpuidle_get_tick);
-	TRACE_4D(TRC_PM_IDLE_ENTRY, cx->type, before, exp, pred);
+	TRACE_TIME(TRC_PM_IDLE_ENTRY, cx->type, before, exp, pred);
 
 	update_last_cx_stat(power, cx, before);
 
@@ -997,8 +986,8 @@ static void cf_check mwait_idle(void)
 
 	local_irq_enable();
 
-	TRACE_6D(TRC_PM_IDLE_EXIT, cx->type, after,
-		irq_traced[0], irq_traced[1], irq_traced[2], irq_traced[3]);
+	TRACE_TIME(TRC_PM_IDLE_EXIT, cx->type, after,
+		   irq_traced[0], irq_traced[1], irq_traced[2], irq_traced[3]);
 
 	if (!(lapic_timer_reliable_states & (1 << cx->type)))
 		lapic_timer_on();
@@ -1537,7 +1526,7 @@ static int cf_check mwait_idle_cpu_init(
 		dev = processor_powers[cpu];
 		if (!rc && cpuidle_current_governor->enable)
 			rc = cpuidle_current_governor->enable(dev);
-		return !rc ? NOTIFY_DONE : notifier_from_errno(rc);
+		return notifier_from_errno(rc);
 
 	case CPU_ONLINE:
 		if (!dev)

@@ -294,9 +294,12 @@ static int cf_check apply_microcode(const struct microcode_patch *patch)
 
     result = microcode_update_match(patch);
 
-    if ( result != NEW_UCODE &&
-         !(opt_ucode_allow_same && result == SAME_UCODE) )
+    if ( result == MIS_UCODE )
         return -EINVAL;
+
+    if ( result == OLD_UCODE ||
+         (result == SAME_UCODE && !opt_ucode_allow_same) )
+        return -EEXIST;
 
     wbinvd();
 
@@ -328,7 +331,7 @@ static int cf_check apply_microcode(const struct microcode_patch *patch)
 }
 
 static struct microcode_patch *cf_check cpu_request_microcode(
-    const void *buf, size_t size)
+    const void *buf, size_t size, bool make_copy)
 {
     int error = 0;
     const struct microcode_patch *saved = NULL;
@@ -368,10 +371,15 @@ static struct microcode_patch *cf_check cpu_request_microcode(
 
     if ( saved )
     {
-        patch = xmemdup_bytes(saved, get_totalsize(saved));
+        if ( make_copy )
+        {
+            patch = xmemdup_bytes(saved, get_totalsize(saved));
 
-        if ( !patch )
-            error = -ENOMEM;
+            if ( !patch )
+                error = -ENOMEM;
+        }
+        else
+            patch = (struct microcode_patch *)saved;
     }
 
     if ( error && !patch )
@@ -380,9 +388,30 @@ static struct microcode_patch *cf_check cpu_request_microcode(
     return patch;
 }
 
-const struct microcode_ops __initconst_cf_clobber intel_ucode_ops = {
+static bool __init can_load_microcode(void)
+{
+    uint64_t mcu_ctrl;
+
+    if ( !cpu_has_mcu_ctrl )
+        return true;
+
+    rdmsrl(MSR_MCU_CONTROL, mcu_ctrl);
+
+    /* If DIS_MCU_LOAD is set applying microcode updates won't work */
+    return !(mcu_ctrl & MCU_CONTROL_DIS_MCU_LOAD);
+}
+
+static const struct microcode_ops __initconst_cf_clobber intel_ucode_ops = {
     .cpu_request_microcode            = cpu_request_microcode,
     .collect_cpu_info                 = collect_cpu_info,
     .apply_microcode                  = apply_microcode,
     .compare_patch                    = compare_patch,
 };
+
+void __init ucode_probe_intel(struct microcode_ops *ops)
+{
+    *ops = intel_ucode_ops;
+
+    if ( !can_load_microcode() )
+        ops->apply_microcode = NULL;
+}

@@ -4,16 +4,15 @@
  * Copyright (c) 2002-2005, K A Fraser
  */
 
-#include <xen/console.h>
 #include <xen/domain.h>
 #include <xen/domain_page.h>
 #include <xen/init.h>
 #include <xen/libelf.h>
 #include <xen/multiboot.h>
-#include <xen/paging.h>
 #include <xen/pfn.h>
 #include <xen/sched.h>
 #include <xen/softirq.h>
+#include <xen/vga.h>
 
 #include <asm/bzimage.h>
 #include <asm/dom0_build.h>
@@ -359,7 +358,7 @@ int __init dom0_construct_pv(struct domain *d,
                              const module_t *image,
                              unsigned long image_headroom,
                              module_t *initrd,
-                             char *cmdline)
+                             const char *cmdline)
 {
     int i, rc, order, machine;
     bool compatible, compat;
@@ -460,7 +459,12 @@ int __init dom0_construct_pv(struct domain *d,
     compat = is_pv_32bit_domain(d);
 
     if ( elf_64bit(&elf) && machine == EM_X86_64 )
+    {
         compatible = true;
+
+        /* Zap meaningless setting which kernels may carry by mistake. */
+        parms.pae = 0;
+    }
 
     if ( elf_msb(&elf) )
         compatible = false;
@@ -491,12 +495,12 @@ int __init dom0_construct_pv(struct domain *d,
 
     nr_pages = dom0_compute_nr_pages(d, &parms, initrd_len);
 
-    if ( parms.pae == XEN_PAE_EXTCR3 )
-            set_bit(VMASST_TYPE_pae_extended_cr3, &d->vm_assist);
-
 #ifdef CONFIG_PV32
     if ( elf_32bit(&elf) )
     {
+        if ( parms.pae == XEN_PAE_EXTCR3 )
+            __set_bit(VMASST_TYPE_pae_extended_cr3, &d->vm_assist);
+
         if ( !pv_shim && (parms.virt_hv_start_low != UNSET_ADDR) )
         {
             unsigned long value = ROUNDUP(parms.virt_hv_start_low,
@@ -595,7 +599,10 @@ int __init dom0_construct_pv(struct domain *d,
         vphysmap_start = parms.p2m_base;
         vphysmap_end   = vphysmap_start + nr_pages * sizeof(unsigned long);
     }
-    page = alloc_domheap_pages(d, order, MEMF_no_scrub);
+    page = alloc_domheap_pages(d, order,
+                               MEMF_no_scrub |
+                               (VM_ASSIST(d, pae_extended_cr3) ||
+                                !compat ? 0 : MEMF_bits(32)));
     if ( page == NULL )
         panic("Not enough RAM for domain 0 allocation\n");
     alloc_spfn = mfn_x(page_to_mfn(page));
@@ -804,11 +811,8 @@ int __init dom0_construct_pv(struct domain *d,
 
     d->arch.paging.mode = 0;
 
-    /* Set up CR3 value for write_ptbase */
-    if ( paging_mode_enabled(d) )
-        paging_update_paging_modes(v);
-    else
-        update_cr3(v);
+    /* Set up CR3 value for switch_cr3_cr4(). */
+    update_cr3(v);
 
     /* We run on dom0's page tables for the final part of the build process. */
     switch_cr3_cr4(cr3_pa(v->arch.cr3), read_cr4());
@@ -821,6 +825,8 @@ int __init dom0_construct_pv(struct domain *d,
     rc = elf_load_binary(&elf);
     if ( rc < 0 )
     {
+        mapcache_override_current(NULL);
+        switch_cr3_cr4(current->arch.cr3, read_cr4());
         printk("Failed to load the kernel binary\n");
         goto out;
     }
@@ -1040,8 +1046,7 @@ int __init dom0_construct_pv(struct domain *d,
 
 out:
     if ( elf_check_broken(&elf) )
-        printk(XENLOG_WARNING "Dom0 kernel broken ELF: %s\n",
-               elf_check_broken(&elf));
+        printk("%pd kernel: broken ELF: %s\n", d, elf_check_broken(&elf));
 
     return rc;
 }

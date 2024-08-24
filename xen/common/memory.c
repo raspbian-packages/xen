@@ -28,6 +28,7 @@
 #include <asm/current.h>
 #include <asm/hardirq.h>
 #include <asm/p2m.h>
+#include <asm/page.h>
 #include <public/memory.h>
 #include <xsm/xsm.h>
 
@@ -474,15 +475,15 @@ static void decrease_reservation(struct memop_args *a)
         if ( tb_init_done )
         {
             struct {
-                u64 gfn;
-                int d:16,order:16;
+                uint64_t gfn;
+                uint32_t d, order;
             } t;
 
             t.gfn = gmfn;
             t.d = a->domain->domain_id;
             t.order = a->extent_order;
         
-            __trace_var(TRC_MEM_DECREASE_RESERVATION, 0, sizeof(t), &t);
+            trace(TRC_MEM_DECREASE_RESERVATION, sizeof(t), &t);
         }
 
         /* See if populate-on-demand wants to handle this */
@@ -756,7 +757,7 @@ static long memory_exchange(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
                              MEMF_no_refcount) )
             {
                 unsigned long dec_count;
-                bool_t drop_dom_ref;
+                bool drop_dom_ref;
 
                 /*
                  * Pages in in_chunk_list is stolen without
@@ -769,10 +770,10 @@ static long memory_exchange(XEN_GUEST_HANDLE_PARAM(xen_memory_exchange_t) arg)
                               (1UL << in_chunk_order)) -
                              (j * (1UL << exch.out.extent_order)));
 
-                spin_lock(&d->page_alloc_lock);
+                nrspin_lock(&d->page_alloc_lock);
                 drop_dom_ref = (dec_count &&
                                 !domain_adjust_tot_pages(d, -dec_count));
-                spin_unlock(&d->page_alloc_lock);
+                nrspin_unlock(&d->page_alloc_lock);
 
                 if ( drop_dom_ref )
                     put_domain(d);
@@ -1120,7 +1121,7 @@ static long xatp_permission_check(struct domain *d, unsigned int space)
     return xsm_add_to_physmap(XSM_TARGET, current->domain, d);
 }
 
-unsigned int ioreq_server_max_frames(const struct domain *d)
+static unsigned int ioreq_server_max_frames(const struct domain *d)
 {
     unsigned int nr = 0;
 

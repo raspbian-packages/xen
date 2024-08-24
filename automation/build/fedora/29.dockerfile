@@ -1,4 +1,5 @@
-FROM fedora:29
+# syntax=docker/dockerfile:1
+FROM --platform=linux/amd64 fedora:29
 LABEL maintainer.name="The Xen Project" \
       maintainer.email="xen-devel@lists.xenproject.org"
 
@@ -9,13 +10,10 @@ RUN dnf -y install \
         gcc-c++ \
         ncurses-devel \
         zlib-devel \
-        openssl-devel \
         python-devel \
         python3-devel \
         libuuid-devel \
         pkgconfig \
-        # gettext for Xen < 4.13
-        gettext \
         flex \
         bison \
         libaio-devel \
@@ -23,8 +21,6 @@ RUN dnf -y install \
         yajl-devel \
         pixman-devel \
         glibc-devel \
-        # glibc-devel.i686 for Xen < 4.15
-        glibc-devel.i686 \
         make \
         binutils \
         git \

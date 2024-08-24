@@ -68,7 +68,7 @@ cd ../..
 cat >> binaries/pxelinux.0 << EOF
 #!ipxe
 
-kernel xen console=com1
+kernel xen console=com1 console_timestamps=boot
 module bzImage console=hvc0
 module xen-rootfs.cpio.gz
 boot
@@ -77,15 +77,16 @@ EOF
 # Run the test
 rm -f smoke.serial
 set +e
-timeout -k 1 720 \
-qemu-system-x86_64 \
+export QEMU_CMD="qemu-system-x86_64 \
     -cpu qemu64,+svm \
     -m 2G -smp 2 \
     -monitor none -serial stdio \
     -nographic \
     -device virtio-net-pci,netdev=n0 \
-    -netdev user,id=n0,tftp=binaries,bootfile=/pxelinux.0 |& tee smoke.serial
+    -netdev user,id=n0,tftp=binaries,bootfile=/pxelinux.0"
 
-set -e
-(grep -q "Domain-0" smoke.serial && grep -q "BusyBox" smoke.serial) || exit 1
-exit 0
+export QEMU_LOG="smoke.serial"
+export LOG_MSG="Domain-0"
+export PASSED="BusyBox"
+
+./automation/scripts/qemu-key.exp

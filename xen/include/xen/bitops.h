@@ -1,6 +1,10 @@
-#ifndef _LINUX_BITOPS_H
-#define _LINUX_BITOPS_H
-#include <asm/types.h>
+#ifndef XEN_BITOPS_H
+#define XEN_BITOPS_H
+
+#include <xen/compiler.h>
+#include <xen/types.h>
+
+#include <asm/bitops.h>
 
 /*
  * Create a contiguous bitmask starting at bit position @l and ending at
@@ -13,121 +17,132 @@
     (((~0ULL) << (l)) & (~0ULL >> (BITS_PER_LLONG - 1 - (h))))
 
 /*
- * ffs: find first bit set. This is defined the same way as
- * the libc and compiler builtin ffs routines, therefore
- * differs in spirit from the above ffz (man ffs).
+ * Find First/Last Set bit (all forms).
+ *
+ * Bits are labelled from 1.  Returns 0 if given 0.
  */
+unsigned int __pure generic_ffsl(unsigned long x);
+unsigned int __pure generic_flsl(unsigned long x);
 
-static inline int generic_ffs(int x)
+static always_inline __pure unsigned int ffs(unsigned int x)
 {
-    int r = 1;
+    if ( __builtin_constant_p(x) )
+        return __builtin_ffs(x);
 
-    if (!x)
-        return 0;
-    if (!(x & 0xffff)) {
-        x >>= 16;
-        r += 16;
-    }
-    if (!(x & 0xff)) {
-        x >>= 8;
-        r += 8;
-    }
-    if (!(x & 0xf)) {
-        x >>= 4;
-        r += 4;
-    }
-    if (!(x & 3)) {
-        x >>= 2;
-        r += 2;
-    }
-    if (!(x & 1)) {
-        x >>= 1;
-        r += 1;
-    }
-    return r;
-}
-
-/*
- * fls: find last bit set.
- */
-
-static __inline__ int generic_fls(int x)
-{
-    int r = 32;
-
-    if (!x)
-        return 0;
-    if (!(x & 0xffff0000u)) {
-        x <<= 16;
-        r -= 16;
-    }
-    if (!(x & 0xff000000u)) {
-        x <<= 8;
-        r -= 8;
-    }
-    if (!(x & 0xf0000000u)) {
-        x <<= 4;
-        r -= 4;
-    }
-    if (!(x & 0xc0000000u)) {
-        x <<= 2;
-        r -= 2;
-    }
-    if (!(x & 0x80000000u)) {
-        x <<= 1;
-        r -= 1;
-    }
-    return r;
-}
-
-#if BITS_PER_LONG == 64
-
-static inline int generic_ffsl(unsigned long x)
-{
-    return !x || (u32)x ? generic_ffs(x) : generic_ffs(x >> 32) + 32;
-}
-
-static inline int generic_flsl(unsigned long x)
-{
-    u32 h = x >> 32;
-
-    return h ? generic_fls(h) + 32 : generic_fls(x);
-}
-
+#ifdef arch_ffs
+    return arch_ffs(x);
 #else
-# define generic_ffsl generic_ffs
-# define generic_flsl generic_fls
+    return generic_ffsl(x);
+#endif
+}
+
+static always_inline __pure unsigned int ffsl(unsigned long x)
+{
+    if ( __builtin_constant_p(x) )
+        return __builtin_ffsl(x);
+
+#ifdef arch_ffs
+    return arch_ffsl(x);
+#else
+    return generic_ffsl(x);
+#endif
+}
+
+static always_inline __pure unsigned int ffs64(uint64_t x)
+{
+    if ( BITS_PER_LONG == 64 )
+        return ffsl(x);
+    else
+        return !x || (uint32_t)x ? ffs(x) : ffs(x >> 32) + 32;
+}
+
+static always_inline __pure unsigned int fls(unsigned int x)
+{
+    if ( __builtin_constant_p(x) )
+        return x ? 32 - __builtin_clz(x) : 0;
+
+#ifdef arch_fls
+    return arch_fls(x);
+#else
+    return generic_flsl(x);
+#endif
+}
+
+static always_inline __pure unsigned int flsl(unsigned long x)
+{
+    if ( __builtin_constant_p(x) )
+        return x ? BITS_PER_LONG - __builtin_clzl(x) : 0;
+
+#ifdef arch_fls
+    return arch_flsl(x);
+#else
+    return generic_flsl(x);
+#endif
+}
+
+static always_inline __pure unsigned int fls64(uint64_t x)
+{
+    if ( BITS_PER_LONG == 64 )
+        return flsl(x);
+    else
+    {
+        uint32_t h = x >> 32;
+
+        return h ? fls(h) + 32 : fls(x);
+    }
+}
+
+/* --------------------- Please tidy below here --------------------- */
+
+#ifndef find_next_bit
+/**
+ * find_next_bit - find the next set bit in a memory region
+ * @addr: The address to base the search on
+ * @offset: The bitnumber to start searching at
+ * @size: The bitmap size in bits
+ */
+extern unsigned long find_next_bit(const unsigned long *addr,
+                                   unsigned long size,
+                                   unsigned long offset);
 #endif
 
-/*
- * Include this here because some architectures need generic_ffs/fls in
- * scope
+#ifndef find_next_zero_bit
+/**
+ * find_next_zero_bit - find the next cleared bit in a memory region
+ * @addr: The address to base the search on
+ * @offset: The bitnumber to start searching at
+ * @size: The bitmap size in bits
  */
-#include <asm/bitops.h>
-
-#if BITS_PER_LONG == 64
-# define fls64 flsl
-# define ffs64 ffsl
-#else
-# ifndef ffs64
-static inline int generic_ffs64(__u64 x)
-{
-    return !x || (__u32)x ? ffs(x) : ffs(x >> 32) + 32;
-}
-#  define ffs64 generic_ffs64
-# endif
-# ifndef fls64
-static inline int generic_fls64(__u64 x)
-{
-    __u32 h = x >> 32;
-
-    return h ? fls(h) + 32 : fls(x);
-}
-#  define fls64 generic_fls64
-# endif
+extern unsigned long find_next_zero_bit(const unsigned long *addr,
+                                        unsigned long size,
+                                        unsigned long offset);
 #endif
 
-static __inline__ int get_bitmask_order(unsigned int count)
+#ifndef find_first_bit
+/**
+ * find_first_bit - find the first set bit in a memory region
+ * @addr: The address to start the search at
+ * @size: The maximum size to search
+ *
+ * Returns the bit number of the first set bit.
+ */
+extern unsigned long find_first_bit(const unsigned long *addr,
+                                    unsigned long size);
+#endif
+
+#ifndef find_first_zero_bit
+/**
+ * find_first_zero_bit - find the first cleared bit in a memory region
+ * @addr: The address to start the search at
+ * @size: The maximum size to search
+ *
+ * Returns the bit number of the first cleared bit.
+ */
+extern unsigned long find_first_zero_bit(const unsigned long *addr,
+                                         unsigned long size);
+#endif
+
+static inline int get_bitmask_order(unsigned int count)
 {
     int order;
     
@@ -135,7 +150,7 @@ static __inline__ int get_bitmask_order(unsigned int count)
     return order;   /* We could be slightly more clever with -1 here... */
 }
 
-static __inline__ int get_count_order(unsigned int count)
+static inline int get_count_order(unsigned int count)
 {
     int order;
 
@@ -186,12 +201,12 @@ static inline unsigned int generic_hweight64(uint64_t w)
     if ( BITS_PER_LONG < 64 )
         return generic_hweight32(w >> 32) + generic_hweight32(w);
 
-    w -= (w >> 1) & 0x5555555555555555ul;
-    w =  (w & 0x3333333333333333ul) + ((w >> 2) & 0x3333333333333333ul);
-    w =  (w + (w >> 4)) & 0x0f0f0f0f0f0f0f0ful;
+    w -= (w >> 1) & 0x5555555555555555UL;
+    w =  (w & 0x3333333333333333UL) + ((w >> 2) & 0x3333333333333333UL);
+    w =  (w + (w >> 4)) & 0x0f0f0f0f0f0f0f0fUL;
 
     if ( IS_ENABLED(CONFIG_HAS_FAST_MULTIPLY) )
-        return (w * 0x0101010101010101ul) >> 56;
+        return (w * 0x0101010101010101UL) >> 56;
 
     w += w >> 8;
     w += w >> 16;
@@ -199,7 +214,7 @@ static inline unsigned int generic_hweight64(uint64_t w)
     return (w + (w >> 32)) & 0xFF;
 }
 
-static inline unsigned long hweight_long(unsigned long w)
+static inline unsigned int hweight_long(unsigned long w)
 {
     return sizeof(w) == 4 ? generic_hweight32(w) : generic_hweight64(w);
 }
@@ -227,11 +242,11 @@ static inline __u32 ror32(__u32 word, unsigned int shift)
 }
 
 /* base-2 logarithm */
-#define __L2(_x)  (((_x) & 0x00000002) ?   1 : 0)
-#define __L4(_x)  (((_x) & 0x0000000c) ? ( 2 + __L2( (_x)>> 2)) : __L2( _x))
-#define __L8(_x)  (((_x) & 0x000000f0) ? ( 4 + __L4( (_x)>> 4)) : __L4( _x))
-#define __L16(_x) (((_x) & 0x0000ff00) ? ( 8 + __L8( (_x)>> 8)) : __L8( _x))
-#define ilog2(_x) (((_x) & 0xffff0000) ? (16 + __L16((_x)>>16)) : __L16(_x))
+#define __L2(x)  (((x) & 0x00000002U) ?   1                     : 0)
+#define __L4(x)  (((x) & 0x0000000cU) ? ( 2 + __L2( (x) >> 2))  : __L2( x))
+#define __L8(x)  (((x) & 0x000000f0U) ? ( 4 + __L4( (x) >> 4))  : __L4( x))
+#define __L16(x) (((x) & 0x0000ff00U) ? ( 8 + __L8( (x) >> 8))  : __L8( x))
+#define ilog2(x) (((x) & 0xffff0000U) ? (16 + __L16((x) >> 16)) : __L16(x))
 
 /**
  * for_each_set_bit - iterate over every set bit in a memory region
@@ -246,4 +261,4 @@ static inline __u32 ror32(__u32 word, unsigned int shift)
 
 #define BIT_WORD(nr) ((nr) / BITS_PER_LONG)
 
-#endif
+#endif /* XEN_BITOPS_H */

@@ -14,6 +14,7 @@
 #include <xen/multiboot.h>
 #include <xen/param.h>
 #include <xen/pci_regs.h>
+#include <xen/pdx.h>
 #include <xen/pfn.h>
 #if EFI_PAGE_SIZE != PAGE_SIZE
 # error Cannot use xen/pfn.h here!
@@ -34,13 +35,13 @@
 #define EFI_REVISION(major, minor) (((major) << 16) | (minor))
 
 #define SMBIOS3_TABLE_GUID \
-  { 0xf2fd1544, 0x9794, 0x4a2c, {0x99, 0x2e, 0xe5, 0xbb, 0xcf, 0x20, 0xe3, 0x94} }
+  { 0xf2fd1544U, 0x9794, 0x4a2c, {0x99, 0x2e, 0xe5, 0xbb, 0xcf, 0x20, 0xe3, 0x94} }
 #define SHIM_LOCK_PROTOCOL_GUID \
-  { 0x605dab50, 0xe046, 0x4300, {0xab, 0xb6, 0x3d, 0xd8, 0x10, 0xdd, 0x8b, 0x23} }
+  { 0x605dab50U, 0xe046, 0x4300, {0xab, 0xb6, 0x3d, 0xd8, 0x10, 0xdd, 0x8b, 0x23} }
 #define APPLE_PROPERTIES_PROTOCOL_GUID \
-  { 0x91bd12fe, 0xf6c3, 0x44fb, { 0xa5, 0xb7, 0x51, 0x22, 0xab, 0x30, 0x3a, 0xe0} }
+  { 0x91bd12feU, 0xf6c3, 0x44fb, {0xa5, 0xb7, 0x51, 0x22, 0xab, 0x30, 0x3a, 0xe0} }
 #define EFI_SYSTEM_RESOURCE_TABLE_GUID    \
-  { 0xb122a263, 0x3661, 0x4f68, {0x99, 0x29, 0x78, 0xf8, 0xb0, 0xd6, 0x21, 0x80} }
+  { 0xb122a263U, 0x3661, 0x4f68, {0x99, 0x29, 0x78, 0xf8, 0xb0, 0xd6, 0x21, 0x80} }
 #define EFI_SYSTEM_RESOURCE_TABLE_FIRMWARE_RESOURCE_VERSION 1
 
 typedef struct {
@@ -528,10 +529,10 @@ static char * __init split_string(char *s)
     return NULL;
 }
 
-static char *__init get_value(const struct file *cfg, const char *section,
+static char *__init get_value(const struct file *file, const char *section,
                               const char *item)
 {
-    char *ptr = cfg->str, *end = ptr + cfg->size;
+    char *ptr = file->str, *end = ptr + file->size;
     size_t slen = section ? strlen(section) : 0, ilen = strlen(item);
     bool match = !slen;
 
@@ -821,9 +822,9 @@ static bool __init read_section(const EFI_LOADED_IMAGE *image,
     return true;
 }
 
-static void __init pre_parse(const struct file *cfg)
+static void __init pre_parse(const struct file *file)
 {
-    char *ptr = cfg->str, *end = ptr + cfg->size;
+    char *ptr = file->str, *end = ptr + file->size;
     bool start = true, comment = false;
 
     for ( ; ptr < end; ++ptr )
@@ -844,7 +845,7 @@ static void __init pre_parse(const struct file *cfg)
         else
             start = 0;
     }
-    if ( cfg->size && end[-1] )
+    if ( file->size && end[-1] )
          PrintStr(L"No newline at end of config file,"
                    " last line will be ignored.\r\n");
 }
@@ -1247,14 +1248,15 @@ static void __init efi_exit_boot(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *Syste
 #endif
 
     /* Adjust pointers into EFI. */
-    efi_ct = (void *)efi_ct + DIRECTMAP_VIRT_START;
-    efi_rs = (void *)efi_rs + DIRECTMAP_VIRT_START;
+    efi_ct = (const void *)efi_ct + DIRECTMAP_VIRT_START;
+    efi_rs = (const void *)efi_rs + DIRECTMAP_VIRT_START;
     efi_memmap = (void *)efi_memmap + DIRECTMAP_VIRT_START;
-    efi_fw_vendor = (void *)efi_fw_vendor + DIRECTMAP_VIRT_START;
+    efi_fw_vendor = (const void *)efi_fw_vendor + DIRECTMAP_VIRT_START;
 }
 
-void EFIAPI __init noreturn
-efi_start(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
+/* SAF-1-safe */
+void EFIAPI __init noreturn efi_start(EFI_HANDLE ImageHandle,
+                                      EFI_SYSTEM_TABLE *SystemTable)
 {
     static EFI_GUID __initdata loaded_image_guid = LOADED_IMAGE_PROTOCOL;
     static EFI_GUID __initdata shim_lock_guid = SHIM_LOCK_PROTOCOL_GUID;
@@ -1343,6 +1345,15 @@ efi_start(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 
         if ( !base_video )
             efi_console_set_mode();
+    }
+    else
+    {
+        /*
+         * Some compilers may emit a false "uninitialized use" warning for argc,
+         * so initialize argc/argv here to avoid the warning.
+         */
+        argc = 0;
+        argv = NULL;
     }
 
     PrintStr(L"Xen " XEN_VERSION_STRING XEN_EXTRAVERSION
@@ -1451,21 +1462,8 @@ efi_start(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
             }
         }
 
-        /*
-         * EFI_LOAD_OPTION does not supply an image name as first component:
-         * Make one up.
-         */
-        if ( argc && !*argv )
-        {
-            EFI_FILE_HANDLE handle = get_parent_handle(loaded_image,
-                                                       &file_name);
-
-            handle->Close(handle);
-            *argv = file_name;
-        }
-
         name.s = get_value(&cfg, section.s, "options");
-        efi_arch_handle_cmdline(argc ? *argv : NULL, options, name.s);
+        efi_arch_handle_cmdline(options, name.s);
 
         if ( !base_video )
         {
@@ -1636,9 +1634,11 @@ static __init void copy_mapping(unsigned long mfn, unsigned long end,
 
 static bool __init cf_check ram_range_valid(unsigned long smfn, unsigned long emfn)
 {
+    paddr_t ram_base = pfn_to_paddr(smfn);
+    unsigned long ram_npages = emfn - smfn;
     unsigned long sz = pfn_to_pdx(emfn - 1) / PDX_GROUP_COUNT + 1;
 
-    return !(smfn & pfn_hole_mask) &&
+    return pdx_is_region_compressible(ram_base, ram_npages) &&
            find_next_bit(pdx_group_valid, sz,
                          pfn_to_pdx(smfn) / PDX_GROUP_COUNT) < sz;
 }
@@ -1664,7 +1664,7 @@ void __init efi_init_memory(void)
     if ( !efi_enabled(EFI_BOOT) )
         return;
 
-    printk(XENLOG_INFO "EFI memory map:%s\n",
+    printk(XENLOG_DEBUG "EFI memory map:%s\n",
            map_bs ? " (mapping BootServices)" : "");
     for ( i = 0; i < efi_memmap_size; i += efi_mdesc_size )
     {
@@ -1672,9 +1672,11 @@ void __init efi_init_memory(void)
         u64 len = desc->NumberOfPages << EFI_PAGE_SHIFT;
         unsigned long smfn, emfn;
         unsigned int prot = PAGE_HYPERVISOR_RWX;
+        paddr_t mem_base;
+        unsigned long mem_npages;
 
-        printk(XENLOG_INFO " %013" PRIx64 "-%013" PRIx64
-                           " type=%u attr=%016" PRIx64 "\n",
+        printk(XENLOG_DEBUG " %013" PRIx64 "-%013" PRIx64
+                            " type=%u attr=%016" PRIx64 "\n",
                desc->PhysicalStart, desc->PhysicalStart + len - 1,
                desc->Type, desc->Attribute);
 
@@ -1723,24 +1725,27 @@ void __init efi_init_memory(void)
         smfn = PFN_DOWN(desc->PhysicalStart);
         emfn = PFN_UP(desc->PhysicalStart + len);
 
+        mem_base = pfn_to_paddr(smfn);
+        mem_npages = emfn - smfn;
+
         if ( desc->Attribute & EFI_MEMORY_WB )
-            /* nothing */;
+            prot |= _PAGE_WB;
         else if ( desc->Attribute & EFI_MEMORY_WT )
-            prot |= _PAGE_PWT | MAP_SMALL_PAGES;
+            prot |= _PAGE_WT | MAP_SMALL_PAGES;
         else if ( desc->Attribute & EFI_MEMORY_WC )
-            prot |= _PAGE_PAT | MAP_SMALL_PAGES;
+            prot |= _PAGE_WC | MAP_SMALL_PAGES;
         else if ( desc->Attribute & (EFI_MEMORY_UC | EFI_MEMORY_UCE) )
-            prot |= _PAGE_PWT | _PAGE_PCD | MAP_SMALL_PAGES;
+            prot |= _PAGE_UC | MAP_SMALL_PAGES;
         else if ( efi_bs_revision >= EFI_REVISION(2, 5) &&
                   (desc->Attribute & EFI_MEMORY_WP) )
-            prot |= _PAGE_PAT | _PAGE_PWT | MAP_SMALL_PAGES;
+            prot |= _PAGE_WP | MAP_SMALL_PAGES;
         else
         {
             printk(XENLOG_ERR "Unknown cachability for MFNs %#lx-%#lx%s\n",
                    smfn, emfn - 1, efi_map_uc ? ", assuming UC" : "");
             if ( !efi_map_uc )
                 continue;
-            prot |= _PAGE_PWT | _PAGE_PCD | MAP_SMALL_PAGES;
+            prot |= _PAGE_UC | MAP_SMALL_PAGES;
         }
 
         if ( desc->Attribute & (efi_bs_revision < EFI_REVISION(2, 5)
@@ -1750,8 +1755,7 @@ void __init efi_init_memory(void)
             prot |= _PAGE_NX;
 
         if ( pfn_to_pdx(emfn - 1) < (DIRECTMAP_SIZE >> PAGE_SHIFT) &&
-             !(smfn & pfn_hole_mask) &&
-             !((smfn ^ (emfn - 1)) & ~pfn_pdx_bottom_mask) )
+             pdx_is_region_compressible(mem_base, mem_npages) )
         {
             if ( (unsigned long)mfn_to_virt(emfn - 1) >= HYPERVISOR_VIRT_END )
                 prot &= ~_PAGE_GLOBAL;

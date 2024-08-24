@@ -20,6 +20,7 @@
 #include <asm/p2m.h>
 #include <asm/setup.h>
 #include <asm/spec_ctrl.h>
+#include <io_ports.h>
 
 struct memsize {
     long nr_pages;
@@ -266,42 +267,30 @@ bool __initdata opt_dom0_pvh = !IS_ENABLED(CONFIG_PV);
 bool __initdata opt_dom0_verbose = IS_ENABLED(CONFIG_VERBOSE_DEBUG);
 bool __initdata opt_dom0_msr_relaxed;
 
-static int __init cf_check parse_dom0_param(const char *s)
+int __init parse_arch_dom0_param(const char *s, const char *e)
 {
-    const char *ss;
-    int rc = 0;
+    int val;
 
-    do {
-        int val;
-
-        ss = strchr(s, ',');
-        if ( !ss )
-            ss = strchr(s, '\0');
-
-        if ( IS_ENABLED(CONFIG_PV) && !cmdline_strcmp(s, "pv") )
-            opt_dom0_pvh = false;
-        else if ( IS_ENABLED(CONFIG_HVM) && !cmdline_strcmp(s, "pvh") )
-            opt_dom0_pvh = true;
+    if ( IS_ENABLED(CONFIG_PV) && !cmdline_strcmp(s, "pv") )
+        opt_dom0_pvh = false;
+    else if ( IS_ENABLED(CONFIG_HVM) && !cmdline_strcmp(s, "pvh") )
+        opt_dom0_pvh = true;
 #ifdef CONFIG_SHADOW_PAGING
-        else if ( (val = parse_boolean("shadow", s, ss)) >= 0 )
-            opt_dom0_shadow = val;
+    else if ( (val = parse_boolean("shadow", s, e)) >= 0 )
+        opt_dom0_shadow = val;
 #endif
-        else if ( (val = parse_boolean("verbose", s, ss)) >= 0 )
-            opt_dom0_verbose = val;
-        else if ( IS_ENABLED(CONFIG_PV) &&
-                  (val = parse_boolean("cpuid-faulting", s, ss)) >= 0 )
-            opt_dom0_cpuid_faulting = val;
-        else if ( (val = parse_boolean("msr-relaxed", s, ss)) >= 0 )
-            opt_dom0_msr_relaxed = val;
-        else
-            rc = -EINVAL;
+    else if ( (val = parse_boolean("verbose", s, e)) >= 0 )
+        opt_dom0_verbose = val;
+    else if ( IS_ENABLED(CONFIG_PV) &&
+              (val = parse_boolean("cpuid-faulting", s, e)) >= 0 )
+        opt_dom0_cpuid_faulting = val;
+    else if ( (val = parse_boolean("msr-relaxed", s, e)) >= 0 )
+        opt_dom0_msr_relaxed = val;
+    else
+        return -EINVAL;
 
-        s = ss + 1;
-    } while ( *ss );
-
-    return rc;
+    return 0;
 }
-custom_param("dom0", parse_dom0_param);
 
 static char __initdata opt_dom0_ioports_disable[200] = "";
 string_param("dom0_ioports_disable", opt_dom0_ioports_disable);
@@ -479,7 +468,7 @@ static void __init process_dom0_ioports_disable(struct domain *dom0)
 int __init dom0_setup_permissions(struct domain *d)
 {
     unsigned long mfn;
-    unsigned int i;
+    unsigned int i, offs;
     int rc;
 
     if ( pv_shim )
@@ -492,22 +481,55 @@ int __init dom0_setup_permissions(struct domain *d)
 
     /* Modify I/O port access permissions. */
 
-    /* Master Interrupt Controller (PIC). */
-    rc |= ioports_deny_access(d, 0x20, 0x21);
-    /* Slave Interrupt Controller (PIC). */
-    rc |= ioports_deny_access(d, 0xA0, 0xA1);
+    for ( offs = 0, i = ISOLATE_LSB(i8259A_alias_mask) ?: 2;
+          offs <= i8259A_alias_mask; offs += i )
+    {
+        if ( offs & ~i8259A_alias_mask )
+            continue;
+        /* Master Interrupt Controller (PIC). */
+        rc |= ioports_deny_access(d, 0x20 + offs, 0x21 + offs);
+        /* Slave Interrupt Controller (PIC). */
+        rc |= ioports_deny_access(d, 0xA0 + offs, 0xA1 + offs);
+    }
+
+    /* ELCR of both PICs. */
+    rc |= ioports_deny_access(d, 0x4D0, 0x4D1);
+
     /* Interval Timer (PIT). */
-    rc |= ioports_deny_access(d, 0x40, 0x43);
+    for ( offs = 0, i = ISOLATE_LSB(pit_alias_mask) ?: 4;
+          offs <= pit_alias_mask; offs += i )
+        if ( !(offs & ~pit_alias_mask) )
+            rc |= ioports_deny_access(d, PIT_CH0 + offs, PIT_MODE + offs);
+
     /* PIT Channel 2 / PC Speaker Control. */
     rc |= ioports_deny_access(d, 0x61, 0x61);
+
+    /* INIT# and alternative A20M# control. */
+    rc |= ioports_deny_access(d, 0x92, 0x92);
+
+    /* IGNNE# control. */
+    rc |= ioports_deny_access(d, 0xF0, 0xF0);
+
     /* ACPI PM Timer. */
     if ( pmtmr_ioport )
         rc |= ioports_deny_access(d, pmtmr_ioport, pmtmr_ioport + 3);
-    /* PCI configuration space (NB. 0xcf8 has special treatment). */
-    rc |= ioports_deny_access(d, 0xcfc, 0xcff);
+
+    /* Reset control. */
+    rc |= ioports_deny_access(d, 0xCF9, 0xCF9);
+
+    /* PCI configuration space (NB. 0xCF8 has special treatment). */
+    rc |= ioports_deny_access(d, 0xCFC, 0xCFF);
+
 #ifdef CONFIG_HVM
     if ( is_hvm_domain(d) )
     {
+        /* ISA DMA controller, channels 0-3 (incl possible aliases). */
+        rc |= ioports_deny_access(d, 0x00, 0x1F);
+        /* ISA DMA controller, page registers (incl various reserved ones). */
+        rc |= ioports_deny_access(d, 0x80 + !!hvm_port80_allowed, 0x8F);
+        /* ISA DMA controller, channels 4-7 (incl usual aliases). */
+        rc |= ioports_deny_access(d, 0xC0, 0xDF);
+
         /* HVM debug console IO port. */
         rc |= ioports_deny_access(d, XEN_HVM_DEBUGCONS_IOPORT,
                                   XEN_HVM_DEBUGCONS_IOPORT);
@@ -549,7 +571,7 @@ int __init dom0_setup_permissions(struct domain *d)
     for ( i = 0; i < e820.nr_map; i++ )
     {
         unsigned long sfn, efn;
-        sfn = max_t(unsigned long, paddr_to_pfn(e820.map[i].addr), 0x100ul);
+        sfn = max_t(unsigned long, paddr_to_pfn(e820.map[i].addr), 0x100UL);
         efn = paddr_to_pfn(e820.map[i].addr + e820.map[i].size - 1);
         if ( (e820.map[i].type == E820_UNUSABLE) &&
              (e820.map[i].size != 0) &&
@@ -576,7 +598,7 @@ int __init dom0_setup_permissions(struct domain *d)
 
 int __init construct_dom0(struct domain *d, const module_t *image,
                           unsigned long image_headroom, module_t *initrd,
-                          char *cmdline)
+                          const char *cmdline)
 {
     int rc;
 

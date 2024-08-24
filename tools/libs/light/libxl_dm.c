@@ -1915,7 +1915,6 @@ static int libxl__build_device_model_args_new(libxl__gc *gc,
                     continue;
                 }
 
-                assert(disks[i].backend != LIBXL_DISK_BACKEND_TAP);
                 target_path = libxl__device_disk_find_local_path(gc,
                                     guest_domid, &disks[i], true);
 
@@ -3381,7 +3380,8 @@ static void device_model_postconfig_done(libxl__egc *egc,
     dmss->callback(egc, dmss, rc);
 }
 
-void libxl__spawn_qdisk_backend(libxl__egc *egc, libxl__dm_spawn_state *dmss)
+void libxl__spawn_qemu_xenpv_backend(libxl__egc *egc,
+                                     libxl__dm_spawn_state *dmss)
 {
     STATE_AO_GC(dmss->spawn.ao);
     flexarray_t *dm_args, *dm_envs;
@@ -3471,7 +3471,7 @@ static int kill_device_model(libxl__gc *gc, const char *xs_path_pid)
 }
 
 /* Helper to destroy a Qdisk backend */
-int libxl__destroy_qdisk_backend(libxl__gc *gc, uint32_t domid)
+int libxl__destroy_qemu_xenpv_backend(libxl__gc *gc, uint32_t domid)
 {
     char *pid_path;
     int rc;
@@ -3771,7 +3771,7 @@ int libxl__need_xenpv_qemu(libxl__gc *gc, libxl_domain_config *d_config)
         goto out;
     }
 
-    if (d_config->num_vfbs > 0 || d_config->num_p9s > 0) {
+    if (d_config->num_vfbs > 0) {
         ret = 1;
         goto out;
     }

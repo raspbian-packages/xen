@@ -9,13 +9,13 @@ for the definitions of the support status levels etc.
 
 # Release Support
 
-    Xen-Version: 4.17
-    Initial-Release: 2022-12-12
-    Supported-Until: 2024-06-12
-    Security-Support-Until: 2025-12-12
+    Xen-Version: 4.19
+    Initial-Release: 2024-07-29
+    Supported-Until: 2026-01-29
+    Security-Support-Until: 2027-07-29
 
 Release Notes
-: <a href="https://wiki.xenproject.org/wiki/Xen_Project_4.17_Release_Notes">RN</a>
+: <a href="https://wiki.xenproject.org/wiki/Xen_Project_4.19_Release_Notes">RN</a>
 
 # Feature Support
 
@@ -37,7 +37,8 @@ supported in this document.
 
 ### ARM v8
 
-    Status: Supported
+    Status, Xen in AArch64 mode: Supported
+    Status, Xen in AArch32 mode: Tech Preview
     Status, Cortex A57 r0p0-r1p1: Supported, not security supported
     Status, Cortex A77 r0p0-r1p0: Supported, not security supported
 
@@ -46,9 +47,9 @@ For the Cortex A77 r0p0 - r1p0, see Errata 1508412.
 
 ## Host hardware support
 
-### Physical CPU Hotplug
+### ACPI CPU Hotplug
 
-    Status, x86: Supported
+    Status, x86: Experimental
 
 ### Physical Memory
 
@@ -60,10 +61,25 @@ For the Cortex A77 r0p0 - r1p0, see Errata 1508412.
 
     Status, x86: Supported
 
+### Physical CPUs
+
+    Status, x86: Supported up to 4096
+    Status, ARM: Supported up to 128
+
 ### Host ACPI (via Domain 0)
 
     Status, x86 PV: Supported
     Status, ARM: Experimental
+
+### Host EFI Boot
+
+    Status, x86: Supported
+    Status, Arm64: Supported
+
+### Host EFI Secure Boot
+
+    Status, x86: Experimental
+    Status, Arm64: Experimental
 
 ### x86/Intel Platform QoS Technologies
 
@@ -78,11 +94,41 @@ For the Cortex A77 r0p0 - r1p0, see Errata 1508412.
     Status, ARM SMMUv3: Tech Preview
     Status, Renesas IPMMU-VMSA: Supported, not security supported
 
+### ARM/GICv3
+
+GICv3 is an interrupt controller specification designed by Arm.
+
+    Status, Arm64: Security supported
+    Status, Arm32: Supported, not security supported
+
 ### ARM/GICv3 ITS
 
 Extension to the GICv3 interrupt controller to support MSI.
 
     Status: Experimental
+
+### ARM/Partial Emulation
+
+Enable partial emulation of registers, otherwise considered unimplemented,
+that would normally trigger a fault injection.
+
+    Status: Supported, with caveats
+
+Only the following system registers are security supported:
+
+  * MDCCSR_EL0
+  * DBGDTR_EL0
+  * DBGDTRTX_EL0
+  * DBGDTRRX_EL0
+  * DBGDSCRINT
+  * DBGDTRTXINT
+  * DBGDTRRXINT
+
+### ARM Scalable Vector Extension (SVE/SVE2)
+
+Arm64 domains can use Scalable Vector Extension (SVE/SVE2).
+
+    Status: Tech Preview
 
 ## Guest Type
 
@@ -115,7 +161,20 @@ Requires hardware virtualisation support (Intel VMX / AMD SVM).
 Dom0 support requires an IOMMU (Intel VT-d / AMD IOMMU).
 
     Status, domU: Supported
-    Status, dom0: Experimental
+    Status, dom0: Supported, with caveats
+
+PVH dom0 hasn't received the same test coverage as PV dom0, so it can exhibit
+unexpected behavior or issues on some hardware.
+
+At least the following features are missing on a PVH dom0:
+
+  * PCI SR-IOV and Resizable BARs.
+
+  * Native NMI forwarding (nmi=dom0 command line option).
+
+  * MCE handling.
+
+  * PCI Passthrough to any kind of domUs.
 
 ### ARM
 
@@ -146,6 +205,12 @@ ARM only has one guest type at the moment
     Status: Supported
 
 ## Toolstack
+
+While 32-bit builds of the tool stack are generally supported, restrictions
+apply in particular when running on top of a 64-bit hypervisor.  For example,
+very large guests aren't expected to be manageable in this case.  This includes
+guests giving the appearance of being large, by altering their own memory
+layouts.
 
 ### xl
 
@@ -635,6 +700,7 @@ there is currently no xl support.
 ### PV 9pfs (backend)
 
     Status, QEMU: Tech Preview
+    Status, xen-9pfsd: Experimental
 
 ### PVCalls (backend)
 
@@ -775,6 +841,11 @@ This feature is not security supported: see https://xenbits.xen.org/xsa/advisory
 
 Only systems using IOMMUs are supported.
 
+Passing through of devices sharing resources with another device is not
+security supported.  Such sharing could e.g. be the same line interrupt being
+used by multiple devices, one of which is to be passed through, or two such
+devices having memory BARs within the same 4k page.
+
 Not compatible with migration, populate-on-demand, altp2m,
 introspection, memory sharing, or memory paging.
 
@@ -813,9 +884,24 @@ that covers the DMA of the device to be passed through.
 
 No support for QEMU backends in a 16K or 64K domain.
 
+### ARM: Firmware Framework for Arm A-profile (FF-A) Mediator
+
+    Status, Arm64: Tech Preview
+
+There are still some code paths where a vCPU may hog a pCPU longer than
+necessary. The FF-A mediator is not yet implemented for Arm32. Part of the
+FF-A specification is not supported, see the top comment in
+xen/arch/arm/tee/ffa.c for limitations.
+
 ### ARM: Guest Device Tree support
 
     Status: Supported
+
+### Device Tree Overlays
+
+Add/Remove device tree nodes using a device tree overlay binary (.dtbo).
+
+    Status, ARM: Experimental
 
 ### ARM: Guest ACPI support
 

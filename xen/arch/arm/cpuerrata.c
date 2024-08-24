@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #include <xen/cpu.h>
 #include <xen/cpumask.h>
 #include <xen/init.h>
@@ -369,9 +370,9 @@ custom_param("spec-ctrl", parse_spec_ctrl);
 
 /* Arm64 only for now as for Arm32 the workaround is currently handled in C. */
 #ifdef CONFIG_ARM_64
-void __init arm_enable_wa2_handling(const struct alt_instr *alt,
-                                    const uint32_t *origptr,
-                                    uint32_t *updptr, int nr_inst)
+void asmlinkage __init arm_enable_wa2_handling(const struct alt_instr *alt,
+                                               const uint32_t *origptr,
+                                               uint32_t *updptr, int nr_inst)
 {
     BUG_ON(nr_inst != 1);
 
@@ -460,13 +461,13 @@ static bool has_ssbd_mitigation(const struct arm_cpu_capabilities *entry)
 
 #define MIDR_RANGE(model, min, max)     \
     .matches = is_affected_midr_range,  \
-    .midr_model = model,                \
-    .midr_range_min = min,              \
-    .midr_range_max = max
+    .midr_model = (model),              \
+    .midr_range_min = (min),            \
+    .midr_range_max = (max)
 
 #define MIDR_ALL_VERSIONS(model)        \
     .matches = is_affected_midr_range,  \
-    .midr_model = model,                \
+    .midr_model = (model),              \
     .midr_range_min = 0,                \
     .midr_range_max = (MIDR_VARIANT_MASK | MIDR_REVISION_MASK)
 
@@ -702,7 +703,7 @@ void __init enable_errata_workarounds(void)
                     "**** Only trusted guests should be used.                             ****\n");
 
         /* Taint the machine has being insecure */
-        add_taint(TAINT_MACHINE_UNSECURE);
+        add_taint(TAINT_MACHINE_INSECURE);
     }
 #endif
 }
@@ -732,7 +733,7 @@ static int cpu_errata_callback(struct notifier_block *nfb,
         break;
     }
 
-    return !rc ? NOTIFY_DONE : notifier_from_errno(rc);
+    return notifier_from_errno(rc);
 }
 
 static struct notifier_block cpu_errata_nfb = {

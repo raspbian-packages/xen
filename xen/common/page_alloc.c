@@ -120,27 +120,29 @@
  *   regions within it.
  */
 
-#include <xen/init.h>
-#include <xen/types.h>
-#include <xen/lib.h>
-#include <xen/sched.h>
-#include <xen/spinlock.h>
-#include <xen/mm.h>
-#include <xen/param.h>
-#include <xen/irq.h>
-#include <xen/softirq.h>
 #include <xen/domain_page.h>
+#include <xen/event.h>
+#include <xen/init.h>
+#include <xen/irq.h>
 #include <xen/keyhandler.h>
+#include <xen/lib.h>
+#include <xen/mm.h>
+#include <xen/nodemask.h>
+#include <xen/numa.h>
+#include <xen/param.h>
 #include <xen/perfc.h>
 #include <xen/pfn.h>
-#include <xen/numa.h>
-#include <xen/nodemask.h>
-#include <xen/event.h>
+#include <xen/types.h>
+#include <xen/sched.h>
+#include <xen/softirq.h>
+#include <xen/spinlock.h>
+
+#include <asm/flushtlb.h>
+#include <asm/page.h>
+
 #include <public/sysctl.h>
 #include <public/sched.h>
-#include <asm/page.h>
-#include <asm/numa.h>
-#include <asm/flushtlb.h>
+
 #ifdef CONFIG_X86
 #include <asm/guest.h>
 #include <asm/p2m.h>
@@ -148,16 +150,22 @@
 #include <asm/paging.h>
 #else
 #define p2m_pod_offline_or_broken_hit(pg) 0
-#define p2m_pod_offline_or_broken_replace(pg) BUG_ON(pg != NULL)
+#define p2m_pod_offline_or_broken_replace(pg) BUG_ON(pg)
 #endif
 
 #ifndef PGC_static
 #define PGC_static 0
 #endif
 
+#define PGC_no_buddy_merge PGC_static
+
 #ifndef PGT_TYPE_INFO_INITIALIZER
 #define PGT_TYPE_INFO_INITIALIZER 0
 #endif
+
+unsigned long __read_mostly max_page;
+unsigned long __read_mostly total_pages;
+paddr_t __ro_after_init mem_hotplug;
 
 /*
  * Comma-separated list of hexadecimal page numbers containing bad bytes.
@@ -248,10 +256,10 @@ static PAGE_LIST_HEAD(page_broken_list);
  */
 
 /*
- * first_valid_mfn is exported because it is use in ARM specific NUMA
- * helpers. See comment in arch/arm/include/asm/numa.h.
+ * When !CONFIG_NUMA first_valid_mfn is non-static, for use by respective
+ * stubs.
  */
-mfn_t first_valid_mfn = INVALID_MFN_INITIALIZER;
+STATIC_IF(CONFIG_NUMA) mfn_t first_valid_mfn = INVALID_MFN_INITIALIZER;
 
 struct bootmem_region {
     unsigned long s, e; /* MFNs @s through @e-1 inclusive are free */
@@ -469,7 +477,7 @@ unsigned long domain_adjust_tot_pages(struct domain *d, long pages)
 {
     long dom_before, dom_after, dom_claimed, sys_before, sys_after;
 
-    ASSERT(spin_is_locked(&d->page_alloc_lock));
+    ASSERT(rspin_is_locked(&d->page_alloc_lock));
     d->tot_pages += pages;
 
     /*
@@ -508,7 +516,7 @@ int domain_set_outstanding_pages(struct domain *d, unsigned long pages)
      * must always take the global heap_lock rather than only in the much
      * rarer case that d->outstanding_pages is non-zero
      */
-    spin_lock(&d->page_alloc_lock);
+    nrspin_lock(&d->page_alloc_lock);
     spin_lock(&heap_lock);
 
     /* pages==0 means "unset" the claim. */
@@ -554,7 +562,7 @@ int domain_set_outstanding_pages(struct domain *d, unsigned long pages)
 
 out:
     spin_unlock(&heap_lock);
-    spin_unlock(&d->page_alloc_lock);
+    nrspin_unlock(&d->page_alloc_lock);
     return ret;
 }
 
@@ -919,6 +927,13 @@ static struct page_info *get_free_buddy(unsigned int zone_lo,
     }
 }
 
+/* Initialise fields which have other uses for free pages. */
+static void init_free_page_fields(struct page_info *pg)
+{
+    pg->u.inuse.type_info = PGT_TYPE_INFO_INITIALIZER;
+    page_set_owner(pg, NULL);
+}
+
 /* Allocate 2^@order contiguous pages. */
 static struct page_info *alloc_heap_pages(
     unsigned int zone_lo, unsigned int zone_hi,
@@ -969,7 +984,7 @@ static struct page_info *alloc_heap_pages(
         return NULL;
     }
 
-    node = phys_to_nid(page_to_maddr(pg));
+    node = page_to_nid(pg);
     zone = page_to_zone(pg);
     buddy_order = PFN_ORDER(pg);
 
@@ -1027,10 +1042,7 @@ static struct page_info *alloc_heap_pages(
             accumulate_tlbflush(&need_tlbflush, &pg[i],
                                 &tlbflush_timestamp);
 
-        /* Initialise fields which have other uses for free pages. */
-        pg[i].u.inuse.type_info = PGT_TYPE_INFO_INITIALIZER;
-        page_set_owner(&pg[i], NULL);
-
+        init_free_page_fields(&pg[i]);
     }
 
     spin_unlock(&heap_lock);
@@ -1076,7 +1088,7 @@ static struct page_info *alloc_heap_pages(
 /* Remove any offlined page in the buddy pointed to by head. */
 static int reserve_offlined_page(struct page_info *head)
 {
-    unsigned int node = phys_to_nid(page_to_maddr(head));
+    unsigned int node = page_to_nid(head);
     int zone = page_to_zone(head), i, head_order = PFN_ORDER(head), count = 0;
     struct page_info *cur_head;
     unsigned int cur_order, first_dirty;
@@ -1203,6 +1215,14 @@ static unsigned int node_to_scrub(bool get_node)
             node = cycle_node(node, node_online_map);
         } while ( !cpumask_empty(&node_to_cpumask(node)) &&
                   (node != local_node) );
+
+        /*
+         * In practice `node` will always be within MAX_NUMNODES, but GCC can't
+         * always see that, so an explicit check is necessary to avoid tripping
+         * its out-of-bounds array access warning (-Warray-bounds).
+         */
+        if ( node >= MAX_NUMNODES )
+            break;
 
         if ( node == local_node )
             break;
@@ -1441,7 +1461,7 @@ static void free_heap_pages(
 {
     unsigned long mask;
     mfn_t mfn = page_to_mfn(pg);
-    unsigned int i, node = phys_to_nid(mfn_to_maddr(mfn));
+    unsigned int i, node = mfn_to_nid(mfn);
     unsigned int zone = page_to_zone(pg);
     bool pg_offlined = false;
 
@@ -1483,9 +1503,9 @@ static void free_heap_pages(
             /* Merge with predecessor block? */
             if ( !mfn_valid(page_to_mfn(predecessor)) ||
                  !page_state_is(predecessor, free) ||
-                 (predecessor->count_info & PGC_static) ||
+                 (predecessor->count_info & PGC_no_buddy_merge) ||
                  (PFN_ORDER(predecessor) != order) ||
-                 (phys_to_nid(page_to_maddr(predecessor)) != node) )
+                 (page_to_nid(predecessor) != node) )
                 break;
 
             check_and_stop_scrub(predecessor);
@@ -1507,9 +1527,9 @@ static void free_heap_pages(
             /* Merge with successor block? */
             if ( !mfn_valid(page_to_mfn(successor)) ||
                  !page_state_is(successor, free) ||
-                 (successor->count_info & PGC_static) ||
+                 (successor->count_info & PGC_no_buddy_merge) ||
                  (PFN_ORDER(successor) != order) ||
-                 (phys_to_nid(page_to_maddr(successor)) != node) )
+                 (page_to_nid(successor) != node) )
                 break;
 
             check_and_stop_scrub(successor);
@@ -1572,7 +1592,7 @@ static unsigned long mark_page_offline(struct page_info *pg, int broken)
 static int reserve_heap_page(struct page_info *pg)
 {
     struct page_info *head = NULL;
-    unsigned int i, node = phys_to_nid(page_to_maddr(pg));
+    unsigned int i, node = page_to_nid(pg);
     unsigned int zone = page_to_zone(pg);
 
     for ( i = 0; i <= MAX_ORDER; i++ )
@@ -1792,14 +1812,14 @@ static void _init_heap_pages(const struct page_info *pg,
                              bool need_scrub)
 {
     unsigned long s, e;
-    unsigned int nid = phys_to_nid(page_to_maddr(pg));
+    unsigned int nid = page_to_nid(pg);
 
     s = mfn_x(page_to_mfn(pg));
     e = mfn_x(mfn_add(page_to_mfn(pg + nr_pages - 1), 1));
     if ( unlikely(!avail[nid]) )
     {
         bool use_tail = IS_ALIGNED(s, 1UL << MAX_ORDER) &&
-                        (find_first_set_bit(e) <= find_first_set_bit(s));
+                        (ffsl(e) <= ffsl(s));
         unsigned long n;
 
         n = init_node_heap(nid, s, nr_pages, &use_tail);
@@ -1822,7 +1842,7 @@ static void _init_heap_pages(const struct page_info *pg,
          * Note that the value of ffsl() and flsl() starts from 1 so we need
          * to decrement it by 1.
          */
-        unsigned int inc_order = min(MAX_ORDER, flsl(e - s) - 1);
+        unsigned int inc_order = min(MAX_ORDER + 0U, flsl(e - s) - 1U);
 
         if ( s )
             inc_order = min(inc_order, ffsl(s) - 1U);
@@ -1867,7 +1887,7 @@ static void init_heap_pages(
 #ifdef CONFIG_SEPARATE_XENHEAP
         unsigned int zone = page_to_zone(pg);
 #endif
-        unsigned int nid = phys_to_nid(page_to_maddr(pg));
+        unsigned int nid = page_to_nid(pg);
         unsigned long left = nr_pages - i;
         unsigned long contig_pages;
 
@@ -1891,7 +1911,7 @@ static void init_heap_pages(
                 break;
 #endif
 
-            if ( nid != (phys_to_nid(page_to_maddr(pg + contig_pages))) )
+            if ( nid != (page_to_nid(pg + contig_pages)) )
                 break;
         }
 
@@ -1932,7 +1952,7 @@ void __init end_boot_allocator(void)
     {
         struct bootmem_region *r = &bootmem_region_list[i];
         if ( (r->s < r->e) &&
-             (phys_to_nid(pfn_to_paddr(r->s)) == cpu_to_node(0)) )
+             (mfn_to_nid(_mfn(r->s)) == cpu_to_node(0)) )
         {
             init_heap_pages(mfn_to_page(_mfn(r->s)), r->e - r->s);
             r->e = r->s;
@@ -2245,8 +2265,8 @@ void __init xenheap_max_mfn(unsigned long mfn)
 {
     ASSERT(!first_node_initialised);
     ASSERT(!xenheap_bits);
-    BUILD_BUG_ON(PADDR_BITS >= BITS_PER_LONG);
-    xenheap_bits = min(flsl(mfn + 1) - 1 + PAGE_SHIFT, PADDR_BITS);
+    BUILD_BUG_ON((PADDR_BITS - PAGE_SHIFT) >= BITS_PER_LONG);
+    xenheap_bits = min(flsl(mfn + 1) - 1U + PAGE_SHIFT, PADDR_BITS + 0U);
     printk(XENLOG_INFO "Xen heap: %u bits\n", xenheap_bits);
 }
 
@@ -2328,7 +2348,7 @@ int assign_pages(
     int rc = 0;
     unsigned int i;
 
-    spin_lock(&d->page_alloc_lock);
+    nrspin_lock(&d->page_alloc_lock);
 
     if ( unlikely(d->is_dying) )
     {
@@ -2375,7 +2395,7 @@ int assign_pages(
         if ( unlikely(nr > d->max_pages - tot_pages) )
         {
             gprintk(XENLOG_INFO, "Over-allocation for %pd: %Lu > %u\n",
-                    d, tot_pages + 0ull + nr, d->max_pages);
+                    d, tot_pages + 0ULL + nr, d->max_pages);
             rc = -E2BIG;
             goto out;
         }
@@ -2387,7 +2407,7 @@ int assign_pages(
         {
             gprintk(XENLOG_INFO,
                     "Excess allocation for %pd: %Lu (%u extra)\n",
-                    d, d->tot_pages + 0ull + nr, d->extra_pages);
+                    d, d->tot_pages + 0ULL + nr, d->extra_pages);
             if ( pg[0].count_info & PGC_extra )
                 d->extra_pages -= nr;
             rc = -E2BIG;
@@ -2410,7 +2430,7 @@ int assign_pages(
     }
 
  out:
-    spin_unlock(&d->page_alloc_lock);
+    nrspin_unlock(&d->page_alloc_lock);
     return rc;
 }
 
@@ -2455,7 +2475,7 @@ struct page_info *alloc_domheap_pages(
         {
             unsigned long i;
 
-            for ( i = 0; i < (1ul << order); i++ )
+            for ( i = 0; i < (1UL << order); i++ )
             {
                 ASSERT(!pg[i].count_info);
                 pg[i].count_info = PGC_extra;
@@ -2482,7 +2502,7 @@ void free_domheap_pages(struct page_info *pg, unsigned int order)
     if ( unlikely(is_xen_heap_page(pg)) )
     {
         /* NB. May recursively lock from relinquish_memory(). */
-        spin_lock_recursive(&d->page_alloc_lock);
+        rspin_lock(&d->page_alloc_lock);
 
         for ( i = 0; i < (1 << order); i++ )
             arch_free_heap_page(d, &pg[i]);
@@ -2490,7 +2510,7 @@ void free_domheap_pages(struct page_info *pg, unsigned int order)
         d->xenheap_pages -= 1 << order;
         drop_dom_ref = (d->xenheap_pages == 0);
 
-        spin_unlock_recursive(&d->page_alloc_lock);
+        rspin_unlock(&d->page_alloc_lock);
     }
     else
     {
@@ -2499,7 +2519,7 @@ void free_domheap_pages(struct page_info *pg, unsigned int order)
         if ( likely(d) && likely(d != dom_cow) )
         {
             /* NB. May recursively lock from relinquish_memory(). */
-            spin_lock_recursive(&d->page_alloc_lock);
+            rspin_lock(&d->page_alloc_lock);
 
             for ( i = 0; i < (1 << order); i++ )
             {
@@ -2522,7 +2542,7 @@ void free_domheap_pages(struct page_info *pg, unsigned int order)
 
             drop_dom_ref = !domain_adjust_tot_pages(d, -(1 << order));
 
-            spin_unlock_recursive(&d->page_alloc_lock);
+            rspin_unlock(&d->page_alloc_lock);
 
             /*
              * Normally we expect a domain to clear pages before freeing them,
@@ -2738,7 +2758,7 @@ void free_domstatic_page(struct page_info *page)
     ASSERT_ALLOC_CONTEXT();
 
     /* NB. May recursively lock from relinquish_memory(). */
-    spin_lock_recursive(&d->page_alloc_lock);
+    rspin_lock(&d->page_alloc_lock);
 
     arch_free_heap_page(d, page);
 
@@ -2749,7 +2769,7 @@ void free_domstatic_page(struct page_info *page)
     /* Add page on the resv_page_list *after* it has been freed. */
     page_list_add_tail(page, &d->resv_page_list);
 
-    spin_unlock_recursive(&d->page_alloc_lock);
+    rspin_unlock(&d->page_alloc_lock);
 
     if ( drop_dom_ref )
         put_domain(d);
@@ -2785,9 +2805,7 @@ static bool prepare_staticmem_pages(struct page_info *pg, unsigned long nr_mfns,
          * to PGC_state_inuse.
          */
         pg[i].count_info = PGC_static | PGC_state_inuse;
-        /* Initialise fields which have other uses for free pages. */
-        pg[i].u.inuse.type_info = PGT_TYPE_INFO_INITIALIZER;
-        page_set_owner(&pg[i], NULL);
+        init_free_page_fields(&pg[i]);
     }
 
     spin_unlock(&heap_lock);
@@ -2891,9 +2909,9 @@ mfn_t acquire_reserved_page(struct domain *d, unsigned int memflags)
     ASSERT_ALLOC_CONTEXT();
 
     /* Acquire a page from reserved page list(resv_page_list). */
-    spin_lock(&d->page_alloc_lock);
+    nrspin_lock(&d->page_alloc_lock);
     page = page_list_remove_head(&d->resv_page_list);
-    spin_unlock(&d->page_alloc_lock);
+    nrspin_unlock(&d->page_alloc_lock);
     if ( unlikely(!page) )
         return INVALID_MFN;
 
@@ -2912,9 +2930,9 @@ mfn_t acquire_reserved_page(struct domain *d, unsigned int memflags)
      */
     unprepare_staticmem_pages(page, 1, false);
  fail:
-    spin_lock(&d->page_alloc_lock);
+    nrspin_lock(&d->page_alloc_lock);
     page_list_add_tail(page, &d->resv_page_list);
-    spin_unlock(&d->page_alloc_lock);
+    nrspin_unlock(&d->page_alloc_lock);
     return INVALID_MFN;
 }
 #endif

@@ -3,11 +3,6 @@
 #include <errno.h>
 #include <sys/mman.h>
 
-#define DEFINE_PER_CPU(type, var) type per_cpu_##var
-#define this_cpu(var) per_cpu_##var
-
-#define ERR_PTR(val) NULL
-
 /* See gcc bug 100680, but here don't bother making this version dependent. */
 #define gcc11_wrap(x) ({                  \
     unsigned long x_;                     \
@@ -22,20 +17,12 @@
 
 /* For generic assembly code: use macros to define operation/operand sizes. */
 #ifdef __i386__
-# define r(name)       e ## name
 # define __OS          "l"  /* Operation Suffix */
 # define __OP          "e"  /* Operand Prefix */
 #else
-# define r(name)       r ## name
 # define __OS          "q"  /* Operation Suffix */
 # define __OP          "r"  /* Operand Prefix */
 #endif
-
-#define get_stub(stb) ({                         \
-    assert(!(stb).addr);                         \
-    (void *)((stb).addr = (uintptr_t)(stb).buf); \
-})
-#define put_stub(stb) ((stb).addr = 0)
 
 uint32_t mxcsr_mask = 0x0000ffbf;
 struct cpu_policy cp;
@@ -48,7 +35,10 @@ static bool use_xsave;
  * (When debugging the emulator, care needs to be taken when inserting
  * printf() or alike function calls into regions using this.)
  */
-#define FXSAVE_AREA ((struct x86_fxsr *)fpu_save_area)
+struct x86_fxsr *get_fpu_save_area(void)
+{
+    return (void *)fpu_save_area;
+}
 
 void emul_save_fpu_state(void)
 {
@@ -96,6 +86,7 @@ bool emul_test_init(void)
     cp.feat.adx = true;
     cp.feat.avx512pf = cp.feat.avx512f;
     cp.feat.rdpid = true;
+    cp.feat.wrmsrns = true;
     cp.extd.clzero = true;
 
     if ( cpu_has_xsave )
@@ -265,12 +256,12 @@ void emul_test_put_fpu(
 
 static uint32_t pkru;
 
-static unsigned int rdpkru(void)
+unsigned int rdpkru(void)
 {
     return pkru;
 }
 
-static void wrpkru(unsigned int val)
+void wrpkru(unsigned int val)
 {
     pkru = val;
 }

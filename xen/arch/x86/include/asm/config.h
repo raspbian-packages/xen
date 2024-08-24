@@ -20,7 +20,6 @@
 #define BITS_PER_XEN_ULONG BITS_PER_LONG
 
 #define CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS 1
-#define CONFIG_DISCONTIGMEM 1
 #define CONFIG_NUMA_EMU 1
 
 #define CONFIG_PAGEALLOC_MAX_ORDER (2 * PAGETABLE_ORDER)
@@ -30,7 +29,6 @@
 /* Intel P4 currently has largest cache line (L2 line size is 128 bytes). */
 #define CONFIG_X86_L1_CACHE_SHIFT 7
 
-#define CONFIG_ACPI_SRAT 1
 #define CONFIG_ACPI_CSTATE 1
 
 #define CONFIG_WATCHDOG 1
@@ -43,13 +41,14 @@
 
 /* Linkage for x86 */
 #ifdef __ASSEMBLY__
-#define ALIGN .align 16,0x90
+#define CODE_FILL 0x90
+#define ALIGN .align CONFIG_FUNCTION_ALIGNMENT, CODE_FILL
 #define ENTRY(name)                             \
-  .globl name;                                  \
   ALIGN;                                        \
-  name:
+  GLOBAL(name)
 #define GLOBAL(name)                            \
   .globl name;                                  \
+  .hidden name;                                 \
   name:
 #endif
 
@@ -257,7 +256,7 @@ extern unsigned char boot_edid_info[128];
 #endif /* CONFIG_PV32 */
 
 #define MACH2PHYS_COMPAT_VIRT_START    HYPERVISOR_COMPAT_VIRT_START
-#define MACH2PHYS_COMPAT_VIRT_END      0xFFE00000
+#define MACH2PHYS_COMPAT_VIRT_END      0xFFE00000U
 #define MACH2PHYS_COMPAT_NR_ENTRIES(d) \
     ((MACH2PHYS_COMPAT_VIRT_END-MACH2PHYS_COMPAT_VIRT_START(d))>>2)
 

@@ -1,5 +1,6 @@
 #include <xen/init.h>
 #include <xen/kernel.h>
+#include <xen/sched.h>
 #include <xen/string.h>
 #include <xen/bitops.h>
 #include <xen/smp.h>
@@ -12,7 +13,6 @@
 #include <asm/apic.h>
 #include <asm/i387.h>
 #include <mach_apic.h>
-#include <asm/hvm/support.h>
 
 #include "cpu.h"
 
@@ -220,6 +220,11 @@ static void cf_check intel_ctxt_switch_masking(const struct vcpu *next)
 #undef LAZY
 }
 
+#ifdef CONFIG_XEN_IBT /* Announce the function to ENDBR clobbering logic. */
+static const typeof(ctxt_switch_masking) __initconst_cf_clobber __used csm =
+    intel_ctxt_switch_masking;
+#endif
+
 /*
  * opt_cpuid_mask_ecx/edx: cpuid.1[ecx, edx] feature mask.
  * For example, E8400[Intel Core 2 Duo Processor series] ecx = 0x0008E3FD,
@@ -228,8 +233,18 @@ static void cf_check intel_ctxt_switch_masking(const struct vcpu *next)
  */
 static void __init noinline intel_init_levelling(void)
 {
-	if (probe_cpuid_faulting())
+	/*
+	 * Intel Fam0f is old enough that probing for CPUID faulting support
+	 * introduces spurious #GP(0) when the appropriate MSRs are read,
+	 * so skip it altogether. In the case where Xen is virtualized these
+	 * MSRs may be emulated though, so we allow it in that case.
+	 */
+	if ((boot_cpu_data.x86 != 0xf || cpu_has_hypervisor) &&
+	    probe_cpuid_faulting()) {
+		expected_levelling_cap |= LCAP_faulting;
+		levelling_caps |= LCAP_faulting;
 		return;
+	}
 
 	probe_masking_msrs();
 
@@ -288,33 +303,33 @@ static void __init noinline intel_init_levelling(void)
 		ctxt_switch_masking = intel_ctxt_switch_masking;
 }
 
+/* Unmask CPUID levels if masked. */
+void intel_unlock_cpuid_leaves(struct cpuinfo_x86 *c)
+{
+	uint64_t misc_enable, disable;
+
+	rdmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
+
+	disable = misc_enable & MSR_IA32_MISC_ENABLE_LIMIT_CPUID;
+	if (disable) {
+		wrmsrl(MSR_IA32_MISC_ENABLE, misc_enable & ~disable);
+		bootsym(trampoline_misc_enable_off) |= disable;
+		c->cpuid_level = cpuid_eax(0);
+		printk(KERN_INFO "revised cpuid level: %u\n", c->cpuid_level);
+	}
+}
+
 static void cf_check early_init_intel(struct cpuinfo_x86 *c)
 {
-	u64 misc_enable, disable;
-
 	/* Netburst reports 64 bytes clflush size, but does IO in 128 bytes */
 	if (c->x86 == 15 && c->x86_cache_alignment == 64)
 		c->x86_cache_alignment = 128;
 
-	/* Unmask CPUID levels and NX if masked: */
-	rdmsrl(MSR_IA32_MISC_ENABLE, misc_enable);
+	if (c == &boot_cpu_data &&
+	    bootsym(trampoline_misc_enable_off) & MSR_IA32_MISC_ENABLE_XD_DISABLE)
+		printk(KERN_INFO "re-enabled NX (Execute Disable) protection\n");
 
-	disable = misc_enable & (MSR_IA32_MISC_ENABLE_LIMIT_CPUID |
-				 MSR_IA32_MISC_ENABLE_XD_DISABLE);
-	if (disable) {
-		wrmsrl(MSR_IA32_MISC_ENABLE, misc_enable & ~disable);
-		bootsym(trampoline_misc_enable_off) |= disable;
-		bootsym(trampoline_efer) |= EFER_NXE;
-	}
-
-	if (disable & MSR_IA32_MISC_ENABLE_LIMIT_CPUID)
-		printk(KERN_INFO "revised cpuid level: %d\n",
-		       cpuid_eax(0));
-	if (disable & MSR_IA32_MISC_ENABLE_XD_DISABLE) {
-		write_efer(read_efer() | EFER_NXE);
-		printk(KERN_INFO
-		       "re-enabled NX (Execute Disable) protection\n");
-	}
+	intel_unlock_cpuid_leaves(c);
 
 	/* CPUID workaround for Intel 0F33/0F34 CPU */
 	if (boot_cpu_data.x86 == 0xF && boot_cpu_data.x86_model == 3 &&
@@ -593,7 +608,7 @@ static void cf_check init_intel(struct cpuinfo_x86 *c)
 		setup_clear_cpu_cap(X86_FEATURE_CLWB);
 }
 
-const struct cpu_dev intel_cpu_dev = {
+const struct cpu_dev __initconst_cf_clobber intel_cpu_dev = {
 	.c_early_init	= early_init_intel,
 	.c_init		= init_intel,
 };

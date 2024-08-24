@@ -169,20 +169,23 @@ static void __init efi_arch_process_memory_map(EFI_SYSTEM_TABLE *SystemTable,
 
         switch ( desc->Type )
         {
+        default:
+            type = E820_RESERVED;
+            break;
+
         case EfiBootServicesCode:
         case EfiBootServicesData:
             if ( map_bs )
             {
-        default:
                 type = E820_RESERVED;
                 break;
             }
-            /* fall through */
+            fallthrough;
         case EfiConventionalMemory:
             if ( !trampoline_phys && desc->PhysicalStart + len <= 0x100000 &&
                  len >= cfg.size && desc->PhysicalStart + len > cfg.addr )
                 cfg.addr = (desc->PhysicalStart + len - cfg.size) & PAGE_MASK;
-            /* fall through */
+            fallthrough;
         case EfiLoaderCode:
         case EfiLoaderData:
             if ( desc->Attribute & EFI_MEMORY_RUNTIME )
@@ -190,9 +193,13 @@ static void __init efi_arch_process_memory_map(EFI_SYSTEM_TABLE *SystemTable,
             else if ( desc->Attribute & EFI_MEMORY_WB )
                 type = E820_RAM;
             else
-        case EfiUnusableMemory:
                 type = E820_UNUSABLE;
             break;
+
+        case EfiUnusableMemory:
+            type = E820_UNUSABLE;
+            break;
+
         case EfiACPIReclaimMemory:
             type = E820_ACPI;
             break;
@@ -303,12 +310,12 @@ static void __init efi_arch_cfg_file_late(const EFI_LOADED_IMAGE *image,
     }
 }
 
-static void __init efi_arch_handle_cmdline(CHAR16 *image_name,
-                                           CHAR16 *cmdline_options,
+static void __init efi_arch_handle_cmdline(CHAR16 *cmdline_options,
                                            const char *cfgfile_options)
 {
     union string name;
 
+    /* NB place_string() prepends, so call in reverse order. */
     if ( cmdline_options )
     {
         name.w = cmdline_options;
@@ -317,15 +324,6 @@ static void __init efi_arch_handle_cmdline(CHAR16 *image_name,
     }
     if ( cfgfile_options )
         place_string(&mbi.cmdline, cfgfile_options);
-    /* Insert image name last, as it gets prefixed to the other options. */
-    if ( image_name )
-    {
-        name.w = image_name;
-        w2s(&name);
-    }
-    else
-        name.s = "xen";
-    place_string(&mbi.cmdline, name.s);
 
     if ( mbi.cmdline )
         mbi.flags |= MBI_CMDLINE;
@@ -740,16 +738,25 @@ static void __init efi_arch_handle_module(const struct file *file,
 
 static void __init efi_arch_cpu(void)
 {
-    uint32_t eax = cpuid_eax(0x80000000);
+    uint32_t eax = cpuid_eax(0x80000000U);
     uint32_t *caps = boot_cpu_data.x86_capability;
 
     boot_tsc_stamp = rdtsc();
 
     caps[FEATURESET_1c] = cpuid_ecx(1);
 
-    if ( (eax >> 16) == 0x8000 && eax > 0x80000000 )
+    if ( (eax >> 16) == 0x8000 && eax > 0x80000000U )
     {
-        caps[FEATURESET_e1d] = cpuid_edx(0x80000001);
+        caps[FEATURESET_e1d] = cpuid_edx(0x80000001U);
+
+        /*
+         * This check purposefully doesn't use cpu_has_nx because
+         * cpu_has_nx bypasses the boot_cpu_data read if Xen was compiled
+         * with CONFIG_REQUIRE_NX
+         */
+        if ( IS_ENABLED(CONFIG_REQUIRE_NX) &&
+             !boot_cpu_has(X86_FEATURE_NX) )
+            blexit(L"This build of Xen requires NX support");
 
         if ( cpu_has_nx )
             trampoline_efer |= EFER_NXE;
@@ -786,7 +793,31 @@ static bool __init efi_arch_use_config_file(EFI_SYSTEM_TABLE *SystemTable)
 
 static void __init efi_arch_flush_dcache_area(const void *vaddr, UINTN size) { }
 
-void __init efi_multiboot2(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
+/* Return a pointer to the character after the first occurrence of opt in cmd */
+static const char *__init get_option(const char *cmd, const char *opt)
+{
+    const char *s = cmd, *o = NULL;
+
+    if ( !cmd || !opt )
+        return NULL;
+
+    while ( (s = strstr(s, opt)) != NULL )
+    {
+        if ( s == cmd || *(s - 1) == ' ' || *(s - 1) == '\t' )
+        {
+            o = s + strlen(opt);
+            break;
+        }
+
+        s += strlen(opt);
+    }
+
+    return o;
+}
+
+void asmlinkage __init efi_multiboot2(EFI_HANDLE ImageHandle,
+                                      EFI_SYSTEM_TABLE *SystemTable,
+                                      const char *cmdline)
 {
     EFI_GRAPHICS_OUTPUT_PROTOCOL *gop;
     EFI_HANDLE gop_handle;
@@ -797,7 +828,13 @@ void __init efi_multiboot2(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
 
     efi_init(ImageHandle, SystemTable);
 
-    efi_console_set_mode();
+    if ( StdOut->QueryMode(StdOut, StdOut->Mode->Mode,
+                           &cols, &rows) != EFI_SUCCESS )
+        /*
+         * If active StdOut mode is invalid init ConOut (StdOut) to the max
+         * supported size.
+         */
+        efi_console_set_mode();
 
     if ( StdOut->QueryMode(StdOut, StdOut->Mode->Mode,
                            &cols, &rows) == EFI_SUCCESS )
@@ -807,7 +844,54 @@ void __init efi_multiboot2(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable
 
     if ( gop )
     {
-        gop_mode = efi_find_gop_mode(gop, 0, 0, 0);
+        const char *cur = cmdline;
+        unsigned int width = 0, height = 0, depth = 0;
+        bool keep_current = false;
+
+        while ( (cur = get_option(cur, "vga=")) != NULL )
+        {
+#define VALID_TERMINATOR(c) \
+    (*(c) == ' ' || *(c) == '\t' || *(c) == '\0' || *(c) == ',')
+            if ( !strncmp(cur, "gfx-", 4) )
+            {
+                width = simple_strtoul(cur + 4, &cur, 10);
+
+                if ( *cur == 'x' )
+                    height = simple_strtoul(cur + 1, &cur, 10);
+                else
+                    goto error;
+
+                if ( *cur == 'x' )
+                    depth = simple_strtoul(cur + 1, &cur, 10);
+                else
+                    goto error;
+
+                if ( !VALID_TERMINATOR(cur) )
+                {
+                error:
+                    PrintErr(L"Warning: Invalid gfx- option detected\r\n");
+                    width = height = depth = 0;
+                }
+                keep_current = false;
+            }
+            else if ( !strncmp(cur, "current", 7) && VALID_TERMINATOR(cur + 7) )
+                keep_current = true;
+            else if ( !strncmp(cur, "keep", 4) && VALID_TERMINATOR(cur + 4) )
+            {
+                /* Ignore, handled in later vga= parsing. */
+            }
+            else
+            {
+                /* Fallback to defaults if unimplemented. */
+                width = height = depth = 0;
+                keep_current = false;
+                PrintErr(L"Warning: Cannot use selected vga option\r\n");
+            }
+#undef VALID_TERMINATOR
+        }
+
+        if ( !keep_current )
+            gop_mode = efi_find_gop_mode(gop, width, height, depth);
 
         efi_arch_edid(gop_handle);
     }

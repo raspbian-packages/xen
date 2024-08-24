@@ -22,7 +22,6 @@
 #include <xen/iocap.h>
 #include <asm/irq.h>
 #include <asm/hvm/hvm.h>
-#include <asm/hvm/support.h>
 #include <asm/processor.h>
 #include <asm/setup.h>
 #include <asm/smp.h>
@@ -119,7 +118,7 @@ long arch_do_sysctl(
         unsigned int cpu = sysctl->u.cpu_hotplug.cpu;
         unsigned int op  = sysctl->u.cpu_hotplug.op;
         bool plug;
-        long (*fn)(void *);
+        long (*fn)(void *data);
         void *hcpu;
 
         switch ( op )
@@ -297,14 +296,14 @@ long arch_do_sysctl(
     case XEN_SYSCTL_get_cpu_featureset:
     {
         static const struct cpu_policy *const policy_table[6] = {
-            [XEN_SYSCTL_cpu_featureset_raw]  = &raw_cpu_policy,
-            [XEN_SYSCTL_cpu_featureset_host] = &host_cpu_policy,
+            [XEN_SYSCTL_cpu_featureset_raw]     = &raw_cpu_policy,
+            [XEN_SYSCTL_cpu_featureset_host]    = &host_cpu_policy,
 #ifdef CONFIG_PV
-            [XEN_SYSCTL_cpu_featureset_pv]   = &pv_def_cpu_policy,
-            [XEN_SYSCTL_cpu_featureset_pv_max] = &pv_max_cpu_policy,
+            [XEN_SYSCTL_cpu_featureset_pv]      = &pv_def_cpu_policy,
+            [XEN_SYSCTL_cpu_featureset_pv_max]  = &pv_max_cpu_policy,
 #endif
 #ifdef CONFIG_HVM
-            [XEN_SYSCTL_cpu_featureset_hvm]  = &hvm_def_cpu_policy,
+            [XEN_SYSCTL_cpu_featureset_hvm]     = &hvm_def_cpu_policy,
             [XEN_SYSCTL_cpu_featureset_hvm_max] = &hvm_max_cpu_policy,
 #endif
         };

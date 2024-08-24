@@ -1,20 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0-or-later */
 /******************************************************************************
  * arch/x86/traps.c
  *
  * Modifications to Linux original are copyright (c) 2002-2004, K A Fraser
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; If not, see <http://www.gnu.org/licenses/>.
  */
 
 /*
@@ -24,6 +12,7 @@
  * Gareth Hughes <gareth@valinux.com>, May 2000
  */
 
+#include <xen/bug.h>
 #include <xen/init.h>
 #include <xen/sched.h>
 #include <xen/lib.h>
@@ -36,7 +25,6 @@
 #include <xen/shutdown.h>
 #include <xen/guest_access.h>
 #include <asm/regs.h>
-#include <xen/debugger.h>
 #include <xen/delay.h>
 #include <xen/event.h>
 #include <xen/spinlock.h>
@@ -135,7 +123,7 @@ unsigned int __ro_after_init ler_msr;
 const unsigned int nmi_cpu;
 
 #define stack_words_per_line 4
-#define ESP_BEFORE_EXCEPTION(regs) ((unsigned long *)regs->rsp)
+#define ESP_BEFORE_EXCEPTION(regs) ((unsigned long *)(regs)->rsp)
 
 void show_code(const struct cpu_user_regs *regs)
 {
@@ -206,8 +194,7 @@ void show_code(const struct cpu_user_regs *regs)
 }
 
 static void compat_show_guest_stack(struct vcpu *v,
-                                    const struct cpu_user_regs *regs,
-                                    int debug_stack_lines)
+                                    const struct cpu_user_regs *regs)
 {
     unsigned int i, *stack, addr, mask = STACK_SIZE;
     void *stack_page = NULL;
@@ -284,7 +271,7 @@ static void show_guest_stack(struct vcpu *v, const struct cpu_user_regs *regs)
 
     if ( is_pv_32bit_vcpu(v) )
     {
-        compat_show_guest_stack(v, regs, debug_stack_lines);
+        compat_show_guest_stack(v, regs);
         return;
     }
 
@@ -656,7 +643,7 @@ void show_stack_overflow(unsigned int cpu, const struct cpu_user_regs *regs)
     printk("\n");
 }
 
-void show_execution_state(const struct cpu_user_regs *regs)
+void cf_check show_execution_state(const struct cpu_user_regs *regs)
 {
     /* Prevent interleaving of output. */
     unsigned long flags = console_lock_recursive_irqsave();
@@ -666,11 +653,6 @@ void show_execution_state(const struct cpu_user_regs *regs)
     show_stack(regs);
 
     console_unlock_recursive_irqrestore(flags);
-}
-
-void cf_check show_execution_state_nonconst(struct cpu_user_regs *regs)
-{
-    show_execution_state(regs);
 }
 
 void vcpu_show_execution_state(struct vcpu *v)
@@ -805,7 +787,7 @@ void fatal_trap(const struct cpu_user_regs *regs, bool show_remote)
 
         show_execution_state(regs);
 
-        if ( trapnr == TRAP_page_fault )
+        if ( trapnr == X86_EXC_PF )
             show_page_walk(read_cr2());
 
         if ( show_remote )
@@ -845,13 +827,8 @@ void fatal_trap(const struct cpu_user_regs *regs, bool show_remote)
           (regs->eflags & X86_EFLAGS_IF) ? "" : " IN INTERRUPT CONTEXT");
 }
 
-void do_unhandled_trap(struct cpu_user_regs *regs)
+void asmlinkage do_unhandled_trap(struct cpu_user_regs *regs)
 {
-    unsigned int trapnr = regs->entry_vector;
-
-    if ( debugger_trap_fatal(trapnr, regs) )
-        return;
-
     fatal_trap(regs, false);
 }
 
@@ -983,7 +960,7 @@ static bool extable_fixup(struct cpu_user_regs *regs, bool print)
     return true;
 }
 
-void do_trap(struct cpu_user_regs *regs)
+void asmlinkage do_trap(struct cpu_user_regs *regs)
 {
     unsigned int trapnr = regs->entry_vector;
 
@@ -995,7 +972,7 @@ void do_trap(struct cpu_user_regs *regs)
     if ( guest_mode(regs) )
     {
         pv_inject_hw_exception(trapnr,
-                               (TRAP_HAVE_EC & (1u << trapnr))
+                               (X86_EXC_HAVE_EC & (1u << trapnr))
                                ? regs->error_code : X86_EVENT_NO_EC);
         return;
     }
@@ -1004,9 +981,6 @@ void do_trap(struct cpu_user_regs *regs)
         return;
 
  hardware_trap:
-    if ( debugger_trap_fatal(trapnr, regs) )
-        return;
-
     fatal_trap(regs, false);
 }
 
@@ -1215,19 +1189,16 @@ void cpuid_hypervisor_leaves(const struct vcpu *v, uint32_t leaf,
     }
 }
 
-void do_invalid_op(struct cpu_user_regs *regs)
+void asmlinkage do_invalid_op(struct cpu_user_regs *regs)
 {
-    const struct bug_frame *bug = NULL;
     u8 bug_insn[2];
-    const char *prefix = "", *filename, *predicate, *eip = (char *)regs->rip;
-    unsigned long fixup;
-    int id = -1, lineno;
-    const struct virtual_region *region;
+    const void *eip = (const void *)regs->rip;
+    int id;
 
     if ( likely(guest_mode(regs)) )
     {
         if ( pv_emulate_invalid_op(regs) )
-            pv_inject_hw_exception(TRAP_invalid_op, X86_EVENT_NO_EC);
+            pv_inject_hw_exception(X86_EXC_UD, X86_EVENT_NO_EC);
         return;
     }
 
@@ -1236,97 +1207,32 @@ void do_invalid_op(struct cpu_user_regs *regs)
          memcmp(bug_insn, "\xf\xb", sizeof(bug_insn)) )
         goto die;
 
-    region = find_text_region(regs->rip);
-    if ( region )
-    {
-        for ( id = 0; id < BUGFRAME_NR; id++ )
-        {
-            const struct bug_frame *b;
-            unsigned int i;
-
-            for ( i = 0, b = region->frame[id].bugs;
-                  i < region->frame[id].n_bugs; b++, i++ )
-            {
-                if ( bug_loc(b) == eip )
-                {
-                    bug = b;
-                    goto found;
-                }
-            }
-        }
-    }
-
- found:
-    if ( !bug )
+    id = do_bug_frame(regs, regs->rip);
+    if ( id < 0 )
         goto die;
+
     eip += sizeof(bug_insn);
-    if ( id == BUGFRAME_run_fn )
-    {
-        void (*fn)(struct cpu_user_regs *) = bug_ptr(bug);
-
-        fn(regs);
-        fixup_exception_return(regs, (unsigned long)eip, 0);
-        return;
-    }
-
-    /* WARN, BUG or ASSERT: decode the filename pointer and line number. */
-    filename = bug_ptr(bug);
-    if ( !is_kernel(filename) && !is_patch(filename) )
-        goto die;
-    fixup = strlen(filename);
-    if ( fixup > 50 )
-    {
-        filename += fixup - 47;
-        prefix = "...";
-    }
-    lineno = bug_line(bug);
 
     switch ( id )
     {
+    case BUGFRAME_run_fn:
     case BUGFRAME_warn:
-        printk("Xen WARN at %s%s:%d\n", prefix, filename, lineno);
-        show_execution_state(regs);
         fixup_exception_return(regs, (unsigned long)eip, 0);
-        return;
-
+        fallthrough;
     case BUGFRAME_bug:
-        printk("Xen BUG at %s%s:%d\n", prefix, filename, lineno);
-
-        if ( debugger_trap_fatal(TRAP_invalid_op, regs) )
-            return;
-
-        show_execution_state(regs);
-        panic("Xen BUG at %s%s:%d\n", prefix, filename, lineno);
-
     case BUGFRAME_assert:
-        /* ASSERT: decode the predicate string pointer. */
-        predicate = bug_msg(bug);
-        if ( !is_kernel(predicate) && !is_patch(predicate) )
-            predicate = "<unknown>";
-
-        printk("Assertion '%s' failed at %s%s:%d\n",
-               predicate, prefix, filename, lineno);
-
-        if ( debugger_trap_fatal(TRAP_invalid_op, regs) )
-            return;
-
-        show_execution_state(regs);
-        panic("Assertion '%s' failed at %s%s:%d\n",
-              predicate, prefix, filename, lineno);
+        return;
     }
 
  die:
     if ( likely(extable_fixup(regs, true)) )
         return;
 
-    if ( debugger_trap_fatal(TRAP_invalid_op, regs) )
-        return;
-
     show_execution_state(regs);
-    panic("FATAL TRAP: vector = %d (invalid opcode)\n", TRAP_invalid_op);
+    panic("FATAL TRAP: vector = %d (invalid opcode)\n", X86_EXC_UD);
 }
 
-void do_int3(struct cpu_user_regs *regs)
+void asmlinkage do_int3(struct cpu_user_regs *regs)
 {
     struct vcpu *curr = current;
 
@@ -1335,21 +1241,96 @@ void do_int3(struct cpu_user_regs *regs)
         if ( likely(extable_fixup(regs, true)) )
             return;
 
-        if ( !debugger_trap_fatal(TRAP_int3, regs) )
-            printk(XENLOG_DEBUG "Hit embedded breakpoint at %p [%ps]\n",
-                   _p(regs->rip), _p(regs->rip));
+        printk(XENLOG_DEBUG "Hit embedded breakpoint at %p [%ps]\n",
+               _p(regs->rip), _p(regs->rip));
 
         return;
     }
 
     if ( guest_kernel_mode(curr, regs) && curr->domain->debugger_attached )
     {
-        curr->arch.gdbsx_vcpu_event = TRAP_int3;
+        curr->arch.gdbsx_vcpu_event = X86_EXC_BP;
         domain_pause_for_debugger();
         return;
     }
 
-    pv_inject_hw_exception(TRAP_int3, X86_EVENT_NO_EC);
+    pv_inject_hw_exception(X86_EXC_BP, X86_EVENT_NO_EC);
+}
+
+/* SAF-1-safe */
+void do_general_protection(struct cpu_user_regs *regs)
+{
+#ifdef CONFIG_PV
+    struct vcpu *v = current;
+#endif
+
+    if ( regs->error_code & X86_XEC_EXT )
+        goto hardware_gp;
+
+    if ( !guest_mode(regs) )
+        goto gp_in_kernel;
+
+#ifdef CONFIG_PV
+    /*
+     * Cunning trick to allow arbitrary "INT n" handling.
+     *
+     * We set DPL == 0 on all vectors in the IDT. This prevents any INT <n>
+     * instruction from trapping to the appropriate vector, when that might not
+     * be expected by Xen or the guest OS. For example, that entry might be for
+     * a fault handler (unlike traps, faults don't increment EIP), or might
+     * expect an error code on the stack (which a software trap never
+     * provides), or might be a hardware interrupt handler that doesn't like
+     * being called spuriously.
+     *
+     * Instead, a GPF occurs with the faulting IDT vector in the error code.
+     * Bit 1 is set to indicate that an IDT entry caused the fault. Bit 0 is
+     * clear (which got already checked above) to indicate that it's a software
+     * fault, not a hardware one.
+     *
+     * NOTE: Vectors 3 and 4 are dealt with from their own handler. This is
+     * okay because they can only be triggered by an explicit DPL-checked
+     * instruction. The DPL specified by the guest OS for these vectors is NOT
+     * CHECKED!!
+     */
+    if ( regs->error_code & X86_XEC_IDT )
+    {
+        /* This fault must be due to <INT n> instruction. */
+        uint8_t vector = regs->error_code >> 3;
+        const struct trap_info *ti = &v->arch.pv.trap_ctxt[vector];
+
+        if ( permit_softint(TI_GET_DPL(ti), v, regs) )
+        {
+            regs->rip += 2;
+            pv_inject_sw_interrupt(vector);
+            return;
+        }
+    }
+    else if ( is_pv_32bit_vcpu(v) && regs->error_code )
+    {
+        pv_emulate_gate_op(regs);
+        return;
+    }
+
+    /* Emulate some simple privileged and I/O instructions. */
+    if ( (regs->error_code == 0) &&
+         pv_emulate_privileged_op(regs) )
+    {
+        trace_trap_one_addr(TRC_PV_EMULATE_PRIVOP, regs->rip);
+        return;
+    }
+
+    /* Pass on GPF as is. */
+    pv_inject_hw_exception(X86_EXC_GP, regs->error_code);
+    return;
+#endif
+
+ gp_in_kernel:
+    if ( likely(extable_fixup(regs, true)) )
+        return;
+
+ hardware_gp:
+    show_execution_state(regs);
+    panic("GENERAL PROTECTION FAULT\n[error_code=%04x]\n", regs->error_code);
 }
 
 #ifdef CONFIG_PV
@@ -1383,7 +1364,7 @@ static int handle_ldt_mapping_fault(unsigned int offset,
         {
             uint16_t ec = (offset & ~(X86_XEC_EXT | X86_XEC_IDT)) | X86_XEC_TI;
 
-            pv_inject_hw_exception(TRAP_gp_fault, ec);
+            pv_inject_hw_exception(X86_EXC_GP, ec);
         }
         else
             /* else pass the #PF back, with adjusted %cr2. */
@@ -1615,7 +1596,7 @@ static int fixup_page_fault(unsigned long addr, struct cpu_user_regs *regs)
     return 0;
 }
 
-void do_page_fault(struct cpu_user_regs *regs)
+void asmlinkage do_page_fault(struct cpu_user_regs *regs)
 {
     unsigned long addr;
     unsigned int error_code;
@@ -1671,9 +1652,6 @@ void do_page_fault(struct cpu_user_regs *regs)
         }
 
     fatal:
-        if ( debugger_trap_fatal(TRAP_page_fault, regs) )
-            return;
-
         show_execution_state(regs);
         show_page_walk(addr);
         panic("FATAL PAGE FAULT\n"
@@ -1692,7 +1670,7 @@ void do_page_fault(struct cpu_user_regs *regs)
  * during early boot (an issue was seen once, but was most likely a hardware
  * problem).
  */
-void __init do_early_page_fault(struct cpu_user_regs *regs)
+void asmlinkage __init do_early_page_fault(struct cpu_user_regs *regs)
 {
     static unsigned int __initdata stuck;
     static unsigned long __initdata prev_eip, prev_cr2;
@@ -1715,85 +1693,6 @@ void __init do_early_page_fault(struct cpu_user_regs *regs)
                regs->cs, _p(regs->rip), _p(cr2), regs->error_code);
         fatal_trap(regs, 0);
     }
-}
-
-void do_general_protection(struct cpu_user_regs *regs)
-{
-#ifdef CONFIG_PV
-    struct vcpu *v = current;
-#endif
-
-    if ( regs->error_code & X86_XEC_EXT )
-        goto hardware_gp;
-
-    if ( !guest_mode(regs) )
-        goto gp_in_kernel;
-
-#ifdef CONFIG_PV
-    /*
-     * Cunning trick to allow arbitrary "INT n" handling.
-     *
-     * We set DPL == 0 on all vectors in the IDT. This prevents any INT <n>
-     * instruction from trapping to the appropriate vector, when that might not
-     * be expected by Xen or the guest OS. For example, that entry might be for
-     * a fault handler (unlike traps, faults don't increment EIP), or might
-     * expect an error code on the stack (which a software trap never
-     * provides), or might be a hardware interrupt handler that doesn't like
-     * being called spuriously.
-     *
-     * Instead, a GPF occurs with the faulting IDT vector in the error code.
-     * Bit 1 is set to indicate that an IDT entry caused the fault. Bit 0 is
-     * clear (which got already checked above) to indicate that it's a software
-     * fault, not a hardware one.
-     *
-     * NOTE: Vectors 3 and 4 are dealt with from their own handler. This is
-     * okay because they can only be triggered by an explicit DPL-checked
-     * instruction. The DPL specified by the guest OS for these vectors is NOT
-     * CHECKED!!
-     */
-    if ( regs->error_code & X86_XEC_IDT )
-    {
-        /* This fault must be due to <INT n> instruction. */
-        uint8_t vector = regs->error_code >> 3;
-        const struct trap_info *ti = &v->arch.pv.trap_ctxt[vector];
-
-        if ( permit_softint(TI_GET_DPL(ti), v, regs) )
-        {
-            regs->rip += 2;
-            pv_inject_sw_interrupt(vector);
-            return;
-        }
-    }
-    else if ( is_pv_32bit_vcpu(v) && regs->error_code )
-    {
-        pv_emulate_gate_op(regs);
-        return;
-    }
-
-    /* Emulate some simple privileged and I/O instructions. */
-    if ( (regs->error_code == 0) &&
-         pv_emulate_privileged_op(regs) )
-    {
-        trace_trap_one_addr(TRC_PV_EMULATE_PRIVOP, regs->rip);
-        return;
-    }
-
-    /* Pass on GPF as is. */
-    pv_inject_hw_exception(TRAP_gp_fault, regs->error_code);
-    return;
-#endif
-
- gp_in_kernel:
-
-    if ( likely(extable_fixup(regs, true)) )
-        return;
-
- hardware_gp:
-    if ( debugger_trap_fatal(TRAP_gp_fault, regs) )
-        return;
-
-    show_execution_state(regs);
-    panic("GENERAL PROTECTION FAULT\n[error_code=%04x]\n", regs->error_code);
 }
 
 static bool pci_serr_cont;
@@ -1971,7 +1870,7 @@ void trigger_nmi_continuation(void)
     apic_wait_icr_idle();
 }
 
-void do_device_not_available(struct cpu_user_regs *regs)
+void asmlinkage do_device_not_available(struct cpu_user_regs *regs)
 {
 #ifdef CONFIG_PV
     struct vcpu *curr = current;
@@ -1997,17 +1896,19 @@ void do_device_not_available(struct cpu_user_regs *regs)
 
     if ( curr->arch.pv.ctrlreg[0] & X86_CR0_TS )
     {
-        pv_inject_hw_exception(TRAP_no_device, X86_EVENT_NO_EC);
+        pv_inject_hw_exception(X86_EXC_NM, X86_EVENT_NO_EC);
         curr->arch.pv.ctrlreg[0] &= ~X86_CR0_TS;
     }
     else
-        TRACE_0D(TRC_PV_MATH_STATE_RESTORE);
+        TRACE_TIME(TRC_PV_MATH_STATE_RESTORE);
 #else
     ASSERT_UNREACHABLE();
 #endif
 }
 
-void do_debug(struct cpu_user_regs *regs)
+void nocall sysenter_eflags_saved(void);
+
+void asmlinkage do_debug(struct cpu_user_regs *regs)
 {
     unsigned long dr6;
     struct vcpu *v = current;
@@ -2061,11 +1962,8 @@ void do_debug(struct cpu_user_regs *regs)
                 return;
             }
 #endif
-            if ( !debugger_trap_fatal(TRAP_debug, regs) )
-            {
-                WARN();
-                regs->eflags &= ~X86_EFLAGS_TF;
-            }
+            WARN();
+            regs->eflags &= ~X86_EFLAGS_TF;
         }
 
         /*
@@ -2129,10 +2027,10 @@ void do_debug(struct cpu_user_regs *regs)
         return;
     }
 
-    pv_inject_hw_exception(TRAP_debug, X86_EVENT_NO_EC);
+    pv_inject_hw_exception(X86_EXC_DB, X86_EVENT_NO_EC);
 }
 
-void do_entry_CP(struct cpu_user_regs *regs)
+void asmlinkage do_entry_CP(struct cpu_user_regs *regs)
 {
     static const char errors[][10] = {
         [1] = "near ret",
@@ -2236,35 +2134,49 @@ void percpu_traps_init(void)
         wrmsrl(MSR_IA32_DEBUGCTLMSR, IA32_DEBUGCTLMSR_LBR);
 }
 
+/* Exception entries */
+void nocall entry_DE(void);
+void nocall entry_DB(void);
+void nocall entry_NMI(void);
+void nocall entry_BP(void);
+void nocall entry_OF(void);
+void nocall entry_BR(void);
+void nocall entry_UD(void);
+void nocall entry_NM(void);
+void nocall entry_DF(void);
+void nocall entry_TS(void);
+void nocall entry_NP(void);
+void nocall entry_SS(void);
+void nocall entry_GP(void);
+void nocall early_page_fault(void);
+void nocall entry_PF(void);
+void nocall entry_MF(void);
+void nocall entry_AC(void);
+void nocall entry_MC(void);
+void nocall entry_XM(void);
+void nocall entry_CP(void);
+
 void __init init_idt_traps(void)
 {
-    /*
-     * Note that interrupt gates are always used, rather than trap gates. We
-     * must have interrupts disabled until DS/ES/FS/GS are saved because the
-     * first activation must have the "bad" value(s) for these registers and
-     * we may lose them if another activation is installed before they are
-     * saved. The page-fault handler also needs interrupts disabled until %cr2
-     * has been read and saved on the stack.
-     */
-    set_intr_gate(TRAP_divide_error,&divide_error);
-    set_intr_gate(TRAP_debug,&debug);
-    set_intr_gate(TRAP_nmi,&nmi);
-    set_swint_gate(TRAP_int3,&int3);         /* usable from all privileges */
-    set_swint_gate(TRAP_overflow,&overflow); /* usable from all privileges */
-    set_intr_gate(TRAP_bounds,&bounds);
-    set_intr_gate(TRAP_invalid_op,&invalid_op);
-    set_intr_gate(TRAP_no_device,&device_not_available);
-    set_intr_gate(TRAP_double_fault,&double_fault);
-    set_intr_gate(TRAP_invalid_tss,&invalid_TSS);
-    set_intr_gate(TRAP_no_segment,&segment_not_present);
-    set_intr_gate(TRAP_stack_error,&stack_segment);
-    set_intr_gate(TRAP_gp_fault,&general_protection);
-    set_intr_gate(TRAP_page_fault,&early_page_fault);
-    set_intr_gate(TRAP_copro_error,&coprocessor_error);
-    set_intr_gate(TRAP_alignment_check,&alignment_check);
-    set_intr_gate(TRAP_machine_check,&machine_check);
-    set_intr_gate(TRAP_simd_error,&simd_coprocessor_error);
-    set_intr_gate(X86_EXC_CP, entry_CP);
+    set_intr_gate (X86_EXC_DE,  entry_DE);
+    set_intr_gate (X86_EXC_DB,  entry_DB);
+    set_intr_gate (X86_EXC_NMI, entry_NMI);
+    set_swint_gate(X86_EXC_BP,  entry_BP);
+    set_swint_gate(X86_EXC_OF,  entry_OF);
+    set_intr_gate (X86_EXC_BR,  entry_BR);
+    set_intr_gate (X86_EXC_UD,  entry_UD);
+    set_intr_gate (X86_EXC_NM,  entry_NM);
+    set_intr_gate (X86_EXC_DF,  entry_DF);
+    set_intr_gate (X86_EXC_TS,  entry_TS);
+    set_intr_gate (X86_EXC_NP,  entry_NP);
+    set_intr_gate (X86_EXC_SS,  entry_SS);
+    set_intr_gate (X86_EXC_GP,  entry_GP);
+    set_intr_gate (X86_EXC_PF,  early_page_fault);
+    set_intr_gate (X86_EXC_MF,  entry_MF);
+    set_intr_gate (X86_EXC_AC,  entry_AC);
+    set_intr_gate (X86_EXC_MC,  entry_MC);
+    set_intr_gate (X86_EXC_XM,  entry_XM);
+    set_intr_gate (X86_EXC_CP,  entry_CP);
 
     /* Specify dedicated interrupt stacks for NMI, #DF, and #MC. */
     enable_each_ist(idt_table);
@@ -2283,7 +2195,7 @@ void __init trap_init(void)
     unsigned int vector;
 
     /* Replace early pagefault with real pagefault handler. */
-    set_intr_gate(TRAP_page_fault, &page_fault);
+    set_intr_gate(X86_EXC_PF, entry_PF);
 
     pv_trap_init();
 
@@ -2372,13 +2284,13 @@ void asm_domain_crash_synchronous(unsigned long addr)
 }
 
 #ifdef CONFIG_DEBUG
-void check_ist_exit(const struct cpu_user_regs *regs, bool ist_exit)
+void asmlinkage check_ist_exit(const struct cpu_user_regs *regs, bool ist_exit)
 {
     const unsigned int ist_mask =
         (1U << X86_EXC_NMI) | (1U << X86_EXC_DB) |
         (1U << X86_EXC_DF)  | (1U << X86_EXC_MC);
     uint8_t ev = regs->entry_vector;
-    bool is_ist = (ev < TRAP_nr) && ((1U << ev) & ist_mask);
+    bool is_ist = (ev < X86_EXC_NUM) && ((1U << ev) & ist_mask);
 
     ASSERT(is_ist == ist_exit);
 }

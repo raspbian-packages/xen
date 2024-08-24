@@ -1,20 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * alternative runtime patching
  * inspired by the x86 version
  *
  * Copyright (C) 2014-2016 ARM Ltd.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <xen/init.h>
@@ -55,7 +44,7 @@ static bool branch_insn_requires_update(const struct alt_instr *alt,
         return true;
 
     replptr = (unsigned long)ALT_REPL_PTR(alt);
-    if ( pc >= replptr && pc <= (replptr + alt->alt_len) )
+    if ( pc >= replptr && pc <= (replptr + alt->repl_len) )
         return false;
 
     /*
@@ -139,9 +128,9 @@ static int __apply_alternatives(const struct alt_region *region,
             continue;
 
         if ( alt->cpufeature == ARM_CB_PATCH )
-            BUG_ON(alt->alt_len != 0);
+            BUG_ON(alt->repl_len != 0);
         else
-            BUG_ON(alt->alt_len != alt->orig_len);
+            BUG_ON(alt->repl_len != alt->orig_len);
 
         origptr = ALT_ORIG_PTR(alt);
         updptr = (void *)origptr + update_offset;
@@ -234,6 +223,7 @@ void __init apply_alternatives_all(void)
     vunmap(xenmap);
 }
 
+#ifdef CONFIG_LIVEPATCH
 int apply_alternatives(const struct alt_instr *start, const struct alt_instr *end)
 {
     const struct alt_region region = {
@@ -243,6 +233,7 @@ int apply_alternatives(const struct alt_instr *start, const struct alt_instr *en
 
     return __apply_alternatives(&region, 0);
 }
+#endif
 
 /*
  * Local variables:

@@ -16,7 +16,7 @@
 #include <asm/setup.h>
 #include <asm/xstate.h>
 
-struct cpu_policy __ro_after_init     raw_cpu_policy;
+struct cpu_policy __read_mostly       raw_cpu_policy;
 struct cpu_policy __ro_after_init    host_cpu_policy;
 #ifdef CONFIG_PV
 struct cpu_policy __ro_after_init  pv_max_cpu_policy;
@@ -43,7 +43,7 @@ static const uint32_t deep_features[] = INIT_DEEP_FEATURES;
 static const struct feature_name {
     const char *name;
     unsigned int bit;
-} feature_names[] __initconstrel = INIT_FEATURE_NAMES;
+} feature_names[] __initconstrel = INIT_FEATURE_NAME_TO_VAL;
 
 /*
  * Parse a list of cpuid feature names -> bool, calling the callback for any
@@ -193,8 +193,7 @@ static void sanitise_featureset(uint32_t *fs)
 static void recalculate_xstate(struct cpu_policy *p)
 {
     uint64_t xstates = XSTATE_FP_SSE;
-    uint32_t xstate_size = XSTATE_AREA_MIN_SIZE;
-    unsigned int i, Da1 = p->xstate.Da1;
+    unsigned int i, ecx_mask = 0, Da1 = p->xstate.Da1;
 
     /*
      * The Da1 leaf is the only piece of information preserved in the common
@@ -206,61 +205,47 @@ static void recalculate_xstate(struct cpu_policy *p)
         return;
 
     if ( p->basic.avx )
-    {
         xstates |= X86_XCR0_YMM;
-        xstate_size = max(xstate_size,
-                          xstate_offsets[X86_XCR0_YMM_POS] +
-                          xstate_sizes[X86_XCR0_YMM_POS]);
-    }
 
     if ( p->feat.mpx )
-    {
         xstates |= X86_XCR0_BNDREGS | X86_XCR0_BNDCSR;
-        xstate_size = max(xstate_size,
-                          xstate_offsets[X86_XCR0_BNDCSR_POS] +
-                          xstate_sizes[X86_XCR0_BNDCSR_POS]);
-    }
 
     if ( p->feat.avx512f )
-    {
         xstates |= X86_XCR0_OPMASK | X86_XCR0_ZMM | X86_XCR0_HI_ZMM;
-        xstate_size = max(xstate_size,
-                          xstate_offsets[X86_XCR0_HI_ZMM_POS] +
-                          xstate_sizes[X86_XCR0_HI_ZMM_POS]);
-    }
 
     if ( p->feat.pku )
-    {
         xstates |= X86_XCR0_PKRU;
-        xstate_size = max(xstate_size,
-                          xstate_offsets[X86_XCR0_PKRU_POS] +
-                          xstate_sizes[X86_XCR0_PKRU_POS]);
-    }
 
-    p->xstate.max_size  =  xstate_size;
+    /* Subleaf 0 */
+    p->xstate.max_size =
+        xstate_uncompressed_size(xstates & ~XSTATE_XSAVES_ONLY);
     p->xstate.xcr0_low  =  xstates & ~XSTATE_XSAVES_ONLY;
     p->xstate.xcr0_high = (xstates & ~XSTATE_XSAVES_ONLY) >> 32;
 
+    /* Subleaf 1 */
     p->xstate.Da1 = Da1;
+    if ( p->xstate.xsavec )
+        ecx_mask |= XSTATE_ALIGN64;
+
     if ( p->xstate.xsaves )
     {
+        ecx_mask |= XSTATE_XSS;
         p->xstate.xss_low   =  xstates & XSTATE_XSAVES_ONLY;
         p->xstate.xss_high  = (xstates & XSTATE_XSAVES_ONLY) >> 32;
     }
-    else
-        xstates &= ~XSTATE_XSAVES_ONLY;
 
-    for ( i = 2; i < min(63ul, ARRAY_SIZE(p->xstate.comp)); ++i )
+    /* Subleafs 2+ */
+    xstates &= ~XSTATE_FP_SSE;
+    BUILD_BUG_ON(ARRAY_SIZE(p->xstate.comp) < 63);
+    for_each_set_bit ( i, &xstates, 63 )
     {
-        uint64_t curr_xstate = 1ul << i;
-
-        if ( !(xstates & curr_xstate) )
-            continue;
-
-        p->xstate.comp[i].size   = xstate_sizes[i];
-        p->xstate.comp[i].offset = xstate_offsets[i];
-        p->xstate.comp[i].xss    = curr_xstate & XSTATE_XSAVES_ONLY;
-        p->xstate.comp[i].align  = curr_xstate & xstate_align;
+        /*
+         * Pass through size (eax) and offset (ebx) directly.  Visbility of
+         * attributes in ecx limited by visible features in Da1.
+         */
+        p->xstate.raw[i].a = raw_cpu_policy.xstate.raw[i].a;
+        p->xstate.raw[i].b = raw_cpu_policy.xstate.raw[i].b;
+        p->xstate.raw[i].c = raw_cpu_policy.xstate.raw[i].c & ecx_mask;
     }
 }
 
@@ -321,7 +306,7 @@ static void recalculate_misc(struct cpu_policy *p)
         p->extd.vendor_edx = p->basic.vendor_edx;
 
         p->extd.raw_fms = p->basic.raw_fms;
-        p->extd.raw[0x1].b &= 0xff00ffff;
+        p->extd.raw[0x1].b &= 0xff00ffffU;
         p->extd.e1d |= p->basic._1d & CPUID_COMMON_1D_FEATURES;
 
         p->extd.raw[0x8].a &= 0x0000ffff; /* GuestMaxPhysAddr hidden. */
@@ -344,7 +329,7 @@ static void recalculate_misc(struct cpu_policy *p)
     }
 }
 
-static void __init calculate_raw_policy(void)
+void calculate_raw_cpu_policy(void)
 {
     struct cpu_policy *p = &raw_cpu_policy;
 
@@ -352,6 +337,13 @@ static void __init calculate_raw_policy(void)
 
     /* Nothing good will come from Xen and libx86 disagreeing on vendor. */
     ASSERT(p->x86_vendor == boot_cpu_data.x86_vendor);
+
+    /*
+     * Clear the truly dynamic fields.  These vary with the in-context XCR0
+     * and MSR_XSS, and aren't interesting fields in the raw policy.
+     */
+    p->xstate.raw[0].b = 0;
+    p->xstate.raw[1].b = 0;
 
     /* 0x000000ce  MSR_INTEL_PLATFORM_INFO */
     /* Was already added by probe_cpuid_faulting() */
@@ -378,10 +370,10 @@ static void __init calculate_host_policy(void)
      * this information.
      */
     if ( cpu_has_lfence_dispatch )
-        max_extd_leaf = max(max_extd_leaf, 0x80000021);
+        max_extd_leaf = max(max_extd_leaf, 0x80000021U);
 
-    p->extd.max_leaf = 0x80000000 | min_t(uint32_t, max_extd_leaf & 0xffff,
-                                          ARRAY_SIZE(p->extd.raw) - 1);
+    p->extd.max_leaf = 0x80000000U | min_t(uint32_t, max_extd_leaf & 0xffff,
+                                           ARRAY_SIZE(p->extd.raw) - 1);
 
     x86_cpu_featureset_to_policy(boot_cpu_data.x86_capability, p);
     recalculate_xstate(p);
@@ -390,19 +382,6 @@ static void __init calculate_host_policy(void)
     /* When vPMU is disabled, drop it from the host policy. */
     if ( vpmu_mode == XENPMU_MODE_OFF )
         p->basic.raw[0xa] = EMPTY_LEAF;
-
-    if ( p->extd.svm )
-    {
-        /* Clamp to implemented features which require hardware support. */
-        p->extd.raw[0xa].d &= ((1u << SVM_FEATURE_NPT) |
-                               (1u << SVM_FEATURE_LBRV) |
-                               (1u << SVM_FEATURE_NRIPS) |
-                               (1u << SVM_FEATURE_PAUSEFILTER) |
-                               (1u << SVM_FEATURE_DECODEASSISTS));
-        /* Enable features which are always emulated. */
-        p->extd.raw[0xa].d |= ((1u << SVM_FEATURE_VMCBCLEAN) |
-                               (1u << SVM_FEATURE_TSCRATEMSR));
-    }
 
     /* 0x000000ce  MSR_INTEL_PLATFORM_INFO */
     /* probe_cpuid_faulting() sanity checks presence of MISC_FEATURES_ENABLES */
@@ -444,6 +423,7 @@ static void __init guest_common_max_feature_adjustments(uint32_t *fs)
          */
         __set_bit(X86_FEATURE_MD_CLEAR, fs);
         __set_bit(X86_FEATURE_FB_CLEAR, fs);
+        __set_bit(X86_FEATURE_RFDS_CLEAR, fs);
 
         /*
          * The Gather Data Sampling microcode mitigation (August 2023) has an
@@ -457,6 +437,31 @@ static void __init guest_common_max_feature_adjustments(uint32_t *fs)
              raw_cpu_policy.feat.clwb )
             __set_bit(X86_FEATURE_CLWB, fs);
     }
+
+    /*
+     * Topology information inside the guest is entirely at the toolstack's
+     * discretion, and bears no relationship to the host we're running on.
+     *
+     * HTT identifies p->basic.lppp as valid
+     * CMP_LEGACY identifies p->extd.nc as valid
+     */
+    __set_bit(X86_FEATURE_HTT, fs);
+    __set_bit(X86_FEATURE_CMP_LEGACY, fs);
+
+    /*
+     * To mitigate Native-BHI, one option is to use a TSX Abort on capable
+     * systems.  This is safe even if RTM has been disabled for other reasons
+     * via MSR_TSX_{CTRL,FORCE_ABORT}.  However, a guest kernel doesn't get to
+     * know this type of information.
+     *
+     * Therefore the meaning of RTM_ALWAYS_ABORT has been adjusted, to instead
+     * mean "XBEGIN won't fault".  This is enough for a guest kernel to make
+     * an informed choice WRT mitigating Native-BHI.
+     *
+     * If RTM-capable, we can run a VM which has seen RTM_ALWAYS_ABORT.
+     */
+    if ( test_bit(X86_FEATURE_RTM, fs) )
+        __set_bit(X86_FEATURE_RTM_ALWAYS_ABORT, fs);
 }
 
 static void __init guest_common_default_feature_adjustments(uint32_t *fs)
@@ -493,6 +498,10 @@ static void __init guest_common_default_feature_adjustments(uint32_t *fs)
         if ( cpu_has_fb_clear )
             __set_bit(X86_FEATURE_FB_CLEAR, fs);
 
+        __clear_bit(X86_FEATURE_RFDS_CLEAR, fs);
+        if ( cpu_has_rfds_clear )
+            __set_bit(X86_FEATURE_RFDS_CLEAR, fs);
+
         /*
          * The Gather Data Sampling microcode mitigation (August 2023) has an
          * adverse performance impact on the CLWB instruction on SKX/CLX/CPX.
@@ -508,14 +517,31 @@ static void __init guest_common_default_feature_adjustments(uint32_t *fs)
     }
 
     /*
+     * Topology information is at the toolstack's discretion so these are
+     * unconditionally set in max, but pick a default which matches the host.
+     */
+    __clear_bit(X86_FEATURE_HTT, fs);
+    if ( cpu_has_htt )
+        __set_bit(X86_FEATURE_HTT, fs);
+
+    __clear_bit(X86_FEATURE_CMP_LEGACY, fs);
+    if ( cpu_has_cmp_legacy )
+        __set_bit(X86_FEATURE_CMP_LEGACY, fs);
+
+    /*
      * On certain hardware, speculative or errata workarounds can result in
      * TSX being placed in "force-abort" mode, where it doesn't actually
      * function as expected, but is technically compatible with the ISA.
      *
      * Do not advertise RTM to guests by default if it won't actually work.
+     * Instead, advertise RTM_ALWAYS_ABORT indicating that TSX Aborts are safe
+     * to use, e.g. for mitigating Native-BHI.
      */
     if ( rtm_disabled )
+    {
         __clear_bit(X86_FEATURE_RTM, fs);
+        __set_bit(X86_FEATURE_RTM_ALWAYS_ABORT, fs);
+    }
 }
 
 static void __init guest_common_feature_adjustments(uint32_t *fs)
@@ -549,10 +575,25 @@ static void __init calculate_pv_max_policy(void)
     unsigned int i;
 
     *p = host_cpu_policy;
+
+    /*
+     * Some VMs may have a larger-than-necessary feat max_subleaf.  Allow them
+     * to migrate in.
+     */
+    p->feat.max_subleaf = ARRAY_SIZE(p->feat.raw) - 1;
+
     x86_cpu_policy_to_featureset(p, fs);
 
     for ( i = 0; i < ARRAY_SIZE(fs); ++i )
         fs[i] &= pv_max_featuremask[i];
+
+    /*
+     * Xen at the time of writing (Feb 2024, 4.19 dev cycle) used to leak the
+     * host x2APIC capability into PV guests, but never supported the guest
+     * trying to turn x2APIC mode on.  Tolerate an incoming VM which saw the
+     * x2APIC CPUID bit and is alive enough to migrate.
+     */
+    __set_bit(X86_FEATURE_X2APIC, fs);
 
     /*
      * If Xen isn't virtualising MSR_SPEC_CTRL for PV guests (functional
@@ -581,6 +622,10 @@ static void __init calculate_pv_def_policy(void)
     unsigned int i;
 
     *p = pv_max_cpu_policy;
+
+    /* Default to the same max_subleaf as the host. */
+    p->feat.max_subleaf = host_cpu_policy.feat.max_subleaf;
+
     x86_cpu_policy_to_featureset(p, fs);
 
     for ( i = 0; i < ARRAY_SIZE(fs); ++i )
@@ -617,6 +662,13 @@ static void __init calculate_hvm_max_policy(void)
     const uint32_t *mask;
 
     *p = host_cpu_policy;
+
+    /*
+     * Some VMs may have a larger-than-necessary feat max_subleaf.  Allow them
+     * to migrate in.
+     */
+    p->feat.max_subleaf = ARRAY_SIZE(p->feat.raw) - 1;
+
     x86_cpu_policy_to_featureset(p, fs);
 
     mask = hvm_hap_supported() ?
@@ -677,6 +729,12 @@ static void __init calculate_hvm_max_policy(void)
      */
     if ( cpu_has_vmx )
     {
+        if ( !cpu_has_vmx_rdtscp )
+            __clear_bit(X86_FEATURE_RDTSCP, fs);
+
+        if ( !cpu_has_vmx_invpcid )
+            __clear_bit(X86_FEATURE_INVPCID, fs);
+
         if ( !cpu_has_vmx_mpx )
             __clear_bit(X86_FEATURE_MPX, fs);
 
@@ -684,6 +742,31 @@ static void __init calculate_hvm_max_policy(void)
             __clear_bit(X86_FEATURE_XSAVES, fs);
     }
 
+    /*
+     * Xen doesn't use PKS, so the guest support for it has opted to not use
+     * the VMCS load/save controls for efficiency reasons.  This depends on
+     * the exact vmentry/exit behaviour, so don't expose PKS in other
+     * situations until someone has cross-checked the behaviour for safety.
+     */
+    if ( !cpu_has_vmx )
+        __clear_bit(X86_FEATURE_PKS, fs);
+
+    /* 
+     * Make adjustments to possible (nested) virtualization features exposed
+     * to the guest
+     */
+    if ( p->extd.svm )
+    {
+        /* Clamp to implemented features which require hardware support. */
+        p->extd.raw[0xa].d &= ((1u << SVM_FEATURE_NPT) |
+                               (1u << SVM_FEATURE_LBRV) |
+                               (1u << SVM_FEATURE_NRIPS) |
+                               (1u << SVM_FEATURE_PAUSEFILTER) |
+                               (1u << SVM_FEATURE_DECODEASSISTS));
+        /* Enable features which are always emulated. */
+        p->extd.raw[0xa].d |= (1u << SVM_FEATURE_VMCBCLEAN);
+    }
+    
     guest_common_max_feature_adjustments(fs);
     guest_common_feature_adjustments(fs);
 
@@ -703,6 +786,10 @@ static void __init calculate_hvm_def_policy(void)
     const uint32_t *mask;
 
     *p = hvm_max_cpu_policy;
+
+    /* Default to the same max_subleaf as the host. */
+    p->feat.max_subleaf = host_cpu_policy.feat.max_subleaf;
+
     x86_cpu_policy_to_featureset(p, fs);
 
     mask = hvm_hap_supported() ?
@@ -743,7 +830,6 @@ static void __init calculate_hvm_def_policy(void)
 
 void __init init_guest_cpu_policies(void)
 {
-    calculate_raw_policy();
     calculate_host_policy();
 
     if ( IS_ENABLED(CONFIG_PV) )
@@ -802,11 +888,11 @@ void recalculate_cpuid_policy(struct domain *d)
 
     p->basic.max_leaf   = min(p->basic.max_leaf,   max->basic.max_leaf);
     p->feat.max_subleaf = min(p->feat.max_subleaf, max->feat.max_subleaf);
-    p->extd.max_leaf    = 0x80000000 | min(p->extd.max_leaf & 0xffff,
-                                           ((p->x86_vendor & (X86_VENDOR_AMD |
-                                                              X86_VENDOR_HYGON))
-                                            ? CPUID_GUEST_NR_EXTD_AMD
-                                            : CPUID_GUEST_NR_EXTD_INTEL) - 1);
+    p->extd.max_leaf    = 0x80000000U | min(p->extd.max_leaf & 0xffff,
+                                            ((p->x86_vendor & (X86_VENDOR_AMD |
+                                                               X86_VENDOR_HYGON))
+                                             ? CPUID_GUEST_NR_EXTD_AMD
+                                             : CPUID_GUEST_NR_EXTD_INTEL) - 1);
 
     x86_cpu_policy_to_featureset(p, fs);
     x86_cpu_policy_to_featureset(max, max_fs);
@@ -830,14 +916,6 @@ void recalculate_cpuid_policy(struct domain *d)
             __clear_bit(X86_FEATURE_SVM, max_fs);
         }
     }
-
-    /*
-     * Allow the toolstack to set HTT, X2APIC and CMP_LEGACY.  These bits
-     * affect how to interpret topology information in other cpuid leaves.
-     */
-    __set_bit(X86_FEATURE_HTT, max_fs);
-    __set_bit(X86_FEATURE_X2APIC, max_fs);
-    __set_bit(X86_FEATURE_CMP_LEGACY, max_fs);
 
     /*
      * 32bit PV domains can't use any Long Mode features, and cannot use
@@ -873,7 +951,7 @@ void recalculate_cpuid_policy(struct domain *d)
 
     p->extd.maxphysaddr = min(p->extd.maxphysaddr, max->extd.maxphysaddr);
     p->extd.maxphysaddr = min_t(uint8_t, p->extd.maxphysaddr,
-                                paging_max_paddr_bits(d));
+                                domain_max_paddr_bits(d));
     p->extd.maxphysaddr = max_t(uint8_t, p->extd.maxphysaddr,
                                 (p->basic.pae || p->basic.pse36) ? 36 : 32);
 

@@ -174,6 +174,9 @@ static void ubsan_epilogue(unsigned long *flags)
 		"========================================\n");
 	spin_unlock_irqrestore(&report_lock, *flags);
 	current->in_ubsan--;
+
+	if (IS_ENABLED(CONFIG_UBSAN_FATAL))
+	    panic("UBSAN failure detected\n");
 }
 
 static void handle_overflow(struct overflow_data *data, unsigned long lhs,
@@ -513,7 +516,7 @@ void __ubsan_handle_pointer_overflow(struct pointer_overflow_data *data,
 	ubsan_prologue(&data->location, &flags);
 
 	pr_err("pointer operation %s %p to %p\n",
-	       base > result ? "underflowed" : "overflowed",
+	       base > result ? "overflowed" : "underflowed",
 	       _p(base), _p(result));
 
 	ubsan_epilogue(&flags);

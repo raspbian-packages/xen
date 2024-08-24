@@ -29,8 +29,8 @@ extern uint32_t mxcsr_mask;
 #define XSAVE_HDR_OFFSET          FXSAVE_SIZE
 #define XSTATE_AREA_MIN_SIZE      (FXSAVE_SIZE + XSAVE_HDR_SIZE)
 
-#define XSTATE_FP_SSE  (X86_XCR0_FP | X86_XCR0_SSE)
-#define XCNTXT_MASK    (X86_XCR0_FP | X86_XCR0_SSE | X86_XCR0_YMM | \
+#define XSTATE_FP_SSE  (X86_XCR0_X87 | X86_XCR0_SSE)
+#define XCNTXT_MASK    (X86_XCR0_X87 | X86_XCR0_SSE | X86_XCR0_YMM | \
                         X86_XCR0_OPMASK | X86_XCR0_ZMM | X86_XCR0_HI_ZMM | \
                         XSTATE_NONLAZY)
 
@@ -40,6 +40,7 @@ extern uint32_t mxcsr_mask;
 #define XSTATE_XSAVES_ONLY         0
 #define XSTATE_COMPACTION_ENABLED  (1ULL << 63)
 
+#define XSTATE_XSS     (1U << 0)
 #define XSTATE_ALIGN64 (1U << 1)
 
 extern u64 xfeature_mask;
@@ -100,14 +101,15 @@ int __must_check validate_xstate(const struct domain *d,
                                  uint64_t xcr0, uint64_t xcr0_accum,
                                  const struct xsave_hdr *hdr);
 int __must_check handle_xsetbv(u32 index, u64 new_bv);
-void expand_xsave_states(struct vcpu *v, void *dest, unsigned int size);
+void expand_xsave_states(const struct vcpu *v, void *dest, unsigned int size);
 void compress_xsave_states(struct vcpu *v, const void *src, unsigned int size);
 
 /* extended state init and cleanup functions */
 void xstate_free_save_area(struct vcpu *v);
 int xstate_alloc_save_area(struct vcpu *v);
 void xstate_init(struct cpuinfo_x86 *c);
-unsigned int xstate_ctxt_size(u64 xcr0);
+unsigned int xstate_uncompressed_size(uint64_t xcr0);
+unsigned int xstate_compressed_size(uint64_t xstates);
 
 static inline uint64_t xgetbv(unsigned int index)
 {
