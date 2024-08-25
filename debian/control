@@ -3,7 +3,7 @@ Priority: optional
 Maintainer: Debian Xen Team <pkg-xen-devel@lists.alioth.debian.org>
 Uploaders: Ian Jackson <iwj@xenproject.org>, Hans van Kranenburg <hans@knorrie.org>
 Section: admin
-Standards-Version: 4.6.2
+Standards-Version: 4.7.0
 Build-Depends:
    debhelper-compat (= 13),
    dh-exec,
