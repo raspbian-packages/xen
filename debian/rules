@@ -322,6 +322,10 @@ override_dh_installinit:
 	dh_installinit --name xen --no-start -- defaults
 	dh_installinit --name xendomains --no-start -- defaults
 
+override_dh_installsystemd:
+	dh_installsystemd --name xen --no-start --no-stop-on-upgrade
+	dh_installsystemd --name xendomains --no-start --no-stop-on-upgrade
+
 # We want to ship xen-shim-syms in a -dbg package, but if we just add a
 # xen-utils-V-dbg package for it, lintian will complain with the following
 # warning:
