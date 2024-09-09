@@ -1,8 +1,47 @@
-xen (4.19.0+14-g0918434e0f-1~exp1) UNRELEASED; urgency=medium
+xen (4.19.0+14-g0918434e0f-1~exp1) experimental; urgency=medium
 
-  * Update to new upstream version 4.19.0+14-g0918434e0f.
+  Significant changes:
+  * Update to new upstream version 4.19.0+14-g0918434e0f, which also contains
+    security fixes for the following issues:
+    - x86: Register File Data Sampling
+      XSA-452 CVE-2023-28746
+    - GhostRace: Speculative Race Conditions
+      XSA-453 CVE-2024-2193
+    - x86 HVM hypercalls may trigger Xen bug check
+      XSA-454 CVE-2023-46842
+    - x86: Incorrect logic for BTC/SRSO mitigations
+      XSA-455 CVE-2024-31142
+    - x86: Native Branch History Injection
+      XSA-456 CVE-2024-2201
+    - double unlock in x86 guest IRQ handling
+      XSA-458 CVE-2024-31143
+    - error handling in x86 IOMMU identity mapping
+      XSA-460 CVE-2024-31145
+    - PCI device pass-through with shared resources
+      XSA-461 CVE-2024-31146
+  * Note that the following XSA are not listed, because...
+    - XSA-457 has patches for the Linux kernel.
+    - XSA-459 is within Xapi which is not shipped by this package.
+  * Fix compilation with OCaml 5.2.0 (Closes: #1073913)
 
- -- Maximilian Engelhardt <maxi@daemonizer.de>  Sat, 24 Aug 2024 13:58:58 +0200
+  Changes related to upgrading to Xen 4.19:
+  * debian/control: adjust to 4.19
+  * debian/copyright: update for xen 4.19
+  * Refresh remaining patches if needed
+
+  Packaging minor fixes and improvements:
+  * debian/control: remove old version constraints and cleanup
+  * debian/control: update Standards-Version to 4.7.0
+  * debian/control: add python3-setuptools dependency
+  * debian/rules: cleanup and improved comments
+  * debian/rules: enable parallel build
+  * debian/rules: move xenstore-control to xen-utils-common (Closes: #1036601)
+  * debian: ship systemd service files for xen and xendomains
+    (Closes: #1029998)
+  * docs/Makefile: Work around a reproducibility issue by generating
+    documentation for ppc and riscv architectures.
+
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Mon, 09 Sep 2024 12:05:47 +0200
 
 xen (4.17.3+36-g54dacb5c02-1) unstable; urgency=medium
 
