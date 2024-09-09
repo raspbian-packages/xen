@@ -15,6 +15,7 @@ Build-Depends:
    python3-dev:any,
    libpython3-dev,
    dh-python,
+   python3-setuptools,
    bcc [amd64],
    gcc-multilib [amd64],
    libext2fs-dev,
