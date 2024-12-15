@@ -337,10 +337,10 @@ Copyright: 2002-present Keir Fraser and many others
 License: LGPL-2.1
 
 Files: debian/*
-Copyright: 2008-2015, Bastian Blank
-           2016-present Ian Jackson <ijackson@chiark.greenend.org.uk>
-           2018-present Hans van Kranenburg <hans@knorrie.org>
-           2020-present Maximilian Engelhardt <maxi@daemonizer.de>
+Copyright: 2008-2015 Bastian Blank
+           2016-2023 Ian Jackson <ijackson@chiark.greenend.org.uk>
+           2018-2024 Hans van Kranenburg <hans@knorrie.org>
+           2020-2024 Maximilian Engelhardt <maxi@daemonizer.de>
 License: GPL-2+
 
 License: GPL-2
