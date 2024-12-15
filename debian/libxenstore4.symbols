@@ -1,4 +1,4 @@
-libxenstore.so.4 libxenstore4t64 #MINVER#
+libxenstore.so.4 libxenstore4 #MINVER#
  VERS_4.0@VERS_4.0 4.16.0
  xs_check_watch@VERS_4.0 4.16.0
  xs_close@VERS_4.0 4.16.0
