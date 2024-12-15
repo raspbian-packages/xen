@@ -156,44 +156,49 @@ static bool iopl_ok(const struct vcpu *v, const struct cpu_user_regs *regs)
 }
 
 /* Has the guest requested sufficient permission for this I/O access? */
-static bool guest_io_okay(unsigned int port, unsigned int bytes,
-                          struct vcpu *v, struct cpu_user_regs *regs)
+static int guest_io_okay(unsigned int port, unsigned int bytes,
+                         struct x86_emulate_ctxt *ctxt)
 {
+    const struct cpu_user_regs *regs = ctxt->regs;
+    struct vcpu *v = current;
     /* If in user mode, switch to kernel mode just to read I/O bitmap. */
     const bool user_mode = !(v->arch.flags & TF_kernel_mode);
 
     if ( iopl_ok(v, regs) )
-        return true;
+        return X86EMUL_OKAY;
 
-    if ( (port + bytes) <= v->arch.pv.iobmp_limit )
+    /*
+     * When @iobmp_nr is non-zero, Xen, like real CPUs and the TSS IOPB,
+     * always reads 2 bytes from @iobmp, which might be one byte @iobmp_nr.
+     */
+    if ( (port + bytes) <= v->arch.pv.iobmp_nr )
     {
-        union { uint8_t bytes[2]; uint16_t mask; } x;
+        const void *__user addr = v->arch.pv.iobmp.p + (port >> 3);
+        uint16_t mask;
+        int rc;
 
-        /*
-         * Grab permission bytes from guest space. Inaccessible bytes are
-         * read as 0xff (no access allowed).
-         */
+        /* Grab permission bytes from guest space. */
         if ( user_mode )
             toggle_guest_pt(v);
 
-        switch ( __copy_from_guest_offset(x.bytes, v->arch.pv.iobmp,
-                                          port>>3, 2) )
+        rc = __copy_from_guest_pv(&mask, addr, 2);
+
+        if ( user_mode )
+            toggle_guest_pt(v);
+
+        if ( rc )
         {
-        default: x.bytes[0] = ~0;
-            /* fallthrough */
-        case 1:  x.bytes[1] = ~0;
-            /* fallthrough */
-        case 0:  break;
+            x86_emul_pagefault(0, (unsigned long)addr + bytes - rc, ctxt);
+            return X86EMUL_EXCEPTION;
         }
 
-        if ( user_mode )
-            toggle_guest_pt(v);
-
-        if ( (x.mask & (((1 << bytes) - 1) << (port & 7))) == 0 )
-            return true;
+        if ( (mask & (((1 << bytes) - 1) << (port & 7))) == 0 )
+            return X86EMUL_OKAY;
     }
 
-    return false;
+    x86_emul_hw_exception(X86_EXC_GP, 0, ctxt);
+
+    return X86EMUL_EXCEPTION;
 }
 
 /* Has the administrator granted sufficient permission for this I/O access? */
@@ -323,30 +328,21 @@ static unsigned int check_guest_io_breakpoint(struct vcpu *v,
                                               unsigned int port,
                                               unsigned int len)
 {
-    unsigned int width, i, match = 0;
-    unsigned long start;
+    unsigned int i, match = 0;
 
     if ( !v->arch.pv.dr7_emul || !(v->arch.pv.ctrlreg[4] & X86_CR4_DE) )
         return 0;
 
     for ( i = 0; i < 4; i++ )
     {
+        unsigned long start;
+        unsigned int width;
+
         if ( !(v->arch.pv.dr7_emul & (3 << (i * DR_ENABLE_SIZE))) )
             continue;
 
-        start = v->arch.dr[i];
-        width = 0;
-
-        switch ( (v->arch.dr7 >>
-                  (DR_CONTROL_SHIFT + i * DR_CONTROL_SIZE)) & 0xc )
-        {
-        case DR_LEN_1: width = 1; break;
-        case DR_LEN_2: width = 2; break;
-        case DR_LEN_4: width = 4; break;
-        case DR_LEN_8: width = 8; break;
-        }
-
-        start &= ~(width - 1UL);
+        width = x86_bp_width(v->arch.dr7, i);
+        start = v->arch.dr[i] & ~(width - 1UL);
 
         if ( (start < (port + len)) && ((start + width) > port) )
             match |= 1u << i;
@@ -362,12 +358,14 @@ static int cf_check read_io(
     struct priv_op_ctxt *poc = container_of(ctxt, struct priv_op_ctxt, ctxt);
     struct vcpu *curr = current;
     struct domain *currd = current->domain;
+    int rc;
 
     /* INS must not come here. */
     ASSERT((ctxt->opcode & ~9) == 0xe4);
 
-    if ( !guest_io_okay(port, bytes, curr, ctxt->regs) )
-        return X86EMUL_UNHANDLEABLE;
+    rc = guest_io_okay(port, bytes, ctxt);
+    if ( rc != X86EMUL_OKAY )
+        return rc;
 
     poc->bpmatch = check_guest_io_breakpoint(curr, port, bytes);
 
@@ -467,12 +465,14 @@ static int cf_check write_io(
     struct priv_op_ctxt *poc = container_of(ctxt, struct priv_op_ctxt, ctxt);
     struct vcpu *curr = current;
     struct domain *currd = current->domain;
+    int rc;
 
     /* OUTS must not come here. */
     ASSERT((ctxt->opcode & ~9) == 0xe6);
 
-    if ( !guest_io_okay(port, bytes, curr, ctxt->regs) )
-        return X86EMUL_UNHANDLEABLE;
+    rc = guest_io_okay(port, bytes, ctxt);
+    if ( rc != X86EMUL_OKAY )
+        return rc;
 
     poc->bpmatch = check_guest_io_breakpoint(curr, port, bytes);
 
@@ -621,8 +621,9 @@ static int cf_check rep_ins(
 
     *reps = 0;
 
-    if ( !guest_io_okay(port, bytes_per_rep, curr, ctxt->regs) )
-        return X86EMUL_UNHANDLEABLE;
+    rc = guest_io_okay(port, bytes_per_rep, ctxt);
+    if ( rc != X86EMUL_OKAY )
+        return rc;
 
     rc = read_segment(x86_seg_es, &sreg, ctxt);
     if ( rc != X86EMUL_OKAY )
@@ -687,8 +688,9 @@ static int cf_check rep_outs(
 
     *reps = 0;
 
-    if ( !guest_io_okay(port, bytes_per_rep, curr, ctxt->regs) )
-        return X86EMUL_UNHANDLEABLE;
+    rc = guest_io_okay(port, bytes_per_rep, ctxt);
+    if ( rc != X86EMUL_OKAY )
+        return rc;
 
     rc = read_segment(seg, &sreg, ctxt);
     if ( rc != X86EMUL_OKAY )
@@ -1366,10 +1368,7 @@ int pv_emulate_privileged_op(struct cpu_user_regs *regs)
             ctxt.bpmatch |= DR_STEP;
 
         if ( ctxt.bpmatch )
-        {
-            curr->arch.dr6 |= ctxt.bpmatch | DR_STATUS_RESERVED_ONE;
-            pv_inject_hw_exception(X86_EXC_DB, X86_EVENT_NO_EC);
-        }
+            pv_inject_DB(ctxt.bpmatch);
 
         /* fall through */
     case X86EMUL_RETRY:

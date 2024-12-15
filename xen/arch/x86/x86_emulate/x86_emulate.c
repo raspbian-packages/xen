@@ -5928,6 +5928,7 @@ x86_emulate(
                                evex.w == ((b >> 4) & 1)),
                               X86_EXC_UD);
         d |= TwoOp;
+        op_bytes = 1; /* fake */
         /* fall through */
     case X86EMUL_OPC_EVEX_66(0x0f38, 0xc4): /* vpconflict{d,q} [xyz]mm/mem,[xyz]mm{k} */
         fault_suppression = false;
@@ -6075,6 +6076,7 @@ x86_emulate(
     case X86EMUL_OPC_VEX_F2(0x0f38, 0x51): /* vpdpbssds [xy]mm/mem,[xy]mm,[xy]mm */
         host_and_vcpu_must_have(avx_vnni_int8);
         generate_exception_if(vex.w, X86_EXC_UD);
+        op_bytes = 16 << vex.l;
         goto simd_0f_ymm;
 
     case X86EMUL_OPC_VEX_66(0x0f38, 0x50): /* vpdpbusd [xy]mm/mem,[xy]mm,[xy]mm */
@@ -7014,6 +7016,8 @@ x86_emulate(
         *pvex = vex;
         pvex->b = 1;
         pvex->r = 1;
+        if ( !mode_64bit() )
+            pvex->w = 0;
         pvex->reg = 0xf; /* rAX */
         buf[3] = b;
         buf[4] = 0x09; /* reg=rCX r/m=(%rCX) */
@@ -7048,6 +7052,8 @@ x86_emulate(
         *pvex = vex;
         pvex->b = 1;
         pvex->r = 1;
+        if ( !mode_64bit() )
+            pvex->w = 0;
         pvex->reg = 0xf; /* rAX */
         buf[3] = b;
         buf[4] = (modrm & 0x38) | 0x01; /* r/m=(%rCX) */
@@ -7811,11 +7817,6 @@ x86_emulate(
     case X86EMUL_OPC_VEX_F2(0x0f3a, 0xf0): /* rorx imm,r/m,r */
         vcpu_must_have(bmi2);
         generate_exception_if(vex.l || vex.reg != 0xf, X86_EXC_UD);
-        if ( ea.type == OP_REG )
-            src.val = *ea.reg;
-        else if ( (rc = read_ulong(ea.mem.seg, ea.mem.off, &src.val, op_bytes,
-                                   ctxt, ops)) != X86EMUL_OKAY )
-            goto done;
         if ( mode_64bit() && vex.w )
             asm ( "rorq %b1,%0" : "=g" (dst.val) : "c" (imm1), "0" (src.val) );
         else
@@ -7984,8 +7985,8 @@ x86_emulate(
         generate_exception_if(modrm_reg == src1 ||
                               (ea.type != OP_MEM && modrm_reg == modrm_rm),
                               X86_EXC_UD);
-        if ( ea.type != OP_REG || (b & 1) || !evex.brs )
-            avx512_vlen_check(!(b & 1));
+        if ( ea.type != OP_REG || !evex.brs )
+            avx512_vlen_check(b & 1);
         goto simd_zmm;
     }
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -ex
+set -ex -o pipefail
 
 serial_log="$(pwd)/smoke.serial"
 
@@ -9,9 +9,8 @@ machine=$1
 
 # Run the test
 rm -f ${serial_log}
-set +e
 
-export QEMU_CMD="qemu-system-ppc64 \
+export TEST_CMD="qemu-system-ppc64 \
     -bios skiboot.lid \
     -M $machine \
     -m 2g \
@@ -22,7 +21,7 @@ export QEMU_CMD="qemu-system-ppc64 \
     -serial stdio \
     -kernel binaries/xen"
 
-export QEMU_LOG="${serial_log}"
+export TEST_LOG="${serial_log}"
 export PASSED="Hello, ppc64le!"
 
-./automation/scripts/qemu-key.exp
+./automation/scripts/console.exp | sed 's/\r\+$//'

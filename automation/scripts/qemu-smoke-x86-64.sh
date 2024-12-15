@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -ex
+set -ex -o pipefail
 
 # variant should be either pv or pvh
 variant=$1
@@ -15,13 +15,12 @@ case $variant in
 esac
 
 rm -f smoke.serial
-set +e
-export QEMU_CMD="qemu-system-x86_64 -nographic -kernel binaries/xen \
+export TEST_CMD="qemu-system-x86_64 -nographic -kernel binaries/xen \
         -initrd xtf/tests/example/$k \
         -append \"loglvl=all console=com1 noreboot console_timestamps=boot $extra\" \
         -m 512 -monitor none -serial stdio"
 
-export QEMU_LOG="smoke.serial"
+export TEST_LOG="smoke.serial"
 export PASSED="Test result: SUCCESS"
 
-./automation/scripts/qemu-key.exp
+./automation/scripts/console.exp | sed 's/\r\+$//'

@@ -1603,6 +1603,14 @@ void asmlinkage do_page_fault(struct cpu_user_regs *regs)
 
     addr = read_cr2();
 
+    /*
+     * Don't re-enable interrupts if we were running an IRQ-off region when
+     * we hit the page fault, or we'll break that code.
+     */
+    ASSERT(!local_irq_is_enabled());
+    if ( regs->flags & X86_EFLAGS_IF )
+        local_irq_enable();
+
     /* fixup_page_fault() might change regs->error_code, so cache it here. */
     error_code = regs->error_code;
 
@@ -2017,9 +2025,14 @@ void asmlinkage do_debug(struct cpu_user_regs *regs)
         return;
     }
 
-    /* Save debug status register where guest OS can peek at it */
-    v->arch.dr6 |= (dr6 & ~X86_DR6_DEFAULT);
-    v->arch.dr6 &= (dr6 | ~X86_DR6_DEFAULT);
+    /*
+     * Update the guest's dr6 so the debugger can peek at it.
+     *
+     * TODO: This should be passed out-of-band, so guest state is not modified
+     * by debugging actions completed behind it's back.
+     */
+    v->arch.dr6 = x86_merge_dr6(v->domain->arch.cpu_policy,
+                                v->arch.dr6, dr6 ^ X86_DR6_DEFAULT);
 
     if ( guest_kernel_mode(v, regs) && v->domain->debugger_attached )
     {
@@ -2027,7 +2040,7 @@ void asmlinkage do_debug(struct cpu_user_regs *regs)
         return;
     }
 
-    pv_inject_hw_exception(X86_EXC_DB, X86_EVENT_NO_EC);
+    pv_inject_DB(0 /* N/A, already merged */);
 }
 
 void asmlinkage do_entry_CP(struct cpu_user_regs *regs)

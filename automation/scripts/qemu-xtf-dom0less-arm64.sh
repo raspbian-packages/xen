@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -ex
+set -ex -o pipefail
 
 # Name of the XTF test
 xtf_test=$1
@@ -50,8 +50,7 @@ bash imagebuilder/scripts/uboot-script-gen -t tftp -d binaries/ -c binaries/conf
 
 # Run the test
 rm -f smoke.serial
-set +e
-export QEMU_CMD="./binaries/qemu-system-aarch64 \
+export TEST_CMD="./binaries/qemu-system-aarch64 \
     -machine virtualization=true \
     -cpu cortex-a57 -machine type=virt \
     -m 2048 -monitor none -serial stdio \
@@ -62,7 +61,7 @@ export QEMU_CMD="./binaries/qemu-system-aarch64 \
     -bios /usr/lib/u-boot/qemu_arm64/u-boot.bin"
 
 export UBOOT_CMD="virtio scan; dhcp; tftpb 0x40000000 boot.scr; source 0x40000000"
-export QEMU_LOG="smoke.serial"
+export TEST_LOG="smoke.serial"
 export PASSED="${passed}"
 
-./automation/scripts/qemu-key.exp
+./automation/scripts/console.exp | sed 's/\r\+$//'

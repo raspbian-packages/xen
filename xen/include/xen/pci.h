@@ -150,7 +150,20 @@ struct pci_dev {
         unsigned int count;
 #define PT_FAULT_THRESHOLD 10
     } fault;
-    u64 vf_rlen[6];
+
+    /*
+     * List head if PF.
+     * List entry if VF.
+     */
+    struct list_head vf_list;
+    union {
+        struct pf_info {
+            /* Only populated for PFs. */
+            uint64_t vf_rlen[PCI_SRIOV_NUM_BARS];
+        } physfn;
+        /* Link from VF to PF. Only populated for VFs. */
+        const struct pci_dev *pf_pdev;
+    };
 
     /* Data for vPCI. */
     struct vpci *vpci;
