@@ -1,8 +1,17 @@
-xen (4.19.1-1~exp1) UNRELEASED; urgency=medium
+xen (4.19.1-1~exp1) experimental; urgency=medium
 
-  * Update to new upstream version 4.19.1.
+  * Update to new upstream version 4.19.1, which also contains
+    security fixes for the following issues:
+    - x86: Deadlock in vlapic_error()
+      XSA-462 CVE-2024-45817
+    - Deadlock in x86 HVM standard VGA handling
+      XSA-463 CVE-2024-45818
+    - libxl leaks data to PVH guests via ACPI tables
+      XSA-464 CVE-2024-45819
+  * Fix compilation on arm64 and armhf with upstream commit ee826bc490
+    ("Arm64: adjust __irq_to_desc() to fix build with gcc14")
 
- -- Maximilian Engelhardt <maxi@daemonizer.de>  Sun, 15 Dec 2024 13:52:39 +0100
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Sun, 15 Dec 2024 13:52:56 +0100
 
 xen (4.19.0+14-g0918434e0f-1~exp1) experimental; urgency=medium
 
