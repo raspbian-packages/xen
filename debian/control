@@ -22,7 +22,7 @@ Build-Depends:
    iasl,
    seabios [amd64],
    libaio-dev,
-   libfdt-dev [armhf arm64],
+   libfdt-dev [arm64],
    libglib2.0-dev,
    liblzma-dev,
    libncurses-dev,
@@ -41,7 +41,7 @@ Vcs-Git: https://salsa.debian.org/xen-team/debian-xen.git
 Rules-Requires-Root: no
 
 Package: xenstore-utils
-Architecture: amd64 arm64 armhf
+Architecture: amd64 arm64
 Section: admin
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Suggests: xen-doc
@@ -60,7 +60,7 @@ Description: Xenstore command line utilities for Xen
 
 Package: xen-utils-common
 Section: admin
-Architecture: amd64 armhf arm64
+Architecture: amd64 arm64
 Depends: udev, xenstore-utils,
     ${shlibs:Depends}, ${python3:Depends}, ${misc:Depends}
 Replaces: xenstore-utils (<< 4.19.0+14-g0918434e0f-1~)
@@ -75,7 +75,7 @@ Description: Xen administrative tools - common files
 
 Package: xen-hypervisor-common
 Section: kernel
-Architecture: amd64 armhf arm64
+Architecture: amd64 arm64
 Depends: ${misc:Depends}
 Description: Xen Hypervisor - common files
  The configuration which arranges for an installed hypervisor to be booted
@@ -87,7 +87,7 @@ Description: Xen Hypervisor - common files
 
 Package: xen-doc
 Section: doc
-Architecture: amd64 armhf arm64
+Architecture: amd64 arm64
 Depends: ${misc:Depends}
 Description: Xen documentation
  Documentation for the Xen hypervisor and surrounding software,
@@ -100,7 +100,7 @@ Description: Xen documentation
 
 Package: xen-utils-4.19
 Section: admin
-Architecture: amd64 arm64 armhf
+Architecture: amd64 arm64
 Provides: xen-utils
 Depends: ${shlibs:Depends}, ${misc:Depends}, ${python3:Depends}, xen-utils-common (>= ${source:Version})
 Recommends: bridge-utils, xen-hypervisor-4.19, qemu-system-xen [amd64], grub-xen-host [amd64]
@@ -114,7 +114,7 @@ Built-Using: ${misc:Built-Using}
 
 Package: xen-utils-4.19-dbg
 Section: debug
-Architecture: amd64 arm64 armhf
+Architecture: amd64 arm64
 Priority: optional
 Depends: xen-utils-4.19 (= ${binary:Version}), ${misc:Depends}
 Description: debug symbols for xen-utils-4.19
@@ -178,37 +178,9 @@ Description: Xen System on ARM64 (metapackage)
  This package depends on the latest Xen hypervisor for use on ARM64 and the
  Xen utils.
 
-Package: xen-hypervisor-4.19-armhf
-Section: kernel
-Architecture: armhf
-Provides: xen-hypervisor, xen-hypervisor-4.19, xen-hypervisor-armhf
-Depends: ${misc:Depends}
-Recommends: xen-utils-4.19, xen-hypervisor-common
-Description: Xen Hypervisor on ARMHF
- The hypervisor is the "core" for Xen itself.  It gets started by the boot
- loader and controls cpu and memory, sharing them between your
- administrative domain (Domain 0) and the virtual guest systems.
-
-Package: xen-hypervisor-4.19-armhf-dbg
-Section: debug
-Architecture: armhf
-Priority: optional
-Depends: xen-hypervisor-4.19-armhf (= ${binary:Version}), ${misc:Depends}
-Description: debug symbols for Xen Hypervisor on ARMHF
- This package provides the detached debug symbols for the Xen hypervisor.
-
-Package: xen-system-armhf
-Section: admin
-Architecture: armhf
-Provides: xen-system
-Depends: xen-hypervisor-4.19-armhf, xen-hypervisor-common, xen-utils-4.19, ${misc:Depends}
-Description: Xen System on ARMHF (metapackage)
- This package depends on the latest Xen hypervisor for use on ARMHF and the
- Xen utils.
-
 Package: libxen-dev
 Section: libdevel
-Architecture: amd64 arm64 armhf
+Architecture: amd64 arm64
 Depends: ${shlibs:Depends}, ${misc:Depends},
 	 libxenmisc4.19 (= ${binary:Version}),
 	 libxencall1t64 (= ${binary:Version}),
@@ -236,7 +208,7 @@ Description: Public headers and libs for Xen
 
 Package: libxenmisc4.19
 Section: libs
-Architecture: amd64 arm64 armhf
+Architecture: amd64 arm64
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Xen runtime libraries - miscellaneous, versioned ABI
  Shared libraries for Xen utilities.
@@ -250,7 +222,7 @@ Provides: ${t64:Provides}
 Replaces: libxencall1
 Breaks: libxencall1 (<< ${source:Version})
 Section: libs
-Architecture: amd64 arm64 armhf
+Architecture: amd64 arm64
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Xen runtime library - libxencall
  Shared library for Xen utilities.
@@ -261,7 +233,7 @@ Provides: ${t64:Provides}
 Replaces: libxendevicemodel1
 Breaks: libxendevicemodel1 (<< ${source:Version})
 Section: libs
-Architecture: amd64 arm64 armhf
+Architecture: amd64 arm64
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Xen runtime libraries - libxendevicemodel
  Shared library for Xen utilities.
@@ -272,7 +244,7 @@ Provides: ${t64:Provides}
 Replaces: libxenevtchn1
 Breaks: libxenevtchn1 (<< ${source:Version})
 Section: libs
-Architecture: amd64 arm64 armhf
+Architecture: amd64 arm64
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Xen runtime libraries - libxenevtchn
  Shared library for Xen utilities.
@@ -283,7 +255,7 @@ Provides: ${t64:Provides}
 Replaces: libxenforeignmemory1
 Breaks: libxenforeignmemory1 (<< ${source:Version})
 Section: libs
-Architecture: amd64 arm64 armhf
+Architecture: amd64 arm64
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Xen runtime libraries - libxenforeignmemory
  Shared library for Xen utilities.
@@ -294,7 +266,7 @@ Provides: ${t64:Provides}
 Replaces: libxengnttab1
 Breaks: libxengnttab1 (<< ${source:Version})
 Section: libs
-Architecture: amd64 arm64 armhf
+Architecture: amd64 arm64
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Xen runtime libraries - libxengnttab
  Shared library for Xen utilities.
@@ -305,7 +277,7 @@ Provides: ${t64:Provides}
 Replaces: libxenstore4
 Breaks: libxenstore4 (<< ${source:Version})
 Section: libs
-Architecture: amd64 arm64 armhf
+Architecture: amd64 arm64
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Xen runtime libraries - libxenstore
  Shared library for Xen utilities.
@@ -316,7 +288,7 @@ Provides: ${t64:Provides}
 Replaces: libxentoolcore1
 Breaks: libxentoolcore1 (<< ${source:Version})
 Section: libs
-Architecture: amd64 arm64 armhf
+Architecture: amd64 arm64
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Xen runtime libraries - libxentoolcore
  Shared library for Xen utilities.
@@ -327,7 +299,7 @@ Provides: ${t64:Provides}
 Replaces: libxentoollog1
 Breaks: libxentoollog1 (<< ${source:Version})
 Section: libs
-Architecture: amd64 arm64 armhf
+Architecture: amd64 arm64
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Xen runtime libraries - libxentoollog
  Shared library for Xen utilities.
@@ -338,7 +310,7 @@ Provides: ${t64:Provides}
 Replaces: libxenhypfs1
 Breaks: libxenhypfs1 (<< ${source:Version})
 Section: libs
-Architecture: amd64 arm64 armhf
+Architecture: amd64 arm64
 Depends: ${shlibs:Depends}, ${misc:Depends}
 Description: Xen runtime library - libxenhypfs
  Shared library for Xen utilities.

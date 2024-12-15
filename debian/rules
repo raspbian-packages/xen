@@ -53,11 +53,9 @@ include /usr/share/dpkg/architecture.mk
 # Debian nor GNU names.
 
 flavour_amd64 = amd64
-flavour_armhf = armhf
 flavour_arm64 = arm64
 
 xen_arch_amd64 = x86_64
-xen_arch_armhf = arm32
 xen_arch_arm64 = arm64
 
 flavour=$(flavour_$(DEB_HOST_ARCH))
