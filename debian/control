@@ -1,7 +1,10 @@
 Source: xen
 Priority: optional
 Maintainer: Debian Xen Team <pkg-xen-devel@lists.alioth.debian.org>
-Uploaders: Ian Jackson <iwj@xenproject.org>, Hans van Kranenburg <hans@knorrie.org>
+Uploaders:
+ Ian Jackson <iwj@xenproject.org>,
+ Hans van Kranenburg <hans@knorrie.org>,
+ Maximilian Engelhardt <maxi@daemonizer.de>,
 Section: admin
 Standards-Version: 4.7.0
 Build-Depends:
