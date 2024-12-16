@@ -1,3 +1,19 @@
+xen (4.19.1-1~exp2) experimental; urgency=medium
+
+  * Drop support for armhf (Closes: #989560)
+    - src:xen now FTBFS on armhf because OCaml 5.x has no support for native
+      compilation on 32-bit systems any more.
+    - As seen in #989560, Xen on armhf was already dysfunctional for years
+    - The team does not have resources or knowledge to support the armhf build
+
+  [ Maximilian Engelhardt ]
+
+  * d/control: Add Maximilian Engelhardt to Uploaders
+  * d/copyright: Specify correct years for authors of debian/*
+  * debian: undo ABI-stable t64 package renaming
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Mon, 16 Dec 2024 22:01:57 +0100
+
 xen (4.19.1-1~exp1) experimental; urgency=medium
 
   * Update to new upstream version 4.19.1, which also contains
