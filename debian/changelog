@@ -1,12 +1,6 @@
-xen (4.17.5+23-ga4e5191dc0-1) UNRELEASED; urgency=medium
+xen (4.17.5+23-ga4e5191dc0-1) bookworm-security; urgency=medium
 
-  * Update to new upstream version 4.17.5+23-ga4e5191dc0.
-
- -- Hans van Kranenburg <hans@knorrie.org>  Fri, 20 Dec 2024 18:46:01 +0100
-
-xen (4.17.5-1~deb12u1) bookworm; urgency=medium
-
-  * Update to new upstream version 4.17.5, which also contains
+  * Update to new upstream version 4.17.5+23-ga4e5191dc0, which also contains
     security fixes for the following issues:
     - x86: shadow stack vs exceptions from emulation stubs
       XSA-451 CVE-2023-46841
@@ -26,11 +20,19 @@ xen (4.17.5-1~deb12u1) bookworm; urgency=medium
       XSA-460 CVE-2024-31145
     - PCI device pass-through with shared resources
       XSA-461 CVE-2024-31146
+    - x86: Deadlock in vlapic_error()
+      XSA-462 CVE-2024-45817
+    - Deadlock in x86 HVM standard VGA handling
+      XSA-463 CVE-2024-45818
+    - libxl leaks data to PVH guests via ACPI tables
+      XSA-464 CVE-2024-45819
   * Note that the following XSA are not listed, because...
-    - XSA-457 has patches for the Linux kernel.
+    - XSA-457 and XSA-465 have patches for the Linux kernel.
     - XSA-459 is within Xapi which is not shipped by this package.
+    - XSA-466 contains a documentation update that was only applied to the
+      current development version of Xen
 
- -- Maximilian Engelhardt <maxi@daemonizer.de>  Sun, 18 Aug 2024 20:33:38 +0200
+ -- Hans van Kranenburg <hans@knorrie.org>  Fri, 20 Dec 2024 18:46:37 +0100
 
 xen (4.17.3+10-g091466ba55-1~deb12u1) bookworm; urgency=medium
 
