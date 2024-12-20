@@ -1,3 +1,9 @@
+xen (4.17.5+23-ga4e5191dc0-1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.17.5+23-ga4e5191dc0.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Fri, 20 Dec 2024 18:46:01 +0100
+
 xen (4.17.5-1~deb12u1) bookworm; urgency=medium
 
   * Update to new upstream version 4.17.5, which also contains
