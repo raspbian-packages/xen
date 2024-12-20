@@ -95,10 +95,14 @@ newlib-$(NEWLIB_VERSION): newlib-$(NEWLIB_VERSION).tar.gz
 	patch -d $@ -p0 < newlib-chk.patch
 	patch -d $@ -p1 < newlib-stdint-size_max-fix-from-1.17.0.patch
 	patch -d $@ -p1 < newlib-disable-texinfo.patch
+	patch -d $@ -p1 < newlib-cygmon-gmon.patch
+	patch -d $@ -p1 < newlib-makedoc.patch
+	patch -d $@ -p1 < newlib-fix-copy_past_newline.patch
 	find $@ -type f | xargs perl -i.bak \
 		-pe 's/\b_(tzname|daylight|timezone)\b/$$1/g'
 	touch $@
 
+NEWLIB_CFLAGS += -Wno-implicit-function-declaration
 NEWLIB_STAMPFILE=$(CROSS_ROOT)/$(GNU_TARGET_ARCH)-xen-elf/lib/libc.a
 .PHONY: cross-newlib
 cross-newlib: $(NEWLIB_STAMPFILE)
