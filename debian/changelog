@@ -1,3 +1,9 @@
+xen (4.19.1-1~exp3) experimental; urgency=medium
+
+  * d/copyright: Fix invalid "-present" copyright years. (Closes: #1089621)
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Fri, 20 Dec 2024 17:00:44 +0100
+
 xen (4.19.1-1~exp2) experimental; urgency=medium
 
   * Drop support for armhf (Closes: #989560)
