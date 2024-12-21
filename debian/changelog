@@ -1,3 +1,13 @@
+xen (4.19.1-1) unstable; urgency=medium
+
+  * Upload to unstable (Closes: #1089033)
+  * Note that the following XSA were not listed, because...
+    - XSA-465 has patches for the Linux kernel.
+    - XSA-466 contains a documentation update that was only applied to the
+      current development version of Xen
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Sat, 21 Dec 2024 11:33:16 +0100
+
 xen (4.19.1-1~exp4) experimental; urgency=medium
 
   * Upload again, with binaries this time.
