@@ -1,0 +1,29 @@
+From: Maximilian Engelhardt <maxi@daemonizer.de>
+Date: Tue, 30 Jan 2024 21:22:03 +0100
+Subject: docs/Makefile: Add ppc and riscv to DOC_ARCHES
+
+Not having ppc and riscv included in DOC_ARCHES causes "multiple
+definitions of ..." message on documentation build.
+
+It can also make the generated html documentation link to the header
+files of another architecture. This is additionally a problem as it can
+randomly make the documentation build non-reproducible.
+
+Signed-off-by: Maximilian Engelhardt <maxi@daemonizer.de>
+---
+ docs/Makefile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/docs/Makefile b/docs/Makefile
+index 48e7786..c0f158c 100644
+--- a/docs/Makefile
++++ b/docs/Makefile
+@@ -11,7 +11,7 @@ else
+ DATE		:= $(shell date "$(DATE_FMT)")
+ endif
+ 
+-DOC_ARCHES      := arm x86_32 x86_64
++DOC_ARCHES      := arm ppc riscv x86_32 x86_64
+ MAN_SECTIONS    := 1 5 7 8
+ 
+ # Documentation sources to build
