@@ -28,11 +28,7 @@ export DEB_MAINTAINER := $(shell sed -ne 's/^Maintainer: \(.*\)$$/\1/p' debian/c
 # hypervisor build.  This because I haven't investigated which
 # of them are sane to use in the hypervisor context, rather than
 # simply in userland binaries.
-#
-# Inexplicably, if you tell make `export V=value' and `$(shell ...)'
-# it does not pass V to the shell.  WTF.  So we set a variable
-# dbmo which we include in the relevant $(shell ...) invocations.
-dbmo= DEB_BUILD_MAINT_OPTIONS="hardening=+all"
+export DEB_BUILD_MAINT_OPTIONS="hardening=+all"
 
 # Architecture handling.
 #
@@ -138,9 +134,9 @@ export WGET=/bin/false GIT=/bin/false
 
 t=$(CURDIR)/debian/tmp
 
-dpkg_CFLAGS   := $(shell $(dbmo) dpkg-buildflags --get CFLAGS)
-dpkg_CPPFLAGS := $(shell $(dbmo) dpkg-buildflags --get CPPFLAGS)
-dpkg_LDFLAGS  := $(shell $(dbmo) dpkg-buildflags --get LDFLAGS)
+dpkg_CFLAGS   := $(shell dpkg-buildflags --get CFLAGS)
+dpkg_CPPFLAGS := $(shell dpkg-buildflags --get CPPFLAGS)
+dpkg_LDFLAGS  := $(shell dpkg-buildflags --get LDFLAGS)
 
 make_args_common := \
 	CC=$(DEB_HOST_GNU_TYPE)-gcc \
@@ -213,9 +209,7 @@ override_dh_auto_configure:
 # do it separately.
 override_dh_auto_build:
 	$(MAKE) $(make_args_xen) xen
-	$(MAKE) $(make_args_tools) tools CONFIG_PV_SHIM=n
-	# The docs fail on parallel build, so build linear
-	$(MAKE) $(make_args_tools) docs CONFIG_PV_SHIM=n -j1
+	$(MAKE) $(make_args_tools) tools docs CONFIG_PV_SHIM=n
 	case $(flavour) in \
 	amd64) \
 		$(MAKE) $(make_args_xen) -C tools/firmware/xen-dir ;; \
