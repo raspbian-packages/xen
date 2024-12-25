@@ -184,6 +184,7 @@ Description: Xen System on ARM64 (metapackage)
 Package: libxen-dev
 Section: libdevel
 Architecture: amd64 arm64
+Multi-Arch: same
 Depends: ${shlibs:Depends}, ${misc:Depends},
 	 libxenmisc4.20 (= ${binary:Version}),
 	 libxencall1 (= ${binary:Version}),
