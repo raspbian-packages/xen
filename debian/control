@@ -90,7 +90,8 @@ Description: Xen Hypervisor - common files
 
 Package: xen-doc
 Section: doc
-Architecture: amd64 arm64
+Architecture: all
+Multi-Arch: foreign
 Depends: ${misc:Depends}
 Description: Xen documentation
  Documentation for the Xen hypervisor and surrounding software,
@@ -99,7 +100,6 @@ Description: Xen documentation
  .
  You do not need this package for the primary manpages for the
  Xen control utilities, as those are in the xen-utils-common package.
-# Yes, arch-specific.  See xen-doc.lintian-overrides.
 
 Package: xen-utils-4.20
 Section: admin
