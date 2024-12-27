@@ -22,6 +22,10 @@ variables:
 
   RELEASE: 'bookworm'
 
+  # This is fixed in sid with xen 4.19, but we will not change it in bookworm.
+  # As salsa-ci runs lintian from unstable, let's ignore it here.
+  SALSA_CI_LINTIAN_SUPPRESS_TAGS: 'missing-systemd-service-for-init.d-script'
+
   # xen currently does not enable hardening when building the hypervisor so
   # disable blhc.
   SALSA_CI_DISABLE_BLHC: 1
