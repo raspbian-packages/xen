@@ -170,13 +170,6 @@ make_args_tools := $(make_args_common) \
 	BUILD_PATH_PREFIX_MAP='.=$(shell pwd)' \
 	debug=n
 
-# use the date from SOURCE_DATE_EPOCH for reproducible builds
-export XEN_BUILD_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)")
-export XEN_BUILD_TIME=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%T")
-export SMBIOS_REL_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%m/%d/%Y")
-export VGABIOS_REL_DATE=$(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" "+%d %b %Y")
-
-
 %:
 	dh $@ --with=python3
 
