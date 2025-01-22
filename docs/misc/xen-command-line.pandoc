@@ -270,8 +270,22 @@ and not running softirqs. Reduce this if softirqs are not being run frequently
 enough. Setting this to a high value may cause boot failure, particularly if
 the NMI watchdog is also enabled.
 
+### buddy-alloc-size (arm64)
+> `= <size>`
+
+> Default: `64M`
+
+Amount of memory reserved for the buddy allocator when colored allocator is
+active. This option is available only when `CONFIG_LLC_COLORING` is enabled.
+The colored allocator is meant as an alternative to the buddy allocator,
+because its allocation policy is by definition incompatible with the generic
+one. Since the Xen heap systems is not colored yet, we need to support the
+coexistence of the two allocators for now. This parameter, which is optional
+and for expert only, it's used to set the amount of memory reserved to the
+buddy allocator.
+
 ### cet
-    = List of [ shstk=<bool>, ibt=<bool> ]
+    = List of [ <bool>, shstk=<bool>, ibt=<bool> ]
 
     Applicability: x86
 
@@ -282,6 +296,8 @@ call/jmp COP/JOP) attacks.
 CET is incompatible with 32bit PV guests.  If any CET sub-options are active,
 they will override the `pv=32` boolean to `false`.  Backwards compatibility
 can be maintained with the pv-shim mechanism.
+
+*   An unqualified boolean is a shorthand for setting all suboptions at once.
 
 *   The `shstk=` boolean controls whether Xen uses Shadow Stacks for its own
     protection.
@@ -962,6 +978,15 @@ Controls for the dom0 IOMMU setup.
 > `= List of <hex>-<hex>`
 
 Specify a list of IO ports to be excluded from dom0 access.
+
+### dom0-llc-colors (arm64)
+> `= List of [ <integer> | <integer>-<integer> ]`
+
+> Default: `All available LLC colors`
+
+Specify dom0 LLC color configuration. This option is available only when
+`CONFIG_LLC_COLORING` is enabled. If the parameter is not set, all available
+colors are used.
 
 ### dom0_max_vcpus
 
@@ -1708,6 +1733,45 @@ This option is intended for debugging purposes only.  Enable MSR_DEBUGCTL.LBR
 in hypervisor context to be able to dump the Last Interrupt/Exception To/From
 record with other registers.
 
+### llc-coloring (arm64)
+> `= <boolean>`
+
+> Default: `false`
+
+Flag to enable or disable LLC coloring support at runtime. This option is
+available only when `CONFIG_LLC_COLORING` is enabled. See the general
+cache coloring documentation for more info.
+
+### llc-nr-ways (arm64)
+> `= <integer>`
+
+> Default: `Obtained from hardware`
+
+Specify the number of ways of the Last Level Cache. This option is available
+only when `CONFIG_LLC_COLORING` is enabled. LLC size and number of ways are used
+to find the number of supported cache colors. By default the value is
+automatically computed by probing the hardware, but in case of specific needs,
+it can be manually set. Those include failing probing and debugging/testing
+purposes so that it's possible to emulate platforms with different number of
+supported colors. If set, also "llc-size" must be set, otherwise the default
+will be used. Note that using both options implies "llc-coloring=on" unless an
+earlier "llc-coloring=off" is there.
+
+### llc-size (arm64)
+> `= <size>`
+
+> Default: `Obtained from hardware`
+
+Specify the size of the Last Level Cache. This option is available only when
+`CONFIG_LLC_COLORING` is enabled. LLC size and number of ways are used to find
+the number of supported cache colors. By default the value is automatically
+computed by probing the hardware, but in case of specific needs, it can be
+manually set. Those include failing probing and debugging/testing purposes so
+that it's possible to emulate platforms with different number of supported
+colors. If set, also "llc-nr-ways" must be set, otherwise the default will be
+used. Note that using both options implies "llc-coloring=on" unless an
+earlier "llc-coloring=off" is there.
+
 ### lock-depth-size
 > `= <integer>`
 
@@ -2139,7 +2203,7 @@ callbacks are safe to be executed. Expressed in milliseconds; maximum is
 ### reboot (x86)
 > `= t[riple] | k[bd] | a[cpi] | p[ci] | P[ower] | e[fi] | n[o] [, [w]arm | [c]old]`
 
-> Default: `0`
+> Default: system dependent
 
 Specify the host reboot method.
 
@@ -2153,14 +2217,14 @@ Specify the host reboot method.
 
 `kbd` instructs Xen to reboot the host via the keyboard controller.
 
-`acpi` instructs Xen to reboot the host using RESET_REG in the ACPI FADT.
+`acpi` instructs Xen to reboot the host using RESET_REG in the ACPI FADT (this
+is default mode if available).
 
 `pci` instructs Xen to reboot the host using PCI reset register (port CF9).
 
 `Power` instructs Xen to power-cycle the host using PCI reset register (port CF9).
 
-'efi' instructs Xen to reboot using the EFI reboot call (in EFI mode by
- default it will use that method first).
+`efi` instructs Xen to reboot using the EFI reboot call.
 
 `xen` instructs Xen to reboot using Xen's SCHEDOP hypercall (this is the default
 when running nested Xen)
@@ -2392,7 +2456,7 @@ By default SSBD will be mitigated at runtime (i.e `ssbd=runtime`).
 >              {ibrs,ibpb,ssbd,psfd,
 >              eager-fpu,l1d-flush,branch-harden,srb-lock,
 >              unpriv-mmio,gds-mit,div-scrub,lock-harden,
->              bhi-dis-s}=<bool> ]`
+>              bhi-dis-s,bp-spec-reduce}=<bool> ]`
 
 Controls for speculative execution sidechannel mitigations.  By default, Xen
 will pick the most appropriate mitigations based on compiled in support,
@@ -2541,6 +2605,13 @@ boolean can be used to force or prevent Xen from using speculation barriers to
 protect lock critical regions.  This mitigation won't be engaged by default,
 and needs to be explicitly enabled on the command line.
 
+On hardware supporting SRSO_MSR_FIX, the `bp-spec-reduce=` option can be used
+to force or prevent Xen from using MSR_BP_CFG.BP_SPEC_REDUCE to mitigate the
+SRSO (Speculative Return Stack Overflow) vulnerability.  Xen will use
+bp-spec-reduce when available, as it is preferable to using `ibpb-entry=hvm`
+to mitigate SRSO for HVM guests, and because it is a prerequisite to advertise
+SRSO_U/S_NO to PV guests.
+
 ### sync_console
 > `= <boolean>`
 
@@ -2586,7 +2657,7 @@ pages) must also be specified via the tbuf_size parameter.
 ### tsx
     = <bool>
 
-    Applicability: x86
+    Applicability: x86 with CONFIG_INTEL active
     Default: false on parts vulnerable to TAA, true otherwise
 
 Controls for the use of Transactional Synchronization eXtensions.
@@ -2650,7 +2721,7 @@ performance.
    Alternatively, selecting `tsx=1` will re-enable TSX at the users own risk.
 
 ### ucode
-> `= List of [ <integer> | scan=<bool>, nmi=<bool>, allow-same=<bool> ]`
+> `= List of [ <integer> | scan=<bool>, nmi=<bool> ]`
 
     Applicability: x86
     Default: `nmi`
@@ -2681,11 +2752,6 @@ precedence over `scan`.
 'nmi' determines late loading is performed in NMI handler or just in
 stop_machine context. In NMI handler, even NMIs are blocked, which is
 considered safer. The default value is `true`.
-
-'allow-same' alters the default acceptance policy for new microcode to permit
-trying to reload the same version.  Many CPUs will actually reload microcode
-of the same version, and this allows for easy testing of the late microcode
-loading path.
 
 ### unrestricted_guest (Intel)
 > `= <boolean>`
@@ -2821,6 +2887,27 @@ vwfi to `native` reduces irq latency significantly. It can also lead to
 suboptimal scheduling decisions, but only when the system is
 oversubscribed (i.e., in total there are more vCPUs than pCPUs).
 
+### wallclock (x86)
+> `= auto | xen | cmos | efi`
+
+> Default: `auto`
+
+Allow forcing the usage of a specific wallclock source.
+
+ * `auto` let the hypervisor select the clocksource based on internal
+   heuristics.
+
+ * `xen` force usage of the Xen shared_info wallclock when booted as a Xen
+   guest.  This option is only available if the hypervisor was compiled with
+   `CONFIG_XEN_GUEST` enabled.
+
+ * `cmos` force usage of the CMOS RTC wallclock.
+
+ * `efi` force usage of the EFI_GET_TIME run-time method when booted from EFI
+   firmware.
+
+If the selected option is invalid or not available Xen will default to `auto`.
+
 ### watchdog (x86)
 > `= force | <boolean>`
 
@@ -2847,10 +2934,10 @@ the watchdog.
 Permit use of x2apic setup for SMP environments.
 
 ### x2apic-mode (x86)
-> `= physical | cluster | mixed`
+> `= physical | mixed`
 
 > Default: `physical` if **FADT** mandates physical mode, otherwise set at
->          build time by CONFIG_X2APIC_{PHYSICAL,LOGICAL,MIXED}.
+>          build time by CONFIG_X2APIC_{PHYSICAL,MIXED}.
 
 In the case that x2apic is in use, this option switches between modes to
 address APICs in the system as interrupt destinations.
@@ -2867,6 +2954,16 @@ mode.
 
 **WARNING: `x2apic_phys` is deprecated and superseded by `x2apic-mode`.
 The latter takes precedence if both are set.**
+
+### xen-llc-colors (arm64)
+> `= List of [ <integer> | <integer>-<integer> ]`
+
+> Default: `0: the lowermost color`
+
+Specify Xen LLC color configuration. This options is available only when
+`CONFIG_LLC_COLORING` is enabled.
+Two colors are most likely needed on platforms where private caches are
+physically indexed, e.g. the L1 instruction cache of the Arm Cortex-A57.
 
 ### xenheap_megabytes (arm32)
 > `= <size>`

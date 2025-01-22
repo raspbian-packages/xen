@@ -124,20 +124,10 @@ SECTIONS
       _eplatform = .;
   } :text
 
-  . = ALIGN(8);
-  .dev.info : {
-      _sdevice = .;
-      *(.dev.info)
-      _edevice = .;
-  } :text
+  DT_DEV_INFO
 
 #ifdef CONFIG_ACPI
-  . = ALIGN(8);
-  .adev.info : {
-      _asdevice = .;
-      *(.adev.info)
-      _aedevice = .;
-  } :text
+  ACPI_DEV_INFO
 #endif
 
   . = ALIGN(8);
@@ -157,6 +147,7 @@ SECTIONS
        *(.altinstr_replacement)
   } :text
   . = ALIGN(PAGE_SIZE);
+  __init_data_begin = .;
   .init.data : {
        *(.init.rodata)
        *(.init.rodata.*)
@@ -198,14 +189,7 @@ SECTIONS
        __bss_start = .;
        *(.bss.stack_aligned)
        *(.bss.page_aligned)
-       . = ALIGN(PAGE_SIZE);
-       __per_cpu_start = .;
-       *(.bss.percpu.page_aligned)
-       *(.bss.percpu)
-       . = ALIGN(SMP_CACHE_BYTES);
-       *(.bss.percpu.read_mostly)
-       . = ALIGN(SMP_CACHE_BYTES);
-       __per_cpu_data_end = .;
+       PERCPU_BSS
        *(.bss .bss.*)
        . = ALIGN(POINTER_ALIGN);
        __bss_end = .;
@@ -230,6 +214,13 @@ SECTIONS
  * match the context.
  */
 ASSERT(_start == XEN_VIRT_START, "_start != XEN_VIRT_START")
+#ifdef CONFIG_MPU
+/*
+ * On MPU based platforms, the starting address is to be provided by user.
+ * One need to check that it is 4KB aligned.
+ */
+ASSERT(IS_ALIGNED(_start,       4096), "starting address should be aligned to 4KB")
+#endif
 
 /*
  * We require that Xen is loaded at a page boundary, so this ensures that any

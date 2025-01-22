@@ -39,7 +39,7 @@
 #include <asm/div64.h>
 #include <asm/acpi.h>
 #include <asm/hpet.h>
-#include <io_ports.h>
+#include <asm/io-ports.h>
 #include <asm/setup.h> /* for early_time_init */
 #include <public/arch-x86/cpuid.h>
 
@@ -66,10 +66,10 @@ struct cpu_time {
 struct platform_timesource {
     const char *id;
     const char *name;
-    u64 frequency;
+    uint64_t frequency;
     /* Post-init this hook may only be invoked via the read_counter() wrapper! */
-    u64 (*read_counter)(void);
-    s64 (*init)(struct platform_timesource *);
+    uint64_t (*read_counter)(void);
+    int64_t (*init)(struct platform_timesource *);
     void (*resume)(struct platform_timesource *);
     int counter_bits;
 };
@@ -368,7 +368,7 @@ static u64 cf_check read_pit_count(void)
     return count32;
 }
 
-static s64 __init cf_check init_pit(struct platform_timesource *pts)
+static int64_t __init cf_check init_pit(struct platform_timesource *pts)
 {
     u8 portb = inb(0x61);
     u64 start, end;
@@ -610,7 +610,7 @@ static u64 cf_check read_pmtimer_count(void)
     return inl(pmtmr_ioport);
 }
 
-static s64 __init cf_check init_pmtimer(struct platform_timesource *pts)
+static int64_t __init cf_check init_pmtimer(struct platform_timesource *pts)
 {
     if ( !pmtmr_ioport || (pmtmr_width != 24 && pmtmr_width != 32) )
         return 0;
@@ -655,7 +655,7 @@ static unsigned int __initdata tsc_flags;
  * Called in verify_tsc_reliability() under reliable TSC conditions
  * thus reusing all the checks already performed there.
  */
-static s64 __init cf_check init_tsc(struct platform_timesource *pts)
+static int64_t __init cf_check init_tsc(struct platform_timesource *pts)
 {
     u64 ret = pts->frequency;
 
@@ -786,6 +786,30 @@ static struct platform_timesource __initdata_cf_clobber plt_xen_timer =
     .counter_bits = 63,
 };
 #endif
+
+static unsigned long read_xen_wallclock(void)
+{
+#ifdef CONFIG_XEN_GUEST
+    const struct shared_info *sh_info = XEN_shared_info;
+    uint32_t wc_version;
+    uint64_t wc_sec;
+
+    ASSERT(xen_guest);
+
+    do {
+        wc_version = sh_info->wc_version & ~1;
+        smp_rmb();
+
+        wc_sec  = sh_info->wc_sec;
+        smp_rmb();
+    } while ( wc_version != sh_info->wc_version );
+
+    return wc_sec + read_xen_timer() / 1000000000;
+#else
+    ASSERT_UNREACHABLE();
+    return 0;
+#endif
+}
 
 #ifdef CONFIG_HYPERV_GUEST
 /************************************************************
@@ -1010,9 +1034,9 @@ static void __init reset_platform_timer(void)
     spin_unlock_irq(&platform_timer_lock);
 }
 
-static s64 __init try_platform_timer(struct platform_timesource *pts)
+static int64_t __init try_platform_timer(struct platform_timesource *pts)
 {
-    s64 rc = pts->init(pts);
+    int64_t rc = pts->init(pts);
 
     if ( rc <= 0 )
         return rc;
@@ -1046,7 +1070,7 @@ static u64 __init init_platform_timer(void)
 
     struct platform_timesource *pts = NULL;
     unsigned int i;
-    s64 rc = -1;
+    int64_t rc = -1;
 
     /* clocksource=tsc is initialized via __initcalls (when CPUs are up). */
     if ( (opt_clocksource[0] != '\0') && strcmp(opt_clocksource, "tsc") )
@@ -1222,8 +1246,26 @@ struct rtc_time {
     unsigned int year, mon, day, hour, min, sec;
 };
 
-static void __get_cmos_time(struct rtc_time *rtc)
+static bool __get_cmos_time(struct rtc_time *rtc)
 {
+    s_time_t start, t1, t2;
+    unsigned long flags;
+
+    spin_lock_irqsave(&rtc_lock, flags);
+
+    /* read RTC exactly on falling edge of update flag */
+    start = NOW();
+    do { /* may take up to 1 second... */
+        t1 = NOW() - start;
+    } while ( !(CMOS_READ(RTC_FREQ_SELECT) & RTC_UIP) &&
+              t1 <= SECONDS(1) );
+
+    start = NOW();
+    do { /* must try at least 2.228 ms */
+        t2 = NOW() - start;
+    } while ( (CMOS_READ(RTC_FREQ_SELECT) & RTC_UIP) &&
+              t2 < MILLISECS(3) );
+
     rtc->sec  = CMOS_READ(RTC_SECONDS);
     rtc->min  = CMOS_READ(RTC_MINUTES);
     rtc->hour = CMOS_READ(RTC_HOURS);
@@ -1241,69 +1283,46 @@ static void __get_cmos_time(struct rtc_time *rtc)
         BCD_TO_BIN(rtc->year);
     }
 
+    spin_unlock_irqrestore(&rtc_lock, flags);
+
     if ( (rtc->year += 1900) < 1970 )
         rtc->year += 100;
+
+    return t1 <= SECONDS(1) && t2 < MILLISECS(3);
 }
 
-static unsigned long get_cmos_time(void)
+static bool __initdata opt_cmos_rtc_probe;
+boolean_param("cmos-rtc-probe", opt_cmos_rtc_probe);
+
+static bool __init cmos_rtc_probe(void)
 {
-    unsigned long res, flags;
-    struct rtc_time rtc;
     unsigned int seconds = 60;
-    static bool __read_mostly cmos_rtc_probe;
-    boolean_param("cmos-rtc-probe", cmos_rtc_probe);
 
-    if ( efi_enabled(EFI_RS) )
-    {
-        res = efi_get_time();
-        if ( res )
-            return res;
-    }
+    if ( !(acpi_gbl_FADT.boot_flags & ACPI_FADT_NO_CMOS_RTC) )
+        return true;
 
-    if ( likely(!(acpi_gbl_FADT.boot_flags & ACPI_FADT_NO_CMOS_RTC)) )
-        cmos_rtc_probe = false;
-    else if ( system_state < SYS_STATE_smp_boot && !cmos_rtc_probe )
-        panic("System with no CMOS RTC advertised must be booted from EFI"
-              " (or with command line option \"cmos-rtc-probe\")\n");
+    if ( !opt_cmos_rtc_probe )
+        return false;
 
     for ( ; ; )
     {
-        s_time_t start, t1, t2;
+        struct rtc_time rtc;
+        bool success = __get_cmos_time(&rtc);
 
-        spin_lock_irqsave(&rtc_lock, flags);
-
-        /* read RTC exactly on falling edge of update flag */
-        start = NOW();
-        do { /* may take up to 1 second... */
-            t1 = NOW() - start;
-        } while ( !(CMOS_READ(RTC_FREQ_SELECT) & RTC_UIP) &&
-                  t1 <= SECONDS(1) );
-
-        start = NOW();
-        do { /* must try at least 2.228 ms */
-            t2 = NOW() - start;
-        } while ( (CMOS_READ(RTC_FREQ_SELECT) & RTC_UIP) &&
-                  t2 < MILLISECS(3) );
-
-        __get_cmos_time(&rtc);
-
-        spin_unlock_irqrestore(&rtc_lock, flags);
-
-        if ( likely(!cmos_rtc_probe) ||
-             t1 > SECONDS(1) || t2 >= MILLISECS(3) ||
+        if ( !success ||
              rtc.sec >= 60 || rtc.min >= 60 || rtc.hour >= 24 ||
              !rtc.day || rtc.day > 31 ||
              !rtc.mon || rtc.mon > 12 )
-            break;
+            return false;
 
         if ( seconds < 60 )
         {
             if ( rtc.sec != seconds )
             {
-                cmos_rtc_probe = false;
                 acpi_gbl_FADT.boot_flags &= ~ACPI_FADT_NO_CMOS_RTC;
+                return true;
             }
-            break;
+            return false;
         }
 
         process_pending_softirqs();
@@ -1311,8 +1330,16 @@ static unsigned long get_cmos_time(void)
         seconds = rtc.sec;
     }
 
-    if ( unlikely(cmos_rtc_probe) )
-        panic("No CMOS RTC found - system must be booted from EFI\n");
+    ASSERT_UNREACHABLE();
+    return false;
+}
+
+
+static unsigned long cmos_rtc_read(void)
+{
+    struct rtc_time rtc;
+
+    __get_cmos_time(&rtc);
 
     return mktime(rtc.year, rtc.mon, rtc.day, rtc.hour, rtc.min, rtc.sec);
 }
@@ -1440,6 +1467,7 @@ unsigned int rtc_guest_read(unsigned int port)
 
     default:
         ASSERT_UNREACHABLE();
+        break;
     }
 
     return data;
@@ -1492,31 +1520,120 @@ void rtc_guest_write(unsigned int port, unsigned int data)
 
     default:
         ASSERT_UNREACHABLE();
+        break;
     }
+}
+
+static enum {
+    WALLCLOCK_UNSET,
+    WALLCLOCK_XEN,
+    WALLCLOCK_CMOS,
+    WALLCLOCK_EFI,
+} wallclock_source __ro_after_init;
+
+static const char *__init wallclock_type_to_string(void)
+{
+    switch ( wallclock_source )
+    {
+    case WALLCLOCK_XEN:
+        return "XEN";
+
+    case WALLCLOCK_CMOS:
+        return "CMOS RTC";
+
+    case WALLCLOCK_EFI:
+        return "EFI";
+
+    case WALLCLOCK_UNSET:
+        return "UNSET";
+    }
+
+    ASSERT_UNREACHABLE();
+    return "";
+}
+
+static int __init cf_check parse_wallclock(const char *arg)
+{
+    wallclock_source = WALLCLOCK_UNSET;
+
+    if ( !arg )
+        return -EINVAL;
+
+    if ( !strcmp("auto", arg) )
+        ASSERT(wallclock_source == WALLCLOCK_UNSET);
+    else if ( !strcmp("xen", arg) )
+    {
+        if ( !xen_guest )
+            return -EINVAL;
+
+        wallclock_source = WALLCLOCK_XEN;
+    }
+    else if ( !strcmp("cmos", arg) )
+        wallclock_source = WALLCLOCK_CMOS;
+    else if ( !strcmp("efi", arg) )
+        /*
+         * Checking if run-time services are available must be done after
+         * command line parsing.
+         */
+        wallclock_source = WALLCLOCK_EFI;
+    else
+        return -EINVAL;
+
+    return 0;
+}
+custom_param("wallclock", parse_wallclock);
+
+static void __init probe_wallclock(void)
+{
+    ASSERT(wallclock_source == WALLCLOCK_UNSET);
+
+    if ( xen_guest )
+    {
+        wallclock_source = WALLCLOCK_XEN;
+        return;
+    }
+    if ( cmos_rtc_probe() )
+    {
+        wallclock_source = WALLCLOCK_CMOS;
+        return;
+    }
+    if ( efi_enabled(EFI_RS) && efi_get_time() )
+    {
+        wallclock_source = WALLCLOCK_EFI;
+        return;
+    }
+
+    panic("No usable wallclock found, probed:%s%s%s\n%s",
+          !opt_cmos_rtc_probe && !efi_enabled(EFI_RS) ? " None" : "",
+          opt_cmos_rtc_probe ? " CMOS" : "",
+          efi_enabled(EFI_RS) ? " EFI" : "",
+          !opt_cmos_rtc_probe
+              ? "Try with command line option \"cmos-rtc-probe\"\n"
+              : !efi_enabled(EFI_RS)
+                  ? "System must be booted from EFI\n"
+                  : "");
 }
 
 static unsigned long get_wallclock_time(void)
 {
-#ifdef CONFIG_XEN_GUEST
-    if ( xen_guest )
+    switch ( wallclock_source )
     {
-        struct shared_info *sh_info = XEN_shared_info;
-        uint32_t wc_version;
-        uint64_t wc_sec;
+    case WALLCLOCK_XEN:
+        return read_xen_wallclock();
 
-        do {
-            wc_version = sh_info->wc_version & ~1;
-            smp_rmb();
+    case WALLCLOCK_CMOS:
+        return cmos_rtc_read();
 
-            wc_sec  = sh_info->wc_sec;
-            smp_rmb();
-        } while ( wc_version != sh_info->wc_version );
+    case WALLCLOCK_EFI:
+        return efi_get_time();
 
-        return wc_sec + read_xen_timer() / 1000000000;
+    case WALLCLOCK_UNSET:
+        /* Unexpected state - handled by the ASSERT_UNREACHABLE() below. */
+        break;
     }
-#endif
 
-    return get_cmos_time();
+    ASSERT_UNREACHABLE();
+    return 0;
 }
 
 /***************************************************************************
@@ -1837,7 +1954,7 @@ static void cf_check local_time_calibration(void)
      * Weirdness can happen if we lose sync with the platform timer.
      * We could be smarter here: resync platform timer with local timer?
      */
-    if ( ((s64)stime_elapsed64 < (EPOCH / 2)) )
+    if ( ((int64_t)stime_elapsed64 < (EPOCH / 2)) )
         goto out;
 
     /*
@@ -1859,8 +1976,8 @@ static void cf_check local_time_calibration(void)
      * This allows us to binary shift a 32-bit tsc_elapsed such that:
      * stime_elapsed < tsc_elapsed <= 2*stime_elapsed
      */
-    while ( ((u32)stime_elapsed64 != stime_elapsed64) ||
-            ((s32)stime_elapsed64 < 0) )
+    while ( ((uint32_t)stime_elapsed64 != stime_elapsed64) ||
+            ((int32_t)stime_elapsed64 < 0) )
     {
         stime_elapsed64 >>= 1;
         tsc_elapsed64   >>= 1;
@@ -2312,7 +2429,7 @@ static void __init tsc_check_writability(void)
 
         write_tsc(tsc | (1ULL << 32));
         tmp = rdtsc();
-        if ( ABS((s64)tmp - (s64)tmp2) < (1LL << 31) )
+        if ( ABS((int64_t)tmp - (int64_t)tmp2) < (1LL << 31) )
             what = "only partially";
     }
     else
@@ -2440,6 +2557,18 @@ int __init init_xen_time(void)
     tsc_check_writability();
 
     open_softirq(TIME_CALIBRATE_SOFTIRQ, local_time_calibration);
+
+    /*
+     * EFI run time services can be disabled from the command line, hence the
+     * check for them cannot be done as part of the wallclock option parsing.
+     */
+    if ( wallclock_source == WALLCLOCK_EFI && !efi_enabled(EFI_RS) )
+        wallclock_source = WALLCLOCK_UNSET;
+
+    if ( wallclock_source == WALLCLOCK_UNSET )
+        probe_wallclock();
+
+    printk(XENLOG_INFO "Wallclock source: %s\n", wallclock_type_to_string());
 
     /* NB. get_wallclock_time() can take over one second to execute. */
     do_settime(get_wallclock_time(), 0, NOW());

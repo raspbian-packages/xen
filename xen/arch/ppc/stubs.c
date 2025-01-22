@@ -3,6 +3,7 @@
 #include <xen/domain.h>
 #include <xen/irq.h>
 #include <xen/nodemask.h>
+#include <xen/sections.h>
 #include <xen/time.h>
 #include <public/domctl.h>
 #include <public/vm_event.h>
@@ -55,18 +56,6 @@ void arch_hypercall_tasklet_result(struct vcpu *v, long res)
 }
 
 void vcpu_show_execution_state(struct vcpu *v)
-{
-    BUG_ON("unimplemented");
-}
-
-/* shutdown.c */
-
-void machine_restart(unsigned int delay_millisecs)
-{
-    BUG_ON("unimplemented");
-}
-
-void machine_halt(void)
 {
     BUG_ON("unimplemented");
 }
@@ -152,7 +141,6 @@ void smp_send_state_dump(unsigned int cpu)
 /* domain.c */
 
 DEFINE_PER_CPU(struct vcpu *, curr_vcpu);
-unsigned long __per_cpu_offset[NR_CPUS];
 
 void context_switch(struct vcpu *prev, struct vcpu *next)
 {
@@ -330,6 +318,12 @@ int __init parse_arch_dom0_param(const char *s, const char *e)
 /* delay.c */
 
 void udelay(unsigned long usecs)
+{
+    BUG_ON("unimplemented");
+}
+
+void share_xen_page_with_guest(struct page_info *page, struct domain *d,
+                               enum XENSHARE_flags flags)
 {
     BUG_ON("unimplemented");
 }

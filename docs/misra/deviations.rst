@@ -30,6 +30,12 @@ Deviations related to MISRA C:2012 Directives:
        not to add an additional encapsulation layer.
      - Tagged as `deliberate` for ECLAIR.
 
+   * - D4.10
+     - Including multiple times a .c file is safe because every function or data item
+       it defines would in (the common case) be already defined.
+       Peer reviewed by the community.
+     - Tagged as `safe` for ECLAIR.
+
 Deviations related to MISRA C:2012 Rules:
 -----------------------------------------
 
@@ -347,6 +353,15 @@ Deviations related to MISRA C:2012 Rules:
        Fixing this violation would require to increase code complexity and lower readability.
      - Tagged as `safe` for ECLAIR.
 
+   * - R11.8
+     - Violations caused by function __hvm_copy occur when a const void
+       argument is passed, as the const qualifier is stripped. However, in such
+       cases, the function ensures that it does not modify the buffer
+       referenced by the argument, therefore, this use is deemed safe. Fixing
+       this violation would require to increase code complexity and lower
+       readability.
+     - Tagged as `safe` for ECLAIR.
+
    * - R11.9
      - __ACCESS_ONCE uses an integer, which happens to be zero, as a
        compile time check. The typecheck uses a cast. The usage of zero or other
@@ -409,12 +424,34 @@ Deviations related to MISRA C:2012 Rules:
      - Tagged as `deliberate` for ECLAIR.
 
    * - R16.3
-     - Switch clauses ending with continue, goto, return statements are safe.
+     - Statements that change the control flow (i.e., break, continue, goto,
+       return) and calls to functions that do not return the control back are
+       \"allowed terminal statements\".
      - Tagged as `safe` for ECLAIR.
 
    * - R16.3
-     - Switch clauses ending with a call to a function that does not give
-       the control back (i.e., a function with attribute noreturn) are safe.
+     - An if-else statement having both branches ending with one of the allowed
+       terminal statemets is itself an allowed terminal statements.
+     - Tagged as `safe` for ECLAIR.
+
+   * - R16.3
+     - An if-else statement having an always true condition and the true
+       branch ending with an allowed terminal statement is itself an allowed
+       terminal statement.
+     - Tagged as `safe` for ECLAIR.
+
+   * - R16.3
+     - A switch clause ending with a statement expression which, in turn, ends
+       with an allowed terminal statement (e.g., the expansion of
+       generate_exception()) is safe.
+     - Tagged as `safe` for ECLAIR.
+
+   * - R16.3
+     - A switch clause ending with a do-while-false the body of which, in turn,
+       ends with an allowed terminal statement (e.g., PARSE_ERR_RET()) is safe.
+       An exception to that is the macro ASSERT_UNREACHABLE() which is
+       effective in debug build only: a switch clause ending with
+       ASSERT_UNREACHABLE() is not considered safe.
      - Tagged as `safe` for ECLAIR.
 
    * - R16.3
@@ -473,6 +510,16 @@ Deviations related to MISRA C:2012 Rules:
          - __builtin_memset()
          - cpumask_check()
 
+   * - R18.2
+     - Subtractions between pointers where at least one of the operand is a
+       pointer to a symbol defined by the linker are safe.
+     - Tagged as `safe` for ECLAIR.
+
+   * - R18.2
+     - Subtraction between pointers encapsulated by macro page_to_mfn
+       are safe.
+     - Tagged as `safe` for ECLAIR.
+
    * - R20.4
      - The override of the keyword \"inline\" in xen/compiler.h is present so
        that section contents checks pass when the compiler chooses not to
@@ -504,6 +551,19 @@ Deviations related to MISRA C:2012 Rules:
      - The macro `count_args_` is not compliant with the rule, but is not likely
        to incur in the risk of being misused or lead to developer confusion, and
        refactoring it to add parentheses breaks its functionality.
+     - Tagged as `safe` for ECLAIR.
+
+   * - R20.7
+     - The macros `{COMPILE,RUNTIME}_CHECK` defined in
+       `xen/include/xen/self-tests.h` are allowed not to parenthesize the "fn"
+       argument, to allow function-like macros to be tested as well as
+       functions. Given the specialized use of these macros and their limited
+       usage scope, omitting parentheses is deemed unlikely to cause issues.
+     - Tagged as `deliberate` for ECLAIR.
+
+   * - R20.7
+     - Problems related to operator precedence can not occur if the expansion
+       of the macro argument is surrounded by tokens '{', '}' and ';'.
      - Tagged as `safe` for ECLAIR.
 
    * - R20.12

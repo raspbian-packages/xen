@@ -13,7 +13,7 @@ RUN <<EOF
 
     useradd --create-home user
 
-    apt-get -y update
+    apt-get update
 
     DEPS=(
         # Xen
@@ -26,6 +26,7 @@ RUN <<EOF
 
         # Qemu for test phase
         qemu-system-riscv64
+        expect
     )
 
     apt-get -y --no-install-recommends install "${DEPS[@]}"

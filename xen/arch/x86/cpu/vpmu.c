@@ -13,13 +13,15 @@
 #include <xen/guest_access.h>
 #include <xen/hypercall.h>
 #include <xen/sched.h>
+
+#include <asm/irq-vectors.h>
 #include <asm/regs.h>
 #include <asm/msr.h>
 #include <asm/nmi.h>
 #include <asm/p2m.h>
 #include <asm/vpmu.h>
 #include <asm/apic.h>
-#include <irq_vectors.h>
+
 #include <public/pmu.h>
 #include <xsm/xsm.h>
 
@@ -663,6 +665,8 @@ long do_xenpmu_op(
 
         if ( pmu_params.version.maj != XENPMU_VER_MAJ )
             return -EINVAL;
+
+        break;
     }
 
     switch ( op )
@@ -671,7 +675,7 @@ long do_xenpmu_op(
     {
         if ( (pmu_params.val &
               ~(XENPMU_MODE_SELF | XENPMU_MODE_HV | XENPMU_MODE_ALL)) ||
-             (hweight64(pmu_params.val) > 1) )
+             multiple_bits_set(pmu_params.val) )
             return -EINVAL;
 
         /* 32-bit dom0 can only sample itself. */
@@ -776,6 +780,7 @@ long do_xenpmu_op(
 
     default:
         ret = -EINVAL;
+        break;
     }
 
     return ret;

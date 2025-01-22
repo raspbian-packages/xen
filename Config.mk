@@ -141,6 +141,14 @@ export XEN_HAS_BUILD_ID=y
 build_id_linker := --build-id=sha1
 endif
 
+# Wrap date(1) to use SOURCE_DATE_EPOCH if set the environment.
+# See https://reproducible-builds.org/docs/source-date-epoch/
+ifdef SOURCE_DATE_EPOCH
+date = $(shell LC_ALL=C date -u -d "@$(SOURCE_DATE_EPOCH)" $(1) 2>/dev/null || LC_ALL=C date -u -r "$(SOURCE_DATE_EPOCH)" $(1) 2>/dev/null || LC_ALL=C date -u $(1))
+else
+date = $(shell LC_ALL=C date $(1))
+endif
+
 define buildmakevars2shellvars
     export PREFIX="$(prefix)";                                            \
     export XEN_SCRIPT_DIR="$(XEN_SCRIPT_DIR)";                            \
@@ -221,10 +229,10 @@ OVMF_UPSTREAM_URL ?= https://xenbits.xen.org/git-http/ovmf.git
 OVMF_UPSTREAM_REVISION ?= ba91d0292e593df8528b66f99c1b0b14fadc8e16
 
 QEMU_UPSTREAM_URL ?= https://xenbits.xen.org/git-http/qemu-xen.git
-QEMU_UPSTREAM_REVISION ?= qemu-xen-4.19.1
+QEMU_UPSTREAM_REVISION ?= 3fdb3cd3a27a22a050c7d27126a24807a7a45745
 
 MINIOS_UPSTREAM_URL ?= https://xenbits.xen.org/git-http/mini-os.git
-MINIOS_UPSTREAM_REVISION ?= xen-RELEASE-4.19.1
+MINIOS_UPSTREAM_REVISION ?= 6d5159e8410be16a47433bac1627e63f8adc7cd9
 
 SEABIOS_UPSTREAM_URL ?= https://xenbits.xen.org/git-http/seabios.git
 SEABIOS_UPSTREAM_REVISION ?= rel-1.16.3
@@ -233,7 +241,9 @@ ETHERBOOT_NICS ?= rtl8139 8086100e
 
 
 QEMU_TRADITIONAL_URL ?= https://xenbits.xen.org/git-http/qemu-xen-traditional.git
-QEMU_TRADITIONAL_REVISION ?= xen-4.19.0
+QEMU_TRADITIONAL_REVISION ?= 3d273dd05e51e5a1ffba3d98c7437ee84e8f8764
+# Wed Jul 15 10:01:40 2020 +0100
+# qemu-trad: remove Xen path dependencies
 
 # Specify which qemu-dm to use. This may be `ioemu' to use the old
 # Mercurial in-tree version, or a local directory, or a git URL.

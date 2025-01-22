@@ -98,11 +98,6 @@ static inline bool cpus_have_cap(unsigned int num)
     return test_bit(num, cpu_hwcaps);
 }
 
-static inline int cpu_nr_siblings(unsigned int cpu)
-{
-    return 1;
-}
-
 /* System capability check for constant cap */
 #define cpus_have_const_cap(num) ({                 \
         register_t __ret;                           \
@@ -207,7 +202,9 @@ struct cpuinfo_arm {
             unsigned long mte:4;
             unsigned long ras_frac:4;
             unsigned long mpam_frac:4;
-            unsigned long __res1:44;
+            unsigned long __res1:4;
+            unsigned long sme:4;
+            unsigned long __res2:36;
         };
     } pfr64;
 

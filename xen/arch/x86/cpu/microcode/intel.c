@@ -229,8 +229,7 @@ static int microcode_sanity_check(const struct microcode_patch *patch)
  * Production microcode has a positive revision.  Pre-production microcode has
  * a negative revision.
  */
-static enum microcode_match_result compare_revisions(
-    int32_t old_rev, int32_t new_rev)
+static int compare_revisions(int32_t old_rev, int32_t new_rev)
 {
     if ( new_rev > old_rev )
         return NEW_UCODE;
@@ -248,9 +247,8 @@ static enum microcode_match_result compare_revisions(
     return OLD_UCODE;
 }
 
-/* Check an update against the CPU signature and current update revision */
-static enum microcode_match_result microcode_update_match(
-    const struct microcode_patch *mc)
+/* Check whether this microcode patch is applicable for the current CPU. */
+static bool microcode_fits_cpu(const struct microcode_patch *mc)
 {
     const struct extended_sigtable *ext;
     unsigned int i;
@@ -260,48 +258,46 @@ static enum microcode_match_result microcode_update_match(
 
     /* Check the main microcode signature. */
     if ( signature_matches(cpu_sig, mc->sig, mc->pf) )
-        goto found;
+        return true;
 
     /* If there is an extended signature table, check each of them. */
     if ( (ext = get_ext_sigtable(mc)) != NULL )
         for ( i = 0; i < ext->count; ++i )
             if ( signature_matches(cpu_sig, ext->sigs[i].sig, ext->sigs[i].pf) )
-                goto found;
+                return true;
 
-    return MIS_UCODE;
-
- found:
-    return compare_revisions(cpu_sig->rev, mc->rev);
+    return false;
 }
 
-static enum microcode_match_result cf_check compare_patch(
-    const struct microcode_patch *new, const struct microcode_patch *old)
+static int cf_check intel_compare(
+    const struct microcode_patch *old, const struct microcode_patch *new)
 {
     /*
      * Both patches to compare are supposed to be applicable to local CPU.
      * Just compare the revision number.
      */
-    ASSERT(microcode_update_match(old) != MIS_UCODE);
-    ASSERT(microcode_update_match(new) != MIS_UCODE);
+    ASSERT(microcode_fits_cpu(old));
+    ASSERT(microcode_fits_cpu(new));
 
     return compare_revisions(old->rev, new->rev);
 }
 
-static int cf_check apply_microcode(const struct microcode_patch *patch)
+static int cf_check apply_microcode(const struct microcode_patch *patch,
+                                    unsigned int flags)
 {
     uint64_t msr_content;
     unsigned int cpu = smp_processor_id();
     struct cpu_signature *sig = &this_cpu(cpu_sig);
     uint32_t rev, old_rev = sig->rev;
-    enum microcode_match_result result;
+    int result;
+    bool ucode_force = flags & XENPF_UCODE_FORCE;
 
-    result = microcode_update_match(patch);
-
-    if ( result == MIS_UCODE )
+    if ( !microcode_fits_cpu(patch) )
         return -EINVAL;
 
-    if ( result == OLD_UCODE ||
-         (result == SAME_UCODE && !opt_ucode_allow_same) )
+    result = compare_revisions(old_rev, patch->rev);
+
+    if ( !ucode_force && (result == SAME_UCODE || result == OLD_UCODE) )
         return -EEXIST;
 
     wbinvd();
@@ -364,7 +360,7 @@ static struct microcode_patch *cf_check cpu_request_microcode(
          * If the new update covers current CPU, compare updates and store the
          * one with higher revision.
          */
-        if ( (microcode_update_match(mc) != MIS_UCODE) &&
+        if ( microcode_fits_cpu(mc) &&
              (!saved || compare_revisions(saved->rev, mc->rev) == NEW_UCODE) )
             saved = mc;
 
@@ -404,11 +400,15 @@ static bool __init can_load_microcode(void)
     return !(mcu_ctrl & MCU_CONTROL_DIS_MCU_LOAD);
 }
 
+static const char __initconst intel_cpio_path[] =
+    "kernel/x86/microcode/GenuineIntel.bin";
+
 static const struct microcode_ops __initconst_cf_clobber intel_ucode_ops = {
     .cpu_request_microcode            = cpu_request_microcode,
     .collect_cpu_info                 = collect_cpu_info,
     .apply_microcode                  = apply_microcode,
-    .compare_patch                    = compare_patch,
+    .compare                          = intel_compare,
+    .cpio_path                        = intel_cpio_path,
 };
 
 void __init ucode_probe_intel(struct microcode_ops *ops)

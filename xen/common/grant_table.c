@@ -39,7 +39,7 @@
 #include <xen/paging.h>
 #include <xen/keyhandler.h>
 #include <xen/radix-tree.h>
-#include <xen/vmap.h>
+#include <xen/xvmalloc.h>
 #include <xen/nospec.h>
 #include <xsm/xsm.h>
 #include <asm/flushtlb.h>
@@ -1390,7 +1390,7 @@ unmap_common(
     struct grant_table *lgt, *rgt;
     grant_ref_t ref;
     struct active_grant_entry *act;
-    s16              rc = 0;
+    int16_t          rc;
     struct grant_mapping *map;
     unsigned int flags;
     bool put_handle = false;
@@ -1995,7 +1995,7 @@ int grant_table_init(struct domain *d, int max_grant_frames,
         return -EINVAL;
     }
 
-    if ( (gt = xzalloc(struct grant_table)) == NULL )
+    if ( (gt = xvzalloc(struct grant_table)) == NULL )
         return -ENOMEM;
 
     /* Simple stuff. */
@@ -2012,15 +2012,16 @@ int grant_table_init(struct domain *d, int max_grant_frames,
     d->grant_table = gt;
 
     /* Active grant table. */
-    gt->active = xzalloc_array(struct active_grant_entry *,
-                               max_nr_active_grant_frames(gt));
+    gt->active = xvzalloc_array(struct active_grant_entry *,
+                                max_nr_active_grant_frames(gt));
     if ( gt->active == NULL )
         goto out;
 
     /* Tracking of mapped foreign frames table */
     if ( gt->max_maptrack_frames )
     {
-        gt->maptrack = vzalloc(gt->max_maptrack_frames * sizeof(*gt->maptrack));
+        gt->maptrack = xvzalloc_array(struct grant_mapping *,
+                                      gt->max_maptrack_frames);
         if ( gt->maptrack == NULL )
             goto out;
 
@@ -2028,13 +2029,13 @@ int grant_table_init(struct domain *d, int max_grant_frames,
     }
 
     /* Shared grant table. */
-    gt->shared_raw = xzalloc_array(void *, gt->max_grant_frames);
+    gt->shared_raw = xvzalloc_array(void *, gt->max_grant_frames);
     if ( gt->shared_raw == NULL )
         goto out;
 
     /* Status pages for grant table - for version 2 */
-    gt->status = xzalloc_array(grant_status_t *,
-                               grant_to_status_frames(gt->max_grant_frames));
+    gt->status = xvzalloc_array(grant_status_t *,
+                                grant_to_status_frames(gt->max_grant_frames));
     if ( gt->status == NULL )
         goto out;
 
@@ -2579,7 +2580,7 @@ acquire_grant_for_copy(
     uint16_t trans_page_off;
     uint16_t trans_length;
     bool is_sub_page;
-    s16 rc = GNTST_okay;
+    int16_t rc = GNTST_okay;
     unsigned int pin_incr = readonly ? GNTPIN_hstr_inc : GNTPIN_hstw_inc;
 
     *page = NULL;
@@ -3415,14 +3416,14 @@ gnttab_get_version(XEN_GUEST_HANDLE_PARAM(gnttab_get_version_t) uop)
     return 0;
 }
 
-static s16
+static int16_t
 swap_grant_ref(grant_ref_t ref_a, grant_ref_t ref_b)
 {
     struct domain *d = rcu_lock_current_domain();
     struct grant_table *gt = d->grant_table;
     struct active_grant_entry *act_a = NULL;
     struct active_grant_entry *act_b = NULL;
-    s16 rc = GNTST_okay;
+    int16_t rc = GNTST_okay;
 
     grant_write_lock(gt);
 
@@ -4010,23 +4011,24 @@ grant_table_destroy(
     if ( t == NULL )
         return;
 
+    d->grant_table = NULL;
+
     for ( i = 0; i < nr_grant_frames(t); i++ )
         free_xenheap_page(t->shared_raw[i]);
-    xfree(t->shared_raw);
+    xvfree(t->shared_raw);
 
     ASSERT(!t->maptrack_limit);
-    vfree(t->maptrack);
+    xvfree(t->maptrack);
 
     for ( i = 0; i < nr_active_grant_frames(t); i++ )
         free_xenheap_page(t->active[i]);
-    xfree(t->active);
+    xvfree(t->active);
 
     for ( i = 0; i < nr_status_frames(t); i++ )
         free_xenheap_page(t->status[i]);
-    xfree(t->status);
+    xvfree(t->status);
 
-    xfree(t);
-    d->grant_table = NULL;
+    xvfree(t);
 }
 
 void grant_table_init_vcpu(struct vcpu *v)

@@ -5,6 +5,8 @@
  * Common macros to be used in architecture specific linker scripts.
  */
 
+#ifdef DECL_SECTION_WITH_LADDR
+
 /*
  * Declare a section whose load address is based at PA 0 rather than
  * Xen's virtual base address.
@@ -13,6 +15,10 @@
 # define DECL_SECTION(x) x : AT(ADDR(#x) - __XEN_VIRT_START)
 #else
 # define DECL_SECTION(x) x : AT(ADDR(x) - __XEN_VIRT_START)
+#endif
+
+#else /* !DECL_SECTION_WITH_LADDR */
+#define DECL_SECTION(x) x :
 #endif
 
 /*
@@ -114,6 +120,14 @@
 
 /* List of constructs other than *_SECTIONS in alphabetical order. */
 
+#define ACPI_DEV_INFO        \
+  . = ALIGN(POINTER_ALIGN);  \
+  DECL_SECTION(.adev.info) { \
+      _asdevice = .;         \
+      *(.adev.info)          \
+      _aedevice = .;         \
+  } :text
+
 #define BUGFRAMES                               \
     __start_bug_frames_0 = .;                   \
     *(.bug_frames.0)                            \
@@ -130,6 +144,14 @@
     __start_bug_frames_3 = .;                   \
     *(.bug_frames.3)                            \
     __stop_bug_frames_3 = .;
+
+#define DT_DEV_INFO         \
+  . = ALIGN(POINTER_ALIGN); \
+  DECL_SECTION(.dev.info) { \
+       _sdevice = .;        \
+       *(.dev.info)         \
+       _edevice = .;        \
+  } :text
 
 #ifdef CONFIG_HYPFS
 #define HYPFS_PARAM              \
@@ -150,6 +172,16 @@
 #else
 #define LOCK_PROFILE_DATA
 #endif
+
+#define PERCPU_BSS                 \
+       . = ALIGN(PAGE_SIZE);       \
+       __per_cpu_start = .;        \
+       *(.bss.percpu.page_aligned) \
+       *(.bss.percpu)              \
+       . = ALIGN(SMP_CACHE_BYTES); \
+       *(.bss.percpu.read_mostly)  \
+       . = ALIGN(SMP_CACHE_BYTES); \
+       __per_cpu_data_end = .;     \
 
 #ifdef CONFIG_HAS_VPCI
 #define VPCI_ARRAY               \

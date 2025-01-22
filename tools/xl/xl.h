@@ -129,6 +129,8 @@ int main_restore(int argc, char **argv);
 int main_migrate_receive(int argc, char **argv);
 int main_save(int argc, char **argv);
 int main_migrate(int argc, char **argv);
+int main_suspend(int argc, char **argv);
+int main_resume(int argc, char **argv);
 #endif
 int main_dump_core(int argc, char **argv);
 int main_pause(int argc, char **argv);
@@ -301,6 +303,7 @@ typedef enum {
     DOMAIN_RESTART_NORMAL,       /* Domain should be restarted */
     DOMAIN_RESTART_RENAME,       /* Domain should be renamed and restarted */
     DOMAIN_RESTART_SOFT_RESET,   /* Soft reset should be performed */
+    DOMAIN_RESTART_SUSPENDED,    /* Domain suspended - keep looping */
 } domain_restart_type;
 
 extern void printf_info_sexp(int domid, libxl_domain_config *d_config, FILE *fh);

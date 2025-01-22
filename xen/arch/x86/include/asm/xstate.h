@@ -14,6 +14,7 @@
 
 #define FCW_DEFAULT               0x037f
 #define FCW_RESET                 0x0040
+#define FXSAVE_FTW_RESET          0xFF /* Abridged Tag Word format */
 #define MXCSR_DEFAULT             0x1f80
 
 extern uint32_t mxcsr_mask;
@@ -35,7 +36,8 @@ extern uint32_t mxcsr_mask;
                         XSTATE_NONLAZY)
 
 #define XSTATE_ALL     (~(1ULL << 63))
-#define XSTATE_NONLAZY (X86_XCR0_BNDREGS | X86_XCR0_BNDCSR | X86_XCR0_PKRU)
+#define XSTATE_NONLAZY (X86_XCR0_BNDREGS | X86_XCR0_BNDCSR | X86_XCR0_PKRU | \
+                        X86_XCR0_TILE_CFG | X86_XCR0_TILE_DATA)
 #define XSTATE_LAZY    (XSTATE_ALL & ~XSTATE_NONLAZY)
 #define XSTATE_XSAVES_ONLY         0
 #define XSTATE_COMPACTION_ENABLED  (1ULL << 63)
@@ -82,6 +84,8 @@ struct __attribute__((aligned (64))) xsave_struct
     char data[];                             /* Variable layout states */
 };
 
+typedef typeof(((struct xsave_struct){}).fpu_sse) fpusse_t;
+
 struct xstate_bndcsr {
     uint64_t bndcfgu;
     uint64_t bndstatus;
@@ -122,6 +126,12 @@ static inline uint64_t xgetbv(unsigned int index)
     return lo | ((uint64_t)hi << 32);
 }
 
+static inline bool __nonnull(1)
+xsave_area_compressed(const struct xsave_struct *xsave_area)
+{
+    return xsave_area->xsave_hdr.xcomp_bv & XSTATE_COMPACTION_ENABLED;
+}
+
 static inline bool xstate_all(const struct vcpu *v)
 {
     /*
@@ -129,15 +139,8 @@ static inline bool xstate_all(const struct vcpu *v)
      * (in the legacy region of xsave area) are fixed, so saving
      * XSTATE_FP_SSE will not cause overwriting problem with XSAVES/XSAVEC.
      */
-    return (v->arch.xsave_area->xsave_hdr.xcomp_bv &
-            XSTATE_COMPACTION_ENABLED) &&
+    return xsave_area_compressed(v->arch.xsave_area) &&
            (v->arch.xcr0_accum & XSTATE_LAZY & ~XSTATE_FP_SSE);
-}
-
-static inline bool __nonnull(1)
-xsave_area_compressed(const struct xsave_struct *xsave_area)
-{
-    return xsave_area->xsave_hdr.xcomp_bv & XSTATE_COMPACTION_ENABLED;
 }
 
 #endif /* __ASM_XSTATE_H */

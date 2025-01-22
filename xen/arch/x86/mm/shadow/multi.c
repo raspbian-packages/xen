@@ -562,7 +562,7 @@ _sh_propagate(struct vcpu *v,
                 if ( p2mt == p2m_mmio_direct )
                     sflags |= get_pat_flags(v,
                             gflags,
-                            gfn_to_paddr(target_gfn),
+                            gfn_to_gaddr(target_gfn),
                             mfn_to_maddr(target_mfn),
                             X86_MT_UC);
                 else if ( is_iommu_enabled(d) && iommu_snoop )
@@ -570,7 +570,7 @@ _sh_propagate(struct vcpu *v,
                 else
                     sflags |= get_pat_flags(v,
                             gflags,
-                            gfn_to_paddr(target_gfn),
+                            gfn_to_gaddr(target_gfn),
                             mfn_to_maddr(target_mfn),
                             NO_HARDCODE_MEM_TYPE);
             }
@@ -2701,7 +2701,7 @@ static int cf_check sh_page_fault(
          * else is an emulation bug, or a guest playing with the instruction
          * stream under Xen's feet.
          */
-        if ( emul_ctxt.ctxt.event.type == X86_EVENTTYPE_HW_EXCEPTION &&
+        if ( emul_ctxt.ctxt.event.type == X86_ET_HW_EXC &&
              ((emul_ctxt.ctxt.event.vector == X86_EXC_PF) ||
               (((emul_ctxt.ctxt.event.vector == X86_EXC_GP) ||
                 (emul_ctxt.ctxt.event.vector == X86_EXC_SS)) &&

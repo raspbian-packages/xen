@@ -54,10 +54,9 @@ obj-y += mpparse.o
 obj-y += nmi.o
 obj-y += numa.o
 obj-y += pci.o
-obj-y += percpu.o
 obj-y += physdev.o
 obj-$(CONFIG_COMPAT) += x86_64/physdev.o
-obj-y += psr.o
+obj-$(CONFIG_X86_PSR) += psr.o
 obj-y += setup.o
 obj-y += shutdown.o
 obj-y += smp.o
@@ -67,7 +66,7 @@ obj-y += srat.o
 obj-y += string.o
 obj-y += time.o
 obj-y += traps.o
-obj-y += tsx.o
+obj-$(CONFIG_INTEL) += tsx.o
 obj-y += usercopy.o
 obj-y += x86_emulate.o
 obj-$(CONFIG_TBOOT) += tboot.o
@@ -87,6 +86,8 @@ extra-y += xen.lds
 
 hostprogs-y += boot/mkelf32
 hostprogs-y += efi/mkreloc
+
+$(obj)/efi/mkreloc: HOSTCFLAGS += -I$(srctree)/include
 
 # Allows usercopy.c to include itself
 $(obj)/usercopy.o: CFLAGS-y += -iquote .

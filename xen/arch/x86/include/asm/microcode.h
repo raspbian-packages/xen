@@ -3,7 +3,6 @@
 
 #include <xen/types.h>
 #include <xen/percpu.h>
-#include <xen/multiboot.h>
 
 #include <public/xen.h>
 
@@ -23,13 +22,11 @@ struct cpu_signature {
 DECLARE_PER_CPU(struct cpu_signature, cpu_sig);
 
 void microcode_set_module(unsigned int idx);
-int microcode_update(XEN_GUEST_HANDLE(const_void) buf, unsigned long len);
-int early_microcode_init(unsigned long *module_map,
-                         const struct multiboot_info *mbi,
-                         const module_t mods[]);
-int microcode_init_cache(unsigned long *module_map,
-                         const struct multiboot_info *mbi,
-                         const module_t mods[]);
+int microcode_update(XEN_GUEST_HANDLE(const_void) buf,
+                     unsigned long len, unsigned int flags);
 int microcode_update_one(void);
+
+struct boot_info;
+int early_microcode_init(struct boot_info *bi);
 
 #endif /* ASM_X86__MICROCODE_H */

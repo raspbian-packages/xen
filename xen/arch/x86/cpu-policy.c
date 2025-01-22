@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-or-later */
-#include <xen/cache.h>
 #include <xen/kernel.h>
 #include <xen/param.h>
 #include <xen/sched.h>
+#include <xen/sections.h>
 
 #include <xen/lib/x86/cpu-policy.h>
 
@@ -14,6 +14,7 @@
 #include <asm/msr-index.h>
 #include <asm/paging.h>
 #include <asm/setup.h>
+#include <asm/spec_ctrl.h>
 #include <asm/xstate.h>
 
 struct cpu_policy __read_mostly       raw_cpu_policy;
@@ -157,7 +158,7 @@ static void zero_leaves(struct cpuid_leaf *l,
 
 static void sanitise_featureset(uint32_t *fs)
 {
-    /* for_each_set_bit() uses unsigned longs.  Extend with zeroes. */
+    /* bitmap_for_each() uses unsigned longs.  Extend with zeroes. */
     uint32_t disabled_features[
         ROUNDUP(FSCAPINTS, sizeof(unsigned long)/sizeof(uint32_t))] = {};
     unsigned int i;
@@ -174,8 +175,8 @@ static void sanitise_featureset(uint32_t *fs)
         disabled_features[i] = ~fs[i] & deep_features[i];
     }
 
-    for_each_set_bit(i, (void *)disabled_features,
-                     sizeof(disabled_features) * 8)
+    bitmap_for_each ( i, (void *)disabled_features,
+                      sizeof(disabled_features) * 8 )
     {
         const uint32_t *dfs = x86_cpu_policy_lookup_deep_deps(i);
         unsigned int j;
@@ -193,7 +194,7 @@ static void sanitise_featureset(uint32_t *fs)
 static void recalculate_xstate(struct cpu_policy *p)
 {
     uint64_t xstates = XSTATE_FP_SSE;
-    unsigned int i, ecx_mask = 0, Da1 = p->xstate.Da1;
+    unsigned int ecx_mask = 0, Da1 = p->xstate.Da1;
 
     /*
      * The Da1 leaf is the only piece of information preserved in the common
@@ -216,6 +217,9 @@ static void recalculate_xstate(struct cpu_policy *p)
     if ( p->feat.pku )
         xstates |= X86_XCR0_PKRU;
 
+    if ( p->feat.amx_tile )
+        xstates |= X86_XCR0_TILE_CFG | X86_XCR0_TILE_DATA;
+
     /* Subleaf 0 */
     p->xstate.max_size =
         xstate_uncompressed_size(xstates & ~XSTATE_XSAVES_ONLY);
@@ -237,7 +241,7 @@ static void recalculate_xstate(struct cpu_policy *p)
     /* Subleafs 2+ */
     xstates &= ~XSTATE_FP_SSE;
     BUILD_BUG_ON(ARRAY_SIZE(p->xstate.comp) < 63);
-    for_each_set_bit ( i, &xstates, 63 )
+    for_each_set_bit ( i, xstates )
     {
         /*
          * Pass through size (eax) and offset (ebx) directly.  Visbility of
@@ -621,6 +625,26 @@ static void __init calculate_pv_max_policy(void)
         __clear_bit(X86_FEATURE_IBRSB, fs);
         __clear_bit(X86_FEATURE_IBRS, fs);
     }
+
+    /*
+     * SRSO_U/S_NO means that the CPU is not vulnerable to SRSO attacks across
+     * the User (CPL3) / Supervisor (CPL<3) boundary.
+     *
+     * PV32 guests are unsupported for speculative issues, and excluded from
+     * consideration for simplicity.
+     *
+     * The PV64 user/kernel boundary is CPL3 on both sides, so SRSO_U/S_NO
+     * won't convey the meaning that a PV kernel expects.
+     *
+     * After discussions with AMD, an implementation detail of having
+     * BP_SPEC_REDUCE active causes the PV64 user/kernel boundary to have a
+     * property compatible with the meaning of SRSO_U/S_NO.
+     *
+     * If BP_SPEC_REDUCE isn't active, remove SRSO_U/S_NO from the PV max
+     * policy, which will cause it to filter out of PV default too.
+     */
+    if ( !boot_cpu_has(X86_FEATURE_SRSO_MSR_FIX) || !opt_bp_spec_reduce )
+        __clear_bit(X86_FEATURE_SRSO_US_NO, fs);
 
     guest_common_max_feature_adjustments(fs);
     guest_common_feature_adjustments(fs);

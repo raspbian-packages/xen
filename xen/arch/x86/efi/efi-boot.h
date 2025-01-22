@@ -4,11 +4,15 @@
  * therefore can define arch specific global variables.
  */
 #include <xen/vga.h>
+
+#include <asm/boot-helpers.h>
 #include <asm/e820.h>
 #include <asm/edd.h>
 #include <asm/microcode.h>
 #include <asm/msr.h>
 #include <asm/setup.h>
+#include <asm/trampoline.h>
+#include <asm/efi.h>
 
 static struct file __initdata ucode;
 static multiboot_info_t __initdata mbi = {
@@ -101,27 +105,14 @@ static void __init efi_arch_relocate_image(unsigned long delta)
     }
 }
 
-extern const s32 __trampoline_rel_start[], __trampoline_rel_stop[];
-extern const s32 __trampoline_seg_start[], __trampoline_seg_stop[];
-
 static void __init relocate_trampoline(unsigned long phys)
 {
-    const s32 *trampoline_ptr;
-
     trampoline_phys = phys;
 
     if ( !efi_enabled(EFI_LOADER) )
         return;
 
-    /* Apply relocations to trampoline. */
-    for ( trampoline_ptr = __trampoline_rel_start;
-          trampoline_ptr < __trampoline_rel_stop;
-          ++trampoline_ptr )
-        *(u32 *)(*trampoline_ptr + (long)trampoline_ptr) += phys;
-    for ( trampoline_ptr = __trampoline_seg_start;
-          trampoline_ptr < __trampoline_seg_stop;
-          ++trampoline_ptr )
-        *(u16 *)(*trampoline_ptr + (long)trampoline_ptr) = phys >> 4;
+    reloc_trampoline64();
 }
 
 static void __init place_string(u32 *addr, const char *s)
@@ -244,7 +235,13 @@ static void __init noreturn efi_arch_post_exit_boot(void)
     u64 cr4 = XEN_MINIMAL_CR4 & ~X86_CR4_PGE, efer;
 
     efi_arch_relocate_image(__XEN_VIRT_START - xen_phys_start);
-    memcpy((void *)trampoline_phys, trampoline_start, cfg.size);
+    memcpy(_p(trampoline_phys), trampoline_start, cfg.size);
+
+    /*
+     * We're in physical mode right now (i.e. identity map), so a regular
+     * pointer is also a phyiscal address to the rest of Xen.
+     */
+    multiboot_ptr = (unsigned long)&mbi;
 
     /* Set system registers and transfer control. */
     asm volatile("pushq $0\n\tpopfq");
@@ -277,8 +274,7 @@ static void __init noreturn efi_arch_post_exit_boot(void)
                      [cr4] "+&r" (cr4)
                    : [cr3] "r" (idle_pg_table),
                      [cs] "i" (__HYPERVISOR_CS),
-                     [ds] "r" (__HYPERVISOR_DS),
-                     "D" (&mbi)
+                     [ds] "r" (__HYPERVISOR_DS)
                    : "memory" );
     unreachable();
 }
@@ -637,7 +633,7 @@ static void __init efi_arch_memory_setup(void)
     if ( efi_enabled(EFI_LOADER) )
         cfg.size = trampoline_end - trampoline_start;
     else
-        cfg.size = TRAMPOLINE_SPACE + TRAMPOLINE_STACK_SPACE;
+        cfg.size = TRAMPOLINE_SIZE;
 
     status = efi_bs->AllocatePages(AllocateMaxAddress, EfiLoaderData,
                                    PFN_UP(cfg.size), &cfg.addr);
@@ -815,9 +811,9 @@ static const char *__init get_option(const char *cmd, const char *opt)
     return o;
 }
 
-void asmlinkage __init efi_multiboot2(EFI_HANDLE ImageHandle,
-                                      EFI_SYSTEM_TABLE *SystemTable,
-                                      const char *cmdline)
+void __init efi_multiboot2(EFI_HANDLE ImageHandle,
+                           EFI_SYSTEM_TABLE *SystemTable,
+                           const char *cmdline)
 {
     EFI_GRAPHICS_OUTPUT_PROTOCOL *gop;
     EFI_HANDLE gop_handle;

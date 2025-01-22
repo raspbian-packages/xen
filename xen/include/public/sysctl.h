@@ -18,6 +18,16 @@
 #include "domctl.h"
 #include "physdev.h"
 
+/*
+ * The interface version needs to be incremented by 1 in case the interface
+ * is modified in an incompatible way AND if the version hasn't been
+ * incremented in the current development cycle already.
+ * Pure additions (e.g. new sub-commands) or compatible interface changes
+ * (e.g. adding semantics to 0-checked input fields or data to zeroed output
+ * fields) don't require a change of the version.
+ *
+ * Last version bump: Xen 4.17
+ */
 #define XEN_SYSCTL_INTERFACE_VERSION 0x00000015
 
 /*
@@ -898,15 +908,15 @@ struct xen_sysctl_psr_alloc {
  * instruction for PV guests.
  */
 struct xen_sysctl_cpu_levelling_caps {
-#define XEN_SYSCTL_CPU_LEVELCAP_faulting    (1ul <<  0) /* CPUID faulting    */
-#define XEN_SYSCTL_CPU_LEVELCAP_ecx         (1ul <<  1) /* 0x00000001.ecx    */
-#define XEN_SYSCTL_CPU_LEVELCAP_edx         (1ul <<  2) /* 0x00000001.edx    */
-#define XEN_SYSCTL_CPU_LEVELCAP_extd_ecx    (1ul <<  3) /* 0x80000001.ecx    */
-#define XEN_SYSCTL_CPU_LEVELCAP_extd_edx    (1ul <<  4) /* 0x80000001.edx    */
-#define XEN_SYSCTL_CPU_LEVELCAP_xsave_eax   (1ul <<  5) /* 0x0000000D:1.eax  */
-#define XEN_SYSCTL_CPU_LEVELCAP_thermal_ecx (1ul <<  6) /* 0x00000006.ecx    */
-#define XEN_SYSCTL_CPU_LEVELCAP_l7s0_eax    (1ul <<  7) /* 0x00000007:0.eax  */
-#define XEN_SYSCTL_CPU_LEVELCAP_l7s0_ebx    (1ul <<  8) /* 0x00000007:0.ebx  */
+#define XEN_SYSCTL_CPU_LEVELCAP_faulting    (1UL <<  0) /* CPUID faulting    */
+#define XEN_SYSCTL_CPU_LEVELCAP_ecx         (1UL <<  1) /* 0x00000001.ecx    */
+#define XEN_SYSCTL_CPU_LEVELCAP_edx         (1UL <<  2) /* 0x00000001.edx    */
+#define XEN_SYSCTL_CPU_LEVELCAP_extd_ecx    (1UL <<  3) /* 0x80000001.ecx    */
+#define XEN_SYSCTL_CPU_LEVELCAP_extd_edx    (1UL <<  4) /* 0x80000001.edx    */
+#define XEN_SYSCTL_CPU_LEVELCAP_xsave_eax   (1UL <<  5) /* 0x0000000D:1.eax  */
+#define XEN_SYSCTL_CPU_LEVELCAP_thermal_ecx (1UL <<  6) /* 0x00000006.ecx    */
+#define XEN_SYSCTL_CPU_LEVELCAP_l7s0_eax    (1UL <<  7) /* 0x00000007:0.eax  */
+#define XEN_SYSCTL_CPU_LEVELCAP_l7s0_ebx    (1UL <<  8) /* 0x00000007:0.ebx  */
     uint32_t caps;
 };
 

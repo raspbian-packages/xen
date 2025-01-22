@@ -2,6 +2,7 @@
 #include <xen/lib.h>
 #include <xen/param.h>
 #include <xen/sched.h>
+#include <xen/sections.h>
 #include <xen/domain.h>
 #include <xen/delay.h>
 #include <xen/watchdog.h>
@@ -11,7 +12,7 @@
 #include <public/sched.h>
 
 /* opt_noreboot: If true, machine will need manual reset on error. */
-bool __read_mostly opt_noreboot;
+bool __ro_after_init opt_noreboot;
 boolean_param("noreboot", opt_noreboot);
 
 static void noreturn reboot_or_halt(void)
@@ -29,7 +30,7 @@ static void noreturn reboot_or_halt(void)
     }
 }
 
-void hwdom_shutdown(u8 reason)
+void hwdom_shutdown(unsigned char reason)
 {
     switch ( reason )
     {

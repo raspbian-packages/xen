@@ -101,9 +101,8 @@ primary_switched:
         bl    zero_bss
         PRINT("- Ready -\r\n")
         /* Setup the arguments for start_xen and jump to C world */
-        mov   r0, r10                /* r0 := Physical offset */
-        mov   r1, r8                 /* r1 := paddr(FDT) */
-        mov_w r2, start_xen
+        mov   r0, r8                 /* r0 := paddr(FDT) */
+        mov_w r1, start_xen
         b     launch
 ENDPROC(start)
 
@@ -141,7 +140,7 @@ GLOBAL(init_secondary)
 secondary_switched:
         PRINT("- Ready -\r\n")
         /* Jump to C world */
-        mov_w r2, start_secondary
+        mov_w r1, start_secondary
         b     launch
 ENDPROC(init_secondary)
 
@@ -186,12 +185,15 @@ zero_bss:
         PRINT("- Zero BSS -\r\n")
         mov_w r0, __bss_start        /* r0 := vaddr(__bss_start) */
         mov_w r1, __bss_end          /* r1 := vaddr(__bss_end)   */
+        cmp   r1, r0
+        beq   skip_bss
 
         mov   r2, #0
 1:      str   r2, [r0], #4
         cmp   r0, r1
         blo   1b
 
+skip_bss:
         mov   pc, lr
 ENDPROC(zero_bss)
 
@@ -243,8 +245,7 @@ ENDPROC(cpu_init)
  *
  * Inputs:
  *   r0 : Argument 0 of the C function to call
- *   r1 : Argument 1 of the C function to call
- *   r2 : C entry point
+ *   r1 : C entry point
  *
  * Clobbers r3
  */
@@ -256,7 +257,7 @@ launch:
         sub   sp, #CPUINFO_sizeof    /* Make room for CPU save record */
 
         /* Jump to C world */
-       bx    r2
+       bx    r1
 ENDPROC(launch)
 
 /* Fail-stop */

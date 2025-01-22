@@ -29,6 +29,7 @@ config X86
 	select HAS_PIRQ
 	select HAS_SCHED_GRANULARITY
 	select HAS_UBSAN
+	select HAS_VMAP
 	select HAS_VPCI if HVM
 	select NEEDS_LIBELF
 
@@ -122,6 +123,27 @@ config HVM
 
 	  If unsure, say Y.
 
+config AMD_SVM
+	bool "AMD-V" if EXPERT
+	depends on HVM
+	default y
+	help
+	  Enables virtual machine extensions on platforms that implement the
+	  AMD Virtualization Technology (AMD-V).
+	  If your system includes a processor with AMD-V support, say Y.
+	  If in doubt, say Y.
+
+config INTEL_VMX
+	bool "Intel VT-x" if EXPERT
+	depends on HVM
+	default y
+	select ARCH_VCPU_IOREQ_COMPLETION
+	help
+	  Enables virtual machine extensions on platforms that implement the
+	  Intel Virtualization Technology (Intel VT-x).
+	  If your system includes a processor with Intel VT-x support, say Y.
+	  If in doubt, say Y.
+
 config XEN_SHSTK
 	bool "Supervisor Shadow Stacks"
 	depends on HAS_AS_CET_SS
@@ -200,12 +222,22 @@ config HVM_FEP
 
 config TBOOT
 	bool "Xen tboot support (UNSUPPORTED)"
-	depends on UNSUPPORTED
+	depends on INTEL && UNSUPPORTED
 	default !PV_SHIM_EXCLUSIVE
 	select CRYPTO
 	help
 	  Allows support for Trusted Boot using the Intel(R) Trusted Execution
 	  Technology (TXT)
+
+	  If unsure, stay with the default.
+
+config X86_PSR
+	bool "Platform Shared Resource support" if EXPERT
+	default INTEL
+	help
+	  Support of Platform Shared Resource technology, which is basis for
+	  monitoring and control of resources like cache and memory bandwidth.
+	  See xl-psr documentation for details.
 
 	  If unsure, stay with the default.
 
@@ -252,18 +284,6 @@ config X2APIC_PHYSICAL
 	  for external interrupts, but it also makes the delivery of multi
 	  destination inter processor interrupts (IPIs) slightly slower than
 	  Logical Destination mode.
-
-config X2APIC_CLUSTER
-	bool "Cluster Destination mode"
-	help
-	  When using this mode APICs are addressed using the Cluster Logical
-	  Destination mode.
-
-	  Cluster Destination has the benefit of sending IPIs faster since
-	  multiple APICs can be targeted as destinations of a single IPI.
-	  However the vector space is shared between all CPUs on the cluster,
-	  and hence using this mode reduces the number of available vectors
-	  when compared to Physical mode.
 
 config X2APIC_MIXED
 	bool "Mixed Destination mode"
@@ -351,6 +371,17 @@ config REQUIRE_NX
 	  cases where Xen could be tricked into thinking that the feature
 	  was unavailable. However, if enabled, Xen will no longer boot on
 	  any CPU which is lacking NX support.
+
+config ALTP2M
+	bool "Alternate P2M support" if EXPERT
+	depends on INTEL_VMX
+	default y
+	help
+	  Alternate-p2m allows a guest to manage multiple p2m guest physical
+	  "memory views" (as opposed to a single p2m).
+	  Useful for memory introspection.
+
+	  If unsure, stay with defaults.
 
 endmenu
 

@@ -198,6 +198,7 @@ static int cf_check flask_domain_alloc_security(struct domain *d)
             else if ( pv_shim )
                 dsec->sid = SECINITSID_DOMU;
         }
+        break;
     }
 
     dsec->self_sid = dsec->sid;
@@ -342,6 +343,7 @@ static int cf_check flask_evtchn_send(struct domain *d, struct evtchn *chn)
         break;
     default:
         rc = avc_unknown_permission("event channel state", chn->state);
+        break;
     }
 
     return rc;
@@ -695,6 +697,7 @@ static int cf_check flask_domctl(struct domain *d, unsigned int cmd,
     case XEN_DOMCTL_shadow_op:
     case XEN_DOMCTL_ioport_permission:
     case XEN_DOMCTL_ioport_mapping:
+    case XEN_DOMCTL_gsi_permission:
 #endif
 #ifdef CONFIG_HAS_PASSTHROUGH
     /*
@@ -829,6 +832,9 @@ static int cf_check flask_domctl(struct domain *d, unsigned int cmd,
     case XEN_DOMCTL_soft_reset:
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__SOFT_RESET);
 
+    case XEN_DOMCTL_vuart_op:
+        return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__VUART_OP);
+
     case XEN_DOMCTL_get_cpu_policy:
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__GET_CPU_POLICY);
 
@@ -837,6 +843,12 @@ static int cf_check flask_domctl(struct domain *d, unsigned int cmd,
 
     case XEN_DOMCTL_set_paging_mempool_size:
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__SETPAGINGMEMPOOL);
+
+    case XEN_DOMCTL_dt_overlay:
+        return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__DT_OVERLAY);
+
+    case XEN_DOMCTL_set_llc_colors:
+        return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__SET_LLC_COLORS);
 
     default:
         return avc_unknown_permission("domctl", cmd);
@@ -1309,6 +1321,7 @@ static int cf_check flask_hvm_param(struct domain *d, unsigned long op)
         break;
     default:
         perm = HVM__HVMCTL;
+        break;
     }
 
     return current_has_perm(d, SECCLASS_HVM, perm);
@@ -1791,15 +1804,18 @@ static int cf_check flask_xen_version(uint32_t op)
         /* These sub-ops ignore the permission checks and return data. */
         return 0;
     case XENVER_extraversion:
+    case XENVER_extraversion2:
         return avc_has_perm(dsid, SECINITSID_XEN, SECCLASS_VERSION,
                             VERSION__XEN_EXTRAVERSION, NULL);
     case XENVER_compile_info:
         return avc_has_perm(dsid, SECINITSID_XEN, SECCLASS_VERSION,
                             VERSION__XEN_COMPILE_INFO, NULL);
     case XENVER_capabilities:
+    case XENVER_capabilities2:
         return avc_has_perm(dsid, SECINITSID_XEN, SECCLASS_VERSION,
                             VERSION__XEN_CAPABILITIES, NULL);
     case XENVER_changeset:
+    case XENVER_changeset2:
         return avc_has_perm(dsid, SECINITSID_XEN, SECCLASS_VERSION,
                             VERSION__XEN_CHANGESET, NULL);
     case XENVER_pagesize:
@@ -1809,6 +1825,7 @@ static int cf_check flask_xen_version(uint32_t op)
         return avc_has_perm(dsid, SECINITSID_XEN, SECCLASS_VERSION,
                             VERSION__XEN_GUEST_HANDLE, NULL);
     case XENVER_commandline:
+    case XENVER_commandline2:
         return avc_has_perm(dsid, SECINITSID_XEN, SECCLASS_VERSION,
                             VERSION__XEN_COMMANDLINE, NULL);
     case XENVER_build_id:
@@ -2012,6 +2029,7 @@ const struct xsm_ops *__init flask_init(
     case FLASK_BOOTPARAM_INVALID:
     default:
         panic("Flask: Invalid value for flask= boot parameter.\n");
+        break;
     }
 
     avc_init();

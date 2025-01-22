@@ -5,7 +5,6 @@
 #define __ASM_X86_PROCESSOR_H
 
 #ifndef __ASSEMBLY__
-#include <xen/cache.h>
 #include <xen/types.h>
 #include <xen/smp.h>
 #include <xen/percpu.h>
@@ -97,8 +96,6 @@ extern void ctxt_switch_levelling(const struct vcpu *next);
 extern void (*ctxt_switch_masking)(const struct vcpu *next);
 
 extern bool opt_cpu_info;
-extern u32 trampoline_efer;
-extern u64 trampoline_misc_enable_off;
 
 /* Maximum width of physical addresses supported by the hardware. */
 extern unsigned int paddr_bits;
@@ -120,11 +117,6 @@ extern void init_intel_cacheinfo(struct cpuinfo_x86 *c);
 #define cpu_to_socket(_cpu) (cpu_data[_cpu].phys_proc_id)
 
 unsigned int apicid_to_socket(unsigned int apicid);
-
-static inline int cpu_nr_siblings(unsigned int cpu)
-{
-    return cpu_data[cpu].x86_num_siblings;
-}
 
 /* Some CPUID calls want 'count' to be placed in ecx */
 static inline void cpuid_count(
@@ -312,11 +304,15 @@ static inline void stts(void)
  * after us can get the correct flags.
  */
 extern unsigned long mmu_cr4_features;
+extern unsigned long cr4_pv32_mask;
 
 static always_inline void set_in_cr4 (unsigned long mask)
 {
     mmu_cr4_features |= mask;
     write_cr4(read_cr4() | mask);
+
+    if ( IS_ENABLED(CONFIG_PV32) && (mask & XEN_CR4_PV32_BITS) )
+        cr4_pv32_mask |= (mask & XEN_CR4_PV32_BITS);
 }
 
 static always_inline void __monitor(const void *eax, unsigned long ecx,
@@ -503,9 +499,15 @@ static inline uint8_t get_cpu_family(uint32_t raw, uint8_t *model,
     return fam;
 }
 
+#ifdef CONFIG_INTEL
 extern int8_t opt_tsx;
 extern bool rtm_disabled;
 void tsx_init(void);
+#else
+#define opt_tsx      0     /* explicitly indicate TSX is off */
+#define rtm_disabled false /* RTM was not force-disabled */
+static inline void tsx_init(void) {}
+#endif
 
 void update_mcu_opt_ctrl(void);
 void set_in_mcu_opt_ctrl(uint32_t mask, uint32_t val);

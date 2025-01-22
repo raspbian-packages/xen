@@ -10,6 +10,7 @@
 #include <xen/types.h>
 #include <xen/xmalloc.h>
 #include <xen/string.h>
+#include <xen/sections.h>
 
 #define __ACCESS_ONCE(x) ({                             \
             (void)(typeof(x))0; /* Scalar typecheck. */ \
@@ -57,8 +58,6 @@ static inline void
 debugtrace_printk(const char *fmt, ...) {}
 #endif
 
-/* Allows us to use '%p' as general-purpose machine-word format char. */
-#define _p(_x) ((void *)(unsigned long)(_x))
 extern void printk(const char *fmt, ...)
     __attribute__ ((format (printf, 1, 2), cold));
 

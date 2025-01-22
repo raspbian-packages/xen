@@ -155,9 +155,9 @@ static int __init cf_check hvm_enable(void)
 {
     const struct hvm_function_table *fns = NULL;
 
-    if ( cpu_has_vmx )
+    if ( using_vmx() )
         fns = start_vmx();
-    else if ( cpu_has_svm )
+    else if ( using_svm() )
         fns = start_svm();
 
     if ( fns == NULL )
@@ -219,10 +219,10 @@ int hvm_event_needs_reinjection(uint8_t type, uint8_t vector)
 {
     switch ( type )
     {
-    case X86_EVENTTYPE_EXT_INTR:
-    case X86_EVENTTYPE_NMI:
+    case X86_ET_EXT_INTR:
+    case X86_ET_NMI:
         return 1;
-    case X86_EVENTTYPE_HW_EXCEPTION:
+    case X86_ET_HW_EXC:
         /*
          * SVM uses type 3 ("HW Exception") for #OF and #BP. We explicitly
          * check for these vectors, as they are really SW Exceptions. SVM has
@@ -914,7 +914,11 @@ static int cf_check hvm_save_cpu_ctxt(struct vcpu *v, hvm_domain_context_t *h)
 
     if ( v->fpu_initialised )
     {
-        memcpy(ctxt.fpu_regs, v->arch.fpu_ctxt, sizeof(ctxt.fpu_regs));
+        BUILD_BUG_ON(sizeof(ctxt.fpu_regs) !=
+                     sizeof(v->arch.xsave_area->fpu_sse));
+        memcpy(ctxt.fpu_regs, &v->arch.xsave_area->fpu_sse,
+               sizeof(ctxt.fpu_regs));
+
         ctxt.flags = XEN_X86_FPU_INITIALISED;
     }
 
@@ -1159,10 +1163,10 @@ static int cf_check hvm_load_cpu_ctxt(struct domain *d, hvm_domain_context_t *h)
     seg.attr = ctxt.ldtr_arbytes;
     hvm_set_segment_register(v, x86_seg_ldtr, &seg);
 
-    /* Cover xsave-absent save file restoration on xsave-capable host. */
-    vcpu_setup_fpu(v, xsave_enabled(v) ? NULL : v->arch.xsave_area,
-                   ctxt.flags & XEN_X86_FPU_INITIALISED ? ctxt.fpu_regs : NULL,
-                   FCW_RESET);
+    if ( ctxt.flags & XEN_X86_FPU_INITIALISED )
+        vcpu_setup_fpu(v, &ctxt.fpu_regs);
+    else
+        vcpu_reset_fpu(v);
 
     v->arch.user_regs.rax = ctxt.rax;
     v->arch.user_regs.rbx = ctxt.rbx;
@@ -1535,10 +1539,17 @@ static int cf_check hvm_load_cpu_msrs(struct domain *d, hvm_domain_context_t *h)
             rc = guest_wrmsr(v, ctxt->msr[i].index, ctxt->msr[i].val);
 
             if ( rc != X86EMUL_OKAY )
+            {
+                printk(XENLOG_G_ERR
+                       "HVM %pv load MSR %#x with value %#lx failed\n",
+                       v, ctxt->msr[i].index, ctxt->msr[i].val);
                 return -ENXIO;
+            }
             break;
 
         default:
+            printk(XENLOG_G_ERR "HVM %pv attempted load of unhandled MSR %#x\n",
+                   v, ctxt->msr[i].index);
             return -ENXIO;
         }
     }
@@ -1738,7 +1749,7 @@ void hvm_inject_event(const struct x86_event *event)
 {
     struct vcpu *curr = current;
     const uint8_t vector = event->vector;
-    const bool has_ec = ((event->type == X86_EVENTTYPE_HW_EXCEPTION) &&
+    const bool has_ec = ((event->type == X86_ET_HW_EXC) &&
                          (vector < 32) && ((X86_EXC_HAVE_EC & (1u << vector))));
 
     ASSERT(vector == event->vector); /* Confirm no truncation. */
@@ -1886,6 +1897,7 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
             violation = npfec.read_access || npfec.write_access || npfec.insn_fetch;
             break;
         case p2m_access_r:
+        case p2m_access_r_pw:
             violation = npfec.write_access || npfec.insn_fetch;
             break;
         case p2m_access_w:
@@ -2014,8 +2026,8 @@ int hvm_hap_nested_page_fault(paddr_t gpa, unsigned long gla,
         goto out_put_gfn;
     }
 
-    if ( (p2mt == p2m_mmio_direct) && is_hardware_domain(currd) &&
-         npfec.write_access && npfec.present &&
+    if ( (p2mt == p2m_mmio_direct) && npfec.write_access && npfec.present &&
+         (is_hardware_domain(currd) || subpage_mmio_write_accept(mfn, gla)) &&
          (hvm_emulate_one_mmio(mfn_x(mfn), gla) == X86EMUL_OKAY) )
     {
         rc = 1;
@@ -2599,7 +2611,7 @@ bool hvm_vcpu_virtual_to_linear(
      * It is expected that the access rights of reg are suitable for seg (and
      * that this is enforced at the point that seg is loaded).
      */
-    ASSERT(seg < x86_seg_none);
+    ASSERT(seg < x86_seg_sys);
 
     /* However, check that insn fetches only ever specify CS. */
     ASSERT(access_type != hvm_access_insn_fetch || seg == x86_seg_cs);
@@ -3963,7 +3975,9 @@ static void hvm_latch_shinfo_size(struct domain *d)
      */
     if ( current->domain == d )
     {
-        d->arch.has_32bit_shinfo = (hvm_guest_x86_mode(current) != 8);
+        d->arch.has_32bit_shinfo =
+            hvm_guest_x86_mode(current) != X86_MODE_64BIT;
+
         /*
          * Make sure that the timebase in the shared info structure is correct.
          *
@@ -4002,9 +4016,7 @@ void hvm_vcpu_reset_state(struct vcpu *v, uint16_t cs, uint16_t ip)
         v->arch.guest_table = pagetable_null();
     }
 
-    if ( v->arch.xsave_area )
-        v->arch.xsave_area->xsave_hdr.xstate_bv = 0;
-    vcpu_setup_fpu(v, v->arch.xsave_area, NULL, FCW_RESET);
+    vcpu_reset_fpu(v);
 
     arch_vcpu_regs_init(v);
     v->arch.user_regs.rip = ip;
@@ -4917,6 +4929,8 @@ static int do_altp2m_op(
 
     default:
         ASSERT_UNREACHABLE();
+        rc = -EOPNOTSUPP;
+        break;
     }
 
  out:
@@ -5018,6 +5032,8 @@ static int compat_altp2m_op(
 
     default:
         ASSERT_UNREACHABLE();
+        rc = -EOPNOTSUPP;
+        break;
     }
 
     return rc;
@@ -5281,6 +5297,7 @@ void hvm_get_segment_register(struct vcpu *v, enum x86_segment seg,
          * %cs and %tr are unconditionally present.  SVM ignores these present
          * bits and will happily run without them set.
          */
+        fallthrough;
     case x86_seg_cs:
         reg->p = 1;
         break;

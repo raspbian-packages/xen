@@ -421,15 +421,13 @@ void vgic_enable_irqs(struct vcpu *v, uint32_t r, unsigned int n)
 
 void vgic_set_irqs_pending(struct vcpu *v, uint32_t r, unsigned int rank)
 {
-    const unsigned long mask = r;
-    unsigned int i;
     /* The first rank is always per-vCPU */
     bool private = rank == 0;
 
     /* LPIs will never be set pending via this function */
     ASSERT(!is_lpi(32 * rank + 31));
 
-    for_each_set_bit( i, &mask, 32 )
+    for_each_set_bit ( i, r )
     {
         unsigned int irq = i + 32 * rank;
 
@@ -470,10 +468,7 @@ bool vgic_to_sgi(struct vcpu *v, register_t sgir, enum gic_sgi_mode irqmode,
                  int virq, const struct sgi_target *target)
 {
     struct domain *d = v->domain;
-    int vcpuid;
-    int i;
-    unsigned int base;
-    unsigned long int bitmap;
+    unsigned int base, bitmap;
 
     ASSERT( virq < 16 );
 
@@ -483,15 +478,17 @@ bool vgic_to_sgi(struct vcpu *v, register_t sgir, enum gic_sgi_mode irqmode,
         perfc_incr(vgic_sgi_list);
         base = target->aff1 << 4;
         bitmap = target->list;
-        for_each_set_bit( i, &bitmap, sizeof(target->list) * 8 )
+
+        for_each_set_bit ( i, bitmap )
         {
-            vcpuid = base + i;
+            unsigned int vcpuid = base + i;
+
             if ( vcpuid >= d->max_vcpus || d->vcpu[vcpuid] == NULL ||
                  !is_vcpu_online(d->vcpu[vcpuid]) )
             {
-                gprintk(XENLOG_WARNING, "VGIC: write r=%"PRIregister" \
-                        target->list=%hx, wrong CPUTargetList \n",
-                        sgir, target->list);
+                gprintk(XENLOG_WARNING,
+                        "vGIC: write %#"PRIregister", target->list=%#x, bad target vcpu%u\n",
+                        sgir, target->list, vcpuid);
                 continue;
             }
             vgic_inject_irq(d, d->vcpu[vcpuid], virq, true);
@@ -499,7 +496,7 @@ bool vgic_to_sgi(struct vcpu *v, register_t sgir, enum gic_sgi_mode irqmode,
         break;
     case SGI_TARGET_OTHERS:
         perfc_incr(vgic_sgi_others);
-        for ( i = 0; i < d->max_vcpus; i++ )
+        for ( unsigned int i = 0; i < d->max_vcpus; i++ )
         {
             if ( i != current->vcpu_id && d->vcpu[i] != NULL &&
                  is_vcpu_online(d->vcpu[i]) )
@@ -512,8 +509,8 @@ bool vgic_to_sgi(struct vcpu *v, register_t sgir, enum gic_sgi_mode irqmode,
         break;
     default:
         gprintk(XENLOG_WARNING,
-                "vGICD:unhandled GICD_SGIR write %"PRIregister" \
-                 with wrong mode\n", sgir);
+                "vGICD: GICD_SGIR write %#"PRIregister" with unhandled mode %d\n",
+                sgir, irqmode);
         return false;
     }
 
@@ -722,13 +719,9 @@ unsigned int vgic_max_vcpus(unsigned int domctl_vgic_version)
     }
 }
 
-void vgic_check_inflight_irqs_pending(struct domain *d, struct vcpu *v,
-                                      unsigned int rank, uint32_t r)
+void vgic_check_inflight_irqs_pending(struct vcpu *v, unsigned int rank, uint32_t r)
 {
-    const unsigned long mask = r;
-    unsigned int i;
-
-    for_each_set_bit( i, &mask, 32 )
+    for_each_set_bit ( i, r )
     {
         struct pending_irq *p;
         struct vcpu *v_target;

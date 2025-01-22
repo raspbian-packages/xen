@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * xen/arch/arm/gic-v3-its.c
  *
@@ -948,6 +948,10 @@ int gicv3_its_make_hwdom_dt_nodes(const struct domain *d,
             return res;
 
         res = fdt_property(fdt, "msi-controller", NULL, 0);
+        if ( res )
+            return res;
+
+        res = fdt_property_cell(fdt, "#msi-cells", 1);
         if ( res )
             return res;
 

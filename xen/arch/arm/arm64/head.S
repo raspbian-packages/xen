@@ -260,9 +260,8 @@ primary_switched:
         bl    zero_bss
         PRINT("- Ready -\r\n")
         /* Setup the arguments for start_xen and jump to C world */
-        mov   x0, x20                /* x0 := Physical offset */
-        mov   x1, x21                /* x1 := paddr(FDT) */
-        ldr   x2, =start_xen
+        mov   x0, x21                /* x0 := paddr(FDT) */
+        ldr   x1, =start_xen
         b     launch
 END(real_start)
 
@@ -303,7 +302,7 @@ FUNC(init_secondary)
 secondary_switched:
         PRINT("- Ready -\r\n")
         /* Jump to C world */
-        ldr   x2, =start_secondary
+        ldr   x1, =start_secondary
         b     launch
 END(init_secondary)
 
@@ -347,6 +346,8 @@ FUNC_LOCAL(zero_bss)
         PRINT("- Zero BSS -\r\n")
         ldr   x0, =__bss_start       /* x0 := vaddr(__bss_start) */
         ldr   x1, =__bss_end         /* x1 := vaddr(__bss_end)   */
+        cmp   x1, x0
+        beq   skip_bss
 
 1:      str   xzr, [x0], #8
         cmp   x0, x1
@@ -407,8 +408,7 @@ END(cpu_init)
  *
  * Inputs:
  *   x0 : Argument 0 of the C function to call
- *   x1 : Argument 1 of the C function to call
- *   x2 : C entry point
+ *   x1 : C entry point
  *
  * Clobbers x3
  */
@@ -421,7 +421,7 @@ FUNC_LOCAL(launch)
         mov   sp, x3
 
         /* Jump to C world */
-        br    x2
+        br    x1
 END(launch)
 
 /* Fail-stop */

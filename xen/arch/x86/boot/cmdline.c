@@ -18,35 +18,29 @@
  * Linux kernel source (linux/lib/string.c).
  */
 
-/*
- * This entry point is entered from xen/arch/x86/boot/head.S with:
- *   - 0x4(%esp) = &cmdline,
- *   - 0x8(%esp) = &early_boot_opts.
- */
-asm (
-    "    .text                         \n"
-    "    .globl _start                 \n"
-    "_start:                           \n"
-    "    jmp  cmdline_parse_early      \n"
-    );
-
+#include <xen/compiler.h>
 #include <xen/kconfig.h>
-#include "defs.h"
+#include <xen/macros.h>
+#include <xen/types.h>
+
 #include "video.h"
 
 /* Keep in sync with trampoline.S:early_boot_opts label! */
 typedef struct __packed {
-    u8 skip_realmode;
-    u8 opt_edd;
-    u8 opt_edid;
-    u8 padding;
+    uint8_t skip_realmode;
+    uint8_t opt_edd;
+    uint8_t opt_edid;
+    uint8_t padding;
 #ifdef CONFIG_VIDEO
-    u16 boot_vid_mode;
-    u16 vesa_width;
-    u16 vesa_height;
-    u16 vesa_depth;
+    uint16_t boot_vid_mode;
+    uint16_t vesa_width;
+    uint16_t vesa_height;
+    uint16_t vesa_depth;
 #endif
 } early_boot_opts_t;
+
+/* Avoid pulling in all of ctypes.h for this. */
+#define tolower(c)	((c) | 0x20)
 
 /*
  * Space and TAB are obvious delimiters. However, I am
@@ -214,7 +208,7 @@ static bool skip_realmode(const char *cmdline)
     return find_opt(cmdline, "no-real-mode", false) || find_opt(cmdline, "tboot=", true);
 }
 
-static u8 edd_parse(const char *cmdline)
+static uint8_t edd_parse(const char *cmdline)
 {
     const char *c;
 
@@ -229,7 +223,7 @@ static u8 edd_parse(const char *cmdline)
     return !strmaxcmp(c, "skipmbr", delim_chars);
 }
 
-static u8 edid_parse(const char *cmdline)
+static uint8_t edid_parse(const char *cmdline)
 {
     const char *c;
 
@@ -245,7 +239,7 @@ static u8 edid_parse(const char *cmdline)
 }
 
 #ifdef CONFIG_VIDEO
-static u16 rows2vmode(unsigned int rows)
+static uint16_t rows2vmode(unsigned int rows)
 {
     switch ( rows )
     {
@@ -300,7 +294,7 @@ static void vga_parse(const char *cmdline, early_boot_opts_t *ebo)
         {
             vesa_width = strtoui(c + strlen("gfx-"), "x", &c);
 
-            if ( vesa_width > U16_MAX )
+            if ( vesa_width > UINT16_MAX )
                 return;
 
             /*
@@ -311,12 +305,12 @@ static void vga_parse(const char *cmdline, early_boot_opts_t *ebo)
             ++c;
             vesa_height = strtoui(c, "x", &c);
 
-            if ( vesa_height > U16_MAX )
+            if ( vesa_height > UINT16_MAX )
                 return;
 
             vesa_depth = strtoui(++c, delim_chars_comma, NULL);
 
-            if ( vesa_depth > U16_MAX )
+            if ( vesa_depth > UINT16_MAX )
                 return;
 
             ebo->vesa_width = vesa_width;
@@ -328,7 +322,7 @@ static void vga_parse(const char *cmdline, early_boot_opts_t *ebo)
         {
             tmp = strtoui(c + strlen("mode-"), delim_chars_comma, NULL);
 
-            if ( tmp > U16_MAX )
+            if ( tmp > UINT16_MAX )
                 return;
 
             ebo->boot_vid_mode = tmp;
@@ -341,7 +335,7 @@ static void vga_parse(const char *cmdline, early_boot_opts_t *ebo)
 #endif
 
 /* SAF-1-safe */
-void __stdcall cmdline_parse_early(const char *cmdline, early_boot_opts_t *ebo)
+void cmdline_parse_early(const char *cmdline, early_boot_opts_t *ebo)
 {
     if ( !cmdline )
         return;

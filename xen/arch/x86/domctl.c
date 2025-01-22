@@ -36,6 +36,7 @@
 #include <asm/xstate.h>
 #include <asm/psr.h>
 #include <asm/cpu-policy.h>
+#include <asm/io_apic.h>
 
 static int update_domain_cpu_policy(struct domain *d,
                                     xen_domctl_cpu_policy_t *xdpc)
@@ -234,6 +235,37 @@ long arch_do_domctl(
             ret = ioports_permit_access(d, fp, fp + np - 1);
         else
             ret = ioports_deny_access(d, fp, fp + np - 1);
+        break;
+    }
+
+    case XEN_DOMCTL_gsi_permission:
+    {
+        int irq;
+        unsigned int gsi = domctl->u.gsi_permission.gsi;
+        uint32_t flags = domctl->u.gsi_permission.flags;
+
+        /* Check only valid bits are set */
+        ret = -EINVAL;
+        if ( flags & ~XEN_DOMCTL_GSI_ACTION_MASK )
+            break;
+
+        irq = gsi_2_irq(gsi);
+        if ( irq <= 0 )
+        {
+            ret = irq ?: -EACCES;
+            break;
+        }
+
+        ret = -EPERM;
+        if ( !irq_access_permitted(currd, irq) ||
+             xsm_irq_permission(XSM_HOOK, d, irq, flags) )
+            break;
+
+        if ( flags )
+            ret = irq_permit_access(d, irq);
+        else
+            ret = irq_deny_access(d, irq);
+
         break;
     }
 
@@ -517,6 +549,7 @@ long arch_do_domctl(
 
         default:
             ret = -ENOSYS;
+            break;
         }
         break;
     }
@@ -1129,6 +1162,7 @@ long arch_do_domctl(
                 if ( msr.reserved )
                     break;
 
+                ret = -ENXIO;
                 switch ( msr.index )
                 {
                 case MSR_SPEC_CTRL:
@@ -1137,9 +1171,16 @@ long arch_do_domctl(
                 case MSR_AMD64_DR0_ADDRESS_MASK:
                 case MSR_AMD64_DR1_ADDRESS_MASK ... MSR_AMD64_DR3_ADDRESS_MASK:
                     if ( guest_wrmsr(v, msr.index, msr.value) != X86EMUL_OKAY )
+                    {
+                        printk(XENLOG_G_ERR
+                               "%pv load MSR %#x with value %#lx failed\n",
+                               v, msr.index, msr.value);
                         break;
+                    }
                     continue;
                 }
+                printk(XENLOG_G_ERR "%pv attempted load of unhandled MSR %#x\n",
+                       v, msr.index);
                 break;
             }
 
@@ -1190,6 +1231,7 @@ long arch_do_domctl(
     case XEN_DOMCTL_psr_alloc:
         switch ( domctl->u.psr_alloc.cmd )
         {
+#ifdef CONFIG_X86_PSR
         case XEN_DOMCTL_PSR_SET_L3_CBM:
             ret = psr_set_val(d, domctl->u.psr_alloc.target,
                               domctl->u.psr_alloc.data,
@@ -1251,6 +1293,8 @@ long arch_do_domctl(
             break;
 
 #undef domctl_psr_get_val
+
+#endif /* CONFIG_X86_PSR */
 
         default:
             ret = -EOPNOTSUPP;
@@ -1339,7 +1383,11 @@ void arch_get_info_guest(struct vcpu *v, vcpu_guest_context_u c)
 #define c(fld) (c.nat->fld)
 #endif
 
-    memcpy(&c.nat->fpu_ctxt, v->arch.fpu_ctxt, sizeof(c.nat->fpu_ctxt));
+    BUILD_BUG_ON(sizeof(c.nat->fpu_ctxt) !=
+                 sizeof(v->arch.xsave_area->fpu_sse));
+    memcpy(&c.nat->fpu_ctxt, &v->arch.xsave_area->fpu_sse,
+           sizeof(c.nat->fpu_ctxt));
+
     if ( is_pv_domain(d) )
         c(flags = v->arch.pv.vgc_flags & ~(VGCF_i387_valid|VGCF_in_kernel));
     else

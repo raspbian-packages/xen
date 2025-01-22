@@ -4,13 +4,37 @@ Notable changes to Xen will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
-## [4.19.1](https://xenbits.xenproject.org/gitweb/?p=xen.git;a=shortlog;h=RELEASE-4.19.1)
+## [4.20.0 UNRELEASED](https://xenbits.xenproject.org/gitweb/?p=xen.git;a=shortlog;h=staging) - TBD
 
 ### Changed
+ - Fixed blkif protocol specification for sector sizes different than 512b.
+ - The dombuilder in libxenguest no longer un-gzips secondary modules, instead
+   leaving this to the guest kernel to do in guest context.
  - On x86:
    - Prefer ACPI reboot over UEFI ResetSystem() run time service call.
+   - Prefer CMOS over EFI_GET_TIME as time source.
+   - Switched the xAPIC flat driver to use physical destination mode for external
+     interrupts instead of logical destination mode.
 
-## [4.19.0](https://xenbits.xenproject.org/gitweb/?p=xen.git;a=shortlog;h=staging) - 2024-07-29
+### Added
+ - On Arm:
+   - Experimental support for Armv8-R.
+   - Support for NXP S32G3 Processors Family and NXP LINFlexD UART driver.
+   - Basic handling for SCMI requests over SMC using Shared Memory, by allowing
+     forwarding the calls to EL3 FW if coming from hwdom.
+   - Support for LLC (Last Level Cache) coloring.
+ - On x86:
+   - xl suspend/resume subcommands.
+   - `wallclock` command line option to select time source.
+
+### Removed
+ - On x86:
+   - Support for running on Xeon Phi processors.
+   - Removed the `ucode=allow-same` command line option.
+   - Removed x2APIC Cluster Mode for external interrupts.  x2APIC Physical and
+     Mixed Modes are still available.
+
+## [4.19.0](https://xenbits.xenproject.org/gitweb/?p=xen.git;a=shortlog;h=RELEASE-4.19.0) - 2024-07-29
 
 ### Changed
  - Changed flexible array definitions in public I/O interface headers to not

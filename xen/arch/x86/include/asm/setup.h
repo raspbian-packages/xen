@@ -14,6 +14,7 @@ extern unsigned long xenheap_initial_phys_start;
 extern uint64_t boot_tsc_stamp;
 
 extern void *stack_start;
+extern unsigned int multiboot_ptr;
 
 void early_cpu_init(bool verbose);
 void early_time_init(void);
@@ -25,22 +26,26 @@ void subarch_init_memory(void);
 
 void init_IRQ(void);
 
-int construct_dom0(
-    struct domain *d,
-    const module_t *image, unsigned long image_headroom,
-    module_t *initrd,
-    const char *cmdline);
+struct boot_info;
+int construct_dom0(struct boot_info *bi, struct domain *d);
+
 void setup_io_bitmap(struct domain *d);
 
-unsigned long initial_images_nrpages(nodeid_t node);
-void discard_initial_images(void);
-void *bootstrap_map(const module_t *mod);
+extern struct boot_info xen_boot_info;
 
+unsigned long initial_images_nrpages(nodeid_t node);
+void free_boot_modules(void);
+
+struct boot_module;
+void *bootstrap_map_bm(const struct boot_module *bm);
+void bootstrap_unmap(void);
+
+void release_boot_module(struct boot_module *bm);
+
+struct rangeset;
 int remove_xen_ranges(struct rangeset *r);
 
 int cf_check stub_selftest(void);
-
-extern uint8_t kbd_shift_flags;
 
 #ifdef NDEBUG
 # define highmem_start 0
@@ -63,8 +68,6 @@ extern bool opt_dom0_pvh;
 extern bool opt_dom0_verbose;
 extern bool opt_dom0_cpuid_faulting;
 extern bool opt_dom0_msr_relaxed;
-
-extern unsigned long cr4_pv32_mask;
 
 #define max_init_domid (0)
 

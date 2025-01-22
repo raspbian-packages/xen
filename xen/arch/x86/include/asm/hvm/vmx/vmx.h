@@ -34,8 +34,8 @@ typedef union {
                                EPT/VT-d usage */
         mfn         :   40, /* bits 51:12 - Machine physical frame number */
         sa_p2mt     :   6,  /* bits 57:52 - Software available 2 */
-        access      :   4,  /* bits 61:58 - p2m_access_t */
-        _rsvd       :   1,  /* bit 62 - reserved */
+        pw          :   1,  /* bit 58 - Paging-write access */
+        access      :   4,  /* bits 62:59 - p2m_access_t */
         suppress_ve :   1;  /* bit 63 - suppress #VE */
     };
     u64 epte;
@@ -599,7 +599,7 @@ void vmx_pi_desc_fixup(unsigned int cpu);
 
 void vmx_sync_exit_bitmap(struct vcpu *v);
 
-#ifdef CONFIG_HVM
+#ifdef CONFIG_INTEL_VMX
 void vmx_pi_hooks_assign(struct domain *d);
 void vmx_pi_hooks_deassign(struct domain *d);
 #else

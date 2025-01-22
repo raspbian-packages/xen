@@ -34,7 +34,7 @@ static inline unsigned long canonicalise_addr(unsigned long addr)
 #define pdx_to_virt(pdx) ((void *)(DIRECTMAP_VIRT_START + \
                                    ((unsigned long)(pdx) << PAGE_SHIFT)))
 
-static inline unsigned long __virt_to_maddr(unsigned long va)
+static inline unsigned long virt_to_maddr(unsigned long va)
 {
     ASSERT(va < DIRECTMAP_VIRT_END);
     if ( va >= DIRECTMAP_VIRT_START )
@@ -47,8 +47,9 @@ static inline unsigned long __virt_to_maddr(unsigned long va)
 
     return xen_phys_start + va - XEN_VIRT_START;
 }
+#define virt_to_maddr(va) virt_to_maddr((unsigned long)(va))
 
-static inline void *__maddr_to_virt(unsigned long ma)
+static inline void *maddr_to_virt(unsigned long ma)
 {
     /* Offset in the direct map, accounting for pdx compression */
     unsigned long va_offset = maddr_to_directmapoff(ma);
@@ -68,10 +69,6 @@ typedef struct { intpte_t l4; } l4_pgentry_t;
 typedef l4_pgentry_t root_pgentry_t;
 
 #endif /* !__ASSEMBLY__ */
-
-#define pte_read_atomic(ptep)       read_atomic(ptep)
-#define pte_write_atomic(ptep, pte) write_atomic(ptep, pte)
-#define pte_write(ptep, pte)        write_atomic(ptep, pte)
 
 /* Given a virtual address, get an entry offset into a linear page table. */
 #define l1_linear_offset(_a) (((_a) & VADDR_MASK) >> L1_PAGETABLE_SHIFT)

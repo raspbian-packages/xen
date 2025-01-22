@@ -20,12 +20,6 @@
 #error GUEST_PAGING_LEVELS not defined
 #endif
 
-static inline paddr_t
-gfn_to_paddr(gfn_t gfn)
-{
-    return ((paddr_t)gfn_x(gfn)) << PAGE_SHIFT;
-}
-
 /* Override get_gfn to work with gfn_t */
 #undef get_gfn
 #define get_gfn(d, g, t) get_gfn_type((d), gfn_x(g), (t), P2M_ALLOC)
@@ -377,7 +371,7 @@ static inline paddr_t guest_walk_to_gpa(const walk_t *gw)
     if ( gfn_eq(gfn, INVALID_GFN) )
         return INVALID_PADDR;
 
-    return (gfn_x(gfn) << PAGE_SHIFT) | (gw->va & ~PAGE_MASK);
+    return gfn_to_gaddr(gfn) | (gw->va & ~PAGE_MASK);
 }
 
 /* Given a walk_t from a successful walk, return the page-order of the

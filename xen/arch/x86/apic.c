@@ -26,6 +26,9 @@
 #include <xen/delay.h>
 #include <xen/smp.h>
 #include <xen/softirq.h>
+
+#include <asm/io-ports.h>
+#include <asm/irq-vectors.h>
 #include <asm/mc146818rtc.h>
 #include <asm/microcode.h>
 #include <asm/msr.h>
@@ -35,9 +38,8 @@
 #include <asm/hardirq.h>
 #include <asm/apic.h>
 #include <asm/io_apic.h>
-#include <mach_apic.h>
-#include <io_ports.h>
-#include <irq_vectors.h>
+#include <asm/genapic.h>
+
 #include <xen/kexec.h>
 #include <asm/guest.h>
 #include <asm/nmi.h>
@@ -71,7 +73,7 @@ static struct {
 /*
  * Knob to control our willingness to enable the local APIC.
  */
-static s8 __initdata enable_local_apic; /* -1=force-disable, +1=force-enable */
+static int8_t __initdata enable_local_apic; /* -1=force-disable, +1=force-enable */
 
 /*
  * Debug level
@@ -230,7 +232,6 @@ void __init connect_bsp_APIC(void)
     }
 
     printk("Enabling APIC mode.  Using %d I/O APICs\n", nr_ioapics);
-    enable_apic_mode();
 }
 
 void disconnect_bsp_APIC(int virt_wire_setup)
@@ -495,8 +496,7 @@ void setup_local_APIC(bool bsp)
     /*
      * Double-check whether this APIC is really registered.
      */
-    if (!apic_id_registered())
-        BUG();
+    BUG_ON(!physid_isset(get_apic_id(), phys_cpu_present_map));
 
     /*
      * Intel recommends to set DFR, LDR and TPR before enabling
@@ -925,7 +925,7 @@ void __init init_apic_mappings(void)
     unsigned long apic_phys;
 
     if ( x2apic_enabled )
-        goto __next;
+        goto next;
     /*
      * If no local APIC can be found then set up a fake all
      * zeroes page to simulate the local APIC and another
@@ -938,10 +938,10 @@ void __init init_apic_mappings(void)
         apic_phys = mp_lapic_addr;
 
     set_fixmap_nocache(FIX_APIC_BASE, apic_phys);
-    apic_printk(APIC_VERBOSE, "mapped APIC to %08Lx (%08lx)\n", APIC_BASE,
-                apic_phys);
+    apic_printk(APIC_VERBOSE, "mapped APIC to %p (%08lx)\n",
+                fix_to_virt(FIX_APIC_BASE), apic_phys);
 
-__next:
+ next:
     /*
      * Fetch the APIC ID of the BSP in case we have a
      * default configuration (or the MP table is broken).

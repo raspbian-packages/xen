@@ -447,14 +447,37 @@ static void put_fpu(
         if ( state->ea.type == OP_MEM )
         {
             aux.dp = state->ea.mem.off;
-            if ( ops->read_segment &&
-                 ops->read_segment(state->ea.mem.seg, &sreg,
-                                   ctxt) == X86EMUL_OKAY )
+            if ( state->ea.mem.seg == x86_seg_cs )
+                aux.ds = aux.cs;
+            else if ( ops->read_segment &&
+                      ops->read_segment(state->ea.mem.seg, &sreg,
+                                        ctxt) == X86EMUL_OKAY )
                 aux.ds = sreg.sel;
+#ifdef __XEN__
+            /*
+             * While generally the expectation is that input structures are
+             * fully populated, the selector fields under ctxt->regs normally
+             * aren't set, with the exception of CS and SS for PV domains.
+             * Read the real selector registers for PV, and assert that HVM
+             * invocations always set a properly functioning ->read_segment()
+             * hook.
+             */
+            else if ( is_pv_vcpu(current) )
+                switch ( state->ea.mem.seg )
+                {
+                case x86_seg_ds: aux.ds = read_sreg(ds);  break;
+                case x86_seg_es: aux.ds = read_sreg(es);  break;
+                case x86_seg_fs: aux.ds = read_sreg(fs);  break;
+                case x86_seg_gs: aux.ds = read_sreg(gs);  break;
+                case x86_seg_ss: aux.ds = ctxt->regs->ss; break;
+                default:         ASSERT_UNREACHABLE();    break;
+                }
+            else
+                ASSERT_UNREACHABLE();
+#else
             else
                 switch ( state->ea.mem.seg )
                 {
-                case x86_seg_cs: aux.ds = ctxt->regs->cs; break;
                 case x86_seg_ds: aux.ds = ctxt->regs->ds; break;
                 case x86_seg_es: aux.ds = ctxt->regs->es; break;
                 case x86_seg_fs: aux.ds = ctxt->regs->fs; break;
@@ -462,6 +485,7 @@ static void put_fpu(
                 case x86_seg_ss: aux.ds = ctxt->regs->ss; break;
                 default:         ASSERT_UNREACHABLE();    break;
                 }
+#endif
             aux.dval = true;
         }
         ops->put_fpu(ctxt, X86EMUL_FPU_none, &aux);
@@ -607,9 +631,9 @@ static bool div_dbl(unsigned long u[2], unsigned long v)
  * NB. We don't use idiv directly as it's moderately hard to work out
  *     ahead of time whether it will #DE, which we cannot allow to happen.
  */
-static bool idiv_dbl(unsigned long u[2], long v)
+static bool idiv_dbl(unsigned long u[2], unsigned long v)
 {
-    bool negu = (long)u[1] < 0, negv = v < 0;
+    bool negu = (long)u[1] < 0, negv = (long)v < 0;
 
     /* u = abs(u) */
     if ( negu )
@@ -839,7 +863,8 @@ protmode_load_seg(
         case x86_seg_tr:
             goto raise_exn;
         }
-        if ( !_amd_like(cp) || vcpu_has_nscb() || !ops->read_segment ||
+        if ( seg == x86_seg_none || !_amd_like(cp) || vcpu_has_nscb() ||
+             !ops->read_segment ||
              ops->read_segment(seg, sreg, ctxt) != X86EMUL_OKAY )
             memset(sreg, 0, sizeof(*sreg));
         else
@@ -1232,6 +1257,7 @@ x86_emulate(
 {
     /* Shadow copy of register state. Committed on successful emulation. */
     struct cpu_user_regs _regs = *ctxt->regs;
+    const struct cpu_policy *__maybe_unused cp = ctxt->cpu_policy;
     struct x86_emulate_state state;
     int rc;
     uint8_t b, d, *opc = NULL;
@@ -1458,6 +1484,7 @@ x86_emulate(
 
         d = (d & ~DstMask) | DstMem;
         /* Becomes a normal DstMem operation from here on. */
+        fallthrough;
     case DstMem:
         generate_exception_if(ea.type == OP_MEM && evex.z, X86_EXC_UD);
         if ( state->simd_size != simd_none )
@@ -1940,6 +1967,7 @@ x86_emulate(
             break;
         }
         generate_exception_if((modrm_reg & 7) != 0, X86_EXC_UD);
+        fallthrough;
     case 0x88 ... 0x8b: /* mov */
     case 0xa0 ... 0xa1: /* mov mem.offs,{%al,%ax,%eax,%rax} */
     case 0xa2 ... 0xa3: /* mov {%al,%ax,%eax,%rax},mem.offs */
@@ -2370,19 +2398,19 @@ x86_emulate(
         {
         case 0xcc: /* int3 */
             ctxt->event.vector = X86_EXC_BP;
-            ctxt->event.type = X86_EVENTTYPE_SW_EXCEPTION;
+            ctxt->event.type = X86_ET_SW_EXC;
             break;
         case 0xcd: /* int imm8 */
             ctxt->event.vector = imm1;
-            ctxt->event.type = X86_EVENTTYPE_SW_INTERRUPT;
+            ctxt->event.type = X86_ET_SW_INT;
             break;
         case 0xce: /* into */
             ctxt->event.vector = X86_EXC_OF;
-            ctxt->event.type = X86_EVENTTYPE_SW_EXCEPTION;
+            ctxt->event.type = X86_ET_SW_EXC;
             break;
         case 0xf1: /* icebp */
             ctxt->event.vector = X86_EXC_DB;
-            ctxt->event.type = X86_EVENTTYPE_PRI_SW_EXCEPTION;
+            ctxt->event.type = X86_ET_PRIV_SW_EXC;
             break;
         }
         ctxt->event.error_code = X86_EVENT_NO_EC;
@@ -2852,7 +2880,7 @@ x86_emulate(
                                             &sreg, ctxt, ops) )
             {
             case X86EMUL_OKAY:
-                if ( sreg.s &&
+                if ( sreg.s /* Excludes NUL selectors too. */ &&
                      ((modrm_reg & 1) ? ((sreg.type & 0xa) == 0x2)
                                       : ((sreg.type & 0xa) != 0x8)) )
                     _regs.eflags |= X86_EFLAGS_ZF;
@@ -3074,7 +3102,7 @@ x86_emulate(
          * in fact risking to make guest OSes vulnerable to the equivalent of
          * XSA-7 (CVE-2012-0217).
          */
-        generate_exception_if(ctxt->cpuid->x86_vendor == X86_VENDOR_INTEL &&
+        generate_exception_if(cp->x86_vendor == X86_VENDOR_INTEL &&
                               op_bytes == 8 && !is_canonical_address(_regs.rcx),
                               X86_EXC_GP, 0);
 #endif
@@ -3592,12 +3620,15 @@ x86_emulate(
         if ( !mode_64bit() )
             evex.w = 0;
         /*
-         * SDM version 067 claims that exception type E10NF implies #UD when
-         * EVEX.L'L is non-zero for 32-bit VCVT{,U}SI2SD. Experimentally this
-         * cannot be confirmed, but be on the safe side for the stub.
+         * While SDM version 085 has explicit wording towards embedded rounding
+         * being ignored, it's still not entirely unambiguous with the exception
+         * type referred to. Be on the safe side for the stub.
          */
         if ( !evex.w && evex.pfx == vex_f2 )
+        {
+            evex.brs = 0;
             evex.lr = 0;
+        }
         opc[1] = (modrm & 0x38) | 0xc0;
         insn_bytes = EVEX_PFX_BYTES + 2;
         opc[2] = 0xc3;
@@ -4815,7 +4846,16 @@ x86_emulate(
         else
         {
             host_and_vcpu_must_have(avx512f);
-            generate_exception_if(ea.type != OP_MEM && evex.brs, X86_EXC_UD);
+            /*
+             * While SDM version 085 has explicit wording towards embedded
+             * rounding being ignored, it's still not entirely unambiguous with
+             * the exception type referred to. Be on the safe side for the stub.
+             */
+            if ( ea.type != OP_MEM && evex.brs )
+            {
+                evex.brs = 0;
+                evex.lr = 2;
+            }
         }
         if ( ea.type != OP_REG || !evex.brs )
             avx512_vlen_check(false);
@@ -5788,7 +5828,7 @@ x86_emulate(
             d = DstMem | SrcReg | TwoOp;
         }
         generate_exception_if(evex.brs, X86_EXC_UD);
-        op_bytes = 32 >> (pmov_convert_delta[b & 7] + 1 - evex.lr);
+        op_bytes = 64 >> (pmov_convert_delta[b & 7] + 2 - evex.lr);
         elem_bytes = (b & 7) < 3 ? 1 : (b & 7) != 5 ? 2 : 4;
         goto avx512f_no_sae;
 
@@ -6030,7 +6070,6 @@ x86_emulate(
     case X86EMUL_OPC_EVEX_66(0x0f38, 0xbd): /* vfnmadd231s{s,d} xmm/mem,xmm,xmm{k} */
     case X86EMUL_OPC_EVEX_66(0x0f38, 0xbf): /* vfnmsub231s{s,d} xmm/mem,xmm,xmm{k} */
         host_and_vcpu_must_have(avx512f);
-    simd_zmm_scalar_sae:
         generate_exception_if(ea.type != OP_REG && evex.brs, X86_EXC_UD);
         if ( !evex.brs )
             avx512_vlen_check(true);
@@ -6123,15 +6162,6 @@ x86_emulate(
         host_and_vcpu_must_have(avx512f);
         generate_exception_if(evex.brs, X86_EXC_UD);
         avx512_vlen_check(true);
-        goto simd_zmm;
-
-    case X86EMUL_OPC_EVEX_F2(0x0f38, 0x52): /* vp4dpwssd m128,zmm+3,zmm{k} */
-    case X86EMUL_OPC_EVEX_F2(0x0f38, 0x53): /* vp4dpwssds m128,zmm+3,zmm{k} */
-        host_and_vcpu_must_have(avx512_4vnniw);
-        generate_exception_if((ea.type != OP_MEM || evex.w || evex.brs ||
-                               evex.lr != 2),
-                              X86_EXC_UD);
-        op_mask = op_mask & 0xffff ? 0xf : 0;
         goto simd_zmm;
 
     case X86EMUL_OPC_EVEX_66(0x0f38, 0x8f): /* vpshufbitqmb [xyz]mm/mem,[xyz]mm,k{k} */
@@ -6381,11 +6411,11 @@ x86_emulate(
         {
             if ( (vex.w ? mask.qw[i] : mask.dw[i]) < 0 )
             {
-                signed long idx = b & 1 ? index.qw[i] : index.dw[i];
+                unsigned long idx = b & 1 ? index.qw[i] : index.dw[i];
 
                 rc = ops->read(ea.mem.seg,
                                truncate_ea(ea.mem.off +
-                                           idx * (1 << state->sib_scale)),
+                                           (idx << state->sib_scale)),
                                (void *)mmvalp + i * op_bytes, op_bytes, ctxt);
                 if ( rc != X86EMUL_OKAY )
                 {
@@ -6501,14 +6531,14 @@ x86_emulate(
 
         for ( i = 0; op_mask; ++i )
         {
-            long idx = b & 1 ? index.qw[i] : index.dw[i];
+            unsigned long idx = b & 1 ? index.qw[i] : index.dw[i];
 
             if ( !(op_mask & (1 << i)) )
                 continue;
 
             rc = ops->read(ea.mem.seg,
                            truncate_ea(ea.mem.off +
-                                       idx * (1 << state->sib_scale)),
+                                       (idx << state->sib_scale)),
                            (void *)mmvalp + i * op_bytes, op_bytes, ctxt);
             if ( rc != X86EMUL_OKAY )
             {
@@ -6603,24 +6633,6 @@ x86_emulate(
         host_and_vcpu_must_have(fma);
         goto simd_0f_ymm;
 
-    case X86EMUL_OPC_EVEX_F2(0x0f38, 0x9a): /* v4fmaddps m128,zmm+3,zmm{k} */
-    case X86EMUL_OPC_EVEX_F2(0x0f38, 0xaa): /* v4fnmaddps m128,zmm+3,zmm{k} */
-        host_and_vcpu_must_have(avx512_4fmaps);
-        generate_exception_if((ea.type != OP_MEM || evex.w || evex.brs ||
-                               evex.lr != 2),
-                              X86_EXC_UD);
-        op_mask = op_mask & 0xffff ? 0xf : 0;
-        goto simd_zmm;
-
-    case X86EMUL_OPC_EVEX_F2(0x0f38, 0x9b): /* v4fmaddss m128,xmm+3,xmm{k} */
-    case X86EMUL_OPC_EVEX_F2(0x0f38, 0xab): /* v4fnmaddss m128,xmm+3,xmm{k} */
-        host_and_vcpu_must_have(avx512_4fmaps);
-        generate_exception_if((ea.type != OP_MEM || evex.w || evex.brs ||
-                               evex.lr == 3),
-                              X86_EXC_UD);
-        op_mask = op_mask & 1 ? 0xf : 0;
-        goto simd_zmm;
-
     case X86EMUL_OPC_EVEX_66(0x0f38, 0xa0): /* vpscatterd{d,q} [xyz]mm,mem{k} */
     case X86EMUL_OPC_EVEX_66(0x0f38, 0xa1): /* vpscatterq{d,q} [xyz]mm,mem{k} */
     case X86EMUL_OPC_EVEX_66(0x0f38, 0xa2): /* vscatterdp{s,d} [xyz]mm,mem{k} */
@@ -6673,9 +6685,9 @@ x86_emulate(
 
         for ( i = 0; op_mask; ++i )
         {
-            long idx = (b & 1 ? index.qw[i]
-                              : index.dw[i]) * (1 << state->sib_scale);
-            unsigned long offs = truncate_ea(ea.mem.off + idx);
+            unsigned long idx = b & 1 ? index.qw[i] : index.dw[i];
+            unsigned long offs = truncate_ea(ea.mem.off +
+                                             (idx << state->sib_scale));
             unsigned int j, slot;
 
             if ( !(op_mask & (1 << i)) )
@@ -6693,11 +6705,10 @@ x86_emulate(
              */
             for ( j = (slot = i) + 1; j < n; ++j )
             {
-                long idx2 = (b & 1 ? index.qw[j]
-                                   : index.dw[j]) * (1 << state->sib_scale);
-
+                idx = b & 1 ? index.qw[j] : index.dw[j];
                 if ( (op_mask & (1 << j)) &&
-                     truncate_ea(ea.mem.off + idx2) == offs )
+                     truncate_ea(ea.mem.off +
+                                 (idx << state->sib_scale)) == offs )
                     slot = j;
             }
 
@@ -6761,97 +6772,6 @@ x86_emulate(
         generate_exception_if(!evex.w, X86_EXC_UD);
         goto avx512f_no_sae;
 
-    case X86EMUL_OPC_EVEX_66(0x0f38, 0xc6):
-    case X86EMUL_OPC_EVEX_66(0x0f38, 0xc7):
-    {
-#ifndef __XEN__
-        typeof(evex) *pevex;
-        union {
-            int32_t dw[16];
-            int64_t qw[8];
-        } index;
-#endif
-
-        ASSERT(ea.type == OP_MEM);
-        generate_exception_if((!cpu_has_avx512f || !evex.opmsk || evex.brs ||
-                               evex.z || evex.reg != 0xf || evex.lr != 2),
-                              X86_EXC_UD);
-
-        switch ( modrm_reg & 7 )
-        {
-        case 1: /* vgatherpf0{d,q}p{s,d} mem{k} */
-        case 2: /* vgatherpf1{d,q}p{s,d} mem{k} */
-        case 5: /* vscatterpf0{d,q}p{s,d} mem{k} */
-        case 6: /* vscatterpf1{d,q}p{s,d} mem{k} */
-            vcpu_must_have(avx512pf);
-            break;
-        default:
-            generate_exception(X86_EXC_UD);
-        }
-
-        get_fpu(X86EMUL_FPU_zmm);
-
-#ifndef __XEN__
-        /*
-         * For the test harness perform zero byte memory accesses, such that
-         * in particular correct Disp8 scaling can be verified.
-         */
-        fail_if((modrm_reg & 4) && !ops->write);
-
-        /* Read index register. */
-        opc = init_evex(stub);
-        pevex = copy_EVEX(opc, evex);
-        pevex->opcx = vex_0f;
-        /* vmovdqu{32,64} */
-        opc[0] = 0x7f;
-        pevex->pfx = vex_f3;
-        pevex->w = b & 1;
-        /* Use (%rax) as destination and sib_index as source. */
-        pevex->b = 1;
-        opc[1] = (state->sib_index & 7) << 3;
-        pevex->r = !mode_64bit() || !(state->sib_index & 0x08);
-        pevex->R = !mode_64bit() || !(state->sib_index & 0x10);
-        pevex->RX = 1;
-        opc[2] = 0xc3;
-
-        invoke_stub("", "", "=m" (index) : "a" (&index));
-        put_stub(stub);
-
-        /* Clear untouched parts of the mask value. */
-        n = 1 << (4 - ((b & 1) | evex.w));
-        op_mask &= (1 << n) - 1;
-
-        for ( i = 0; rc == X86EMUL_OKAY && op_mask; ++i )
-        {
-            long idx = b & 1 ? index.qw[i] : index.dw[i];
-
-            if ( !(op_mask & (1 << i)) )
-                continue;
-
-            rc = (modrm_reg & 4
-                  ? ops->write
-                  : ops->read)(ea.mem.seg,
-                               truncate_ea(ea.mem.off +
-                                           idx * (1 << state->sib_scale)),
-                               NULL, 0, ctxt);
-            if ( rc == X86EMUL_EXCEPTION )
-            {
-                /* Squash memory access related exceptions. */
-                x86_emul_reset_event(ctxt);
-                rc = X86EMUL_OKAY;
-            }
-
-            op_mask &= ~(1 << i);
-        }
-
-        if ( rc != X86EMUL_OKAY )
-            goto done;
-#endif
-
-        state->simd_size = simd_none;
-        break;
-    }
-
     case X86EMUL_OPC(0x0f38, 0xc8):     /* sha1nexte xmm/m128,xmm */
     case X86EMUL_OPC(0x0f38, 0xc9):     /* sha1msg1 xmm/m128,xmm */
     case X86EMUL_OPC(0x0f38, 0xca):     /* sha1msg2 xmm/m128,xmm */
@@ -6861,19 +6781,6 @@ x86_emulate(
         host_and_vcpu_must_have(sha);
         op_bytes = 16;
         goto simd_0f38_common;
-
-    case X86EMUL_OPC_EVEX_66(0x0f38, 0xc8): /* vexp2p{s,d} zmm/mem,zmm{k} */
-    case X86EMUL_OPC_EVEX_66(0x0f38, 0xca): /* vrcp28p{s,d} zmm/mem,zmm{k} */
-    case X86EMUL_OPC_EVEX_66(0x0f38, 0xcc): /* vrsqrt28p{s,d} zmm/mem,zmm{k} */
-        host_and_vcpu_must_have(avx512er);
-        generate_exception_if((ea.type != OP_REG || !evex.brs) && evex.lr != 2,
-                              X86_EXC_UD);
-        goto simd_zmm;
-
-    case X86EMUL_OPC_EVEX_66(0x0f38, 0xcb): /* vrcp28s{s,d} xmm/mem,xmm,xmm{k} */
-    case X86EMUL_OPC_EVEX_66(0x0f38, 0xcd): /* vrsqrt28s{s,d} xmm/mem,xmm,xmm{k} */
-        host_and_vcpu_must_have(avx512er);
-        goto simd_zmm_scalar_sae;
 
     case X86EMUL_OPC_VEX_F2(0x0f38, 0xcb): /* vsha512rnds2 xmm,ymm,ymm */
     case X86EMUL_OPC_VEX_F2(0x0f38, 0xcc): /* vsha512msg1 xmm,ymm */
@@ -6942,8 +6849,18 @@ x86_emulate(
 
 #endif /* !X86EMUL_NO_SIMD */
 
+    case X86EMUL_OPC_VEX_66(0x0f38, 0xe0) ...
+         X86EMUL_OPC_VEX_66(0x0f38, 0xef): /* cmp<cc>xadd r,r,m */
+        generate_exception_if(!mode_64bit() || dst.type != OP_MEM || vex.l,
+                              X86_EXC_UD);
+        host_and_vcpu_must_have(cmpccxadd);
+        fail_if(!ops->rmw);
+        state->rmw = rmw_cmpccxadd;
+        break;
+
     case X86EMUL_OPC(0x0f38, 0xf0): /* movbe m,r */
     case X86EMUL_OPC(0x0f38, 0xf1): /* movbe r,m */
+        generate_exception_if(ea.type != OP_MEM, X86_EXC_UD);
         vcpu_must_have(movbe);
         switch ( op_bytes )
         {
@@ -6962,6 +6879,7 @@ x86_emulate(
             break;
         default:
             ASSERT_UNREACHABLE();
+            goto unhandleable;
         }
         break;
 #ifdef HAVE_AS_SSE4_2
@@ -6990,6 +6908,7 @@ x86_emulate(
 # endif
         default:
             ASSERT_UNREACHABLE();
+            goto unhandleable;
         }
         break;
 #endif
@@ -8220,14 +8139,20 @@ x86_emulate(
     {
         ea.val = src.val;
         op_bytes = dst.bytes;
+        state->stub_exn = &stub_exn;
         rc = ops->rmw(dst.mem.seg, dst.mem.off, dst.bytes, &_regs.eflags,
                       state, ctxt);
+#ifdef __XEN__
+        if ( rc == X86EMUL_stub_failure )
+            goto emulation_stub_failure;
+#endif
         if ( rc != X86EMUL_OKAY )
             goto done;
 
         /* Some operations require a register to be written. */
         switch ( state->rmw )
         {
+        case rmw_cmpccxadd:
         case rmw_xchg:
         case rmw_xadd:
             switch ( dst.bytes )
@@ -8247,13 +8172,13 @@ x86_emulate(
     }
     else if ( state->simd_size != simd_none )
     {
-        generate_exception_if(!op_bytes, X86_EXC_UD);
         generate_exception_if((vex.opcx && (d & TwoOp) &&
                                (vex.reg != 0xf || (evex_encoded() && !evex.RX))),
                               X86_EXC_UD);
 
-        if ( !opc )
-            BUG();
+        EXPECT(op_bytes);
+        EXPECT(opc);
+
         if ( evex_encoded() )
         {
             opc[insn_bytes - EVEX_PFX_BYTES] = 0xc3;
@@ -8423,6 +8348,7 @@ x86_emulate(
         }
         if ( rc != 0 )
             goto done;
+        break;
     default:
         break;
     }
@@ -8502,6 +8428,7 @@ int x86_emul_rmw(
     uint32_t *eflags,
     struct x86_emulate_state *s,
     struct x86_emulate_ctxt *ctxt)
+#define stub_exn (*s->stub_exn) /* for invoke_stub() */
 {
     unsigned long *dst = ptr;
 
@@ -8566,6 +8493,37 @@ int x86_emul_rmw(
 #undef UNOP
 #undef BINOP
 #undef SHIFT
+
+#ifdef __x86_64__
+    case rmw_cmpccxadd:
+    {
+        struct x86_emulate_stub stub = {};
+        uint8_t *buf = get_stub(stub);
+        typeof(s->vex) *pvex = container_of(buf + 1, typeof(s->vex),
+                                            raw[0]);
+        unsigned long dummy;
+
+        buf[0] = 0xc4;
+        *pvex = s->vex;
+        pvex->b = 1;
+        pvex->r = 1;
+        pvex->reg = 0xf; /* rAX */
+        buf[3] = ctxt->opcode;
+        buf[4] = 0x11; /* reg=rDX r/m=(%RCX) */
+        buf[5] = 0xc3;
+
+        *eflags &= ~EFLAGS_MASK;
+        invoke_stub("",
+                    _POST_EFLAGS("[eflags]", "[mask]", "[tmp]"),
+                    "+m" (*dst), "+d" (s->ea.val),
+                    [tmp] "=&r" (dummy), [eflags] "+g" (*eflags)
+                    : "a" (*decode_vex_gpr(s->vex.reg, ctxt->regs, ctxt)),
+                      "c" (dst), [mask] "i" (EFLAGS_MASK));
+
+        put_stub(stub);
+        break;
+    }
+#endif
 
     case rmw_not:
         switch ( s->op_bytes )
@@ -8662,7 +8620,13 @@ int x86_emul_rmw(
 #undef JCXZ
 
     return X86EMUL_OKAY;
+
+#if defined(__XEN__) && defined(__x86_64__)
+ emulation_stub_failure:
+    return X86EMUL_stub_failure;
+#endif
 }
+#undef stub_exn
 
 static void __init __maybe_unused build_assertions(void)
 {
@@ -8674,16 +8638,14 @@ static void __init __maybe_unused build_assertions(void)
     BUILD_BUG_ON(x86_seg_fs != 4);
     BUILD_BUG_ON(x86_seg_gs != 5);
 
-    /*
-     * Check X86_EVENTTYPE_* against VMCB EVENTINJ and VMCS INTR_INFO type
-     * fields.
-     */
-    BUILD_BUG_ON(X86_EVENTTYPE_EXT_INTR != 0);
-    BUILD_BUG_ON(X86_EVENTTYPE_NMI != 2);
-    BUILD_BUG_ON(X86_EVENTTYPE_HW_EXCEPTION != 3);
-    BUILD_BUG_ON(X86_EVENTTYPE_SW_INTERRUPT != 4);
-    BUILD_BUG_ON(X86_EVENTTYPE_PRI_SW_EXCEPTION != 5);
-    BUILD_BUG_ON(X86_EVENTTYPE_SW_EXCEPTION != 6);
+    /* Check X86_ET_* against VMCB EVENTINJ and VMCS INTR_INFO type fields. */
+    BUILD_BUG_ON(X86_ET_EXT_INTR    != 0);
+    BUILD_BUG_ON(X86_ET_NMI         != 2);
+    BUILD_BUG_ON(X86_ET_HW_EXC      != 3);
+    BUILD_BUG_ON(X86_ET_SW_INT      != 4);
+    BUILD_BUG_ON(X86_ET_PRIV_SW_EXC != 5);
+    BUILD_BUG_ON(X86_ET_SW_EXC      != 6);
+    BUILD_BUG_ON(X86_ET_OTHER       != 7);
 }
 
 #ifndef NDEBUG

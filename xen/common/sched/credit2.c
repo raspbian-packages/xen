@@ -10,23 +10,18 @@
  * Based on an earlier verson by Emmanuel Ackaouy.
  */
 
+#include <xen/errno.h>
 #include <xen/init.h>
 #include <xen/lib.h>
 #include <xen/param.h>
-#include <xen/sched.h>
-#include <xen/domain.h>
-#include <xen/delay.h>
-#include <xen/event.h>
-#include <xen/time.h>
 #include <xen/perfc.h>
+#include <xen/sched.h>
+#include <xen/sections.h>
 #include <xen/softirq.h>
-#include <asm/div64.h>
-#include <xen/errno.h>
+#include <xen/time.h>
 #include <xen/trace.h>
-#include <xen/cpu.h>
-#include <xen/keyhandler.h>
-#include <asm/cpufeature.h>
-#include <asm/processor.h>
+
+#include <asm/div64.h>
 
 #include "private.h"
 
@@ -34,6 +29,19 @@
 /* #define d2printk printk */
 #define d2printk(x...)
 
+/*
+ * TODO: Abstract this properly, and figure out what Credit2 wants to do with
+ *       the fact that x86_num_siblings doesn't even have the same meaning
+ *       between x86 vendors.
+ */
+static unsigned int cpu_nr_siblings(unsigned int cpu)
+{
+#ifdef CONFIG_X86
+    return cpu_data[cpu].x86_num_siblings;
+#else
+    return 1;
+#endif
+}
 
 /*
  * Credit2 tracing events ("only" 512 available!). Check
@@ -1476,8 +1484,8 @@ static inline void runq_remove(struct csched2_unit *svc)
     list_del_init(&svc->runq_elem);
 }
 
-void burn_credits(struct csched2_runqueue_data *rqd, struct csched2_unit *svc,
-                  s_time_t now);
+static void burn_credits(struct csched2_runqueue_data *rqd,
+                         struct csched2_unit *svc, s_time_t now);
 
 static inline void
 tickle_cpu(unsigned int cpu, struct csched2_runqueue_data *rqd)
@@ -1855,8 +1863,8 @@ static void reset_credit(int cpu, s_time_t now, struct csched2_unit *snext)
     /* No need to resort runqueue, as everyone's order should be the same. */
 }
 
-void burn_credits(struct csched2_runqueue_data *rqd,
-                  struct csched2_unit *svc, s_time_t now)
+static void burn_credits(struct csched2_runqueue_data *rqd,
+                         struct csched2_unit *svc, s_time_t now)
 {
     s_time_t delta;
 

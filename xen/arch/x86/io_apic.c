@@ -29,16 +29,20 @@
 #include <xen/acpi.h>
 #include <xen/keyhandler.h>
 #include <xen/softirq.h>
+#include <xen/xvmalloc.h>
 
+#include <asm/apic.h>
+#include <asm/genapic.h>
 #include <asm/hpet.h>
+#include <asm/io-ports.h>
+#include <asm/io_apic.h>
+#include <asm/irq-vectors.h>
 #include <asm/mc146818rtc.h>
 #include <asm/smp.h>
 #include <asm/desc.h>
 #include <asm/msi.h>
 #include <asm/setup.h>
-#include <mach_apic.h>
-#include <io_ports.h>
-#include <irq_vectors.h>
+
 #include <public/physdev.h>
 #include <xen/trace.h>
 
@@ -1002,6 +1006,25 @@ static int pin_2_irq(int idx, int apic, int pin)
     return irq;
 }
 
+int gsi_2_irq(unsigned int gsi)
+{
+    int ioapic, irq;
+    unsigned int pin;
+
+    if ( gsi > highest_gsi() )
+        return -ERANGE;
+
+    ioapic = mp_find_ioapic(gsi);
+    if ( ioapic < 0 )
+        return -EINVAL;
+
+    pin = gsi - io_apic_gsi_base(ioapic);
+
+    irq = apic_pin_2_gsi_irq(ioapic, pin);
+
+    return irq ?: -EINVAL;
+}
+
 static inline int IO_APIC_irq_trigger(int irq)
 {
     int apic, idx, pin;
@@ -1084,14 +1107,8 @@ static void __init setup_IO_APIC_irqs(void)
             }
 
             irq = pin_2_irq(idx, apic, pin);
-            /*
-             * skip adding the timer int on secondary nodes, which causes
-             * a small but painful rift in the time-space continuum
-             */
-            if (multi_timer_check(apic, irq))
-                continue;
-            else
-                add_pin_to_irq(irq, apic, pin);
+
+            add_pin_to_irq(irq, apic, pin);
 
             if (!IO_APIC_IRQ(irq))
                 continue;
@@ -1347,7 +1364,7 @@ void __init enable_IO_APIC(void)
 
     if ( iommu_intremap != iommu_intremap_off )
     {
-        io_apic_pin_eoi = xmalloc_array(typeof(*io_apic_pin_eoi), nr_ioapics);
+        io_apic_pin_eoi = xvmalloc_array(typeof(*io_apic_pin_eoi), nr_ioapics);
         BUG_ON(!io_apic_pin_eoi);
     }
 
@@ -1356,8 +1373,8 @@ void __init enable_IO_APIC(void)
 
         if ( io_apic_pin_eoi )
         {
-            io_apic_pin_eoi[apic] = xmalloc_array(typeof(**io_apic_pin_eoi),
-                                                  nr_ioapic_entries[apic]);
+            io_apic_pin_eoi[apic] = xvmalloc_array(typeof(**io_apic_pin_eoi),
+                                                   nr_ioapic_entries[apic]);
             BUG_ON(!io_apic_pin_eoi[apic]);
         }
 
@@ -1372,14 +1389,14 @@ void __init enable_IO_APIC(void)
             /* If the interrupt line is enabled and in ExtInt mode
              * I have found the pin where the i8259 is connected.
              */
-            if ((entry.mask == 0) && (entry.delivery_mode == dest_ExtINT)) {
+            if ( ioapic_i8259.pin == -1 && entry.mask == 0 &&
+                 entry.delivery_mode == dest_ExtINT )
+            {
                 ioapic_i8259.apic = apic;
                 ioapic_i8259.pin  = pin;
-                goto found_i8259;
             }
         }
     }
- found_i8259:
     /* Look to see what if the MP table has reported the ExtINT */
     /* If we could not find the appropriate pin by looking at the ioapic
      * the i8259 probably is not connected the ioapic but give the
@@ -1471,7 +1488,7 @@ static void __init setup_ioapic_ids_from_mpc(void)
      * This is broken; anything with a real cpu count has to
      * circumvent this idiocy regardless.
      */
-    ioapic_phys_id_map(&phys_id_present_map);
+    phys_id_present_map = phys_cpu_present_map;
 
     /*
      * Set the IOAPIC ID to the value stored in the MPC table.
@@ -1500,8 +1517,8 @@ static void __init setup_ioapic_ids_from_mpc(void)
          * system must have a unique ID or we get lots of nice
          * 'stuck on smp_invalidate_needed IPI wait' messages.
          */
-        if (check_apicid_used(&phys_id_present_map,
-                              mp_ioapics[apic].mpc_apicid)) {
+        if ( physid_isset(mp_ioapics[apic].mpc_apicid, phys_id_present_map) )
+        {
             printk(KERN_ERR "BIOS bug, IO-APIC#%d ID %d is already used!...\n",
                    apic, mp_ioapics[apic].mpc_apicid);
             for (i = 0; i < get_physical_broadcast(); i++)
@@ -1517,7 +1534,7 @@ static void __init setup_ioapic_ids_from_mpc(void)
                         "phys_id_present_map\n",
                         mp_ioapics[apic].mpc_apicid);
         }
-        set_apicid(mp_ioapics[apic].mpc_apicid, &phys_id_present_map);
+        physid_set(mp_ioapics[apic].mpc_apicid, phys_id_present_map);
 
         /*
          * We need to adjust the IRQ routing table
@@ -1717,8 +1734,7 @@ static bool io_apic_level_ack_pending(unsigned int irq)
 
 static void cf_check mask_and_ack_level_ioapic_irq(struct irq_desc *desc)
 {
-    unsigned long v;
-    int i;
+    bool is_level;
 
     irq_complete_move(desc);
 
@@ -1744,9 +1760,8 @@ static void cf_check mask_and_ack_level_ioapic_irq(struct irq_desc *desc)
  * operation to prevent an edge-triggered interrupt escaping meanwhile.
  * The idea is from Manfred Spraul.  --macro
  */
-    i = desc->arch.vector;
 
-    v = apic_read(APIC_TMR + ((i & ~0x1f) >> 1));
+    is_level = apic_tmr_read(desc->arch.vector);
 
     ack_APIC_irq();
     
@@ -1757,7 +1772,7 @@ static void cf_check mask_and_ack_level_ioapic_irq(struct irq_desc *desc)
        !io_apic_level_ack_pending(desc->irq))
         move_masked_irq(desc);
 
-    if ( !(v & (1U << (i & 0x1f))) )
+    if ( !is_level )
     {
         spin_lock(&ioapic_lock);
         __edge_IO_APIC_irq(desc->irq);
@@ -1808,13 +1823,14 @@ static void cf_check end_level_ioapic_irq_new(struct irq_desc *desc, u8 vector)
  * operation to prevent an edge-triggered interrupt escaping meanwhile.
  * The idea is from Manfred Spraul.  --macro
  */
-    unsigned int v, i = desc->arch.vector;
+    unsigned int i = desc->arch.vector;
+    bool is_level;
 
     /* Manually EOI the old vector if we are moving to the new */
     if ( vector && i != vector )
         eoi_IO_APIC_irq(desc);
 
-    v = apic_read(APIC_TMR + ((i & ~0x1f) >> 1));
+    is_level = apic_tmr_read(i);
 
     end_nonmaskable_irq(desc, vector);
 
@@ -1822,7 +1838,7 @@ static void cf_check end_level_ioapic_irq_new(struct irq_desc *desc, u8 vector)
          !io_apic_level_ack_pending(desc->irq) )
         move_native_irq(desc);
 
-    if ( !(v & (1U << (i & 0x1f))) )
+    if ( !is_level )
     {
         spin_lock(&ioapic_lock);
         __mask_IO_APIC_irq(desc->irq);
@@ -2218,7 +2234,7 @@ int __init io_apic_get_unique_id (int ioapic, int apic_id)
      */
 
     if (physids_empty(apic_id_map))
-        ioapic_phys_id_map(&apic_id_map);
+        apic_id_map = phys_cpu_present_map;
 
     spin_lock_irqsave(&ioapic_lock, flags);
     reg_00.raw = io_apic_read(ioapic, 0);
@@ -2234,10 +2250,11 @@ int __init io_apic_get_unique_id (int ioapic, int apic_id)
      * Every APIC in a system must have a unique ID or we get lots of nice 
      * 'stuck on smp_invalidate_needed IPI wait' messages.
      */
-    if (check_apicid_used(&apic_id_map, apic_id)) {
+    if ( physid_isset(apic_id, apic_id_map) )
+    {
 
         for (i = 0; i < get_physical_broadcast(); i++) {
-            if (!check_apicid_used(&apic_id_map, i))
+            if ( !physid_isset(i, apic_id_map) )
                 break;
         }
 
@@ -2250,7 +2267,7 @@ int __init io_apic_get_unique_id (int ioapic, int apic_id)
         apic_id = i;
     } 
 
-    set_apicid(apic_id, &apic_id_map);
+    physid_set(apic_id, apic_id_map);
 
     if (reg_00.bits.ID != apic_id) {
         reg_00.bits.ID = apic_id;
@@ -2662,8 +2679,8 @@ static void __init ioapic_init_mappings(void)
         }
 
         set_fixmap_nocache(idx, ioapic_phys);
-        apic_printk(APIC_VERBOSE, "mapped IOAPIC to %08Lx (%08lx)\n",
-                    __fix_to_virt(idx), ioapic_phys);
+        apic_printk(APIC_VERBOSE, "mapped IOAPIC to %p (%08lx)\n",
+                    fix_to_virt(idx), ioapic_phys);
 
         if ( bad_ioapic_register(i) )
         {

@@ -1,6 +1,6 @@
 /******************************************************************************
  * kernel.c
- * 
+ *
  * Copyright (c) 2002-2005 K A Fraser
  */
 
@@ -24,6 +24,7 @@
 CHECK_build_id;
 CHECK_compile_info;
 CHECK_feature_info;
+CHECK_varbuf;
 #endif
 
 enum system_state system_state = SYS_STATE_early_boot;
@@ -35,6 +36,7 @@ boolean_param("dit", opt_dit);
 
 static xen_commandline_t saved_cmdline;
 static const char __initconst opt_builtin_cmdline[] = CONFIG_CMDLINE;
+char __ro_after_init xen_cap_info[128];
 
 static int assign_integer_param(const struct kernel_param *param, uint64_t val)
 {
@@ -502,6 +504,70 @@ static int __init cf_check param_init(void)
 __initcall(param_init);
 #endif
 
+static long xenver_varbuf_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
+{
+    struct xen_varbuf user_str;
+    const char *str = NULL;
+    size_t sz;
+    int rc;
+
+    switch ( cmd )
+    {
+    case XENVER_build_id:
+    {
+        unsigned int local_sz;
+
+        rc = xen_build_id((const void **)&str, &local_sz);
+        if ( rc )
+            return rc;
+
+        sz = local_sz;
+        goto have_len;
+    }
+
+    case XENVER_extraversion2:
+        str = xen_extra_version();
+        break;
+
+    case XENVER_changeset2:
+        str = xen_changeset();
+        break;
+
+    case XENVER_commandline2:
+        str = saved_cmdline;
+        break;
+
+    case XENVER_capabilities2:
+        str = xen_cap_info;
+        break;
+
+    default:
+        ASSERT_UNREACHABLE();
+        return -ENODATA;
+    }
+
+    sz = strlen(str);
+
+ have_len:
+    if ( sz > KB(64) ) /* Arbitrary limit.  Avoid long-running operations. */
+        return -E2BIG;
+
+    if ( guest_handle_is_null(arg) ) /* Length request */
+        return sz;
+
+    if ( copy_from_guest(&user_str, arg, 1) )
+        return -EFAULT;
+
+    if ( sz > user_str.len )
+        return -ENOBUFS;
+
+    if ( copy_to_guest_offset(arg, offsetof(struct xen_varbuf, buf),
+                              str, sz) )
+        return -EFAULT;
+
+    return sz;
+}
+
 long do_xen_version(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 {
     bool deny = xsm_xen_version(XSM_OTHER, cmd);
@@ -542,13 +608,13 @@ long do_xen_version(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
 
         memset(info, 0, sizeof(info));
         if ( !deny )
-            arch_get_xen_caps(&info);
+            safe_strcpy(info, xen_cap_info);
 
         if ( copy_to_guest(arg, info, ARRAY_SIZE(info)) )
             return -EFAULT;
         return 0;
     }
-    
+
     case XENVER_platform_parameters:
     {
         const struct vcpu *curr = current;
@@ -587,9 +653,8 @@ long do_xen_version(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
         }
 
         return 0;
-        
     }
-    
+
     case XENVER_changeset:
     {
         xen_changeset_info_t chgset;
@@ -620,7 +685,7 @@ long do_xen_version(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             if ( VM_ASSIST(d, pae_extended_cr3) )
                 fi.submap |= (1U << XENFEAT_pae_pgdir_above_4gb);
             if ( paging_mode_translate(d) )
-                fi.submap |= 
+                fi.submap |=
                     (1U << XENFEAT_writable_page_tables) |
                     (1U << XENFEAT_auto_translated_physmap);
             if ( is_hardware_domain(d) )
@@ -686,40 +751,13 @@ long do_xen_version(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     }
 
     case XENVER_build_id:
-    {
-        xen_build_id_t build_id;
-        unsigned int sz;
-        int rc;
-        const void *p;
-
+    case XENVER_extraversion2:
+    case XENVER_capabilities2:
+    case XENVER_changeset2:
+    case XENVER_commandline2:
         if ( deny )
             return -EPERM;
-
-        /* Only return size. */
-        if ( !guest_handle_is_null(arg) )
-        {
-            if ( copy_from_guest(&build_id, arg, 1) )
-                return -EFAULT;
-
-            if ( build_id.len == 0 )
-                return -EINVAL;
-        }
-
-        rc = xen_build_id(&p, &sz);
-        if ( rc )
-            return rc;
-
-        if ( guest_handle_is_null(arg) )
-            return sz;
-
-        if ( sz > build_id.len )
-            return -ENOBUFS;
-
-        if ( copy_to_guest_offset(arg, offsetof(xen_build_id_t, buf), p, sz) )
-            return -EFAULT;
-
-        return sz;
-    }
+        return xenver_varbuf_op(cmd, arg);
     }
 
     return -ENOSYS;

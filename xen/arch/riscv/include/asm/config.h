@@ -1,7 +1,7 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
-#ifndef __RISCV_CONFIG_H__
-#define __RISCV_CONFIG_H__
+#ifndef ASM__RISCV__CONFIG_H
+#define ASM__RISCV__CONFIG_H
 
 #include <xen/const.h>
 #include <xen/page-size.h>
@@ -41,15 +41,17 @@
  * Start addr          | End addr         | Slot       | area description
  * ============================================================================
  *                   .....                 L2 511          Unused
- *  0xffffffffc0600000  0xffffffffc0800000 L2 511          Fixmap
- *  0xffffffffc0200000  0xffffffffc0600000 L2 511          FDT
- *  0xffffffffc0000000  0xffffffffc0200000 L2 511          Xen
+ *  0xffffffffc0a00000  0xffffffffc0bfffff L2 511          Fixmap
+ *                   ..... ( 2 MB gap )
+ *  0xffffffffc0400000  0xffffffffc07fffff L2 511          FDT
+ *                   ..... ( 2 MB gap )
+ *  0xffffffffc0000000  0xffffffffc01fffff L2 511          Xen
  *                   .....                 L2 510          Unused
- *  0x3200000000        0x7f40000000       L2 200-509      Direct map
+ *  0x3200000000        0x7f7fffffff       L2 200-509      Direct map
  *                   .....                 L2 199          Unused
- *  0x30c0000000        0x31c0000000       L2 195-198      Frametable
+ *  0x30c0000000        0x31bfffffff       L2 195-198      Frametable
  *                   .....                 L2 194          Unused
- *  0x3040000000        0x3080000000       L2 193          VMAP
+ *  0x3040000000        0x307fffffff       L2 193          VMAP
  *                   .....                 L2 0-192        Unused
 #elif RV_STAGE1_MODE == SATP_MODE_SV48
  * Memory layout is the same as for SV39 in terms of slots, so only start and
@@ -74,10 +76,21 @@
 #error "unsupported RV_STAGE1_MODE"
 #endif
 
+#define GAP_SIZE                MB(2)
+
+#define XEN_VIRT_SIZE           MB(2)
+
+#define BOOT_FDT_VIRT_START     (XEN_VIRT_START + XEN_VIRT_SIZE + GAP_SIZE)
+#define BOOT_FDT_VIRT_SIZE      MB(4)
+
+#define FIXMAP_BASE \
+    (BOOT_FDT_VIRT_START + BOOT_FDT_VIRT_SIZE + GAP_SIZE)
+
 #define DIRECTMAP_SLOT_END      509
 #define DIRECTMAP_SLOT_START    200
 #define DIRECTMAP_VIRT_START    SLOTN(DIRECTMAP_SLOT_START)
-#define DIRECTMAP_SIZE          (SLOTN(DIRECTMAP_SLOT_END) - SLOTN(DIRECTMAP_SLOT_START))
+#define DIRECTMAP_SIZE          (SLOTN(DIRECTMAP_SLOT_END + 1) - SLOTN(DIRECTMAP_SLOT_START))
+#define DIRECTMAP_VIRT_END      (DIRECTMAP_VIRT_START + DIRECTMAP_SIZE - 1)
 
 #define FRAMETABLE_SCALE_FACTOR  (PAGE_SIZE/sizeof(struct page_info))
 #define FRAMETABLE_SIZE_IN_SLOTS (((DIRECTMAP_SIZE / SLOTN(1)) / FRAMETABLE_SCALE_FACTOR) + 1)
@@ -143,7 +156,11 @@
 
 #define IDENT_AREA_SIZE 64
 
-#endif /* __RISCV_CONFIG_H__ */
+#ifndef __ASSEMBLY__
+extern unsigned long phys_offset; /* = load_start - XEN_VIRT_START */
+#endif
+
+#endif /* ASM__RISCV__CONFIG_H */
 /*
  * Local variables:
  * mode: C

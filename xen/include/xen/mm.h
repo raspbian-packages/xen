@@ -72,6 +72,8 @@
 
 struct page_info;
 
+extern bool using_static_heap;
+
 void put_page(struct page_info *page);
 bool __must_check get_page(struct page_info *page,
                            const struct domain *domain);
@@ -531,8 +533,6 @@ static inline unsigned int get_order_from_pages(unsigned long nr_pages)
 
     return order;
 }
-
-void scrub_one_page(struct page_info *pg);
 
 #ifndef arch_free_heap_page
 #define arch_free_heap_page(d, pg) \

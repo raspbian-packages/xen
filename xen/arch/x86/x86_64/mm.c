@@ -37,6 +37,8 @@ EMIT_FILE;
 #include <asm/numa.h>
 #include <asm/mem_paging.h>
 #include <asm/mem_sharing.h>
+#include <asm/trampoline.h>
+
 #include <public/memory.h>
 
 #ifdef CONFIG_PV32
@@ -1333,6 +1335,9 @@ int memory_add(unsigned long spfn, unsigned long epfn, unsigned int pxm)
     /* We can't revert any more */
     share_hotadd_m2p_table(&info);
     transfer_pages_to_heap(&info);
+
+    /* Update the node's present pages (like the total_pages of the system) */
+    NODE_DATA(node)->node_present_pages += epfn - spfn;
 
     return 0;
 

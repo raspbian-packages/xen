@@ -71,9 +71,38 @@
 
 #include "ffa_private.h"
 
-/* Negotiated FF-A version to use with the SPMC */
-static uint32_t __ro_after_init ffa_version;
+/* Negotiated FF-A version to use with the SPMC, 0 if not there or supported */
+static uint32_t __ro_after_init ffa_fw_version;
 
+/* Features supported by the SPMC or secure world when present */
+DECLARE_BITMAP(ffa_fw_abi_supported, FFA_ABI_BITMAP_SIZE);
+
+struct ffa_fw_abi {
+    uint32_t id;
+    const char *name;
+};
+
+#define FW_ABI(abi) {abi,#abi}
+
+/* List of ABI we use from the firmware */
+static const struct ffa_fw_abi ffa_fw_abi_needed[] = {
+    FW_ABI(FFA_VERSION),
+    FW_ABI(FFA_FEATURES),
+    FW_ABI(FFA_NOTIFICATION_BITMAP_CREATE),
+    FW_ABI(FFA_NOTIFICATION_BITMAP_DESTROY),
+    FW_ABI(FFA_PARTITION_INFO_GET),
+    FW_ABI(FFA_NOTIFICATION_INFO_GET_64),
+    FW_ABI(FFA_NOTIFICATION_GET),
+    FW_ABI(FFA_RX_RELEASE),
+    FW_ABI(FFA_RXTX_MAP_64),
+    FW_ABI(FFA_RXTX_UNMAP),
+    FW_ABI(FFA_MEM_SHARE_32),
+    FW_ABI(FFA_MEM_SHARE_64),
+    FW_ABI(FFA_MEM_RECLAIM),
+    FW_ABI(FFA_MSG_SEND_DIRECT_REQ_32),
+    FW_ABI(FFA_MSG_SEND_DIRECT_REQ_64),
+    FW_ABI(FFA_MSG_SEND2),
+};
 
 /*
  * Our rx/tx buffers shared with the SPMC. FFA_RXTX_PAGE_COUNT is the
@@ -105,30 +134,16 @@ static bool ffa_get_version(uint32_t *vers)
 
     arm_smccc_1_2_smc(&arg, &resp);
     if ( resp.a0 == FFA_RET_NOT_SUPPORTED )
-    {
-        gprintk(XENLOG_ERR, "ffa: FFA_VERSION returned not supported\n");
         return false;
-    }
 
     *vers = resp.a0;
 
     return true;
 }
 
-static int32_t ffa_features(uint32_t id)
+static bool ffa_abi_supported(uint32_t id)
 {
-    return ffa_simple_call(FFA_FEATURES, id, 0, 0, 0);
-}
-
-static bool check_mandatory_feature(uint32_t id)
-{
-    int32_t ret = ffa_features(id);
-
-    if ( ret )
-        printk(XENLOG_ERR "ffa: mandatory feature id %#x missing: error %d\n",
-               id, ret);
-
-    return !ret;
+    return !ffa_simple_call(FFA_FEATURES, id, 0, 0, 0);
 }
 
 static void handle_version(struct cpu_user_regs *regs)
@@ -137,71 +152,24 @@ static void handle_version(struct cpu_user_regs *regs)
     struct ffa_ctx *ctx = d->arch.tee;
     uint32_t vers = get_user_reg(regs, 1);
 
-    if ( vers < FFA_VERSION_1_1 )
-        vers = FFA_VERSION_1_0;
-    else
-        vers = FFA_VERSION_1_1;
-
-    ctx->guest_vers = vers;
-    ffa_set_regs(regs, vers, 0, 0, 0, 0, 0, 0, 0);
-}
-
-static void handle_msg_send_direct_req(struct cpu_user_regs *regs, uint32_t fid)
-{
-    struct arm_smccc_1_2_regs arg = { .a0 = fid, };
-    struct arm_smccc_1_2_regs resp = { };
-    struct domain *d = current->domain;
-    uint32_t src_dst;
-    uint64_t mask;
-
-    if ( smccc_is_conv_64(fid) )
-        mask = GENMASK_ULL(63, 0);
-    else
-        mask = GENMASK_ULL(31, 0);
-
-    src_dst = get_user_reg(regs, 1);
-    if ( (src_dst >> 16) != ffa_get_vm_id(d) )
+    /*
+     * Guest will use the version it requested if it is our major and minor
+     * lower or equals to ours. If the minor is greater, our version will be
+     * used.
+     * In any case return our version to the caller.
+     */
+    if ( FFA_VERSION_MAJOR(vers) == FFA_MY_VERSION_MAJOR )
     {
-        resp.a0 = FFA_ERROR;
-        resp.a2 = FFA_RET_INVALID_PARAMETERS;
-        goto out;
+        if ( FFA_VERSION_MINOR(vers) > FFA_MY_VERSION_MINOR )
+            ctx->guest_vers = FFA_MY_VERSION;
+        else
+            ctx->guest_vers = vers;
     }
-
-    arg.a1 = src_dst;
-    arg.a2 = get_user_reg(regs, 2) & mask;
-    arg.a3 = get_user_reg(regs, 3) & mask;
-    arg.a4 = get_user_reg(regs, 4) & mask;
-    arg.a5 = get_user_reg(regs, 5) & mask;
-    arg.a6 = get_user_reg(regs, 6) & mask;
-    arg.a7 = get_user_reg(regs, 7) & mask;
-
-    arm_smccc_1_2_smc(&arg, &resp);
-    switch ( resp.a0 )
-    {
-    case FFA_ERROR:
-    case FFA_SUCCESS_32:
-    case FFA_SUCCESS_64:
-    case FFA_MSG_SEND_DIRECT_RESP_32:
-    case FFA_MSG_SEND_DIRECT_RESP_64:
-        break;
-    default:
-        /* Bad fid, report back to the caller. */
-        memset(&resp, 0, sizeof(resp));
-        resp.a0 = FFA_ERROR;
-        resp.a1 = src_dst;
-        resp.a2 = FFA_RET_ABORTED;
-    }
-
-out:
-    ffa_set_regs(regs, resp.a0, resp.a1 & mask, resp.a2 & mask, resp.a3 & mask,
-                 resp.a4 & mask, resp.a5 & mask, resp.a6 & mask,
-                 resp.a7 & mask);
+    ffa_set_regs(regs, FFA_MY_VERSION, 0, 0, 0, 0, 0, 0, 0);
 }
 
 static void handle_features(struct cpu_user_regs *regs)
 {
-    struct domain *d = current->domain;
-    struct ffa_ctx *ctx = d->arch.tee;
     uint32_t a1 = get_user_reg(regs, 1);
     unsigned int n;
 
@@ -228,6 +196,7 @@ static void handle_features(struct cpu_user_regs *regs)
     case FFA_PARTITION_INFO_GET:
     case FFA_MSG_SEND_DIRECT_REQ_32:
     case FFA_MSG_SEND_DIRECT_REQ_64:
+    case FFA_MSG_SEND2:
         ffa_set_regs_success(regs, 0, 0);
         break;
     case FFA_MEM_SHARE_64:
@@ -249,16 +218,10 @@ static void handle_features(struct cpu_user_regs *regs)
         ffa_set_regs_success(regs, 0, 0);
         break;
     case FFA_FEATURE_NOTIF_PEND_INTR:
-        if ( ctx->notif.enabled )
-            ffa_set_regs_success(regs, GUEST_FFA_NOTIF_PEND_INTR_ID, 0);
-        else
-            ffa_set_regs_error(regs, FFA_RET_NOT_SUPPORTED);
+        ffa_set_regs_success(regs, GUEST_FFA_NOTIF_PEND_INTR_ID, 0);
         break;
     case FFA_FEATURE_SCHEDULE_RECV_INTR:
-        if ( ctx->notif.enabled )
-            ffa_set_regs_success(regs, GUEST_FFA_SCHEDULE_RECV_INTR_ID, 0);
-        else
-            ffa_set_regs_error(regs, FFA_RET_NOT_SUPPORTED);
+        ffa_set_regs_success(regs, GUEST_FFA_SCHEDULE_RECV_INTR_ID, 0);
         break;
 
     case FFA_NOTIFICATION_BIND:
@@ -267,10 +230,7 @@ static void handle_features(struct cpu_user_regs *regs)
     case FFA_NOTIFICATION_SET:
     case FFA_NOTIFICATION_INFO_GET_32:
     case FFA_NOTIFICATION_INFO_GET_64:
-        if ( ctx->notif.enabled )
-            ffa_set_regs_success(regs, 0, 0);
-        else
-            ffa_set_regs_error(regs, FFA_RET_NOT_SUPPORTED);
+        ffa_set_regs_success(regs, 0, 0);
         break;
     default:
         ffa_set_regs_error(regs, FFA_RET_NOT_SUPPORTED);
@@ -283,8 +243,6 @@ static bool ffa_handle_call(struct cpu_user_regs *regs)
     uint32_t fid = get_user_reg(regs, 0);
     struct domain *d = current->domain;
     struct ffa_ctx *ctx = d->arch.tee;
-    uint32_t fpi_size;
-    uint32_t count;
     int e;
 
     if ( !ctx )
@@ -310,24 +268,18 @@ static bool ffa_handle_call(struct cpu_user_regs *regs)
         e = ffa_handle_rxtx_unmap();
         break;
     case FFA_PARTITION_INFO_GET:
-        e = ffa_handle_partition_info_get(get_user_reg(regs, 1),
-                                          get_user_reg(regs, 2),
-                                          get_user_reg(regs, 3),
-                                          get_user_reg(regs, 4),
-                                          get_user_reg(regs, 5), &count,
-                                          &fpi_size);
-        if ( e )
-            ffa_set_regs_error(regs, e);
-        else
-            ffa_set_regs_success(regs, count, fpi_size);
+        ffa_handle_partition_info_get(regs);
         return true;
     case FFA_RX_RELEASE:
-        e = ffa_handle_rx_release();
+        e = ffa_rx_release(d);
         break;
     case FFA_MSG_SEND_DIRECT_REQ_32:
     case FFA_MSG_SEND_DIRECT_REQ_64:
-        handle_msg_send_direct_req(regs, fid);
+        ffa_handle_msg_send_direct_req(regs, fid);
         return true;
+    case FFA_MSG_SEND2:
+        e = ffa_handle_msg_send2(regs);
+        break;
     case FFA_MEM_SHARE_32:
     case FFA_MEM_SHARE_64:
         ffa_handle_mem_share(regs);
@@ -372,13 +324,17 @@ static int ffa_domain_init(struct domain *d)
     struct ffa_ctx *ctx;
     int ret;
 
-    if ( !ffa_version )
+    if ( !ffa_fw_version )
         return -ENODEV;
-     /*
-      * We can't use that last possible domain ID or ffa_get_vm_id() would
-      * cause an overflow.
-      */
-    if ( d->domain_id >= UINT16_MAX)
+    /*
+     * We are using the domain_id + 1 as the FF-A ID for VMs as FF-A ID 0 is
+     * reserved for the hypervisor and we only support secure endpoints using
+     * FF-A IDs with BIT 15 set to 1 so make sure those are not used by Xen.
+     */
+    BUILD_BUG_ON(DOMID_FIRST_RESERVED >= UINT16_MAX);
+    BUILD_BUG_ON((DOMID_MASK & BIT(15, U)) != 0);
+
+    if ( d->domain_id >= DOMID_FIRST_RESERVED )
         return -ERANGE;
 
     ctx = xzalloc(struct ffa_ctx);
@@ -505,6 +461,9 @@ static bool ffa_probe(void)
      */
     BUILD_BUG_ON(PAGE_SIZE != FFA_PAGE_SIZE);
 
+    printk(XENLOG_INFO "ARM FF-A Mediator version %u.%u\n",
+           FFA_MY_VERSION_MAJOR, FFA_MY_VERSION_MINOR);
+
     /*
      * psci_init_smccc() updates this value with what's reported by EL-3
      * or secure world.
@@ -514,44 +473,65 @@ static bool ffa_probe(void)
         printk(XENLOG_ERR
                "ffa: unsupported SMCCC version %#x (need at least %#x)\n",
                smccc_ver, ARM_SMCCC_VERSION_1_2);
-        return false;
+        goto err_no_fw;
     }
 
     if ( !ffa_get_version(&vers) )
-        return false;
-
-    if ( vers < FFA_MIN_SPMC_VERSION || vers > FFA_MY_VERSION )
     {
-        printk(XENLOG_ERR "ffa: Incompatible version %#x found\n", vers);
-        return false;
+        gprintk(XENLOG_ERR, "Cannot retrieve the FFA version\n");
+        goto err_no_fw;
     }
 
-    major_vers = (vers >> FFA_VERSION_MAJOR_SHIFT) & FFA_VERSION_MAJOR_MASK;
-    minor_vers = vers & FFA_VERSION_MINOR_MASK;
-    printk(XENLOG_INFO "ARM FF-A Mediator version %u.%u\n",
-           FFA_MY_VERSION_MAJOR, FFA_MY_VERSION_MINOR);
+    /* Some sanity check in case we update the version we support */
+    BUILD_BUG_ON(FFA_MIN_SPMC_VERSION > FFA_MY_VERSION);
+    BUILD_BUG_ON(FFA_VERSION_MAJOR(FFA_MIN_SPMC_VERSION) !=
+                                   FFA_MY_VERSION_MAJOR);
+
+    major_vers = FFA_VERSION_MAJOR(vers);
+    minor_vers = FFA_VERSION_MINOR(vers);
+
+    if ( major_vers != FFA_MY_VERSION_MAJOR ||
+         minor_vers < FFA_VERSION_MINOR(FFA_MIN_SPMC_VERSION) )
+    {
+        printk(XENLOG_ERR "ffa: Incompatible firmware version %u.%u\n",
+               major_vers, minor_vers);
+        goto err_no_fw;
+    }
+
     printk(XENLOG_INFO "ARM FF-A Firmware version %u.%u\n",
            major_vers, minor_vers);
 
     /*
-     * At the moment domains must support the same features used by Xen.
-     * TODO: Rework the code to allow domain to use a subset of the
-     * features supported.
+     * If the call succeed and the version returned is higher or equal to
+     * the one Xen requested, the version requested by Xen will be the one
+     * used. If the version returned is lower but compatible with Xen, Xen
+     * will use that version instead.
+     * A version with a different major or lower than the minimum version
+     * we support is rejected before.
+     * See https://developer.arm.com/documentation/den0077/e/ chapter 13.2.1
      */
-    if ( !check_mandatory_feature(FFA_PARTITION_INFO_GET) ||
-         !check_mandatory_feature(FFA_RX_RELEASE) ||
-         !check_mandatory_feature(FFA_RXTX_MAP_64) ||
-         !check_mandatory_feature(FFA_MEM_SHARE_64) ||
-         !check_mandatory_feature(FFA_RXTX_UNMAP) ||
-         !check_mandatory_feature(FFA_MEM_SHARE_32) ||
-         !check_mandatory_feature(FFA_MEM_RECLAIM) ||
-         !check_mandatory_feature(FFA_MSG_SEND_DIRECT_REQ_32) )
-        return false;
+    if ( minor_vers > FFA_MY_VERSION_MINOR )
+        ffa_fw_version = FFA_MY_VERSION;
+    else
+        ffa_fw_version = vers;
+
+    for ( unsigned int i = 0; i < ARRAY_SIZE(ffa_fw_abi_needed); i++ )
+    {
+        ASSERT(FFA_ABI_BITNUM(ffa_fw_abi_needed[i].id) < FFA_ABI_BITMAP_SIZE);
+
+        if ( ffa_abi_supported(ffa_fw_abi_needed[i].id) )
+            set_bit(FFA_ABI_BITNUM(ffa_fw_abi_needed[i].id),
+                    ffa_fw_abi_supported);
+        else
+            printk(XENLOG_INFO "ARM FF-A Firmware does not support %s\n",
+                   ffa_fw_abi_needed[i].name);
+    }
 
     if ( !ffa_rxtx_init() )
-        return false;
-
-    ffa_version = vers;
+    {
+        printk(XENLOG_ERR "ffa: Error during RXTX buffer init\n");
+        goto err_no_fw;
+    }
 
     if ( !ffa_partinfo_init() )
         goto err_rxtx_destroy;
@@ -564,7 +544,10 @@ static bool ffa_probe(void)
 
 err_rxtx_destroy:
     ffa_rxtx_destroy();
-    ffa_version = 0;
+err_no_fw:
+    ffa_fw_version = 0;
+    bitmap_zero(ffa_fw_abi_supported, FFA_ABI_BITMAP_SIZE);
+    printk(XENLOG_WARNING "ARM FF-A No firmware support\n");
 
     return false;
 }

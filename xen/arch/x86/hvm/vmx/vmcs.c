@@ -59,7 +59,7 @@ static unsigned int __ro_after_init vm_notify_window;
 integer_param("vm-notify-window", vm_notify_window);
 
 static bool __read_mostly opt_ept_pml = true;
-static s8 __read_mostly opt_ept_ad = -1;
+static int8_t __ro_after_init opt_ept_ad = -1;
 int8_t __read_mostly opt_ept_exec_sp = -1;
 
 static int __init cf_check parse_ept_param(const char *s)
@@ -203,6 +203,7 @@ static void __init vmx_display_features(void)
     P(cpu_has_vmx_bus_lock_detection, "Bus Lock Detection");
     P(cpu_has_vmx_notify_vm_exiting, "Notify VM Exit");
     P(cpu_has_vmx_virt_spec_ctrl, "Virtualize SPEC_CTRL");
+    P(cpu_has_vmx_ept_paging_write, "EPT Paging-Write");
 #undef P
 
     if ( !printed )
@@ -366,7 +367,8 @@ static int vmx_init_vmcs_config(bool bsp)
 
     if ( _vmx_cpu_based_exec_control & CPU_BASED_ACTIVATE_TERTIARY_CONTROLS )
     {
-        uint64_t opt = TERTIARY_EXEC_VIRT_SPEC_CTRL;
+        uint64_t opt = (TERTIARY_EXEC_VIRT_SPEC_CTRL |
+                        TERTIARY_EXEC_EPT_PAGING_WRITE);
 
         _vmx_tertiary_exec_control = adjust_vmx_controls2(
             "Tertiary Exec Control", 0, opt,
@@ -1446,6 +1448,7 @@ struct vmx_msr_entry *vmx_find_msr(const struct vcpu *v, uint32_t msr,
 
     default:
         ASSERT_UNREACHABLE();
+        break;
     }
 
     if ( !start )
@@ -1598,6 +1601,7 @@ int vmx_del_msr(struct vcpu *v, uint32_t msr, enum vmx_msr_list_type type)
 
     default:
         ASSERT_UNREACHABLE();
+        return -EINVAL;
     }
 
     if ( !start )

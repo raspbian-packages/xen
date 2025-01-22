@@ -2,6 +2,8 @@
 #include <xen/init.h>
 #include <xen/lib.h>
 #include <xen/mm.h>
+#include <xen/shutdown.h>
+
 #include <public/version.h>
 #include <asm/boot.h>
 #include <asm/early_printk.h>
@@ -43,14 +45,5 @@ void __init noreturn start_xen(unsigned long r3, unsigned long r4,
 
     early_printk("Hello, ppc64le!\n");
 
-    for ( ; ; )
-        /* Set current hardware thread to very low priority */
-        HMT_very_low();
-
-    unreachable();
-}
-
-void arch_get_xen_caps(xen_capabilities_info_t *info)
-{
-    BUG_ON("unimplemented");
+    machine_halt();
 }

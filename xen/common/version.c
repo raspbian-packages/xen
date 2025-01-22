@@ -3,13 +3,12 @@
 #include <xen/init.h>
 #include <xen/errno.h>
 #include <xen/lib.h>
+#include <xen/sections.h>
 #include <xen/string.h>
 #include <xen/types.h>
 #include <xen/efi.h>
 #include <xen/elf.h>
 #include <xen/version.h>
-
-#include <asm/cache.h>
 
 const char *xen_compile_date(void)
 {
@@ -210,11 +209,11 @@ void __init xen_build_init(void)
             }
         }
     }
-#endif
+#endif /* CONFIG_X86 */
     if ( !rc )
         printk(XENLOG_INFO "build-id: %*phN\n", build_id_len, build_id_p);
 }
-#endif
+#endif /* BUILD_ID */
 /*
  * Local variables:
  * mode: C

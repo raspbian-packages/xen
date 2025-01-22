@@ -5,14 +5,10 @@
 #include <xen/stdint.h>
 
 /* Linux inherited types which are being phased out */
-typedef int8_t s8;
 typedef uint8_t u8;
-typedef int16_t s16;
-typedef uint16_t u16, __u16;
-typedef int32_t s32;
-typedef uint32_t u32, __u32;
-typedef int64_t s64;
-typedef uint64_t u64, __u64;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
 
 #include <asm/types.h>
 
@@ -55,12 +51,12 @@ typedef __PTRDIFF_TYPE__ ptrdiff_t;
 #define LONG_MIN        (-LONG_MAX - 1)
 #define ULONG_MAX       (~0UL)
 
-typedef __u16 __le16;
-typedef __u16 __be16;
-typedef __u32 __le32;
-typedef __u32 __be32;
-typedef __u64 __le64;
-typedef __u64 __be64;
+typedef uint16_t __le16;
+typedef uint16_t __be16;
+typedef uint32_t __le32;
+typedef uint32_t __be32;
+typedef uint64_t __le64;
+typedef uint64_t __be64;
 
 typedef unsigned int __attribute__((__mode__(__pointer__))) uintptr_t;
 

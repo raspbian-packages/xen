@@ -16,37 +16,24 @@
 #include <asm/x86_64/page.h>
 
 /* Read a pte atomically from memory. */
-#define l1e_read_atomic(l1ep) \
-    l1e_from_intpte(pte_read_atomic(&l1e_get_intpte(*(l1ep))))
-#define l2e_read_atomic(l2ep) \
-    l2e_from_intpte(pte_read_atomic(&l2e_get_intpte(*(l2ep))))
-#define l3e_read_atomic(l3ep) \
-    l3e_from_intpte(pte_read_atomic(&l3e_get_intpte(*(l3ep))))
-#define l4e_read_atomic(l4ep) \
-    l4e_from_intpte(pte_read_atomic(&l4e_get_intpte(*(l4ep))))
+#define l1e_read(l1ep) \
+    l1e_from_intpte(read_atomic(&l1e_get_intpte(*(l1ep))))
+#define l2e_read(l2ep) \
+    l2e_from_intpte(read_atomic(&l2e_get_intpte(*(l2ep))))
+#define l3e_read(l3ep) \
+    l3e_from_intpte(read_atomic(&l3e_get_intpte(*(l3ep))))
+#define l4e_read(l4ep) \
+    l4e_from_intpte(read_atomic(&l4e_get_intpte(*(l4ep))))
 
 /* Write a pte atomically to memory. */
-#define l1e_write_atomic(l1ep, l1e) \
-    pte_write_atomic(&l1e_get_intpte(*(l1ep)), l1e_get_intpte(l1e))
-#define l2e_write_atomic(l2ep, l2e) \
-    pte_write_atomic(&l2e_get_intpte(*(l2ep)), l2e_get_intpte(l2e))
-#define l3e_write_atomic(l3ep, l3e) \
-    pte_write_atomic(&l3e_get_intpte(*(l3ep)), l3e_get_intpte(l3e))
-#define l4e_write_atomic(l4ep, l4e) \
-    pte_write_atomic(&l4e_get_intpte(*(l4ep)), l4e_get_intpte(l4e))
-
-/*
- * Write a pte safely but non-atomically to memory.
- * The PTE may become temporarily not-present during the update.
- */
 #define l1e_write(l1ep, l1e) \
-    pte_write(&l1e_get_intpte(*(l1ep)), l1e_get_intpte(l1e))
+    write_atomic(&l1e_get_intpte(*(l1ep)), l1e_get_intpte(l1e))
 #define l2e_write(l2ep, l2e) \
-    pte_write(&l2e_get_intpte(*(l2ep)), l2e_get_intpte(l2e))
+    write_atomic(&l2e_get_intpte(*(l2ep)), l2e_get_intpte(l2e))
 #define l3e_write(l3ep, l3e) \
-    pte_write(&l3e_get_intpte(*(l3ep)), l3e_get_intpte(l3e))
+    write_atomic(&l3e_get_intpte(*(l3ep)), l3e_get_intpte(l3e))
 #define l4e_write(l4ep, l4e) \
-    pte_write(&l4e_get_intpte(*(l4ep)), l4e_get_intpte(l4e))
+    write_atomic(&l4e_get_intpte(*(l4ep)), l4e_get_intpte(l4e))
 
 /* Get direct integer representation of a pte's contents (intpte_t). */
 #define l1e_get_intpte(x)          ((x).l1)
@@ -269,8 +256,6 @@ void copy_page_sse2(void *to, const void *from);
 #define mfn_valid(mfn)      __mfn_valid(mfn_x(mfn))
 #define virt_to_mfn(va)     __virt_to_mfn(va)
 #define mfn_to_virt(mfn)    __mfn_to_virt(mfn)
-#define virt_to_maddr(va)   __virt_to_maddr((unsigned long)(va))
-#define maddr_to_virt(ma)   __maddr_to_virt((unsigned long)(ma))
 #define maddr_to_page(ma)   __maddr_to_page(ma)
 #define page_to_maddr(pg)   __page_to_maddr(pg)
 #define virt_to_page(va)    __virt_to_page(va)

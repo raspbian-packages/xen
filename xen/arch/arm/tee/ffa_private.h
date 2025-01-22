@@ -14,6 +14,7 @@
 #include <xen/spinlock.h>
 #include <xen/sched.h>
 #include <xen/time.h>
+#include <xen/bitmap.h>
 
 /* Error codes */
 #define FFA_RET_OK                      0
@@ -35,6 +36,9 @@
 #define MAKE_FFA_VERSION(major, minor)  \
         ((((major) & FFA_VERSION_MAJOR_MASK) << FFA_VERSION_MAJOR_SHIFT) | \
          ((minor) & FFA_VERSION_MINOR_MASK))
+#define FFA_VERSION_MAJOR(vers) (((vers) >> FFA_VERSION_MAJOR_SHIFT) & \
+                                 FFA_VERSION_MAJOR_MASK)
+#define FFA_VERSION_MINOR(vers) ((vers) & FFA_VERSION_MINOR_MASK)
 
 #define FFA_VERSION_1_0         MAKE_FFA_VERSION(1, 0)
 #define FFA_VERSION_1_1         MAKE_FFA_VERSION(1, 1)
@@ -103,6 +107,13 @@
  * blocked initially.
  */
 #define FFA_CTX_TEARDOWN_DELAY          SECONDS(1)
+
+/*
+ * We rely on the convention suggested but not mandated by the FF-A
+ * specification that secure world endpoint identifiers have the bit 15
+ * set and normal world have it set to 0.
+ */
+#define FFA_ID_IS_SECURE(id)    ((id) & BIT(15, U))
 
 /* FF-A-1.1-REL0 section 10.9.2 Memory region handle, page 167 */
 #define FFA_HANDLE_HYP_FLAG             BIT(63, ULL)
@@ -198,18 +209,17 @@
 #define FFA_INTERRUPT                   0x84000062U
 #define FFA_VERSION                     0x84000063U
 #define FFA_FEATURES                    0x84000064U
-#define FFA_RX_ACQUIRE                  0x84000084U
 #define FFA_RX_RELEASE                  0x84000065U
 #define FFA_RXTX_MAP_32                 0x84000066U
 #define FFA_RXTX_MAP_64                 0xC4000066U
 #define FFA_RXTX_UNMAP                  0x84000067U
 #define FFA_PARTITION_INFO_GET          0x84000068U
 #define FFA_ID_GET                      0x84000069U
-#define FFA_SPM_ID_GET                  0x84000085U
+#define FFA_MSG_POLL                    0x8400006AU
 #define FFA_MSG_WAIT                    0x8400006BU
 #define FFA_MSG_YIELD                   0x8400006CU
 #define FFA_RUN                         0x8400006DU
-#define FFA_MSG_SEND2                   0x84000086U
+#define FFA_MSG_SEND                    0x8400006EU
 #define FFA_MSG_SEND_DIRECT_REQ_32      0x8400006FU
 #define FFA_MSG_SEND_DIRECT_REQ_64      0xC400006FU
 #define FFA_MSG_SEND_DIRECT_RESP_32     0x84000070U
@@ -227,8 +237,6 @@
 #define FFA_MEM_RECLAIM                 0x84000077U
 #define FFA_MEM_FRAG_RX                 0x8400007AU
 #define FFA_MEM_FRAG_TX                 0x8400007BU
-#define FFA_MSG_SEND                    0x8400006EU
-#define FFA_MSG_POLL                    0x8400006AU
 #define FFA_NOTIFICATION_BITMAP_CREATE  0x8400007DU
 #define FFA_NOTIFICATION_BITMAP_DESTROY 0x8400007EU
 #define FFA_NOTIFICATION_BIND           0x8400007FU
@@ -237,10 +245,42 @@
 #define FFA_NOTIFICATION_GET            0x84000082U
 #define FFA_NOTIFICATION_INFO_GET_32    0x84000083U
 #define FFA_NOTIFICATION_INFO_GET_64    0xC4000083U
+#define FFA_RX_ACQUIRE                  0x84000084U
+#define FFA_SPM_ID_GET                  0x84000085U
+#define FFA_MSG_SEND2                   0x84000086U
+
+/**
+ * Encoding of features supported or not by the fw in a bitmap:
+ * - Function IDs are going from 0x60 to 0xFF
+ * - A function can be supported in 32 and/or 64bit
+ * The bitmap has one bit for each function in 32 and 64 bit.
+ */
+#define FFA_ABI_ID(id)        ((id) & ARM_SMCCC_FUNC_MASK)
+#define FFA_ABI_CONV(id)      (((id) >> ARM_SMCCC_CONV_SHIFT) & BIT(0,U))
+
+#define FFA_ABI_MIN           FFA_ABI_ID(FFA_ERROR)
+#define FFA_ABI_MAX           FFA_ABI_ID(FFA_MSG_SEND2)
+
+#define FFA_ABI_BITMAP_SIZE   (2 * (FFA_ABI_MAX - FFA_ABI_MIN + 1))
+#define FFA_ABI_BITNUM(id)    ((FFA_ABI_ID(id) - FFA_ABI_MIN) << 1 | \
+                               FFA_ABI_CONV(id))
+
+/* Constituent memory region descriptor */
+struct ffa_address_range {
+    uint64_t address;
+    uint32_t page_count;
+    uint32_t reserved;
+};
+
+/* Composite memory region descriptor */
+struct ffa_mem_region {
+    uint32_t total_page_count;
+    uint32_t address_range_count;
+    uint64_t reserved;
+    struct ffa_address_range address_range_array[];
+};
 
 struct ffa_ctx_notif {
-    bool enabled;
-
     /*
      * True if domain is reported by FFA_NOTIFICATION_INFO_GET to have
      * pending global notifications.
@@ -265,7 +305,7 @@ struct ffa_ctx {
     struct ffa_ctx_notif notif;
     /*
      * tx_lock is used to serialize access to tx
-     * rx_lock is used to serialize access to rx
+     * rx_lock is used to serialize access to rx_is_free
      * lock is used for the rest in this struct
      */
     spinlock_t tx_lock;
@@ -286,6 +326,7 @@ extern void *ffa_rx;
 extern void *ffa_tx;
 extern spinlock_t ffa_rx_buffer_lock;
 extern spinlock_t ffa_tx_buffer_lock;
+extern DECLARE_BITMAP(ffa_fw_abi_supported, FFA_ABI_BITMAP_SIZE);
 
 bool ffa_shm_domain_destroy(struct domain *d);
 void ffa_handle_mem_share(struct cpu_user_regs *regs);
@@ -294,9 +335,7 @@ int ffa_handle_mem_reclaim(uint64_t handle, uint32_t flags);
 bool ffa_partinfo_init(void);
 int ffa_partinfo_domain_init(struct domain *d);
 bool ffa_partinfo_domain_destroy(struct domain *d);
-int32_t ffa_handle_partition_info_get(uint32_t w1, uint32_t w2, uint32_t w3,
-                                      uint32_t w4, uint32_t w5, uint32_t *count,
-                                      uint32_t *fpi_size);
+void ffa_handle_partition_info_get(struct cpu_user_regs *regs);
 
 bool ffa_rxtx_init(void);
 void ffa_rxtx_destroy(void);
@@ -304,7 +343,8 @@ void ffa_rxtx_domain_destroy(struct domain *d);
 uint32_t ffa_handle_rxtx_map(uint32_t fid, register_t tx_addr,
 			     register_t rx_addr, uint32_t page_count);
 uint32_t ffa_handle_rxtx_unmap(void);
-int32_t ffa_handle_rx_release(void);
+int32_t ffa_rx_acquire(struct domain *d);
+int32_t ffa_rx_release(struct domain *d);
 
 void ffa_notif_init(void);
 void ffa_notif_init_interrupt(void);
@@ -316,6 +356,9 @@ int ffa_handle_notification_unbind(struct cpu_user_regs *regs);
 void ffa_handle_notification_info_get(struct cpu_user_regs *regs);
 void ffa_handle_notification_get(struct cpu_user_regs *regs);
 int ffa_handle_notification_set(struct cpu_user_regs *regs);
+
+void ffa_handle_msg_send_direct_req(struct cpu_user_regs *regs, uint32_t fid);
+int32_t ffa_handle_msg_send2(struct cpu_user_regs *regs);
 
 static inline uint16_t ffa_get_vm_id(const struct domain *d)
 {
@@ -393,9 +436,18 @@ static inline int32_t ffa_simple_call(uint32_t fid, register_t a1,
     return ffa_get_ret_code(&resp);
 }
 
-static inline int32_t ffa_rx_release(void)
+static inline int32_t ffa_hyp_rx_release(void)
 {
     return ffa_simple_call(FFA_RX_RELEASE, 0, 0, 0, 0);
+}
+
+static inline bool ffa_fw_supports_fid(uint32_t fid)
+{
+    BUILD_BUG_ON(FFA_ABI_MIN > FFA_ABI_MAX);
+
+    if ( FFA_ABI_BITNUM(fid) > FFA_ABI_BITMAP_SIZE)
+        return false;
+    return test_bit(FFA_ABI_BITNUM(fid), ffa_fw_abi_supported);
 }
 
 #endif /*__FFA_PRIVATE_H__*/

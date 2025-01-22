@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 #include <xen/cpu.h>
 #include <xen/cpumask.h>
 #include <xen/init.h>
@@ -61,9 +61,8 @@ static bool copy_hyp_vect_bpi(unsigned int slot, const char *hyp_vec_start,
      * Vectors are part of the text that are mapped read-only. So re-map
      * the vector table to be able to update vectors.
      */
-    dst_remapped = __vmap(&dst_mfn,
-                          1UL << get_order_from_bytes(VECTOR_TABLE_SIZE),
-                          1, 1, PAGE_HYPERVISOR, VMAP_DEFAULT);
+    dst_remapped = vmap_contig(dst_mfn,
+                               1UL << get_order_from_bytes(VECTOR_TABLE_SIZE));
     if ( !dst_remapped )
         return false;
 
@@ -682,6 +681,12 @@ static const struct arm_cpu_capabilities arm_errata[] = {
         .desc = "ARM erratum 1530923",
         .capability = ARM64_WORKAROUND_AT_SPECULATE,
         MIDR_ALL_VERSIONS(MIDR_CORTEX_A55),
+    },
+    {
+        /* Cortex-A53 (All versions) */
+        .desc = "ARM erratum 1530924",
+        .capability = ARM64_WORKAROUND_AT_SPECULATE,
+        MIDR_ALL_VERSIONS(MIDR_CORTEX_A53),
     },
     {},
 };

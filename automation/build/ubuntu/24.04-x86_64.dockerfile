@@ -11,7 +11,7 @@ RUN <<EOF
 
     useradd --create-home user
 
-    apt-get -y update
+    apt-get update
 
     DEPS=(
         # Xen
@@ -62,6 +62,7 @@ RUN <<EOF
         meson
         ninja-build
         python3-packaging
+        python3-venv
     )
 
     apt-get -y --no-install-recommends install "${DEPS[@]}"

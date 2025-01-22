@@ -1,3 +1,4 @@
+obj-$(CONFIG_INTEL) += acpi.o
 obj-y += cpufreq.o
-obj-y += hwp.o
-obj-y += powernow.o
+obj-$(CONFIG_INTEL) += hwp.o
+obj-$(CONFIG_AMD) += powernow.o

@@ -1,11 +1,17 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 
-#ifndef __ASM_RISCV_SETUP_H__
-#define __ASM_RISCV_SETUP_H__
+#ifndef ASM__RISCV__SETUP_H
+#define ASM__RISCV__SETUP_H
+
+#include <xen/types.h>
 
 #define max_init_domid (0)
 
-#endif /* __ASM_RISCV_SETUP_H__ */
+void setup_mm(void);
+
+void copy_from_paddr(void *dst, paddr_t paddr, unsigned long len);
+
+#endif /* ASM__RISCV__SETUP_H */
 
 /*
  * Local variables:

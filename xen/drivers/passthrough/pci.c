@@ -170,8 +170,11 @@ static int __init cf_check parse_phantom_dev(const char *str)
     {
     case 1: case 2: case 4:
         if ( *s )
-    default:
             return -EINVAL;
+        break;
+
+    default:
+        return -EINVAL;
     }
 
     phantom_devs[nr_phantom_devs++] = phantom;
@@ -696,30 +699,13 @@ int pci_add_device(u16 seg, u8 bus, u8 devfn,
 
             if ( !pf_pdev )
             {
-                ret = pci_add_device(seg, info->physfn.bus, info->physfn.devfn,
-                                     NULL, node);
-                if ( ret )
-                {
-                    printk(XENLOG_WARNING
-                           "Failed to add SR-IOV device PF %pp for VF %pp\n",
-                           &PCI_SBDF(seg, info->physfn.bus, info->physfn.devfn),
-                           &pdev->sbdf);
-                    free_pdev(pseg, pdev);
-                    goto out;
-                }
-                pf_pdev = pci_get_pdev(NULL, PCI_SBDF(seg, info->physfn.bus,
-                                                      info->physfn.devfn));
-                if ( !pf_pdev )
-                {
-                    printk(XENLOG_ERR
-                           "Inconsistent PCI state: failed to find newly added PF %pp for VF %pp\n",
-                           &PCI_SBDF(seg, info->physfn.bus, info->physfn.devfn),
-                           &pdev->sbdf);
-                    ASSERT_UNREACHABLE();
-                    free_pdev(pseg, pdev);
-                    ret = -EILSEQ;
-                    goto out;
-                }
+                printk(XENLOG_WARNING
+                       "Attempted to add SR-IOV VF %pp without PF %pp\n",
+                       &pdev->sbdf,
+                       &PCI_SBDF(seg, info->physfn.bus, info->physfn.devfn));
+                free_pdev(pseg, pdev);
+                ret = -ENODEV;
+                goto out;
             }
 
             if ( !pdev->pf_pdev )

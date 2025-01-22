@@ -2,6 +2,7 @@
 #define __MACROS_H__
 
 #define ROUNDUP(x, a) (((x) + (a) - 1) & ~((a) - 1))
+#define ROUNDDOWN(x, a) ((x) & ~((a) - 1))
 
 #define IS_ALIGNED(val, align) (!((val) & ((align) - 1)))
 
@@ -59,6 +60,14 @@
 #define BUILD_BUG_ON(cond) ((void)BUILD_BUG_ON_ZERO(cond))
 #endif
 
+/*
+ * Force a compilation error.  This is for code which, in the normal case,
+ * should be Dead Code Eliminated, but a failure to eliminate constitutes an
+ * error.  e.g. behind a __builtin_constant_p(), or an illegal case within a
+ * switch(sizeof(...)) construct.
+ */
+#define BUILD_ERROR(msg) asm ( ".error \"" msg "\"" )
+
 /* Hide a value from the optimiser. */
 #define HIDE(x)                                 \
     ({                                          \
@@ -92,6 +101,50 @@
  * @member: The field to return the size of
  */
 #define sizeof_field(type, member) sizeof(((type *)NULL)->member)
+
+/* Cast an arbitrary integer to a pointer. */
+#define _p(x) ((void *)(unsigned long)(x))
+
+/*
+ * min()/max() macros that also do strict type-checking..
+ */
+#define min(x, y)                               \
+    ({                                          \
+        const typeof(x) _x = (x);               \
+        const typeof(y) _y = (y);               \
+        (void)(&_x == &_y); /* typecheck */     \
+        _x < _y ? _x : _y;                      \
+    })
+#define max(x, y)                               \
+    ({                                          \
+        const typeof(x) _x = (x);               \
+        const typeof(y) _y = (y);               \
+        (void)(&_x == &_y); /* typecheck */     \
+        _x > _y ? _x : _y;                      \
+    })
+
+/*
+ * ..and if you can't take the strict types, you can specify one yourself.
+ */
+#define min_t(type, x, y)                       \
+    ({                                          \
+        type __x = (x);                         \
+        type __y = (y);                         \
+        __x < __y ? __x: __y;                   \
+    })
+#define max_t(type, x, y)                       \
+    ({                                          \
+        type __x = (x);                         \
+        type __y = (y);                         \
+        __x > __y ? __x: __y;                   \
+    })
+
+/*
+ * pre-processor, array size, and bit field width suitable variants;
+ * please don't use in "normal" expressions.
+ */
+#define MIN(x, y) ((x) < (y) ? (x) : (y))
+#define MAX(x, y) ((x) > (y) ? (x) : (y))
 
 #endif /* __ASSEMBLY__ */
 

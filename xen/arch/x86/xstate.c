@@ -8,6 +8,7 @@
 #include <xen/param.h>
 #include <xen/percpu.h>
 #include <xen/sched.h>
+#include <xen/xvmalloc.h>
 
 #include <asm/cpu-policy.h>
 #include <asm/current.h>
@@ -507,9 +508,15 @@ int xstate_alloc_save_area(struct vcpu *v)
     unsigned int size;
 
     if ( !cpu_has_xsave )
-        return 0;
-
-    if ( !is_idle_vcpu(v) || !cpu_has_xsavec )
+    {
+        /*
+         * On non-XSAVE systems, we allocate an XSTATE buffer for simplicity.
+         * XSTATE is backwards compatible to FXSAVE, and only one cacheline
+         * larger.
+         */
+        size = XSTATE_AREA_MIN_SIZE;
+    }
+    else if ( !is_idle_vcpu(v) || !cpu_has_xsavec )
     {
         size = xsave_cntxt_size;
         BUG_ON(size < XSTATE_AREA_MIN_SIZE);
@@ -530,7 +537,7 @@ int xstate_alloc_save_area(struct vcpu *v)
 
     /* XSAVE/XRSTOR requires the save area be 64-byte-boundary aligned. */
     BUILD_BUG_ON(__alignof(*save_area) < 64);
-    save_area = _xzalloc(size, __alignof(*save_area));
+    save_area = _xvzalloc(size, __alignof(*save_area));
     if ( save_area == NULL )
         return -ENOMEM;
 
@@ -551,8 +558,7 @@ int xstate_alloc_save_area(struct vcpu *v)
 
 void xstate_free_save_area(struct vcpu *v)
 {
-    xfree(v->arch.xsave_area);
-    v->arch.xsave_area = NULL;
+    XVFREE(v->arch.xsave_area);
 }
 
 static bool valid_xcr0(uint64_t xcr0)
@@ -589,7 +595,7 @@ static bool valid_xcr0(uint64_t xcr0)
 
 unsigned int xstate_uncompressed_size(uint64_t xcr0)
 {
-    unsigned int size = XSTATE_AREA_MIN_SIZE, i;
+    unsigned int size = XSTATE_AREA_MIN_SIZE;
 
     /* Non-XCR0 states don't exist in an uncompressed image. */
     ASSERT((xcr0 & ~X86_XCR0_STATES) == 0);
@@ -606,7 +612,7 @@ unsigned int xstate_uncompressed_size(uint64_t xcr0)
      * with respect their index.
      */
     xcr0 &= ~(X86_XCR0_SSE | X86_XCR0_X87);
-    for_each_set_bit ( i, &xcr0, 63 )
+    for_each_set_bit ( i, xcr0 )
     {
         const struct xstate_component *c = &raw_cpu_policy.xstate.comp[i];
         unsigned int s = c->offset + c->size;
@@ -621,7 +627,9 @@ unsigned int xstate_uncompressed_size(uint64_t xcr0)
 
 unsigned int xstate_compressed_size(uint64_t xstates)
 {
-    unsigned int i, size = XSTATE_AREA_MIN_SIZE;
+    unsigned int size = XSTATE_AREA_MIN_SIZE;
+
+    ASSERT((xstates & ~(X86_XCR0_STATES | X86_XSS_STATES)) == 0);
 
     if ( xstates == 0 )
         return 0;
@@ -634,7 +642,7 @@ unsigned int xstate_compressed_size(uint64_t xstates)
      * componenets require aligning to 64 first.
      */
     xstates &= ~(X86_XCR0_SSE | X86_XCR0_X87);
-    for_each_set_bit ( i, &xstates, 63 )
+    for_each_set_bit ( i, xstates )
     {
         const struct xstate_component *c = &raw_cpu_policy.xstate.comp[i];
 
@@ -846,7 +854,7 @@ void xstate_init(struct cpuinfo_x86 *c)
 
     if ( bsp )
     {
-        static typeof(current->arch.xsave_area->fpu_sse) __initdata ctxt;
+        static fpusse_t __initdata ctxt;
 
         asm ( "fxsave %0" : "=m" (ctxt) );
         if ( ctxt.mxcsr_mask )

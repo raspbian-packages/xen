@@ -154,7 +154,7 @@ maintainers if you want to suggest a change.
    * - `Rule 5.1 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_05_01_2.c>`_
      - Required
      - External identifiers shall be distinct
-     - The Xen characters limit for identifiers is 40. Public headers
+     - The Xen characters limit for identifiers is 63. Public headers
        (xen/include/public/) are allowed to retain longer identifiers
        for backward compatibility.
 
@@ -162,7 +162,7 @@ maintainers if you want to suggest a change.
      - Required
      - Identifiers declared in the same scope and name space shall be
        distinct
-     - The Xen characters limit for identifiers is 40. Public headers
+     - The Xen characters limit for identifiers is 63. Public headers
        (xen/include/public/) are allowed to retain longer identifiers
        for backward compatibility.
 
@@ -177,7 +177,7 @@ maintainers if you want to suggest a change.
    * - `Rule 5.4 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_05_04.c>`_
      - Required
      - Macro identifiers shall be distinct
-     - The Xen characters limit for macro identifiers is 40. Public
+     - The Xen characters limit for macro identifiers is 63. Public
        headers (xen/include/public/) are allowed to retain longer
        identifiers for backward compatibility.
 
@@ -443,6 +443,14 @@ maintainers if you want to suggest a change.
      - The macro NULL shall be the only permitted form of null pointer constant
      -
 
+   * - `Rule 12.2 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_12_02.c>`_
+     - Required
+     - The right hand operand of a shift operator shall lie in the range
+       zero to one less than the width in bits of the essential type of
+       the left hand operand
+     - We rely on gcc -fsanitize=undefined to check for dangerious
+       violations to this rule and to ensure compliance
+
    * - `Rule 12.5 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_12_05.c>`_
      - Mandatory
      - The sizeof operator shall not have an operand which is a function
@@ -453,6 +461,16 @@ maintainers if you want to suggest a change.
      - Required
      - Initializer lists shall not contain persistent side effects
      -
+
+   * - `Rule 13.2 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_13_02.c>`_
+     - Required
+     - The value of an expression and its persistent side-effects shall
+       be the same under all permitted evaluation orders
+     - Be aware that the static analysis tool Eclair might report
+       several findings for Rule 13.2 of type "caution". These are
+       instances where Eclair is unable to verify that the code is valid
+       in regard to Rule 13.2. Caution reports might not be violations.
+       The rule should be followed in any case in new code submitted.
 
    * - `Rule 13.6 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_13_06.c>`_
      - Required
@@ -543,6 +561,13 @@ maintainers if you want to suggest a change.
      - The features of <stdarg.h> shall not be used
      -
 
+   * - `Rule 17.2 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_17_02.c>`_
+     - Required
+     - Functions shall not call themselves, either directly or indirectly
+     - Limited forms of recursion are allowed if the recursion is bound
+       (there is an upper limit and the upper limit is enforced.) The
+       bounding should be explained in a comment or in a deviation.
+
    * - `Rule 17.3 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_17_03.c>`_
      - Mandatory
      - A function shall not be declared implicitly
@@ -575,9 +600,37 @@ maintainers if you want to suggest a change.
        submitting new patches please try to decrease the number of
        violations when possible.
 
+   * - `Rule 18.1 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_18_01.c>`_
+     - Required
+     - A pointer resulting from arithmetic on a pointer operand shall
+       address an element of the same array as that pointer operand
+     -
+
+   * - `Rule 18.2 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_18_02.c>`_
+     - Required
+     - Subtraction between pointers shall only be applied to pointers
+       that address elements of the same array
+     - Be aware that the static analysis tool Eclair might report
+       several findings for Rule 18.2 of type "caution". These are
+       instances where Eclair is unable to verify that the code is valid
+       in regard to Rule 18.2. Caution reports might not be violations.
+       The rule should be followed in any case in new code submitted.
+
    * - `Rule 18.3 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_18_03.c>`_
      - Required
      - The relational operators > >= < and <= shall not be applied to objects of pointer type except where they point into the same object
+     -
+
+   * - `Rule 18.8 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_18_08.c>`_
+     - Required
+     - Variable-length array types shall not be used
+     -
+
+   * - `Rule 18.6 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_18_06_1.c>`_
+     - Required
+     - The address of an object with automatic storage shall not be
+       copied to another object that persists after the first object has
+       ceased to exist
      -
 
    * - `Rule 19.1 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_19_01.c>`_
@@ -589,9 +642,27 @@ maintainers if you want to suggest a change.
        instances where Eclair is unable to verify that the code is valid
        in regard to Rule 19.1. Caution reports are not violations.
 
+   * - `Rule 20.2 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_20_02.c>`_
+     - Required
+     - The ', " or \ characters and the /* or // character sequences
+       shall not occur in a header file name
+     -
+
+   * - `Rule 20.3 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_20_03.c>`_
+     - Required
+     - The #include directive shall be followed by either a <filename>
+       or "filename" sequence
+     -
+
    * - `Rule 20.4 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_20_04.c>`_
      - Required
      - A macro shall not be defined with the same name as a keyword
+     -
+
+   * - `Rule 20.6 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_20_06.c>`_
+     - Required
+     - Tokens that look like a preprocessing directive shall not occur
+       within a macro argument
      -
 
    * - `Rule 20.7 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_20_07.c>`_
@@ -600,13 +671,26 @@ maintainers if you want to suggest a change.
        shall be enclosed in parentheses
      - Extra parentheses are not required when macro parameters are used
        as function arguments, as macro arguments, array indices, lhs in
-       assignments or as initializers in initalizer lists.
+       assignments or as initializers in initalizer lists. In addition,
+       the use of a named variable argument in a macro that would constitute
+       a violation of the rule is allowed by ECLAIR as an extension of the
+       MISRA guideline, since it may not always be possible to parenthesize
+       such argument and the feature is non-standard::
+
+         #define M(args...) args
+         #if M(1) + 0 
 
    * - `Rule 20.9 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_20_09.c>`_
      - Required
      - All identifiers used in the controlling expression of #if or
        #elif preprocessing directives shall be #define'd before
        evaluation
+     -
+
+   * - `Rule 20.11 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_20_11.c>`_
+     - Required
+     - A macro parameter immediately following a # operator shall not
+       immediately be followed by a ## operator
      -
 
    * - `Rule 20.12 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_20_12.c>`_
@@ -651,9 +735,37 @@ maintainers if you want to suggest a change.
        declared
      - See comment for Rule 21.1
 
+   * - `Rule 21.3 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_21_03.c>`_
+     - Required
+     - The memory allocation and deallocation functions of <stdlib.h>
+       shall not be used
+     - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
+
+   * - `Rule 21.4 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_21_04.c>`_
+     - Required
+     - The standard header file <setjmp.h> shall not be used
+     - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
+
+   * - `Rule 21.5 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_21_05.c>`_
+     - Required
+     - The standard header file <signal.h> shall not be used
+     - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
+
    * - `Rule 21.6 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_21_06.c>`_
      - Required
      - The Standard Library input/output routines shall not be used
+     - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
+
+   * - `Rule 21.7 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_21_07.c>`_
+     - Required
+     - The Standard Library functions atof, atoi, atol and atoll of
+       <stdlib.h> shall not be used
+     - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
+
+   * - `Rule 21.8 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_21_08.c>`_
+     - Required
+     - The Standard Library functions abort, exit and system of
+       <stdlib.h> shall not be used
      - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
 
    * - `Rule 21.9 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_21_09.c>`_
@@ -664,6 +776,16 @@ maintainers if you want to suggest a change.
    * - `Rule 21.10 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_21_10.c>`_
      - Required
      - The Standard Library time and date routines shall not be used
+     - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
+
+   * - `Rule 21.11 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_21_11.c>`_
+     - Required
+     - The standard header file <tgmath.h> shall not be used
+     - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
+
+   * - `Rule 21.12 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_21_12.c>`_
+     - Advisory
+     - The exception handling features of <fenv.h> should not be used
      - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
 
    * - `Rule 21.13 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_21_13.c>`_
@@ -725,11 +847,23 @@ maintainers if you want to suggest a change.
      - The Standard Library function system of <stdlib.h> shall not be used
      -
 
+   * - `Rule 22.1 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_22_01.c>`_
+     - Required
+     - All resources obtained dynamically by means of Standard Library
+       functions shall be explicitly released
+     - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
+
    * - `Rule 22.2 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_22_02.c>`_
      - Mandatory
      - A block of memory shall only be freed if it was allocated by means of a
        Standard Library function
      -
+
+   * - `Rule 22.3 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_22_03.c>`_
+     - Required
+     - The same file shall not be open for read and write access at the
+       same time on different streams 
+     - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
 
    * - `Rule 22.4 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_22_04.c>`_
      - Mandatory
@@ -747,6 +881,31 @@ maintainers if you want to suggest a change.
      - The value of a pointer to a FILE shall not be used after the associated
        stream has been closed
      -
+
+   * - `Rule 22.7 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_22_07.c>`_
+     - Required
+     - The macro EOF shall only be compared with the unmodified return
+       value from any Standard Library function capable of returning EOF
+     - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
+
+   * - `Rule 22.8 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_22_08.c>`_
+     - Required
+     - The value of errno shall be set to zero prior to a call to an
+       errno-setting-function
+     - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
+
+   * - `Rule 22.9 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_22_09.c>`_
+     - Required
+     - The value of errno shall be tested against zero after calling an
+       errno-setting-function
+     - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
+
+   * - `Rule 22.10 <https://gitlab.com/MISRA/MISRA-C/MISRA-C-2012/Example-Suite/-/blob/master/R_22_10.c>`_
+     - Required
+     - The value of errno shall only be tested when the last function to
+       be called was an errno-setting-function
+     - Xen doesn't provide, use, or link against a Standard Library [#xen-stdlib]_
+
 
 Terms & Definitions
 -------------------

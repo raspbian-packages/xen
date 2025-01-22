@@ -382,6 +382,7 @@ static void vlapic_accept_irq(struct vcpu *v, uint32_t icr_low)
         gdprintk(XENLOG_ERR, "TODO: unsupported delivery mode in ICR %x\n",
                  icr_low);
         domain_crash(v->domain);
+        break;
     }
 }
 
@@ -481,12 +482,14 @@ static bool is_multicast_dest(struct vlapic *vlapic, unsigned int short_hand,
         return short_hand != APIC_DEST_SELF;
 
     if ( vlapic_x2apic_mode(vlapic) )
-        return dest_mode ? hweight16(dest) > 1 : dest == 0xffffffffU;
+        return dest_mode ? multiple_bits_set((uint16_t)dest)
+                         : dest == 0xffffffffU;
 
     if ( dest_mode )
-        return hweight8(dest &
-                        GET_xAPIC_DEST_FIELD(vlapic_get_reg(vlapic,
-                                                            APIC_DFR))) > 1;
+    {
+        dest &= GET_xAPIC_DEST_FIELD(vlapic_get_reg(vlapic, APIC_DFR));
+        return multiple_bits_set((uint8_t)dest);
+    }
 
     return dest == 0xff;
 }
@@ -1220,7 +1223,7 @@ void vlapic_tdt_msr_set(struct vlapic *vlapic, uint64_t value)
     if ( value > guest_tsc )
     {
         uint64_t delta = gtsc_to_gtime(v->domain, value - guest_tsc);
-        delta = max_t(s64, delta, 0);
+        delta = max_t(int64_t, delta, 0);
 
         HVM_DBG_LOG(DBG_LEVEL_VLAPIC_TIMER, "delta[0x%016"PRIx64"]", delta);
 
@@ -1568,36 +1571,76 @@ static void lapic_load_fixup(struct vlapic *vlapic)
                v, vlapic->loaded.id, vlapic->loaded.ldr, good_ldr);
 }
 
-static int cf_check lapic_load_hidden(struct domain *d, hvm_domain_context_t *h)
-{
-    unsigned int vcpuid = hvm_load_instance(h);
-    struct vcpu *v;
-    struct vlapic *s;
 
+static int lapic_check_common(const struct domain *d, unsigned int vcpuid)
+{
     if ( !has_vlapic(d) )
         return -ENODEV;
 
     /* Which vlapic to load? */
-    if ( vcpuid >= d->max_vcpus || (v = d->vcpu[vcpuid]) == NULL )
+    if ( !domain_vcpu(d, vcpuid) )
     {
-        dprintk(XENLOG_G_ERR, "HVM restore: dom%d has no apic%u\n",
+        dprintk(XENLOG_G_ERR, "HVM restore: dom%d has no vCPU %u\n",
                 d->domain_id, vcpuid);
         return -EINVAL;
     }
-    s = vcpu_vlapic(v);
+
+    return 0;
+}
+
+static int cf_check lapic_check_hidden(const struct domain *d,
+                                       hvm_domain_context_t *h)
+{
+    unsigned int vcpuid = hvm_load_instance(h);
+    struct hvm_hw_lapic s;
+    int rc = lapic_check_common(d, vcpuid);
+
+    if ( rc )
+        return rc;
+
+    if ( hvm_load_entry_zeroextend(LAPIC, h, &s) != 0 )
+        return -ENODATA;
+
+    /* EN=0 with EXTD=1 is illegal */
+    if ( (s.apic_base_msr & (APIC_BASE_ENABLE | APIC_BASE_EXTD)) ==
+         APIC_BASE_EXTD )
+        return -EINVAL;
+
+    return 0;
+}
+
+static int cf_check lapic_load_hidden(struct domain *d, hvm_domain_context_t *h)
+{
+    unsigned int vcpuid = hvm_load_instance(h);
+    struct vcpu *v = d->vcpu[vcpuid];
+    struct vlapic *s = vcpu_vlapic(v);
 
     if ( hvm_load_entry_zeroextend(LAPIC, h, &s->hw) != 0 )
+    {
+        ASSERT_UNREACHABLE();
         return -EINVAL;
+    }
 
     s->loaded.hw = 1;
     if ( s->loaded.regs )
         lapic_load_fixup(s);
 
-    if ( !(s->hw.apic_base_msr & APIC_BASE_ENABLE) &&
-         unlikely(vlapic_x2apic_mode(s)) )
-        return -EINVAL;
-
     hvm_update_vlapic_mode(v);
+
+    return 0;
+}
+
+static int cf_check lapic_check_regs(const struct domain *d,
+                                     hvm_domain_context_t *h)
+{
+    unsigned int vcpuid = hvm_load_instance(h);
+    int rc;
+
+    if ( (rc = lapic_check_common(d, vcpuid)) )
+        return rc;
+
+    if ( !hvm_get_entry(LAPIC_REGS, h) )
+        return -ENODATA;
 
     return 0;
 }
@@ -1605,23 +1648,11 @@ static int cf_check lapic_load_hidden(struct domain *d, hvm_domain_context_t *h)
 static int cf_check lapic_load_regs(struct domain *d, hvm_domain_context_t *h)
 {
     unsigned int vcpuid = hvm_load_instance(h);
-    struct vcpu *v;
-    struct vlapic *s;
-
-    if ( !has_vlapic(d) )
-        return -ENODEV;
-
-    /* Which vlapic to load? */
-    if ( vcpuid >= d->max_vcpus || (v = d->vcpu[vcpuid]) == NULL )
-    {
-        dprintk(XENLOG_G_ERR, "HVM restore: dom%d has no apic%u\n",
-                d->domain_id, vcpuid);
-        return -EINVAL;
-    }
-    s = vcpu_vlapic(v);
+    struct vcpu *v = d->vcpu[vcpuid];
+    struct vlapic *s = vcpu_vlapic(v);
 
     if ( hvm_load_entry(LAPIC_REGS, h, s->regs) != 0 )
-        return -EINVAL;
+        ASSERT_UNREACHABLE();
 
     s->loaded.id = vlapic_get_reg(s, APIC_ID);
     s->loaded.ldr = vlapic_get_reg(s, APIC_LDR);
@@ -1638,9 +1669,9 @@ static int cf_check lapic_load_regs(struct domain *d, hvm_domain_context_t *h)
     return 0;
 }
 
-HVM_REGISTER_SAVE_RESTORE(LAPIC, lapic_save_hidden, NULL,
+HVM_REGISTER_SAVE_RESTORE(LAPIC, lapic_save_hidden, lapic_check_hidden,
                           lapic_load_hidden, 1, HVMSR_PER_VCPU);
-HVM_REGISTER_SAVE_RESTORE(LAPIC_REGS, lapic_save_regs, NULL,
+HVM_REGISTER_SAVE_RESTORE(LAPIC_REGS, lapic_save_regs, lapic_check_regs,
                           lapic_load_regs, 1, HVMSR_PER_VCPU);
 
 int vlapic_init(struct vcpu *v)

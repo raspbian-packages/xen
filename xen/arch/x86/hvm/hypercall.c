@@ -73,6 +73,8 @@ long hvm_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
     {
     case PHYSDEVOP_map_pirq:
     case PHYSDEVOP_unmap_pirq:
+        break;
+
     case PHYSDEVOP_eoi:
     case PHYSDEVOP_irq_status_query:
     case PHYSDEVOP_get_free_pirq:
@@ -80,9 +82,11 @@ long hvm_physdev_op(int cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             return -ENOSYS;
         break;
 
+    case PHYSDEVOP_setup_gsi:
     case PHYSDEVOP_pci_mmcfg_reserved:
     case PHYSDEVOP_pci_device_add:
     case PHYSDEVOP_pci_device_remove:
+    case PHYSDEVOP_pci_device_reset:
     case PHYSDEVOP_dbgp_op:
         if ( !is_hardware_domain(currd) )
             return -ENOSYS;
@@ -108,23 +112,24 @@ int hvm_hypercall(struct cpu_user_regs *regs)
 
     switch ( mode )
     {
-    case 8:
+    case X86_MODE_64BIT:
         eax = regs->rax;
-        /* Fallthrough to permission check. */
-    case 4:
-    case 2:
+        fallthrough;
+    case X86_MODE_32BIT:
+    case X86_MODE_16BIT:
         if ( currd->arch.monitor.guest_request_userspace_enabled &&
-            eax == __HYPERVISOR_hvm_op &&
-            (mode == 8 ? regs->rdi : regs->ebx) == HVMOP_guest_request_vm_event )
+             eax == __HYPERVISOR_hvm_op &&
+             (mode == X86_MODE_64BIT ? regs->rdi : regs->ebx) ==
+             HVMOP_guest_request_vm_event )
             break;
 
         if ( likely(!hvm_get_cpl(curr)) )
             break;
         fallthrough;
-    default:
+    case X86_MODE_VM86:
         regs->rax = -EPERM;
         return HVM_HCALL_completed;
-    case 0:
+    case X86_MODE_REAL:
         break;
     }
 
@@ -194,7 +199,7 @@ enum mc_disposition hvm_do_multicall_call(struct mc_state *state)
 {
     struct vcpu *curr = current;
 
-    if ( hvm_guest_x86_mode(curr) == 8 )
+    if ( hvm_guest_x86_mode(curr) == X86_MODE_64BIT )
     {
         struct multicall_entry *call = &state->call;
 

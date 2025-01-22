@@ -12,7 +12,7 @@
 #include <asm/mpspec.h>
 #include <asm/apic.h>
 #include <asm/i387.h>
-#include <mach_apic.h>
+#include <asm/trampoline.h>
 
 #include "cpu.h"
 

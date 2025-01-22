@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * arm/ioreq.c: hardware virtual machine I/O emulation
  *
@@ -133,12 +133,6 @@ bool arch_ioreq_complete_mmio(void)
     }
 
     return false;
-}
-
-bool arch_vcpu_ioreq_completion(enum vio_completion completion)
-{
-    ASSERT_UNREACHABLE();
-    return true;
 }
 
 /*

@@ -48,6 +48,7 @@
 #include <xen/platform.h>
 
 #include "xentoollog.h"
+#include "xen-barrier.h"
 
 #if defined(__i386__) || defined(__x86_64__)
 #include <xen/foreign/x86_32.h>
@@ -60,33 +61,6 @@
 #define XC_PAGE_MASK            (~(XC_PAGE_SIZE-1))
 
 #define INVALID_MFN  (~0UL)
-
-/*
- *  DEFINITIONS FOR CPU BARRIERS
- */
-
-#define xen_barrier() asm volatile ( "" : : : "memory")
-
-#if defined(__i386__)
-#define xen_mb()  asm volatile ( "lock addl $0, -4(%%esp)" ::: "memory" )
-#define xen_rmb() xen_barrier()
-#define xen_wmb() xen_barrier()
-#elif defined(__x86_64__)
-#define xen_mb()  asm volatile ( "lock addl $0, -32(%%rsp)" ::: "memory" )
-#define xen_rmb() xen_barrier()
-#define xen_wmb() xen_barrier()
-#elif defined(__arm__)
-#define xen_mb()   asm volatile ("dmb" : : : "memory")
-#define xen_rmb()  asm volatile ("dmb" : : : "memory")
-#define xen_wmb()  asm volatile ("dmb" : : : "memory")
-#elif defined(__aarch64__)
-#define xen_mb()   asm volatile ("dmb sy" : : : "memory")
-#define xen_rmb()  asm volatile ("dmb sy" : : : "memory")
-#define xen_wmb()  asm volatile ("dmb sy" : : : "memory")
-#else
-#error "Define barriers"
-#endif
-
 
 #define XENCTRL_HAS_XC_INTERFACE 1
 /* In Xen 4.0 and earlier, xc_interface_open and xc_evtchn_open would
@@ -1171,7 +1145,8 @@ typedef uint32_t xc_node_to_node_dist_t;
 int xc_physinfo(xc_interface *xch, xc_physinfo_t *info);
 int xc_cputopoinfo(xc_interface *xch, unsigned *max_cpus,
                    xc_cputopo_t *cputopo);
-int xc_microcode_update(xc_interface *xch, const void *buf, size_t len);
+int xc_microcode_update(xc_interface *xch, const void *buf,
+                        size_t len, unsigned int flags);
 int xc_get_cpu_version(xc_interface *xch, struct xenpf_pcpu_version *cpu_ver);
 int xc_get_ucode_revision(xc_interface *xch,
                           struct xenpf_ucode_revision *ucode_rev);
@@ -1381,6 +1356,11 @@ int xc_domain_irq_permission(xc_interface *xch,
                              uint32_t domid,
                              uint32_t pirq,
                              bool allow_access);
+
+int xc_domain_gsi_permission(xc_interface *xch,
+                             uint32_t domid,
+                             uint32_t gsi,
+                             uint32_t flags);
 
 int xc_domain_iomem_permission(xc_interface *xch,
                                uint32_t domid,
@@ -1593,6 +1573,16 @@ long xc_memory_op(xc_interface *xch, unsigned int cmd, void *arg, size_t len);
 
 int xc_version(xc_interface *xch, int cmd, void *arg);
 
+/*
+ * Wrappers around XENVER_* subops.  Callers must pass the returned pointer to
+ * free().
+ */
+char *xc_xenver_extraversion(xc_interface *xch);
+char *xc_xenver_capabilities(xc_interface *xch);
+char *xc_xenver_changeset(xc_interface *xch);
+char *xc_xenver_commandline(xc_interface *xch);
+char *xc_xenver_buildid(xc_interface *xch);
+
 int xc_flask_op(xc_interface *xch, xen_flask_op_t *op);
 
 /*
@@ -1637,9 +1627,16 @@ int xc_physdev_map_pirq_msi(xc_interface *xch,
                             int entry_nr,
                             uint64_t table_base);
 
+int xc_physdev_map_pirq_gsi(xc_interface *xch,
+                            uint32_t domid,
+                            int gsi,
+                            int *pirq);
+
 int xc_physdev_unmap_pirq(xc_interface *xch,
                           uint32_t domid,
                           int pirq);
+
+int xc_pcidev_get_gsi(xc_interface *xch, uint32_t sbdf);
 
 /*
  *  LOGGING AND ERROR REPORTING
@@ -2215,7 +2212,7 @@ int xc_memshr_domain_resume(xc_interface *xch,
  * May fail with:
  *  EINVAL if the gfn is not populated or not sharable (mmio, etc)
  *  ENOMEM if internal data structures cannot be allocated
- *  E2BIG if the page is being referenced by other subsytems (e.g. qemu)
+ *  E2BIG if the page is being referenced by other subsystems (e.g. qemu)
  *  ENOENT or EEXIST if there are internal hypervisor errors.
  */
 int xc_memshr_nominate_gfn(xc_interface *xch,
@@ -2653,6 +2650,15 @@ int xc_livepatch_replace(xc_interface *xch, char *name, uint32_t timeout, uint32
  */
 int xc_domain_cacheflush(xc_interface *xch, uint32_t domid,
                          xen_pfn_t start_pfn, xen_pfn_t nr_pfns);
+
+/*
+ * Set LLC colors for a domain.
+ * It can only be used directly after domain creation. An attempt to use it
+ * afterwards will result in an error.
+ */
+int xc_domain_set_llc_colors(xc_interface *xch, uint32_t domid,
+                             const uint32_t *llc_colors,
+                             uint32_t num_llc_colors);
 
 #if defined(__arm__) || defined(__aarch64__)
 int xc_dt_overlay(xc_interface *xch, void *overlay_fdt,

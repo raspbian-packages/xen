@@ -1,7 +1,8 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 #include <xen/init.h>
 #include <xen/compile.h>
 #include <xen/lib.h>
+#include <xen/llc-coloring.h>
 #include <xen/mm.h>
 #include <xen/param.h>
 #include <xen/domain_page.h>
@@ -416,7 +417,6 @@ static void __init allocate_memory_11(struct domain *d,
     }
 }
 
-#ifdef CONFIG_DOM0LESS_BOOT
 bool __init allocate_domheap_memory(struct domain *d, paddr_t tot_size,
                                     alloc_domheap_mem_cb cb, void *extra)
 {
@@ -508,7 +508,6 @@ bool __init allocate_bank_memory(struct kernel_info *kinfo, gfn_t sgfn,
 
     return true;
 }
-#endif
 
 /*
  * When PCI passthrough is available we want to keep the
@@ -900,32 +899,72 @@ int __init add_ext_regions(unsigned long s_gfn, unsigned long e_gfn,
     return 0;
 }
 
+static int __init add_hwdom_free_regions(unsigned long s_gfn,
+                                         unsigned long e_gfn, void *data)
+{
+    struct membanks *free_regions = data;
+    paddr_t start, size;
+    paddr_t s = pfn_to_paddr(s_gfn);
+    paddr_t e = pfn_to_paddr(e_gfn);
+    unsigned int i, j;
+
+    if ( free_regions->nr_banks >= free_regions->max_banks )
+        return 0;
+
+    /*
+     * Both start and size of the free region should be 2MB aligned to
+     * potentially allow superpage mapping.
+     */
+    start = (s + SZ_2M - 1) & ~(SZ_2M - 1);
+    if ( start > e )
+        return 0;
+
+    /*
+     * e is actually "end-1" because it is called by rangeset functions
+     * which are inclusive of the last address.
+     */
+    e += 1;
+    size = (e - start) & ~(SZ_2M - 1);
+
+    /* Find the insert position (descending order). */
+    for ( i = 0; i < free_regions->nr_banks ; i++ )
+        if ( size > free_regions->bank[i].size )
+            break;
+
+    /* Move the other banks to make space. */
+    for ( j = free_regions->nr_banks; j > i ; j-- )
+    {
+        free_regions->bank[j].start = free_regions->bank[j - 1].start;
+        free_regions->bank[j].size = free_regions->bank[j - 1].size;
+    }
+
+    free_regions->bank[i].start = start;
+    free_regions->bank[i].size = size;
+    free_regions->nr_banks++;
+
+    return 0;
+}
+
 /*
- * Find unused regions of Host address space which can be exposed to Dom0
- * as extended regions for the special memory mappings. In order to calculate
- * regions we exclude every region assigned to Dom0 from the Host RAM:
- * - domain RAM
- * - reserved-memory
- * - static shared memory
- * - grant table space
+ * Find unused regions of Host address space which can be exposed to domain
+ * using the host memory layout. In order to calculate regions we exclude every
+ * region passed in mem_banks from the Host RAM.
  */
 static int __init find_unallocated_memory(const struct kernel_info *kinfo,
-                                          struct membanks *ext_regions)
+                                          const struct membanks *mem_banks[],
+                                          unsigned int nr_mem_banks,
+                                          struct membanks *free_regions,
+                                          int (*cb)(unsigned long s_gfn,
+                                                    unsigned long e_gfn,
+                                                    void *data))
 {
     const struct membanks *mem = bootinfo_get_mem();
-    const struct membanks *mem_banks[] = {
-        kernel_info_get_mem_const(kinfo),
-        bootinfo_get_reserved_mem(),
-#ifdef CONFIG_STATIC_SHM
-        bootinfo_get_shmem(),
-#endif
-    };
     struct rangeset *unalloc_mem;
     paddr_t start, end;
     unsigned int i, j;
     int res;
 
-    dt_dprintk("Find unallocated memory for extended regions\n");
+    ASSERT(domain_use_host_layout(kinfo->d));
 
     unalloc_mem = rangeset_new(NULL, NULL, 0);
     if ( !unalloc_mem )
@@ -946,13 +985,8 @@ static int __init find_unallocated_memory(const struct kernel_info *kinfo,
         }
     }
 
-    /*
-     * Exclude the following regions:
-     * 1) Remove RAM assigned to Dom0
-     * 2) Remove reserved memory
-     * 3) Remove static shared memory (when the feature is enabled)
-     */
-    for ( i = 0; i < ARRAY_SIZE(mem_banks); i++ )
+    /* Remove all regions listed in mem_banks */
+    for ( i = 0; i < nr_mem_banks; i++ )
         for ( j = 0; j < mem_banks[i]->nr_banks; j++ )
         {
             start = mem_banks[i]->bank[j].start;
@@ -973,34 +1007,116 @@ static int __init find_unallocated_memory(const struct kernel_info *kinfo,
             }
         }
 
-    /* Remove grant table region */
-    if ( kinfo->gnttab_size )
-    {
-        start = kinfo->gnttab_start;
-        end = kinfo->gnttab_start + kinfo->gnttab_size;
-        res = rangeset_remove_range(unalloc_mem, PFN_DOWN(start),
-                                    PFN_DOWN(end - 1));
-        if ( res )
-        {
-            printk(XENLOG_ERR "Failed to remove: %#"PRIpaddr"->%#"PRIpaddr"\n",
-                   start, end);
-            goto out;
-        }
-    }
-
     start = 0;
     end = (1ULL << p2m_ipa_bits) - 1;
     res = rangeset_report_ranges(unalloc_mem, PFN_DOWN(start), PFN_DOWN(end),
-                                 add_ext_regions, ext_regions);
+                                 cb, free_regions);
     if ( res )
-        ext_regions->nr_banks = 0;
-    else if ( !ext_regions->nr_banks )
+        free_regions->nr_banks = 0;
+    else if ( !free_regions->nr_banks )
         res = -ENOENT;
 
 out:
     rangeset_destroy(unalloc_mem);
 
     return res;
+}
+
+void __init allocate_memory(struct domain *d, struct kernel_info *kinfo)
+{
+    struct membanks *mem = kernel_info_get_mem(kinfo);
+    unsigned int i, nr_banks = GUEST_RAM_BANKS;
+    struct membanks *hwdom_free_mem = NULL;
+
+    printk(XENLOG_INFO "Allocating mappings totalling %ldMB for %pd:\n",
+           /* Don't want format this as PRIpaddr (16 digit hex) */
+           (unsigned long)(kinfo->unassigned_mem >> 20), d);
+
+    mem->nr_banks = 0;
+    /*
+     * Use host memory layout for hwdom. Only case for this is when LLC coloring
+     * is enabled.
+     */
+    if ( is_hardware_domain(d) )
+    {
+        struct membanks *gnttab = membanks_xzalloc(1, MEMORY);
+        /*
+         * Exclude the following regions:
+         * 1) Remove reserved memory
+         * 2) Grant table assigned to hwdom
+         */
+        const struct membanks *mem_banks[] = {
+            bootinfo_get_reserved_mem(),
+            gnttab,
+        };
+
+        if ( !gnttab )
+            goto fail;
+
+        gnttab->nr_banks = 1;
+        gnttab->bank[0].start = kinfo->gnttab_start;
+        gnttab->bank[0].size = kinfo->gnttab_size;
+
+        hwdom_free_mem = membanks_xzalloc(NR_MEM_BANKS, MEMORY);
+        if ( !hwdom_free_mem )
+            goto fail;
+
+        if ( find_unallocated_memory(kinfo, mem_banks, ARRAY_SIZE(mem_banks),
+                                     hwdom_free_mem, add_hwdom_free_regions) )
+            goto fail;
+
+        nr_banks = hwdom_free_mem->nr_banks;
+        xfree(gnttab);
+    }
+
+    for ( i = 0; kinfo->unassigned_mem > 0 && nr_banks > 0; i++, nr_banks-- )
+    {
+        paddr_t bank_start, bank_size;
+
+        if ( is_hardware_domain(d) )
+        {
+            bank_start = hwdom_free_mem->bank[i].start;
+            bank_size = hwdom_free_mem->bank[i].size;
+        }
+        else
+        {
+            const uint64_t bankbase[] = GUEST_RAM_BANK_BASES;
+            const uint64_t banksize[] = GUEST_RAM_BANK_SIZES;
+
+            if ( i >= GUEST_RAM_BANKS )
+                goto fail;
+
+            bank_start = bankbase[i];
+            bank_size = banksize[i];
+        }
+
+        bank_size = MIN(bank_size, kinfo->unassigned_mem);
+        if ( !allocate_bank_memory(kinfo, gaddr_to_gfn(bank_start), bank_size) )
+            goto fail;
+    }
+
+    if ( kinfo->unassigned_mem )
+        goto fail;
+
+    for( i = 0; i < mem->nr_banks; i++ )
+    {
+        printk(XENLOG_INFO "%pd BANK[%d] %#"PRIpaddr"-%#"PRIpaddr" (%ldMB)\n",
+               d,
+               i,
+               mem->bank[i].start,
+               mem->bank[i].start + mem->bank[i].size,
+               /* Don't want format this as PRIpaddr (16 digit hex) */
+               (unsigned long)(mem->bank[i].size >> 20));
+    }
+
+    xfree(hwdom_free_mem);
+    return;
+
+  fail:
+    panic("Failed to allocate requested domain memory."
+          /* Don't want format this as PRIpaddr (16 digit hex) */
+          " %ldKB unallocated. Fix the VMs configurations.\n",
+          (unsigned long)kinfo->unassigned_mem >> 10);
 }
 
 static int __init handle_pci_range(const struct dt_device_node *dev,
@@ -1170,6 +1286,44 @@ static int __init find_domU_holes(const struct kernel_info *kinfo,
     return remove_shm_holes_for_domU(kinfo, ext_regions);
 }
 
+static int __init find_host_extended_regions(const struct kernel_info *kinfo,
+                                             struct membanks *ext_regions)
+{
+    int res;
+    struct membanks *gnttab = membanks_xzalloc(1, MEMORY);
+
+    /*
+     * Exclude the following regions:
+     * 1) Remove RAM assigned to domain
+     * 2) Remove reserved memory
+     * 3) Grant table assigned to domain
+     * 4) Remove static shared memory (when the feature is enabled)
+     */
+    const struct membanks *mem_banks[] = {
+        kernel_info_get_mem_const(kinfo),
+        bootinfo_get_reserved_mem(),
+        gnttab,
+#ifdef CONFIG_STATIC_SHM
+        bootinfo_get_shmem(),
+#endif
+    };
+
+    dt_dprintk("Find unallocated memory for extended regions\n");
+
+    if ( !gnttab )
+        return -ENOMEM;
+
+    gnttab->nr_banks = 1;
+    gnttab->bank[0].start = kinfo->gnttab_start;
+    gnttab->bank[0].size = kinfo->gnttab_size;
+
+    res = find_unallocated_memory(kinfo, mem_banks, ARRAY_SIZE(mem_banks),
+                                  ext_regions, add_ext_regions);
+    xfree(gnttab);
+
+    return res;
+}
+
 int __init make_hypervisor_node(struct domain *d,
                                 const struct kernel_info *kinfo,
                                 int addrcells, int sizecells)
@@ -1217,16 +1371,14 @@ int __init make_hypervisor_node(struct domain *d,
     }
     else
     {
-        ext_regions = xzalloc_flex_struct(struct membanks, bank, NR_MEM_BANKS);
+        ext_regions = membanks_xzalloc(NR_MEM_BANKS, MEMORY);
         if ( !ext_regions )
             return -ENOMEM;
 
-        ext_regions->max_banks = NR_MEM_BANKS;
-
-        if ( is_domain_direct_mapped(d) )
+        if ( domain_use_host_layout(d) )
         {
             if ( !is_iommu_enabled(d) )
-                res = find_unallocated_memory(kinfo, ext_regions);
+                res = find_host_extended_regions(kinfo, ext_regions);
             else
                 res = find_memory_holes(kinfo, ext_regions);
         }
@@ -2152,8 +2304,11 @@ static int __init construct_dom0(struct domain *d)
     /* type must be set before allocate_memory */
     d->arch.type = kinfo.type;
 #endif
-    allocate_memory_11(d, &kinfo);
     find_gnttab_region(d, &kinfo);
+    if ( is_domain_direct_mapped(d) )
+        allocate_memory_11(d, &kinfo);
+    else
+        allocate_memory(d, &kinfo);
 
     rc = process_shm_chosen(d, &kinfo);
     if ( rc < 0 )
@@ -2196,6 +2351,7 @@ void __init create_dom0(void)
         .max_maptrack_frames = -1,
         .grant_opts = XEN_DOMCTL_GRANT_version(opt_gnttab_max_version),
     };
+    unsigned int flags = CDF_privileged;
     int rc;
 
     /* The vGIC for DOM0 is exactly emulating the hardware GIC */
@@ -2223,9 +2379,15 @@ void __init create_dom0(void)
             panic("SVE vector length error\n");
     }
 
-    dom0 = domain_create(0, &dom0_cfg, CDF_privileged | CDF_directmap);
+    if ( !llc_coloring_enabled )
+        flags |= CDF_directmap;
+
+    dom0 = domain_create(0, &dom0_cfg, flags);
     if ( IS_ERR(dom0) )
         panic("Error creating domain 0 (rc = %ld)\n", PTR_ERR(dom0));
+
+    if ( llc_coloring_enabled && (rc = dom0_set_llc_colors(dom0)) )
+        panic("Error initializing LLC coloring for domain 0 (rc = %d)\n", rc);
 
     if ( alloc_dom0_vcpu0(dom0) == NULL )
         panic("Error creating domain 0 vcpu0\n");

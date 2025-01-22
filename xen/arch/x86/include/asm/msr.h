@@ -31,11 +31,10 @@
 			  : /* no outputs */ \
 			  : "c" (msr), "a" (val1), "d" (val2))
 
-static inline void wrmsrl(unsigned int msr, __u64 val)
+static inline void wrmsrl(unsigned int msr, uint64_t val)
 {
-        __u32 lo, hi;
-        lo = (__u32)val;
-        hi = (__u32)(val >> 32);
+        uint32_t lo = val, hi = val >> 32;
+
         wrmsr(msr, lo, hi);
 }
 
@@ -54,17 +53,17 @@ static inline void wrmsr_ns(uint32_t msr, uint32_t lo, uint32_t hi)
 /* rdmsr with exception handling */
 #define rdmsr_safe(msr,val) ({\
     int rc_; \
-    uint32_t lo_, hi_; \
+    uint64_t lo_, hi_; \
     __asm__ __volatile__( \
         "1: rdmsr\n2:\n" \
         ".section .fixup,\"ax\"\n" \
-        "3: xorl %0,%0\n; xorl %1,%1\n" \
+        "3: xorl %k0,%k0\n; xorl %k1,%k1\n" \
         "   movl %5,%2\n; jmp 2b\n" \
         ".previous\n" \
         _ASM_EXTABLE(1b, 3b) \
         : "=a" (lo_), "=d" (hi_), "=&r" (rc_) \
         : "c" (msr), "2" (0), "i" (-EFAULT)); \
-    val = lo_ | ((uint64_t)hi_ << 32); \
+    val = lo_ | (hi_ << 32); \
     rc_; })
 
 /* wrmsr with exception handling */
@@ -99,27 +98,33 @@ static inline void msr_split(struct cpu_user_regs *regs, uint64_t val)
 
 static inline uint64_t rdtsc(void)
 {
-    uint32_t low, high;
+    uint64_t low, high;
 
     __asm__ __volatile__("rdtsc" : "=a" (low), "=d" (high));
 
-    return ((uint64_t)high << 32) | low;
+    return (high << 32) | low;
 }
 
 static inline uint64_t rdtsc_ordered(void)
 {
-	/*
-	 * The RDTSC instruction is not ordered relative to memory access.
-	 * The Intel SDM and the AMD APM are both vague on this point, but
-	 * empirically an RDTSC instruction can be speculatively executed
-	 * before prior loads.  An RDTSC immediately after an appropriate
-	 * barrier appears to be ordered as a normal load, that is, it
-	 * provides the same ordering guarantees as reading from a global
-	 * memory location that some other imaginary CPU is updating
-	 * continuously with a time stamp.
-	 */
-	alternative("lfence", "mfence", X86_FEATURE_MFENCE_RDTSC);
-	return rdtsc();
+    uint64_t low, high, aux;
+
+    /*
+     * The RDTSC instruction is not serializing.  Make it dispatch serializing
+     * for the purposes here by issuing LFENCE (or MFENCE if necessary) ahead
+     * of it.
+     *
+     * RDTSCP, otoh, "does wait until all previous instructions have executed
+     * and all previous loads are globally visible" (SDM) / "forces all older
+     * instructions to retire before reading the timestamp counter" (APM).
+     */
+    alternative_io_2("lfence; rdtsc",
+                     "mfence; rdtsc", X86_FEATURE_MFENCE_RDTSC,
+                     "rdtscp",        X86_FEATURE_RDTSCP,
+                     ASM_OUTPUT2("=a" (low), "=d" (high), "=c" (aux)),
+                     /* no inputs */);
+
+    return (high << 32) | low;
 }
 
 #define __write_tsc(val) wrmsrl(MSR_IA32_TSC, val)

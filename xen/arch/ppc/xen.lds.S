@@ -1,4 +1,6 @@
 #include <xen/lib.h>
+
+#define DECL_SECTION_WITH_LADDR
 #include <xen/xen.lds.h>
 
 OUTPUT_ARCH(powerpc:common64)
@@ -94,6 +96,8 @@ SECTIONS
         CONSTRUCTORS
     } :text
 
+    DT_DEV_INFO                       /* Devicetree based device info */
+
     . = ALIGN(PAGE_SIZE);             /* Init code and data */
     __init_begin = .;
     DECL_SECTION(.init.text) {
@@ -148,14 +152,7 @@ SECTIONS
         __bss_start = .;
         *(.bss.stack_aligned)
         *(.bss.page_aligned)
-        . = ALIGN(PAGE_SIZE);
-        __per_cpu_start = .;
-        *(.bss.percpu.page_aligned)
-        *(.bss.percpu)
-        . = ALIGN(SMP_CACHE_BYTES);
-        *(.bss.percpu.read_mostly)
-        . = ALIGN(SMP_CACHE_BYTES);
-        __per_cpu_data_end = .;
+        PERCPU_BSS
         *(.bss .bss.*)
         . = ALIGN(POINTER_ALIGN);
         __bss_end = .;

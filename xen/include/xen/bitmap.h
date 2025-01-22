@@ -103,13 +103,10 @@ extern int bitmap_allocate_region(unsigned long *bitmap, int pos, int order);
 #define bitmap_switch(nbits, zero, small, large)			  \
 	unsigned int n__ = (nbits);					  \
 	if (__builtin_constant_p(nbits) && !n__) {			  \
-		/* SAF-7-safe Rule 20.7 non-parenthesized macro argument */ \
 		zero;							  \
 	} else if (__builtin_constant_p(nbits) && n__ <= BITS_PER_LONG) { \
-		/* SAF-7-safe Rule 20.7 non-parenthesized macro argument */ \
 		small;							  \
 	} else {							  \
-		/* SAF-7-safe Rule 20.7 non-parenthesized macro argument */ \
 		large;							  \
 	}
 
@@ -273,6 +270,18 @@ static inline void bitmap_clear(unsigned long *map, unsigned int start,
 
 #undef bitmap_switch
 #undef bitmap_bytes
+
+/**
+ * bitmap_for_each - bitate over every set bit in a memory region
+ * @bit: The integer bitator
+ * @addr: The address to base the search on
+ * @size: The maximum size to search
+ */
+#define bitmap_for_each(bit, addr, size)                        \
+    for ( (bit) = find_first_bit(addr, size);                   \
+          (bit) < (size);                                       \
+          (bit) = find_next_bit(addr, size, (bit) + 1) )
+
 
 struct xenctl_bitmap;
 int xenctl_bitmap_to_bitmap(unsigned long *bitmap,

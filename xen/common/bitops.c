@@ -84,8 +84,92 @@ static void __init test_fls(void)
     CHECK(fls64, 0x8000000000000001ULL, 64);
 }
 
+static void __init test_for_each_set_bit(void)
+{
+    unsigned int  ui,  ui_res = 0, tmp;
+    unsigned long ul,  ul_res = 0;
+    uint64_t      ull, ull_res = 0;
+
+    ui = HIDE(0x80008001U);
+    for_each_set_bit ( i, ui )
+        ui_res |= 1U << i;
+
+    if ( ui != ui_res )
+        panic("for_each_set_bit(uint) expected %#x, got %#x\n", ui, ui_res);
+
+    ul = HIDE(1UL << (BITS_PER_LONG - 1) | 1);
+    for_each_set_bit ( i, ul )
+        ul_res |= 1UL << i;
+
+    if ( ul != ul_res )
+        panic("for_each_set_bit(ulong) expected %#lx, got %#lx\n", ul, ul_res);
+
+    ull = HIDE(0x8000000180000001ULL);
+    for_each_set_bit ( i, ull )
+        ull_res |= 1ULL << i;
+
+    if ( ull != ull_res )
+        panic("for_each_set_bit(uint64) expected %#"PRIx64", got %#"PRIx64"\n", ull, ull_res);
+
+    /* Check that we can break from the middle of the loop. */
+    ui = HIDE(0x80001008U);
+    tmp = 0;
+    ui_res = 0;
+    for_each_set_bit ( i, ui )
+    {
+        if ( tmp++ > 1 )
+            break;
+
+        ui_res |= 1U << i;
+    }
+
+    if ( ui_res != 0x1008 )
+        panic("for_each_set_bit(break) expected 0x1008, got %#x\n", ui_res);
+}
+
+static void __init test_multiple_bits_set(void)
+{
+    /*
+     * multiple_bits_set() is generic on the type of it's parameter, as the
+     * internal expression is so simple.
+     */
+
+    CHECK(multiple_bits_set, 0, false);
+    CHECK(multiple_bits_set, 1, false);
+    CHECK(multiple_bits_set, 2, false);
+    CHECK(multiple_bits_set, 3, true);
+
+    CHECK(multiple_bits_set, 1 | (1UL << (BITS_PER_LONG - 1)), true);
+#if BITS_PER_LONG > 32
+    CHECK(multiple_bits_set, 1 | (1UL << 32), true);
+#endif
+
+    CHECK(multiple_bits_set, 0x8000000000000001ULL, true);
+    CHECK(multiple_bits_set, 0xc000000000000000ULL, true);
+}
+
+static void __init test_hweight(void)
+{
+    /* unsigned int hweightl(unsigned long) */
+    CHECK(hweightl, 0, 0);
+    CHECK(hweightl, 1, 1);
+    CHECK(hweightl, 3, 2);
+    CHECK(hweightl, 7, 3);
+    CHECK(hweightl, 0xff, 8);
+
+    CHECK(hweightl, 1 | (1UL << (BITS_PER_LONG - 1)), 2);
+    CHECK(hweightl, -1UL, BITS_PER_LONG);
+
+    /* unsigned int hweight64(uint64_t) */
+    CHECK(hweight64, -1ULL, 64);
+}
+
 static void __init __constructor test_bitops(void)
 {
     test_ffs();
     test_fls();
+    test_for_each_set_bit();
+
+    test_multiple_bits_set();
+    test_hweight();
 }

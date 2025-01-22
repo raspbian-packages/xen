@@ -25,6 +25,8 @@
 #include <caml/fail.h>
 #include <caml/callback.h>
 
+#include "xen-caml-compat.h"
+
 #include <sys/mman.h>
 #include <stdint.h>
 #include <string.h>
@@ -36,14 +38,6 @@
 #include <xen-tools/common-macros.h>
 
 #include "mmap_stubs.h"
-
-#ifndef Val_none
-#define Val_none (Val_int(0))
-#endif
-
-#ifndef Tag_some
-#define Tag_some 0
-#endif
 
 static inline xc_interface *xch_of_val(value v)
 {
@@ -138,12 +132,12 @@ static void domain_handle_of_uuid_string(xen_domain_handle_t h,
  * integers in the Ocaml ABI for more idiomatic handling.
  */
 static value c_bitmap_to_ocaml_list
-             /* ! */
-             /*
+	     /* ! */
+	     /*
 	      * All calls to this function must be in a form suitable
 	      * for xenctrl_abi_check.  The parsing there is ad-hoc.
 	      */
-             (unsigned int bitmap)
+	         (unsigned int bitmap)
 {
 	CAMLparam0();
 	CAMLlocal2(list, tmp);
@@ -180,8 +174,8 @@ static value c_bitmap_to_ocaml_list
 }
 
 static unsigned int ocaml_list_to_c_bitmap(value l)
-             /* ! */
-             /*
+	     /* ! */
+	     /*
 	      * All calls to this function must be in a form suitable
 	      * for xenctrl_abi_check.  The parsing there is ad-hoc.
 	      */
@@ -210,9 +204,10 @@ CAMLprim value stub_xc_domain_create(value xch_val, value wanted_domid, value co
 #define VAL_MAX_GRANT_FRAMES    Field(config, 6)
 #define VAL_MAX_MAPTRACK_FRAMES Field(config, 7)
 #define VAL_MAX_GRANT_VERSION   Field(config, 8)
-#define VAL_VMTRACE_BUF_KB      Field(config, 9)
-#define VAL_CPUPOOL_ID          Field(config, 10)
-#define VAL_ARCH                Field(config, 11)
+#define VAL_ALTP2M_OPTS         Field(config, 9)
+#define VAL_VMTRACE_BUF_KB      Field(config, 10)
+#define VAL_CPUPOOL_ID          Field(config, 11)
+#define VAL_ARCH                Field(config, 12)
 
 	uint32_t domid = Int_val(wanted_domid);
 	uint64_t vmtrace_size = Int32_val(VAL_VMTRACE_BUF_KB);
@@ -230,6 +225,7 @@ CAMLprim value stub_xc_domain_create(value xch_val, value wanted_domid, value co
 		.max_maptrack_frames = Int_val(VAL_MAX_MAPTRACK_FRAMES),
 		.grant_opts =
 		    XEN_DOMCTL_GRANT_version(Int_val(VAL_MAX_GRANT_VERSION)),
+		.altp2m_opts = Int32_val(VAL_ALTP2M_OPTS),
 		.vmtrace_size = vmtrace_size,
 		.cpupool_id = Int32_val(VAL_CPUPOOL_ID),
 	};
@@ -259,7 +255,7 @@ CAMLprim value stub_xc_domain_create(value xch_val, value wanted_domid, value co
 		/* Quick & dirty check for ABI changes. */
 		BUILD_BUG_ON(sizeof(cfg) != 68);
 
-        /* Mnemonics for the named fields inside xen_x86_arch_domainconfig */
+		/* Mnemonics for the named fields inside xen_x86_arch_domainconfig */
 #define VAL_EMUL_FLAGS          Field(arch_domconfig, 0)
 #define VAL_MISC_FLAGS          Field(arch_domconfig, 1)
 
@@ -288,6 +284,7 @@ CAMLprim value stub_xc_domain_create(value xch_val, value wanted_domid, value co
 #undef VAL_ARCH
 #undef VAL_CPUPOOL_ID
 #undef VAL_VMTRACE_BUF_KB
+#undef VAL_ALTP2M_OPTS
 #undef VAL_MAX_GRANT_VERSION
 #undef VAL_MAX_MAPTRACK_FRAMES
 #undef VAL_MAX_GRANT_FRAMES
@@ -351,7 +348,7 @@ static value dom_op(value xch_val, value domid,
 	caml_enter_blocking_section();
 	result = fn(xch, c_domid);
 	caml_leave_blocking_section();
-        if (result)
+	if (result)
 		failwith_xc(xch);
 	CAMLreturn(Val_unit);
 }
@@ -383,7 +380,7 @@ CAMLprim value stub_xc_domain_resume_fast(value xch_val, value domid)
 	caml_enter_blocking_section();
 	result = xc_domain_resume(xch, c_domid, 1);
 	caml_leave_blocking_section();
-        if (result)
+	if (result)
 		failwith_xc(xch);
 	CAMLreturn(Val_unit);
 }
@@ -426,7 +423,7 @@ static value alloc_domaininfo(xc_domaininfo_t * info)
 	Store_field(result, 13, Val_int(info->max_vcpu_id));
 	Store_field(result, 14, caml_copy_int32(info->ssidref));
 
-        tmp = caml_alloc_small(16, 0);
+	tmp = caml_alloc_small(16, 0);
 	for (i = 0; i < 16; i++) {
 		Field(tmp, i) = Val_int(info->handle[i]);
 	}
@@ -741,8 +738,7 @@ CAMLprim value stub_xc_evtchn_status(value xch_val, value domid, value port)
 	Store_field(result_status, 0, Val_int(status.vcpu));
 	Store_field(result_status, 1, stat);
 
-	result = caml_alloc_small(1, Tag_some);
-	Store_field(result, 0, result_status);
+	result = caml_alloc_some(result_status);
 
 	CAMLreturn(result);
 }
@@ -989,9 +985,8 @@ CAMLprim value stub_xc_version_version(value xch_val)
 	CAMLparam1(xch_val);
 	CAMLlocal1(result);
 	xc_interface *xch = xch_of_val(xch_val);
-	xen_extraversion_t extra;
+	char *extra;
 	long packed;
-	int retval;
 
 	caml_enter_blocking_section();
 	packed = xc_version(xch, XENVER_version, NULL);
@@ -1001,10 +996,10 @@ CAMLprim value stub_xc_version_version(value xch_val)
 		failwith_xc(xch);
 
 	caml_enter_blocking_section();
-	retval = xc_version(xch, XENVER_extraversion, &extra);
+	extra = xc_xenver_extraversion(xch);
 	caml_leave_blocking_section();
 
-	if (retval)
+	if (!extra)
 		failwith_xc(xch);
 
 	result = caml_alloc_tuple(3);
@@ -1012,6 +1007,8 @@ CAMLprim value stub_xc_version_version(value xch_val)
 	Store_field(result, 0, Val_int(packed >> 16));
 	Store_field(result, 1, Val_int(packed & 0xffff));
 	Store_field(result, 2, caml_copy_string(extra));
+
+	free(extra);
 
 	CAMLreturn(result);
 }
@@ -1043,36 +1040,47 @@ CAMLprim value stub_xc_version_compile_info(value xch_val)
 }
 
 
-static value xc_version_single_string(value xch_val, int code, void *info)
-{
-	CAMLparam1(xch_val);
-	xc_interface *xch = xch_of_val(xch_val);
-	int retval;
-
-	caml_enter_blocking_section();
-	retval = xc_version(xch, code, info);
-	caml_leave_blocking_section();
-
-	if (retval)
-		failwith_xc(xch);
-
-	CAMLreturn(caml_copy_string((char *)info));
-}
-
-
 CAMLprim value stub_xc_version_changeset(value xch_val)
 {
-	xen_changeset_info_t ci;
+	CAMLparam1(xch_val);
+	CAMLlocal1(result);
+	xc_interface *xch = xch_of_val(xch_val);
+	char *changeset;
 
-	return xc_version_single_string(xch_val, XENVER_changeset, &ci);
+	caml_enter_blocking_section();
+	changeset = xc_xenver_changeset(xch);
+	caml_leave_blocking_section();
+
+	if (!changeset)
+		failwith_xc(xch);
+
+	result = caml_copy_string(changeset);
+
+	free(changeset);
+
+	CAMLreturn(result);
 }
 
 
 CAMLprim value stub_xc_version_capabilities(value xch_val)
 {
-	xen_capabilities_info_t ci;
+	CAMLparam1(xch_val);
+	CAMLlocal1(result);
+	xc_interface *xch = xch_of_val(xch_val);
+	char *capabilities;
 
-	return xc_version_single_string(xch_val, XENVER_capabilities, &ci);
+	caml_enter_blocking_section();
+	capabilities = xc_xenver_capabilities(xch);
+	caml_leave_blocking_section();
+
+	if (!capabilities)
+		failwith_xc(xch);
+
+	result = caml_copy_string(capabilities);
+
+	free(capabilities);
+
+	CAMLreturn(result);
 }
 
 

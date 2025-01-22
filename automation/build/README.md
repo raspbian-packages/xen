@@ -100,17 +100,17 @@ such as openSUSE Tumbleweed. Login with the gitlab.com credentials.
 
 ```
 docker login registry.gitlab.com/xen-project/xen
-make -C automation/build suse/opensuse-tumbleweed
+make -C automation/build opensuse/tumbleweed-x86_64
 env CONTAINER_NO_PULL=1 \
   CONTAINER=tumbleweed \
   CONTAINER_ARGS='-e CC=gcc -e CXX=g++ -e debug=y' \
   automation/scripts/containerize automation/scripts/build < /dev/null
-make -C automation/build suse/opensuse-tumbleweed PUSH=1
+make -C automation/build opensuse/tumbleweed-x86_64 PUSH=1
 ```
 
 [BuildKit]: https://docs.docker.com/build/buildkit/
 [registry]: https://gitlab.com/xen-project/xen/container_registry
-[registry help]: https://gitlab.com/help/user/project/container_registry
+[registry help]: https://docs.gitlab.com/ee/user/packages/container_registry/
 
 
 Building/Running container for a different architecture

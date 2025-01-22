@@ -26,6 +26,20 @@ extern bool opt_hvm_fep;
 #define opt_hvm_fep 0
 #endif
 
+/*
+ * Results for hvm_guest_x86_mode().
+ *
+ * Note, some callers depend on the order of these constants.
+ *
+ * TODO: Rework hvm_guest_x86_mode() to avoid mixing the architectural
+ * concepts of mode and operand size.
+ */
+#define X86_MODE_REAL  0
+#define X86_MODE_VM86  1
+#define X86_MODE_16BIT 2
+#define X86_MODE_32BIT 4
+#define X86_MODE_64BIT 8
+
 /* Interrupt acknowledgement sources. */
 enum hvm_intsrc {
     hvm_intsrc_none,
@@ -241,7 +255,7 @@ struct hvm_function_table {
 
 extern struct hvm_function_table hvm_funcs;
 extern bool hvm_enabled;
-extern s8 hvm_port80_allowed;
+extern int8_t hvm_port80_allowed;
 
 extern const struct hvm_function_table *start_svm(void);
 extern const struct hvm_function_table *start_vmx(void);
@@ -362,6 +376,16 @@ unsigned long hvm_cr4_guest_valid_bits(const struct domain *d);
 int hvm_copy_context_and_params(struct domain *dst, struct domain *src);
 
 int hvm_get_param(struct domain *d, uint32_t index, uint64_t *value);
+
+static inline bool using_vmx(void)
+{
+    return IS_ENABLED(CONFIG_INTEL_VMX) && cpu_has_vmx;
+}
+
+static inline bool using_svm(void)
+{
+    return IS_ENABLED(CONFIG_AMD_SVM) && cpu_has_svm;
+}
 
 #ifdef CONFIG_HVM
 
@@ -512,7 +536,7 @@ static inline void hvm_inject_hw_exception(unsigned int vector, int errcode)
 {
     struct x86_event event = {
         .vector = vector,
-        .type = X86_EVENTTYPE_HW_EXCEPTION,
+        .type = X86_ET_HW_EXC,
         .error_code = errcode,
     };
 
@@ -523,7 +547,7 @@ static inline void hvm_inject_page_fault(int errcode, unsigned long cr2)
 {
     struct x86_event event = {
         .vector = X86_EXC_PF,
-        .type = X86_EVENTTYPE_HW_EXCEPTION,
+        .type = X86_ET_HW_EXC,
         .error_code = errcode,
     };
 
@@ -671,7 +695,7 @@ static inline bool hvm_hap_supported(void)
 /* returns true if hardware supports alternate p2m's */
 static inline bool hvm_altp2m_supported(void)
 {
-    return hvm_funcs.caps.altp2m;
+    return IS_ENABLED(CONFIG_ALTP2M) && hvm_funcs.caps.altp2m;
 }
 
 /* Returns true if we have the minimum hardware requirements for nested virt */
@@ -825,6 +849,11 @@ static inline bool hvm_is_singlestep_supported(void)
 }
 
 static inline bool hvm_hap_supported(void)
+{
+    return false;
+}
+
+static inline bool hvm_altp2m_supported(void)
 {
     return false;
 }

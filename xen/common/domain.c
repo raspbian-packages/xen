@@ -11,6 +11,7 @@
 #include <xen/err.h>
 #include <xen/param.h>
 #include <xen/sched.h>
+#include <xen/sections.h>
 #include <xen/domain.h>
 #include <xen/mm.h>
 #include <xen/event.h>
@@ -33,6 +34,7 @@
 #include <xen/xenoprof.h>
 #include <xen/irq.h>
 #include <xen/argo.h>
+#include <xen/llc-coloring.h>
 #include <asm/p2m.h>
 #include <asm/processor.h>
 #include <public/sched.h>
@@ -62,6 +64,58 @@ DEFINE_RCU_READ_LOCK(domlist_read_lock);
 #define DOMAIN_HASH(_id) ((int)(_id)&(DOMAIN_HASH_SIZE-1))
 static struct domain *domain_hash[DOMAIN_HASH_SIZE];
 struct domain *domain_list;
+
+/*
+ * Insert a domain into the domlist/hash.  This allows the domain to be looked
+ * up by domid, and therefore to be the subject of hypercalls/etc.
+ */
+static void domlist_insert(struct domain *d)
+{
+    struct domain **pd;
+
+    spin_lock(&domlist_update_lock);
+
+    /* domain_list is maintained in domid order. */
+    for ( pd = &domain_list; *pd != NULL; pd = &(*pd)->next_in_list )
+        if ( (*pd)->domain_id > d->domain_id )
+            break;
+
+    d->next_in_list = *pd;
+    rcu_assign_pointer(*pd, d);
+
+    pd = &domain_hash[DOMAIN_HASH(d->domain_id)];
+    d->next_in_hashbucket = *pd;
+    rcu_assign_pointer(*pd, d);
+
+    spin_unlock(&domlist_update_lock);
+}
+
+/*
+ * Remove a domain from the domlist/hash.  This means the domain can no longer
+ * be looked up by domid, and therefore can no longer be the subject of
+ * *subsequent* hypercalls/etc.  In-progress hypercalls/etc can still operate
+ * on the domain.
+ */
+static void domlist_remove(struct domain *d)
+{
+    struct domain **pd;
+
+    spin_lock(&domlist_update_lock);
+
+    pd = &domain_list;
+    while ( *pd != d )
+        pd = &(*pd)->next_in_list;
+
+    rcu_assign_pointer(*pd, d->next_in_list);
+
+    pd = &domain_hash[DOMAIN_HASH(d->domain_id)];
+    while ( *pd != d )
+        pd = &(*pd)->next_in_hashbucket;
+
+    rcu_assign_pointer(*pd, d->next_in_hashbucket);
+
+    spin_unlock(&domlist_update_lock);
+}
 
 struct domain *hardware_domain __read_mostly;
 
@@ -509,6 +563,32 @@ static void _domain_destroy(struct domain *d)
     free_domain_struct(d);
 }
 
+static uint64_t get_unique_id(void)
+{
+    static uint64_t unique_id;
+    static DEFINE_SPINLOCK(lock);
+    uint64_t x;
+
+    spin_lock(&lock);
+
+    x = unique_id ? : NOW();
+
+    /*
+     * Pseudo-randomize id in order to avoid consumers relying on sequence.
+     * Randomization algorithm has a period of 2^64 - 1.
+     * Unique id is not repeatable between resets and each id has the same
+     * lifetime as the domain it is associated with.
+     */
+    x ^= x << 13;
+    x ^= x >> 7;
+    x ^= x << 17;
+    unique_id = x;
+
+    spin_unlock(&lock);
+
+    return x;
+}
+
 static int sanitise_domain_config(struct xen_domctl_createdomain *config)
 {
     bool hvm = config->flags & XEN_DOMCTL_CDF_hvm;
@@ -588,7 +668,7 @@ struct domain *domain_create(domid_t domid,
                              struct xen_domctl_createdomain *config,
                              unsigned int flags)
 {
-    struct domain *d, **pd, *old_hwdom = NULL;
+    struct domain *d, *old_hwdom = NULL;
     enum { INIT_watchdog = 1u<<1,
            INIT_evtchn = 1u<<3, INIT_gnttab = 1u<<4, INIT_arch = 1u<<5 };
     int err, init_status = 0;
@@ -601,6 +681,7 @@ struct domain *domain_create(domid_t domid,
 
     /* Sort out our idea of is_system_domain(). */
     d->domain_id = domid;
+    d->unique_id = get_unique_id();
 
     /* Holding CDF_* internal flags. */
     d->cdf = flags;
@@ -685,95 +766,81 @@ struct domain *domain_create(domid_t domid,
 
     rangeset_domain_initialise(d);
 
-    /* DOMID_{XEN,IO,etc} (other than IDLE) are sufficiently constructed. */
-    if ( is_system_domain(d) && !is_idle_domain(d) )
+    if ( is_idle_domain(d) )
+        arch_init_idle_domain(d);
+
+    /* DOMID_{XEN,IO,IDLE,etc} are sufficiently constructed. */
+    if ( is_system_domain(d) )
         return d;
 
-#ifdef CONFIG_HAS_PIRQ
-    if ( !is_idle_domain(d) )
-    {
-        if ( !is_hardware_domain(d) )
-            d->nr_pirqs = nr_static_irqs + extra_domU_irqs;
-        else
-            d->nr_pirqs = extra_hwdom_irqs ? nr_static_irqs + extra_hwdom_irqs
-                                           : arch_hwdom_irqs(d);
-        d->nr_pirqs = min(d->nr_pirqs, nr_irqs);
+    /*
+     * This assertion helps static analysis tools infer that config cannot be
+     * NULL in this branch, which in turn means that it can be safely
+     * dereferenced. Therefore, this assertion is not redundant.
+     */
+    ASSERT(config);
 
-        radix_tree_init(&d->pirq_tree);
-    }
+#ifdef CONFIG_HAS_PIRQ
+    if ( !is_hardware_domain(d) )
+        d->nr_pirqs = nr_static_irqs + extra_domU_irqs;
+    else
+        d->nr_pirqs = extra_hwdom_irqs ? nr_static_irqs + extra_hwdom_irqs
+                                       : arch_hwdom_irqs(d);
+    d->nr_pirqs = min(d->nr_pirqs, nr_irqs);
+
+    radix_tree_init(&d->pirq_tree);
 #endif
 
     if ( (err = arch_domain_create(d, config, flags)) != 0 )
         goto fail;
     init_status |= INIT_arch;
 
-    if ( !is_idle_domain(d) )
-    {
-        /*
-         * The assertion helps static analysis tools infer that config cannot
-         * be NULL in this branch, which in turn means that it can be safely
-         * dereferenced. Therefore, this assertion is not redundant.
-         */
-        ASSERT(config);
+    watchdog_domain_init(d);
+    init_status |= INIT_watchdog;
 
-        watchdog_domain_init(d);
-        init_status |= INIT_watchdog;
+    err = -ENOMEM;
+    d->iomem_caps = rangeset_new(d, "I/O Memory", RANGESETF_prettyprint_hex);
+    d->irq_caps   = rangeset_new(d, "Interrupts", 0);
+    if ( !d->iomem_caps || !d->irq_caps )
+        goto fail;
 
-        err = -ENOMEM;
-        d->iomem_caps = rangeset_new(d, "I/O Memory", RANGESETF_prettyprint_hex);
-        d->irq_caps   = rangeset_new(d, "Interrupts", 0);
-        if ( !d->iomem_caps || !d->irq_caps )
-            goto fail;
+    if ( (err = xsm_domain_create(XSM_HOOK, d, config->ssidref)) != 0 )
+        goto fail;
 
-        if ( (err = xsm_domain_create(XSM_HOOK, d, config->ssidref)) != 0 )
-            goto fail;
+    d->controller_pause_count = 1;
+    atomic_inc(&d->pause_count);
 
-        d->controller_pause_count = 1;
-        atomic_inc(&d->pause_count);
+    if ( (err = evtchn_init(d, config->max_evtchn_port)) != 0 )
+        goto fail;
+    init_status |= INIT_evtchn;
 
-        if ( (err = evtchn_init(d, config->max_evtchn_port)) != 0 )
-            goto fail;
-        init_status |= INIT_evtchn;
+    if ( (err = grant_table_init(d, config->max_grant_frames,
+                                 config->max_maptrack_frames,
+                                 config->grant_opts)) != 0 )
+        goto fail;
+    init_status |= INIT_gnttab;
 
-        if ( (err = grant_table_init(d, config->max_grant_frames,
-                                     config->max_maptrack_frames,
-                                     config->grant_opts)) != 0 )
-            goto fail;
-        init_status |= INIT_gnttab;
+    if ( (err = argo_init(d)) != 0 )
+        goto fail;
 
-        if ( (err = argo_init(d)) != 0 )
-            goto fail;
+    err = -ENOMEM;
+    d->pbuf = xzalloc_array(char, DOMAIN_PBUF_SIZE);
+    if ( !d->pbuf )
+        goto fail;
 
-        err = -ENOMEM;
+    if ( (err = sched_init_domain(d, config->cpupool_id)) != 0 )
+        goto fail;
 
-        d->pbuf = xzalloc_array(char, DOMAIN_PBUF_SIZE);
-        if ( !d->pbuf )
-            goto fail;
+    if ( (err = late_hwdom_init(d)) != 0 )
+        goto fail;
 
-        if ( (err = sched_init_domain(d, config->cpupool_id)) != 0 )
-            goto fail;
+    /*
+     * Must not fail beyond this point, as our caller doesn't know whether
+     * the domain has been entered into domain_list or not.
+     */
+    domlist_insert(d);
 
-        if ( (err = late_hwdom_init(d)) != 0 )
-            goto fail;
-
-        /*
-         * Must not fail beyond this point, as our caller doesn't know whether
-         * the domain has been entered into domain_list or not.
-         */
-
-        spin_lock(&domlist_update_lock);
-        pd = &domain_list; /* NB. domain_list maintained in order of domid. */
-        for ( pd = &domain_list; *pd != NULL; pd = &(*pd)->next_in_list )
-            if ( (*pd)->domain_id > d->domain_id )
-                break;
-        d->next_in_list = *pd;
-        d->next_in_hashbucket = domain_hash[DOMAIN_HASH(domid)];
-        rcu_assign_pointer(*pd, d);
-        rcu_assign_pointer(domain_hash[DOMAIN_HASH(domid)], d);
-        spin_unlock(&domlist_update_lock);
-
-        memcpy(d->handle, config->handle, sizeof(d->handle));
-    }
+    memcpy(d->handle, config->handle, sizeof(d->handle));
 
     return d;
 
@@ -1235,9 +1302,9 @@ static void cf_check complete_domain_destroy(struct rcu_head *head)
 /* Release resources belonging to task @p. */
 void domain_destroy(struct domain *d)
 {
-    struct domain **pd;
-
     BUG_ON(!d->is_dying);
+
+    domain_llc_coloring_free(d);
 
     /* May be already destroyed, or get_domain() can race us. */
     if ( atomic_cmpxchg(&d->refcnt, 0, DOMAIN_DESTROYED) != 0 )
@@ -1245,17 +1312,8 @@ void domain_destroy(struct domain *d)
 
     TRACE_TIME(TRC_DOM0_DOM_REM, d->domain_id);
 
-    /* Delete from task list and task hashtable. */
-    spin_lock(&domlist_update_lock);
-    pd = &domain_list;
-    while ( *pd != d ) 
-        pd = &(*pd)->next_in_list;
-    rcu_assign_pointer(*pd, d->next_in_list);
-    pd = &domain_hash[DOMAIN_HASH(d->domain_id)];
-    while ( *pd != d ) 
-        pd = &(*pd)->next_in_hashbucket;
-    rcu_assign_pointer(*pd, d->next_in_hashbucket);
-    spin_unlock(&domlist_update_lock);
+    /* Remove from the domlist/hash. */
+    domlist_remove(d);
 
     /* Schedule RCU asynchronous completion of domain destroy. */
     call_rcu(&d->rcu, complete_domain_destroy);

@@ -91,6 +91,8 @@ SECTIONS
         CONSTRUCTORS
     } :text
 
+    DT_DEV_INFO                       /* Devicetree based device info */
+
     . = ALIGN(PAGE_SIZE);             /* Init code and data */
     __init_begin = .;
     .init.text : {
@@ -145,14 +147,7 @@ SECTIONS
         __bss_start = .;
         *(.bss.stack_aligned)
         *(.bss.page_aligned)
-        . = ALIGN(PAGE_SIZE);
-        __per_cpu_start = .;
-        *(.bss.percpu.page_aligned)
-        *(.bss.percpu)
-        . = ALIGN(SMP_CACHE_BYTES);
-        *(.bss.percpu.read_mostly)
-        . = ALIGN(SMP_CACHE_BYTES);
-        __per_cpu_data_end = .;
+        PERCPU_BSS
         *(.sbss .sbss.* .bss .bss.*)
         . = ALIGN(POINTER_ALIGN);
         __bss_end = .;
@@ -181,6 +176,6 @@ ASSERT(!SIZEOF(.got.plt),  ".got.plt non-empty")
  * Changing the size of Xen binary can require an update of
  * PGTBL_INITIAL_COUNT.
  */
-ASSERT(_end - _start <= MB(2), "Xen too large for early-boot assumptions")
+ASSERT(_end - _start <= XEN_VIRT_SIZE, "Xen too large for early-boot assumptions")
 
 ASSERT(_ident_end - _ident_start <= IDENT_AREA_SIZE, "identity region is too big");

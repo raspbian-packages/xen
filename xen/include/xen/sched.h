@@ -370,6 +370,9 @@ struct domain
     domid_t          domain_id;
 
     unsigned int     max_vcpus;
+
+    uint64_t         unique_id;       /* Unique domain identifier */
+
     struct vcpu    **vcpu;
 
     shared_info_t   *shared_info;     /* shared data area */
@@ -637,6 +640,11 @@ struct domain
 
     /* Holding CDF_* constant. Internal flags for domain creation. */
     unsigned int cdf;
+
+#ifdef CONFIG_LLC_COLORING
+    unsigned int num_llc_colors;
+    const unsigned int *llc_colors;
+#endif
 };
 
 static inline struct page_list_head *page_to_list(
@@ -727,6 +735,11 @@ int arch_sanitise_domain_config(struct xen_domctl_createdomain *config);
 struct domain *domain_create(domid_t domid,
                              struct xen_domctl_createdomain *config,
                              unsigned int flags);
+
+#ifndef arch_init_idle_domain
+/* Optional, if there's any construction necessary for DOMID_IDLE */
+static inline void arch_init_idle_domain(struct domain *d) {}
+#endif
 
 /*
  * rcu_lock_domain_by_id() is more efficient than get_domain_by_id().
@@ -1197,6 +1210,12 @@ static always_inline bool is_iommu_enabled(const struct domain *d)
 {
     return evaluate_nospec(d->options & XEN_DOMCTL_CDF_iommu);
 }
+
+#ifdef CONFIG_MEM_PAGING
+# define mem_paging_enabled(d) vm_event_check_ring((d)->vm_event_paging)
+#else
+# define mem_paging_enabled(d) false
+#endif
 
 extern bool sched_smt_power_savings;
 extern bool sched_disable_smt_switching;

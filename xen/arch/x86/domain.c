@@ -768,6 +768,17 @@ static bool emulation_flags_ok(const struct domain *d, uint32_t emflags)
     return true;
 }
 
+void __init arch_init_idle_domain(struct domain *d)
+{
+    static const struct arch_csw idle_csw = {
+        .from = paravirt_ctxt_switch_from,
+        .to   = paravirt_ctxt_switch_to,
+        .tail = idle_loop,
+    };
+
+    d->arch.ctxt_switch = &idle_csw;
+}
+
 int arch_domain_create(struct domain *d,
                        struct xen_domctl_createdomain *config,
                        unsigned int flags)
@@ -779,29 +790,6 @@ int arch_domain_create(struct domain *d,
     INIT_PAGE_LIST_HEAD(&d->arch.relmem_list);
 
     spin_lock_init(&d->arch.e820_lock);
-
-    /* Minimal initialisation for the idle domain. */
-    if ( unlikely(is_idle_domain(d)) )
-    {
-        static const struct arch_csw idle_csw = {
-            .from = paravirt_ctxt_switch_from,
-            .to   = paravirt_ctxt_switch_to,
-            .tail = idle_loop,
-        };
-
-        d->arch.ctxt_switch = &idle_csw;
-
-        d->arch.cpu_policy = ZERO_BLOCK_PTR; /* Catch stray misuses. */
-
-        return 0;
-    }
-
-    if ( !config )
-    {
-        /* Only IDLE is allowed with no config. */
-        ASSERT_UNREACHABLE();
-        return -EINVAL;
-    }
 
     if ( d->domain_id && cpu_has_amd_erratum(&boot_cpu_data, AMD_ERRATUM_121) )
     {
@@ -841,6 +829,8 @@ int arch_domain_create(struct domain *d,
     HYPERVISOR_COMPAT_VIRT_START(d) =
         is_pv_domain(d) ? __HYPERVISOR_COMPAT_VIRT_START : ~0u;
 #endif
+
+    spec_ctrl_init_domain(d);
 
     if ( (rc = paging_domain_init(d)) != 0 )
         goto fail;
@@ -907,8 +897,6 @@ int arch_domain_create(struct domain *d,
     domain_cpu_policy_changed(d);
 
     d->arch.msr_relaxed = config->arch.misc_flags & XEN_X86_MSR_RELAXED;
-
-    spec_ctrl_init_domain(d);
 
     return 0;
 
@@ -1198,9 +1186,10 @@ int arch_set_info_guest(
          is_pv_64bit_domain(d) )
         v->arch.flags &= ~TF_kernel_mode;
 
-    vcpu_setup_fpu(v, v->arch.xsave_area,
-                   flags & VGCF_I387_VALID ? &c.nat->fpu_ctxt : NULL,
-                   FCW_DEFAULT);
+    if ( flags & VGCF_I387_VALID )
+        vcpu_setup_fpu(v, &c.nat->fpu_ctxt);
+    else
+        vcpu_reset_fpu(v);
 
     if ( !compat )
     {
@@ -1732,11 +1721,9 @@ static void load_segments(struct vcpu *n)
         if ( !(n->arch.flags & TF_kernel_mode) )
             SWAP(gsb, gss);
 
-#ifdef CONFIG_HVM
-        if ( cpu_has_svm && (uregs->fs | uregs->gs) <= 3 )
+        if ( using_svm() && (uregs->fs | uregs->gs) <= 3 )
             fs_gs_done = svm_load_segs(n->arch.pv.ldt_ents, LDT_VIRT_START(n),
                                        n->arch.pv.fs_base, gsb, gss);
-#endif
     }
 
     if ( !fs_gs_done )
@@ -2049,9 +2036,9 @@ static void __context_switch(void)
 
     write_ptbase(n);
 
-#if defined(CONFIG_PV) && defined(CONFIG_HVM)
+#ifdef CONFIG_PV
     /* Prefetch the VMCB if we expect to use it later in the context switch */
-    if ( cpu_has_svm && is_pv_64bit_domain(nd) && !is_idle_domain(nd) )
+    if ( using_svm() && is_pv_64bit_domain(nd) && !is_idle_domain(nd) )
         svm_load_segs_prefetch();
 #endif
 

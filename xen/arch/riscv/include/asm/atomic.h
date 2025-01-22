@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
+ /* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Taken and modified from Linux.
  *
@@ -19,8 +19,8 @@
  * Copyright (C) 2024 Vates SAS
  */
 
-#ifndef _ASM_RISCV_ATOMIC_H
-#define _ASM_RISCV_ATOMIC_H
+#ifndef ASM__RISCV__ATOMIC_H
+#define ASM__RISCV__ATOMIC_H
 
 #include <xen/atomic.h>
 
@@ -31,21 +31,17 @@
 
 void __bad_atomic_size(void);
 
-/*
- * Legacy from Linux kernel. For some reason they wanted to have ordered
- * read/write access. Thereby read* is used instead of read*_cpu()
- */
 static always_inline void read_atomic_size(const volatile void *p,
                                            void *res,
                                            unsigned int size)
 {
     switch ( size )
     {
-    case 1: *(uint8_t *)res = readb(p); break;
-    case 2: *(uint16_t *)res = readw(p); break;
-    case 4: *(uint32_t *)res = readl(p); break;
+    case 1: *(uint8_t *)res = readb_cpu(p); break;
+    case 2: *(uint16_t *)res = readw_cpu(p); break;
+    case 4: *(uint32_t *)res = readl_cpu(p); break;
 #ifndef CONFIG_RISCV_32
-    case 8: *(uint32_t *)res = readq(p); break;
+    case 8: *(uint64_t *)res = readq_cpu(p); break;
 #endif
     default: __bad_atomic_size(); break;
     }
@@ -58,24 +54,26 @@ static always_inline void read_atomic_size(const volatile void *p,
 })
 
 static always_inline void _write_atomic(volatile void *p,
-                                       unsigned long x, unsigned int size)
+                                        unsigned long x,
+                                        unsigned int size)
 {
     switch ( size )
     {
-    case 1: writeb(x, p); break;
-    case 2: writew(x, p); break;
-    case 4: writel(x, p); break;
+    case 1: writeb_cpu(x, p); break;
+    case 2: writew_cpu(x, p); break;
+    case 4: writel_cpu(x, p); break;
 #ifndef CONFIG_RISCV_32
-    case 8: writeq(x, p); break;
+    case 8: writeq_cpu(x, p); break;
 #endif
     default: __bad_atomic_size(); break;
     }
 }
 
-#define write_atomic(p, x)                              \
-({                                                      \
-    typeof(*(p)) x_ = (x);                              \
-    _write_atomic(p, x_, sizeof(*(p)));                 \
+#define write_atomic(p, x)                                          \
+({                                                                  \
+    union { typeof(*(p)) v; unsigned long ul; } x_ = { .ul = 0UL }; \
+    x_.v = (x);                                                     \
+    _write_atomic(p, x_.ul, sizeof(*(p)));                          \
 })
 
 static always_inline void _add_sized(volatile void *p,
@@ -268,7 +266,7 @@ ATOMIC_OPS()
 #undef ATOMIC_OPS
 #undef ATOMIC_OP
 
-#endif /* _ASM_RISCV_ATOMIC_H */
+#endif /* ASM__RISCV__ATOMIC_H */
 
 /*
  * Local variables:

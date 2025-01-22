@@ -69,7 +69,7 @@
 #include <public/hvm/params.h>
 #include <asm/cpuid.h>
 #include <xsm/xsm.h>
-#include <asm/mach-default/irq_vectors.h>
+#include <asm/irq-vectors.h>
 #include <asm/pv/traps.h>
 #include <asm/pv/trace.h>
 #include <asm/pv/mm.h>
@@ -114,7 +114,7 @@ DEFINE_PER_CPU_PAGE_ALIGNED(struct tss_page, tss_page);
 static int debug_stack_lines = 20;
 integer_param("debug_stack_lines", debug_stack_lines);
 
-static bool __ro_after_init opt_ler;
+static bool __initdata opt_ler;
 boolean_param("ler", opt_ler);
 
 /* LastExceptionFromIP on this hardware.  Zero if LER is not in use. */
@@ -676,7 +676,6 @@ void vcpu_show_execution_state(struct vcpu *v)
 
     vcpu_pause(v); /* acceptably dangerous */
 
-#ifdef CONFIG_HVM
     /*
      * For VMX special care is needed: Reading some of the register state will
      * require VMCS accesses. Engaging foreign VMCSes involves acquiring of a
@@ -684,12 +683,11 @@ void vcpu_show_execution_state(struct vcpu *v)
      * region. Despite this being a layering violation, engage the VMCS right
      * here. This then also avoids doing so several times in close succession.
      */
-    if ( cpu_has_vmx && is_hvm_vcpu(v) )
+    if ( using_vmx() && is_hvm_vcpu(v) )
     {
         ASSERT(!in_irq());
         vmx_vmcs_enter(v);
     }
-#endif
 
     /* Prevent interleaving of output. */
     flags = console_lock_recursive_irqsave();
@@ -714,10 +712,8 @@ void vcpu_show_execution_state(struct vcpu *v)
         console_unlock_recursive_irqrestore(flags);
     }
 
-#ifdef CONFIG_HVM
-    if ( cpu_has_vmx && is_hvm_vcpu(v) )
+    if ( using_vmx() && is_hvm_vcpu(v) )
         vmx_vmcs_exit(v);
-#endif
 
     vcpu_unpause(v);
 }
@@ -1120,7 +1116,7 @@ void cpuid_hypervisor_leaves(const struct vcpu *v, uint32_t leaf,
             res->a = offset;
             res->b = offset >> 32;
             res->c = d->arch.vtsc_to_ns.mul_frac;
-            res->d = (s8)d->arch.vtsc_to_ns.shift;
+            res->d = d->arch.vtsc_to_ns.shift;
             break;
         }
 
@@ -1186,6 +1182,7 @@ void cpuid_hypervisor_leaves(const struct vcpu *v, uint32_t leaf,
 
     default:
         ASSERT_UNREACHABLE();
+        break;
     }
 }
 
@@ -1450,7 +1447,7 @@ static enum pf_type __page_fault_type(unsigned long addr,
     mfn = cr3 >> PAGE_SHIFT;
 
     l4t = map_domain_page(_mfn(mfn));
-    l4e = l4e_read_atomic(&l4t[l4_table_offset(addr)]);
+    l4e = l4e_read(&l4t[l4_table_offset(addr)]);
     mfn = l4e_get_pfn(l4e);
     unmap_domain_page(l4t);
     if ( ((l4e_get_flags(l4e) & required_flags) != required_flags) ||
@@ -1459,7 +1456,7 @@ static enum pf_type __page_fault_type(unsigned long addr,
     page_user &= l4e_get_flags(l4e);
 
     l3t  = map_domain_page(_mfn(mfn));
-    l3e = l3e_read_atomic(&l3t[l3_table_offset(addr)]);
+    l3e = l3e_read(&l3t[l3_table_offset(addr)]);
     mfn = l3e_get_pfn(l3e);
     unmap_domain_page(l3t);
     if ( ((l3e_get_flags(l3e) & required_flags) != required_flags) ||
@@ -1470,7 +1467,7 @@ static enum pf_type __page_fault_type(unsigned long addr,
         goto leaf;
 
     l2t = map_domain_page(_mfn(mfn));
-    l2e = l2e_read_atomic(&l2t[l2_table_offset(addr)]);
+    l2e = l2e_read(&l2t[l2_table_offset(addr)]);
     mfn = l2e_get_pfn(l2e);
     unmap_domain_page(l2t);
     if ( ((l2e_get_flags(l2e) & required_flags) != required_flags) ||
@@ -1481,7 +1478,7 @@ static enum pf_type __page_fault_type(unsigned long addr,
         goto leaf;
 
     l1t = map_domain_page(_mfn(mfn));
-    l1e = l1e_read_atomic(&l1t[l1_table_offset(addr)]);
+    l1e = l1e_read(&l1t[l1_table_offset(addr)]);
     mfn = l1e_get_pfn(l1e);
     unmap_domain_page(l1t);
     if ( ((l1e_get_flags(l1e) & required_flags) != required_flags) ||
@@ -1756,6 +1753,7 @@ static void io_check_error(const struct cpu_user_regs *regs)
     {
     case 'd': /* 'dom0' */
         nmi_hwdom_report(_XEN_NMIREASON_io_error);
+        break;
     case 'i': /* 'ignore' */
         break;
     default:  /* 'fatal' */
@@ -1776,6 +1774,7 @@ static void unknown_nmi_error(const struct cpu_user_regs *regs,
     {
     case 'd': /* 'dom0' */
         nmi_hwdom_report(_XEN_NMIREASON_unknown);
+        break;
     case 'i': /* 'ignore' */
         break;
     default:  /* 'fatal' */
@@ -2093,55 +2092,9 @@ static void __init set_intr_gate(unsigned int n, void *addr)
     __set_intr_gate(n, 0, addr);
 }
 
-static unsigned int noinline __init calc_ler_msr(void)
-{
-    switch ( boot_cpu_data.x86_vendor )
-    {
-    case X86_VENDOR_INTEL:
-        switch ( boot_cpu_data.x86 )
-        {
-        case 6:
-            return MSR_IA32_LASTINTFROMIP;
-
-        case 15:
-            return MSR_P4_LER_FROM_LIP;
-        }
-        break;
-
-    case X86_VENDOR_AMD:
-        switch ( boot_cpu_data.x86 )
-        {
-        case 6:
-        case 0xf ... 0x19:
-            return MSR_IA32_LASTINTFROMIP;
-        }
-        break;
-
-    case X86_VENDOR_HYGON:
-        return MSR_IA32_LASTINTFROMIP;
-    }
-
-    return 0;
-}
-
 void percpu_traps_init(void)
 {
     subarch_percpu_traps_init();
-
-    if ( !opt_ler )
-        return;
-
-    if ( !ler_msr )
-    {
-        ler_msr = calc_ler_msr();
-        if ( !ler_msr )
-        {
-            opt_ler = false;
-            return;
-        }
-
-        setup_force_cpu_cap(X86_FEATURE_XEN_LBR);
-    }
 
     if ( cpu_has_xen_lbr )
         wrmsrl(MSR_IA32_DEBUGCTLMSR, IA32_DEBUGCTLMSR_LBR);
@@ -2202,6 +2155,42 @@ void __init init_idt_traps(void)
         this_cpu(compat_gdt) = boot_compat_gdt;
 }
 
+static void __init init_ler(void)
+{
+    unsigned int msr = 0;
+
+    if ( !opt_ler )
+        return;
+
+    /*
+     * Intel Pentium 4 is the only known CPU to not use the architectural MSR
+     * indicies.
+     */
+    switch ( boot_cpu_data.x86_vendor )
+    {
+    case X86_VENDOR_INTEL:
+        if ( boot_cpu_data.x86 == 0xf )
+        {
+            msr = MSR_P4_LER_FROM_LIP;
+            break;
+        }
+        fallthrough;
+    case X86_VENDOR_AMD:
+    case X86_VENDOR_HYGON:
+        msr = MSR_IA32_LASTINTFROMIP;
+        break;
+    }
+
+    if ( msr == 0 )
+    {
+        printk(XENLOG_WARNING "LER disabled: failed to identify MSRs\n");
+        return;
+    }
+
+    ler_msr = msr;
+    setup_force_cpu_cap(X86_FEATURE_XEN_LBR);
+}
+
 extern void (*const autogen_entrypoints[X86_NR_VECTORS])(void);
 void __init trap_init(void)
 {
@@ -2226,6 +2215,8 @@ void __init trap_init(void)
             ASSERT(idt_table[vector].b != 0);
         }
     }
+
+    init_ler();
 
     /* Cache {,compat_}gdt_l1e now that physically relocation is done. */
     this_cpu(gdt_l1e) =

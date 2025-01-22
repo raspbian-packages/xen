@@ -7,10 +7,10 @@
         .file "x86_64/entry.S"
 
 #include <asm/asm_defns.h>
+#include <asm/irq-vectors.h>
 #include <asm/page.h>
 #include <asm/processor.h>
 #include <public/xen.h>
-#include <irq_vectors.h>
 
 /* %rsp: struct cpu_user_regs */
 .macro ASSERT_CONTEXT_IS_XEN
@@ -624,7 +624,7 @@ domain_crash_page_fault_0x8:
         ALTERNATIVE "", clac, X86_FEATURE_XEN_SMAP
         movq  %rsi,%rdi
         call  show_page_walk
-ENTRY(dom_crash_sync_extable)
+LABEL(dom_crash_sync_extable, 0)
         ALTERNATIVE "", clac, X86_FEATURE_XEN_SMAP
         # Get out of the guest-save area of the stack.
         GET_STACK_END(ax)
@@ -1254,7 +1254,7 @@ FUNC_LOCAL(autogen_stubs, 0) /* Automatically generated stubs. */
         .if vec >= FIRST_IRQ_VECTOR
 #endif
 
-        ALIGN
+        .align CONFIG_FUNCTION_ALIGNMENT, CODE_FILL
 1:
         ENDBR64
         pushq $0

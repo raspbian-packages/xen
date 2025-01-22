@@ -571,12 +571,12 @@ static int cf_check svm_guest_x86_mode(struct vcpu *v)
     struct vmcb_struct *vmcb = v->arch.hvm.svm.vmcb;
 
     if ( unlikely(!(v->arch.hvm.guest_cr[0] & X86_CR0_PE)) )
-        return 0;
+        return X86_MODE_REAL;
     if ( unlikely(guest_cpu_user_regs()->eflags & X86_EFLAGS_VM) )
-        return 1;
+        return X86_MODE_VM86;
     if ( hvm_long_mode_active(v) && likely(vmcb->cs.l) )
-        return 8;
-    return likely(vmcb->cs.db) ? 4 : 2;
+        return X86_MODE_64BIT;
+    return vmcb->cs.db ? X86_MODE_32BIT : X86_MODE_16BIT;
 }
 
 static void cf_check svm_cpuid_policy_changed(struct vcpu *v)
@@ -681,6 +681,7 @@ static void cf_check svm_get_segment_register(
         ASSERT_UNREACHABLE();
         domain_crash(v->domain);
         *reg = (struct segment_register){};
+        break;
     }
 }
 
@@ -748,6 +749,7 @@ static void cf_check svm_set_segment_register(
         vmcb->ldtr = *reg;
         break;
 
+    case x86_seg_sys:
     case x86_seg_none:
         ASSERT_UNREACHABLE();
         break;
@@ -1183,7 +1185,7 @@ static void svm_emul_swint_injection(struct x86_event *event)
 
     /* ICEBP sets the External Event bit despite being an instruction. */
     ec = (trap << 3) | X86_XEC_IDT |
-        (type == X86_EVENTTYPE_PRI_SW_EXCEPTION ? X86_XEC_EXT : 0);
+         (type == X86_ET_PRIV_SW_EXC ? X86_XEC_EXT : 0);
 
     /*
      * TODO: This does not cover the v8086 mode with CR4.VME case
@@ -1241,7 +1243,7 @@ static void svm_emul_swint_injection(struct x86_event *event)
         goto raise_exception;
 
     /* ICEBP counts as a hardware event, and bypasses the dpl check. */
-    if ( type != X86_EVENTTYPE_PRI_SW_EXCEPTION &&
+    if ( type != X86_ET_PRIV_SW_EXC &&
          vmcb_get_cpl(vmcb) > ((idte.b >> 13) & 3) )
         goto raise_exception;
 
@@ -1262,7 +1264,7 @@ static void svm_emul_swint_injection(struct x86_event *event)
 
  raise_exception:
     event->vector = fault;
-    event->type = X86_EVENTTYPE_HW_EXCEPTION;
+    event->type = X86_ET_HW_EXC;
     event->insn_len = 0;
     event->error_code = ec;
 }
@@ -1283,11 +1285,11 @@ static void cf_check svm_inject_event(const struct x86_event *event)
      * further fault shouldn't occur during delivery.  This covers the fact
      * that hardware doesn't perform DPL checking on injection.
      */
-    if ( event->type == X86_EVENTTYPE_PRI_SW_EXCEPTION ||
-         (!cpu_has_svm_nrips && (event->type >= X86_EVENTTYPE_SW_INTERRUPT)) )
+    if ( event->type == X86_ET_PRIV_SW_EXC ||
+         (!cpu_has_svm_nrips && (event->type >= X86_ET_SW_INT)) )
         svm_emul_swint_injection(&_event);
 
-    switch ( _event.vector | -(_event.type == X86_EVENTTYPE_SW_INTERRUPT) )
+    switch ( _event.vector | -(_event.type == X86_ET_SW_INT) )
     {
     case X86_EXC_DB:
         if ( regs->eflags & X86_EFLAGS_TF )
@@ -1306,13 +1308,13 @@ static void cf_check svm_inject_event(const struct x86_event *event)
         break;
 
     case X86_EXC_PF:
-        ASSERT(_event.type == X86_EVENTTYPE_HW_EXCEPTION);
+        ASSERT(_event.type == X86_ET_HW_EXC);
         curr->arch.hvm.guest_cr[2] = _event.cr2;
         vmcb_set_cr2(vmcb, _event.cr2);
         break;
     }
 
-    if ( eventinj.v && (eventinj.type == X86_EVENTTYPE_HW_EXCEPTION) )
+    if ( eventinj.v && (eventinj.type == X86_ET_HW_EXC) )
     {
         _event.vector = hvm_combine_hw_exceptions(
             eventinj.vector, _event.vector);
@@ -1337,15 +1339,15 @@ static void cf_check svm_inject_event(const struct x86_event *event)
      */
     switch ( _event.type )
     {
-    case X86_EVENTTYPE_SW_INTERRUPT: /* int $n */
+    case X86_ET_SW_INT: /* int $n */
         if ( cpu_has_svm_nrips )
             vmcb->nextrip = regs->rip + _event.insn_len;
         else
             regs->rip += _event.insn_len;
-        eventinj.type = X86_EVENTTYPE_SW_INTERRUPT;
+        eventinj.type = X86_ET_SW_INT;
         break;
 
-    case X86_EVENTTYPE_PRI_SW_EXCEPTION: /* icebp */
+    case X86_ET_PRIV_SW_EXC: /* icebp */
         /*
          * icebp's injection must always be emulated, as hardware does not
          * special case HW_EXCEPTION with vector 1 (#DB) as having trap
@@ -1354,10 +1356,10 @@ static void cf_check svm_inject_event(const struct x86_event *event)
         regs->rip += _event.insn_len;
         if ( cpu_has_svm_nrips )
             vmcb->nextrip = regs->rip;
-        eventinj.type = X86_EVENTTYPE_HW_EXCEPTION;
+        eventinj.type = X86_ET_HW_EXC;
         break;
 
-    case X86_EVENTTYPE_SW_EXCEPTION: /* int3, into */
+    case X86_ET_SW_EXC: /* int3, into */
         /*
          * Hardware special cases HW_EXCEPTION with vectors 3 and 4 as having
          * trap semantics, and will perform DPL checks.
@@ -1366,11 +1368,11 @@ static void cf_check svm_inject_event(const struct x86_event *event)
             vmcb->nextrip = regs->rip + _event.insn_len;
         else
             regs->rip += _event.insn_len;
-        eventinj.type = X86_EVENTTYPE_HW_EXCEPTION;
+        eventinj.type = X86_ET_HW_EXC;
         break;
 
     default:
-        eventinj.type = X86_EVENTTYPE_HW_EXCEPTION;
+        eventinj.type = X86_ET_HW_EXC;
         eventinj.ev = (_event.error_code != X86_EVENT_NO_EC);
         eventinj.ec = _event.error_code;
         break;
@@ -1389,8 +1391,7 @@ static void cf_check svm_inject_event(const struct x86_event *event)
     ASSERT(!eventinj.ev || eventinj.ec == (uint16_t)eventinj.ec);
     vmcb->event_inj = eventinj;
 
-    if ( _event.vector == X86_EXC_PF &&
-         _event.type == X86_EVENTTYPE_HW_EXCEPTION )
+    if ( _event.vector == X86_EXC_PF && _event.type == X86_ET_HW_EXC )
         TRACE(TRC_HVM_PF_INJECT64, _event.error_code,
               _event.cr2, _event.cr2 >> 32);
     else
@@ -2416,6 +2417,7 @@ static void cf_check svm_set_reg(struct vcpu *v, unsigned int reg, uint64_t val)
         printk(XENLOG_G_ERR "%s(%pv, 0x%08x, 0x%016"PRIx64") Bad register\n",
                __func__, v, reg, val);
         domain_crash(d);
+        break;
     }
 }
 
@@ -2691,12 +2693,12 @@ void asmlinkage svm_vmexit_handler(void)
 
             if ( likely(exit_reason != VMEXIT_ICEBP) )
             {
-                trap_type = X86_EVENTTYPE_HW_EXCEPTION;
+                trap_type = X86_ET_HW_EXC;
                 insn_len = 0;
             }
             else
             {
-                trap_type = X86_EVENTTYPE_PRI_SW_EXCEPTION;
+                trap_type = X86_ET_PRIV_SW_EXC;
                 insn_len = svm_get_insn_len(v, INSTR_ICEBP);
 
                 if ( !insn_len )
@@ -2733,13 +2735,13 @@ void asmlinkage svm_vmexit_handler(void)
         {
            rc = hvm_monitor_debug(regs->rip,
                                   HVM_MONITOR_SOFTWARE_BREAKPOINT,
-                                  X86_EVENTTYPE_SW_EXCEPTION,
+                                  X86_ET_SW_EXC,
                                   insn_len, 0);
            if ( rc < 0 )
                goto unexpected_exit_type;
            if ( !rc )
                hvm_inject_exception(X86_EXC_BP,
-                                    X86_EVENTTYPE_SW_EXCEPTION,
+                                    X86_ET_SW_EXC,
                                     insn_len, X86_EVENT_NO_EC);
         }
         break;
@@ -2832,13 +2834,13 @@ void asmlinkage svm_vmexit_handler(void)
                  * ICEBP is handled specially, and already has fault
                  * semantics.
                  */
-            case X86_EVENTTYPE_HW_EXCEPTION:
+            case X86_ET_HW_EXC:
                 if ( vmcb->exit_int_info.vector == X86_EXC_BP ||
                      vmcb->exit_int_info.vector == X86_EXC_OF )
                     break;
                 /* Fallthrough */
-            case X86_EVENTTYPE_EXT_INTR:
-            case X86_EVENTTYPE_NMI:
+            case X86_ET_EXT_INTR:
+            case X86_ET_NMI:
                 insn_len = 0;
                 break;
             }

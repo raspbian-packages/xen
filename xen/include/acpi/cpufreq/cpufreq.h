@@ -79,7 +79,7 @@ struct cpufreq_policy {
 
     bool                resume; /* flag for cpufreq 1st run
                                  * S3 wakeup, hotplug cpu, etc */
-    s8                  turbo;  /* tristate flag: 0 for unsupported
+    int8_t              turbo;  /* tristate flag: 0 for unsupported
                                  * -1 for disable, 1 for enabled
                                  * See CPUFREQ_TURBO_* below for defines */
 };
@@ -254,10 +254,17 @@ void intel_feature_detect(struct cpufreq_policy *policy);
 
 int hwp_cmdline_parse(const char *s, const char *e);
 int hwp_register_driver(void);
+#ifdef CONFIG_INTEL
 bool hwp_active(void);
+#else
+static inline bool hwp_active(void) { return false; }
+#endif
+
 int get_hwp_para(unsigned int cpu,
                  struct xen_cppc_para *cppc_para);
 int set_hwp_para(struct cpufreq_policy *policy,
                  struct xen_set_cppc_para *set_cppc);
+
+int acpi_cpufreq_register(void);
 
 #endif /* __XEN_CPUFREQ_PM_H__ */

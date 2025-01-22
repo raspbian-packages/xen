@@ -25,7 +25,7 @@ CFLAGS_xeninclude = -I$(XEN_INCLUDE)
 XENSTORE_XENSTORED ?= y
 
 # A debug build of tools?
-debug ?= n
+debug ?= y
 debug_symbols ?= $(debug)
 
 XEN_GOCODE_URL    = golang.xenproject.org
@@ -80,13 +80,6 @@ endif
 # $(LDLIBS_libfoo) in their appropriate directories. They should not
 # include any CFLAGS or LDLIBS relating to libbar or libbaz unless
 # they use those libraries directly (not via libfoo) too.
-
-# Give the list of Xen library that the libraries in $(1) are linked against,
-# directly or indirectly.
-define xenlibs-dependencies
-    $(sort $(foreach lib,$(1), \
-        $(USELIBS_$(lib)) $(call xenlibs-dependencies,$(USELIBS_$(lib)))))
-endef
 
 # Flags for linking recursive dependencies of Xen libraries in $(1)
 define xenlibs-rpath
@@ -206,7 +199,7 @@ subdir-all-% subdir-clean-% subdir-install-% subdir-uninstall-%: .phony
 subdir-distclean-%: .phony
 	$(MAKE) -C $* distclean
 
-no-configure-targets := distclean subdir-distclean% clean subdir-clean% subtree-force-update-all %-dir-force-update
+no-configure-targets := distclean subdir-distclean% clean subdir-clean% %-dir-force-update
 ifeq (,$(filter $(no-configure-targets),$(MAKECMDGOALS)))
 $(XEN_ROOT)/config/Tools.mk:
 	$(error You have to run ./configure before building or installing the tools)

@@ -1,4 +1,4 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * Contains CPU feature definitions
  *
@@ -207,6 +207,9 @@ static int __init create_domain_cpuinfo(void)
     /* Hide SVE by default */
     domain_cpuinfo.pfr64.sve = 0;
     domain_cpuinfo.zfr64.bits[0] = 0;
+
+    /* Hide SMT support as Xen does not support it */
+    domain_cpuinfo.pfr64.sme = 0;
 
     /* Hide MTE support as Xen does not support it */
     domain_cpuinfo.pfr64.mte = 0;

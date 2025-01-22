@@ -427,13 +427,11 @@ static const struct ext0f38_table {
     [0xbe] = { .simd_size = simd_packed_fp, .d8s = d8s_vl },
     [0xbf] = { .simd_size = simd_scalar_vexw, .d8s = d8s_dq },
     [0xc4] = { .simd_size = simd_packed_int, .two_op = 1, .d8s = d8s_vl },
-    [0xc6 ... 0xc7] = { .simd_size = simd_other, .vsib = 1, .d8s = d8s_dq },
     [0xc8] = { .simd_size = simd_packed_fp, .two_op = 1, .d8s = d8s_vl },
     [0xc9] = { .simd_size = simd_other },
     [0xca] = { .simd_size = simd_packed_fp, .two_op = 1, .d8s = d8s_vl },
-    [0xcb] = { .simd_size = simd_scalar_vexw, .d8s = d8s_dq },
-    [0xcc] = { .simd_size = simd_packed_fp, .two_op = 1, .d8s = d8s_vl },
-    [0xcd] = { .simd_size = simd_scalar_vexw, .d8s = d8s_dq },
+    [0xcb] = { .simd_size = simd_other, .d8s = d8s_vl },
+    [0xcc ... 0xcd] = { .simd_size = simd_other, .two_op = 1, .d8s = d8s_vl },
     [0xcf] = { .simd_size = simd_packed_int, .d8s = d8s_vl },
     [0xd2] = { .simd_size = simd_other },
     [0xd3] = { .simd_size = simd_other },
@@ -442,6 +440,7 @@ static const struct ext0f38_table {
     [0xda] = { .simd_size = simd_other },
     [0xdb] = { .simd_size = simd_packed_int, .two_op = 1 },
     [0xdc ... 0xdf] = { .simd_size = simd_packed_int, .d8s = d8s_vl },
+    [0xe0 ... 0xef] = { .to_mem = 1 },
     [0xf0] = { .two_op = 1 },
     [0xf1] = { .to_mem = 1, .two_op = 1 },
     [0xf2 ... 0xf3] = {},
@@ -918,14 +917,6 @@ decode_0f38(struct x86_emulate_state *s,
     case X86EMUL_OPC_EVEX_66(0, 0x7c): /* vpbroadcast{d,q} */
         break;
 
-    case X86EMUL_OPC_VEX_F2(0, 0xcc): /* vsha512msg1 */
-    case X86EMUL_OPC_VEX_F2(0, 0xcd): /* vsha512msg2 */
-        s->desc |= TwoOp;
-        /* fallthrough */
-    case X86EMUL_OPC_VEX_F2(0, 0xcb): /* vsha512rnds2 */
-        s->simd_size = simd_other;
-        break;
-
     case 0xf0: /* movbe / crc32 */
         s->desc |= s->vex.pfx == vex_f2 ? ByteOp : Mov;
         if ( s->vex.pfx >= vex_f3 )
@@ -939,6 +930,8 @@ decode_0f38(struct x86_emulate_state *s,
             ctxt->opcode |= MASK_INSR(s->vex.pfx, X86EMUL_OPC_PFX_MASK);
         break;
 
+    case X86EMUL_OPC_VEX_66(0, 0xe0) ...
+         X86EMUL_OPC_VEX_66(0, 0xef): /* cmp<cc>xadd */
     case X86EMUL_OPC_VEX(0, 0xf2):    /* andn */
     case X86EMUL_OPC_VEX(0, 0xf3):    /* Grp 17 */
     case X86EMUL_OPC_VEX(0, 0xf5):    /* bzhi */
@@ -1122,7 +1115,9 @@ int x86emul_decode(struct x86_emulate_state *s,
             switch ( def_ad_bytes )
             {
             default:
-                BUG(); /* Shouldn't be possible. */
+                ASSERT_UNREACHABLE(); /* Shouldn't be possible. */
+                return X86EMUL_UNHANDLEABLE;
+
             case 2:
                 if ( ctxt->regs->eflags & X86_EFLAGS_VM )
                     break;
@@ -1361,7 +1356,8 @@ int x86emul_decode(struct x86_emulate_state *s,
                         --disp8scale;
                     break;
                 }
-                /* vcvt{,t}s{s,d}2usi need special casing: fall through */
+                /* vcvt{,t}s{s,d}2usi need special casing. */
+                fallthrough;
             case 0x2c: /* vcvtts{s,d}2si need special casing */
             case 0x2d: /* vcvts{s,d}2si need special casing */
                 if ( evex_encoded() )
@@ -1418,20 +1414,6 @@ int x86emul_decode(struct x86_emulate_state *s,
                     disp8scale = decode_disp8scale(ext0f38_table[b ^ 0x30].d8s,
                                                    s);
                     s->simd_size = simd_other;
-                }
-
-                switch ( b )
-                {
-                /* vp4dpwssd{,s} need special casing */
-                case 0x52: case 0x53:
-                /* v4f{,n}madd{p,s}s need special casing */
-                case 0x9a: case 0x9b: case 0xaa: case 0xab:
-                    if ( s->evex.pfx == vex_f2 )
-                    {
-                        disp8scale = 4;
-                        s->simd_size = simd_128;
-                    }
-                    break;
                 }
             }
             break;
@@ -1549,7 +1531,8 @@ int x86emul_decode(struct x86_emulate_state *s,
                         disp8scale -= 1 + (s->evex.pfx == vex_66);
                     break;
                 }
-                /* vcvt{,t}sh2usi needs special casing: fall through */
+                /* vcvt{,t}sh2usi needs special casing. */
+                fallthrough;
             case 0x2c: case 0x2d: /* vcvt{,t}sh2si need special casing */
                 disp8scale = 1;
                 break;

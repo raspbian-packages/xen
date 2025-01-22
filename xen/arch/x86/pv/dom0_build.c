@@ -14,6 +14,7 @@
 #include <xen/softirq.h>
 #include <xen/vga.h>
 
+#include <asm/bootinfo.h>
 #include <asm/bzimage.h>
 #include <asm/dom0_build.h>
 #include <asm/guest.h>
@@ -354,13 +355,10 @@ static struct page_info * __init alloc_chunk(struct domain *d,
     return page;
 }
 
-static int __init dom0_construct(struct domain *d,
-                                 const module_t *image,
-                                 unsigned long image_headroom,
-                                 module_t *initrd,
-                                 const char *cmdline)
+static int __init dom0_construct(struct boot_info *bi, struct domain *d)
 {
-    int i, rc, order, machine;
+    unsigned int i;
+    int rc, order, machine;
     bool compatible, compat;
     struct cpu_user_regs *regs;
     unsigned long pfn, mfn;
@@ -374,10 +372,14 @@ static int __init dom0_construct(struct domain *d,
     unsigned int flush_flags = 0;
     start_info_t *si;
     struct vcpu *v = d->vcpu[0];
-    void *image_base = bootstrap_map(image);
-    unsigned long image_len = image->mod_end;
-    void *image_start = image_base + image_headroom;
-    unsigned long initrd_len = initrd ? initrd->mod_end : 0;
+
+    struct boot_module *image;
+    struct boot_module *initrd = NULL;
+    void *image_base;
+    unsigned long image_len;
+    void *image_start;
+    unsigned long initrd_len = 0;
+
     l4_pgentry_t *l4tab = NULL, *l4start = NULL;
     l3_pgentry_t *l3tab = NULL, *l3start = NULL;
     l2_pgentry_t *l2tab = NULL, *l2start = NULL;
@@ -413,6 +415,22 @@ static int __init dom0_construct(struct domain *d,
     paddr_t mpt_alloc;
 
     printk(XENLOG_INFO "*** Building a PV Dom%d ***\n", d->domain_id);
+
+    i = first_boot_module_index(bi, BOOTMOD_KERNEL);
+    if ( i >= bi->nr_modules )
+        panic("Missing kernel boot module for %pd construction\n", d);
+
+    image = &bi->mods[i];
+    image_base = bootstrap_map_bm(image);
+    image_len = image->size;
+    image_start = image_base + image->headroom;
+
+    i = first_boot_module_index(bi, BOOTMOD_RAMDISK);
+    if ( i < bi->nr_modules )
+    {
+        initrd = &bi->mods[i];
+        initrd_len = initrd->size;
+    }
 
     d->max_pages = ~0U;
 
@@ -613,7 +631,8 @@ static int __init dom0_construct(struct domain *d,
         initrd_pfn = vinitrd_start ?
                      (vinitrd_start - v_start) >> PAGE_SHIFT :
                      domain_tot_pages(d);
-        initrd_mfn = mfn = initrd->mod_start;
+        initrd_mfn = paddr_to_pfn(initrd->start);
+        mfn = initrd_mfn;
         count = PFN_UP(initrd_len);
         if ( d->arch.physaddr_bitsize &&
              ((mfn + count - 1) >> (d->arch.physaddr_bitsize - PAGE_SHIFT)) )
@@ -628,20 +647,28 @@ static int __init dom0_construct(struct domain *d,
                     free_domheap_pages(page, order);
                     page += 1UL << order;
                 }
-            memcpy(page_to_virt(page), mfn_to_virt(initrd->mod_start),
-                   initrd_len);
-            mpt_alloc = (paddr_t)initrd->mod_start << PAGE_SHIFT;
-            init_domheap_pages(mpt_alloc,
-                               mpt_alloc + PAGE_ALIGN(initrd_len));
-            initrd->mod_start = initrd_mfn = mfn_x(page_to_mfn(page));
+            memcpy(page_to_virt(page), __va(initrd->start), initrd_len);
+            /*
+             * The initrd was copied but the initrd variable is reused in the
+             * calculations below. As to not leak the memory used for the
+             * module free at this time.
+             */
+            release_boot_module(initrd);
+            initrd_mfn = mfn_x(page_to_mfn(page));
+            initrd->start = pfn_to_paddr(initrd_mfn);
         }
         else
         {
             while ( count-- )
                 if ( assign_pages(mfn_to_page(_mfn(mfn++)), 1, d, 0) )
                     BUG();
+            /*
+             * We have mapped the initrd directly into dom0, and assigned the
+             * pages. Tell the boot_module handling that we've freed it, so the
+             * memory is left alone.
+             */
+            initrd->released = true;
         }
-        initrd->mod_end = 0;
 
         iommu_memory_setup(d, "initrd", mfn_to_page(_mfn(initrd_mfn)),
                            PFN_UP(initrd_len), &flush_flags);
@@ -655,7 +682,7 @@ static int __init dom0_construct(struct domain *d,
                nr_pages - domain_tot_pages(d));
     if ( initrd )
     {
-        mpt_alloc = (paddr_t)initrd->mod_start << PAGE_SHIFT;
+        mpt_alloc = initrd->start;
         printk("\n Init. ramdisk: %"PRIpaddr"->%"PRIpaddr,
                mpt_alloc, mpt_alloc + initrd_len);
     }
@@ -830,7 +857,7 @@ static int __init dom0_construct(struct domain *d,
         printk("Failed to load the kernel binary\n");
         goto out;
     }
-    bootstrap_map(NULL);
+    bootstrap_unmap();
 
     if ( UNSET_ADDR != parms.virt_hypercall )
     {
@@ -846,7 +873,7 @@ static int __init dom0_construct(struct domain *d,
     }
 
     /* Free temporary buffers. */
-    discard_initial_images();
+    free_boot_modules();
 
     /* Set up start info area. */
     si = (start_info_t *)vstartinfo_start;
@@ -883,7 +910,7 @@ static int __init dom0_construct(struct domain *d,
         if ( pfn >= initrd_pfn )
         {
             if ( pfn < initrd_pfn + PFN_UP(initrd_len) )
-                mfn = initrd->mod_start + (pfn - initrd_pfn);
+                mfn = paddr_to_pfn(initrd->start) + (pfn - initrd_pfn);
             else
                 mfn -= PFN_UP(initrd_len);
         }
@@ -953,8 +980,8 @@ static int __init dom0_construct(struct domain *d,
     }
 
     memset(si->cmd_line, 0, sizeof(si->cmd_line));
-    if ( cmdline != NULL )
-        strlcpy((char *)si->cmd_line, cmdline, sizeof(si->cmd_line));
+    if ( image->cmdline_pa )
+        strlcpy((char *)si->cmd_line, __va(image->cmdline_pa), sizeof(si->cmd_line));
 
 #ifdef CONFIG_VIDEO
     if ( !pv_shim && fill_console_start_info((void *)(si + 1)) )
@@ -1051,31 +1078,32 @@ out:
     return rc;
 }
 
-int __init dom0_construct_pv(struct domain *d,
-                             const module_t *image,
-                             unsigned long image_headroom,
-                             module_t *initrd,
-                             const char *cmdline)
+int __init dom0_construct_pv(struct boot_info *bi, struct domain *d)
 {
+    unsigned long cr4 = read_cr4();
     int rc;
 
     /*
      * Clear SMAP in CR4 to allow user-accesses in construct_dom0().  This
-     * prevents us needing to rewrite construct_dom0() in terms of
+     * prevents us needing to write construct_dom0() in terms of
      * copy_{to,from}_user().
      */
-    if ( boot_cpu_has(X86_FEATURE_XEN_SMAP) )
+    if ( cr4 & X86_CR4_SMAP )
     {
-        cr4_pv32_mask &= ~X86_CR4_SMAP;
-        write_cr4(read_cr4() & ~X86_CR4_SMAP);
+        if ( IS_ENABLED(CONFIG_PV32) )
+            cr4_pv32_mask &= ~X86_CR4_SMAP;
+
+        write_cr4(cr4 & ~X86_CR4_SMAP);
     }
 
-    rc = dom0_construct(d, image, image_headroom, initrd, cmdline);
+    rc = dom0_construct(bi, d);
 
-    if ( boot_cpu_has(X86_FEATURE_XEN_SMAP) )
+    if ( cr4 & X86_CR4_SMAP )
     {
-        write_cr4(read_cr4() | X86_CR4_SMAP);
-        cr4_pv32_mask |= X86_CR4_SMAP;
+        write_cr4(cr4);
+
+        if ( IS_ENABLED(CONFIG_PV32) )
+            cr4_pv32_mask |= X86_CR4_SMAP;
     }
 
     return rc;

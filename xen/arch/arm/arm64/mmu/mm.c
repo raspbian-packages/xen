@@ -1,6 +1,7 @@
-/* SPDX-License-Identifier: GPL-2.0 */
+/* SPDX-License-Identifier: GPL-2.0-only */
 
 #include <xen/init.h>
+#include <xen/llc-coloring.h>
 #include <xen/mm.h>
 #include <xen/pfn.h>
 
@@ -111,7 +112,14 @@ void __init arch_setup_page_tables(void)
     prepare_runtime_identity_mapping();
 }
 
-void update_identity_mapping(bool enable)
+/*
+ * Enable/disable the identity mapping in the live page-tables (i.e.
+ * the one pointed by TTBR_EL2).
+ *
+ * Note that nested call (e.g. enable=true, enable=true) is not
+ * supported.
+ */
+static void update_identity_mapping(bool enable)
 {
     paddr_t id_addr = virt_to_maddr(_start);
     int rc;
@@ -125,9 +133,45 @@ void update_identity_mapping(bool enable)
     BUG_ON(rc);
 }
 
+void update_boot_mapping(bool enable)
+{
+    update_identity_mapping(enable);
+}
+
 extern void switch_ttbr_id(uint64_t ttbr);
+extern void relocate_xen(uint64_t ttbr, void *src, void *dst, size_t len);
 
 typedef void (switch_ttbr_fn)(uint64_t ttbr);
+typedef void (relocate_xen_fn)(uint64_t ttbr, void *src, void *dst, size_t len);
+
+#ifdef CONFIG_LLC_COLORING
+void __init relocate_and_switch_ttbr(uint64_t ttbr)
+{
+    vaddr_t id_addr = virt_to_maddr(relocate_xen);
+    relocate_xen_fn *fn = (relocate_xen_fn *)id_addr;
+    lpae_t pte;
+
+    /* Enable the identity mapping in the boot page tables */
+    update_identity_mapping(true);
+
+    /* Enable the identity mapping in the runtime page tables */
+    pte = pte_of_xenaddr((vaddr_t)relocate_xen);
+    pte.pt.table = 1;
+    pte.pt.xn = 0;
+    pte.pt.ro = 1;
+    write_pte(&xen_third_id[third_table_offset(id_addr)], pte);
+
+    /* Relocate Xen and switch TTBR */
+    fn(ttbr, _start, (void *)BOOT_RELOC_VIRT_START, _end - _start);
+
+    /*
+     * Disable the identity mapping in the runtime page tables.
+     * Note it is not necessary to disable it in the boot page tables
+     * because they are not going to be used by this CPU anymore.
+     */
+    update_identity_mapping(false);
+}
+#endif
 
 void __init switch_ttbr(uint64_t ttbr)
 {

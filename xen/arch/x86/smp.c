@@ -14,16 +14,18 @@
 #include <xen/delay.h>
 #include <xen/perfc.h>
 #include <xen/spinlock.h>
+
+#include <asm/apic.h>
 #include <asm/current.h>
+#include <asm/genapic.h>
 #include <asm/guest.h>
+#include <asm/irq-vectors.h>
 #include <asm/smp.h>
 #include <asm/mc146818rtc.h>
 #include <asm/flushtlb.h>
 #include <asm/hardirq.h>
 #include <asm/hpet.h>
 #include <asm/setup.h>
-#include <irq_vectors.h>
-#include <mach_apic.h>
 
 /* Helper functions to prepare APIC register values. */
 static unsigned int prepare_ICR(unsigned int shortcut, int vector)

@@ -8,20 +8,30 @@ config ARM_64
 	depends on !ARM_32
 	select 64BIT
 	select HAS_FAST_MULTIPLY
+	select HAS_LLC_COLORING if !NUMA
 
 config ARM
 	def_bool y
 	select FUNCTION_ALIGNMENT_4B
-	select HAS_ALTERNATIVE
+	select GENERIC_UART_INIT
+	select HAS_ALTERNATIVE if HAS_VMAP
 	select HAS_DEVICE_TREE
-	select HAS_PASSTHROUGH
 	select HAS_UBSAN
-	select IOMMU_FORCE_PT_SHARE
 
 config ARCH_DEFCONFIG
 	string
 	default "arch/arm/configs/arm32_defconfig" if ARM_32
 	default "arch/arm/configs/arm64_defconfig" if ARM_64
+
+config XEN_START_ADDRESS
+	hex "Xen start address: keep default to use platform defined address"
+	default 0xFFFFFFFF
+	depends on MPU
+	help
+	  Used to set customized address at which which Xen will be linked on MPU
+	  systems. Must be aligned to 4KB.
+	  0xFFFFFFFF is used as default value to indicate that user has not
+	  customized this address.
 
 menu "Architecture Features"
 
@@ -58,9 +68,27 @@ config PADDR_BITS
 	default 40 if ARM_PA_BITS_40
 	default 48 if ARM_64
 
+choice
+	prompt "Memory management system"
+	default MMU
+	help
+	  User can choose between the different forms of memory management system.
+
 config MMU
-	def_bool y
+	bool "MMU"
 	select HAS_PMAP
+	select HAS_VMAP
+	select HAS_PASSTHROUGH
+	select IOMMU_FORCE_PT_SHARE
+	help
+	  Select it if you plan to run Xen on A-profile Armv7+
+
+config MPU
+	bool "MPU" if UNSUPPORTED
+	help
+	  Memory Protection Unit (MPU). Select if you plan to run Xen on ARMv8-R
+	  systems supporting EL2. (UNSUPPORTED)
+endchoice
 
 source "arch/Kconfig"
 
@@ -171,6 +199,7 @@ config ARM_SSBD
 
 config HARDEN_BRANCH_PREDICTOR
 	bool "Harden the branch predictor against aliasing attacks" if EXPERT
+	depends on MMU
 	default y
 	help
 	  Speculation attacks against some high-performance processors rely on
@@ -242,6 +271,8 @@ config PARTIAL_EMULATION
 	  guests crashing when accessing registers which are not optional but have
 	  not been emulated to their complete functionality. Enabling this might
 	  result in unwanted/non-spec compliant behavior.
+
+source "arch/arm/firmware/Kconfig"
 
 endmenu
 

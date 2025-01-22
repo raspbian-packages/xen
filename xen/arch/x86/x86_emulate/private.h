@@ -15,6 +15,9 @@
 # include <asm/x86-vendors.h>
 # include <asm/x86_emulate.h>
 
+# undef BUG /* Make sure it's not used anywhere here. */
+void BUG(void);
+
 # ifndef CONFIG_HVM
 #  define X86EMUL_NO_FPU
 #  define X86EMUL_NO_MMX
@@ -258,6 +261,7 @@ struct x86_emulate_state {
         rmw_btc,
         rmw_btr,
         rmw_bts,
+        rmw_cmpccxadd,
         rmw_dec,
         rmw_inc,
         rmw_neg,
@@ -564,8 +568,6 @@ amd_like(const struct x86_emulate_ctxt *ctxt)
 #define vcpu_has_avx512_ifma() (ctxt->cpuid->feat.avx512_ifma)
 #define vcpu_has_clflushopt()  (ctxt->cpuid->feat.clflushopt)
 #define vcpu_has_clwb()        (ctxt->cpuid->feat.clwb)
-#define vcpu_has_avx512pf()    (ctxt->cpuid->feat.avx512pf)
-#define vcpu_has_avx512er()    (ctxt->cpuid->feat.avx512er)
 #define vcpu_has_avx512cd()    (ctxt->cpuid->feat.avx512cd)
 #define vcpu_has_sha()         (ctxt->cpuid->feat.sha)
 #define vcpu_has_avx512bw()    (ctxt->cpuid->feat.avx512bw)
@@ -582,8 +584,6 @@ amd_like(const struct x86_emulate_ctxt *ctxt)
 #define vcpu_has_movdiri()     (ctxt->cpuid->feat.movdiri)
 #define vcpu_has_movdir64b()   (ctxt->cpuid->feat.movdir64b)
 #define vcpu_has_enqcmd()      (ctxt->cpuid->feat.enqcmd)
-#define vcpu_has_avx512_4vnniw() (ctxt->cpuid->feat.avx512_4vnniw)
-#define vcpu_has_avx512_4fmaps() (ctxt->cpuid->feat.avx512_4fmaps)
 #define vcpu_has_avx512_vp2intersect() (ctxt->cpuid->feat.avx512_vp2intersect)
 #define vcpu_has_serialize()   (ctxt->cpuid->feat.serialize)
 #define vcpu_has_tsxldtrk()    (ctxt->cpuid->feat.tsxldtrk)
@@ -593,6 +593,7 @@ amd_like(const struct x86_emulate_ctxt *ctxt)
 #define vcpu_has_sm4()         (ctxt->cpuid->feat.sm4)
 #define vcpu_has_avx_vnni()    (ctxt->cpuid->feat.avx_vnni)
 #define vcpu_has_avx512_bf16() (ctxt->cpuid->feat.avx512_bf16)
+#define vcpu_has_cmpccxadd()   (ctxt->cpuid->feat.cmpccxadd)
 #define vcpu_has_wrmsrns()     (ctxt->cpuid->feat.wrmsrns)
 #define vcpu_has_avx_ifma()    (ctxt->cpuid->feat.avx_ifma)
 #define vcpu_has_avx_vnni_int8() (ctxt->cpuid->feat.avx_vnni_int8)
@@ -671,19 +672,19 @@ amd_like(const struct x86_emulate_ctxt *ctxt)
 # include <asm/uaccess.h>
 
 # define get_stub(stb) ({                                    \
-    void *ptr;                                               \
+    void *_ptr;                                              \
     BUILD_BUG_ON(STUB_BUF_SIZE / 2 < MAX_INST_LEN + 1);      \
     ASSERT(!(stb).ptr);                                      \
     (stb).addr = this_cpu(stubs.addr) + STUB_BUF_SIZE / 2;   \
     (stb).ptr = map_domain_page(_mfn(this_cpu(stubs.mfn))) + \
         ((stb).addr & ~PAGE_MASK);                           \
-    ptr = memset((stb).ptr, 0xcc, STUB_BUF_SIZE / 2);        \
+    _ptr = memset((stb).ptr, 0xcc, STUB_BUF_SIZE / 2);       \
     if ( cpu_has_xen_ibt )                                   \
     {                                                        \
-        place_endbr64(ptr);                                  \
-        ptr += 4;                                            \
+        place_endbr64(_ptr);                                 \
+        _ptr += 4;                                           \
     }                                                        \
-    ptr;                                                     \
+    _ptr;                                                    \
 })
 
 # define put_stub(stb) ({             \

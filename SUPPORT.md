@@ -9,13 +9,13 @@ for the definitions of the support status levels etc.
 
 # Release Support
 
-    Xen-Version: 4.19
-    Initial-Release: 2024-07-29
-    Supported-Until: 2026-01-29
-    Security-Support-Until: 2027-07-29
+    Xen-Version: 4.20-rc
+    Initial-Release: n/a
+    Supported-Until: TBD
+    Security-Support-Until: Unreleased - not yet security-supported
 
 Release Notes
-: <a href="https://wiki.xenproject.org/wiki/Xen_Project_4.19_Release_Notes">RN</a>
+: <a href="https://wiki.xenproject.org/wiki/Xen_Project_X.YY_Release_Notes">RN</a>
 
 # Feature Support
 
@@ -30,6 +30,7 @@ supported in this document.
 ### x86-64
 
     Status: Supported
+    Status, Xeon Phi: Not supported.
 
 ### ARM v7 + Virtualization Extensions
 
@@ -39,6 +40,7 @@ supported in this document.
 
     Status, Xen in AArch64 mode: Supported
     Status, Xen in AArch32 mode: Tech Preview
+    Status, Xen in Armv8-R: Experimental
     Status, Cortex A57 r0p0-r1p1: Supported, not security supported
     Status, Cortex A77 r0p0-r1p0: Supported, not security supported
 
@@ -398,6 +400,13 @@ by maintaining multiple physical to machine (p2m) memory mappings.
 
     Status, x86 HVM: Tech Preview
     Status, ARM: Tech Preview
+
+### Cache coloring
+
+Allows to reserve Last Level Cache (LLC) partitions for Dom0, DomUs and Xen
+itself.
+
+    Status, Arm64: Experimental
 
 ## Resource Management
 
@@ -847,7 +856,7 @@ This feature is not security supported: see https://xenbits.xen.org/xsa/advisory
 
 ### Argo: Inter-domain message delivery by hypercall
 
-    Status: Experimental
+    Status: Tech Preview
 
 ### x86/PCI Device Passthrough
 
@@ -925,6 +934,14 @@ Add/Remove device tree nodes using a device tree overlay binary (.dtbo).
 ### Arm: OP-TEE Mediator
 
     Status: Tech Preview
+
+### Arm: SCMI over SMC calls forwarding to EL3 Firmware
+
+Enable SCMI calls using SMC as doorbell mechanism and Shared Memory for
+transport ("arm,scmi-smc" compatible only) to reach EL3 Firmware if issued
+by hwdom. Some platforms use SCMI for access to system-level resources.
+
+    Status: Supported
 
 ## Virtual Hardware, QEMU
 

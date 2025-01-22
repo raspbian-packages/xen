@@ -1,4 +1,4 @@
-/* 
+/*
     Xen Store Daemon interface providing simple tree-like database.
     Copyright (C) 2005 Rusty Russell IBM Corporation
 
@@ -40,6 +40,14 @@
 #include <xentoolcore_internal.h>
 #include <xen_list.h>
 
+#ifdef USE_PTHREAD
+# include <pthread.h>
+#endif
+
+#ifdef USE_DLSYM
+# include <dlfcn.h>
+#endif
+
 #ifndef O_CLOEXEC
 #define O_CLOEXEC 0
 #endif
@@ -54,14 +62,6 @@ struct xs_stored_msg {
 	char *body;
 };
 
-#ifdef USE_PTHREAD
-
-#include <pthread.h>
-
-#ifdef USE_DLSYM
-#include <dlfcn.h>
-#endif
-
 struct xs_handle {
 	/* Communications channel to xenstore daemon. */
 	int fd;
@@ -74,16 +74,20 @@ struct xs_handle {
          * A read thread which pulls messages off the comms channel and
          * signals waiters.
          */
+#ifdef USE_PTHREAD
 	pthread_t read_thr;
 	int read_thr_exists;
+#endif
 
 	/*
          * A list of fired watch messages, protected by a mutex. Users can
          * wait on the conditional variable until a watch is pending.
          */
 	XEN_TAILQ_HEAD(, struct xs_stored_msg) watch_list;
+#ifdef USE_PTHREAD
 	pthread_mutex_t watch_mutex;
 	pthread_cond_t watch_condvar;
+#endif
 
 	/* Clients can select() on this pipe to wait for a watch to fire. */
 	int watch_pipe[2];
@@ -96,6 +100,7 @@ struct xs_handle {
          * conditional variable for its response.
          */
 	XEN_TAILQ_HEAD(, struct xs_stored_msg) reply_list;
+#ifdef USE_PTHREAD
 	pthread_mutex_t reply_mutex;
 	pthread_cond_t reply_condvar;
 
@@ -115,61 +120,54 @@ struct xs_handle {
 	 *     reply_mutex
 	 *     watch_mutex
 	 */
+#endif
 };
 
-#define mutex_lock(m)		pthread_mutex_lock(m)
-#define mutex_unlock(m)		pthread_mutex_unlock(m)
-#define condvar_signal(c)	pthread_cond_signal(c)
-#define condvar_wait(c,m)	pthread_cond_wait(c,m)
-#define cleanup_push(f, a)	\
-    pthread_cleanup_push((void (*)(void *))(f), (void *)(a))
+
+#ifdef USE_PTHREAD
+
+# define mutex_lock(m)             pthread_mutex_lock(m)
+# define mutex_unlock(m)           pthread_mutex_unlock(m)
+# define condvar_signal(c)         pthread_cond_signal(c)
+# define condvar_wait(c, m)        pthread_cond_wait(c, m)
+# define cleanup_push(f, a)        pthread_cleanup_push((void (*)(void *))(f), (void *)(a))
 /*
  * Some definitions of pthread_cleanup_pop() are a macro starting with an
  * end-brace. GCC then complains if we immediately precede that with a label.
  * Hence we insert a dummy statement to appease the compiler in this situation.
  */
-#define cleanup_pop(run)        ((void)0); pthread_cleanup_pop(run)
+# define cleanup_pop(run)          ((void)0); pthread_cleanup_pop(run)
 
-#define read_thread_exists(h)	(h->read_thr_exists)
+# define read_thread_exists(h)     ((h)->read_thr_exists)
 
 /* Because pthread_cleanup_p* are not available when USE_PTHREAD is
  * disabled, use these macros which convert appropriately. */
-#define cleanup_push_heap(p)        cleanup_push(free, p)
-#define cleanup_pop_heap(run, p)    cleanup_pop((run))
+# define cleanup_push_heap(p)      cleanup_push(free, p)
+# define cleanup_pop_heap(run, p)  cleanup_pop((run))
 
 static void *read_thread(void *arg);
 
-#else /* !defined(USE_PTHREAD) */
+#else /* USE_PTHREAD */
 
-struct xs_handle {
-	int fd;
-	bool is_socket; /* is @fd a file or socket? */
-	Xentoolcore__Active_Handle tc_ah; /* for restrict */
-	XEN_TAILQ_HEAD(, struct xs_stored_msg) reply_list;
-	XEN_TAILQ_HEAD(, struct xs_stored_msg) watch_list;
-	/* Clients can select() on this pipe to wait for a watch to fire. */
-	int watch_pipe[2];
-	/* Filtering watch event in unwatch function? */
-	bool unwatch_filter;
-};
+# define mutex_lock(m)               ((void)0)
+# define mutex_unlock(m)             ((void)0)
+# define condvar_signal(c)           ((void)0)
+# define condvar_wait(c, m)          ((void)0)
+# define cleanup_push(f, a)          ((void)0)
+# define cleanup_pop(run)            ((void)0)
+# define read_thread_exists(h)       (0)
+# define cleanup_push_heap(p)        ((void)0)
+# define cleanup_pop_heap(run, p)    do { if ((run)) free(p); } while(0)
 
-#define mutex_lock(m)		((void)0)
-#define mutex_unlock(m)		((void)0)
-#define condvar_signal(c)	((void)0)
-#define condvar_wait(c,m)	((void)0)
-#define cleanup_push(f, a)	((void)0)
-#define cleanup_pop(run)	((void)0)
-#define read_thread_exists(h)	(0)
+#endif /* !USE_PTHREAD */
 
-#define cleanup_push_heap(p)        ((void)0)
-#define cleanup_pop_heap(run, p)    do { if ((run)) free(p); } while(0)
-
-#endif
 
 static int read_message(struct xs_handle *h, int nonblocking);
 
-static bool setnonblock(int fd, int nonblock) {
+static bool setnonblock(int fd, int nonblock)
+{
 	int flags = fcntl(fd, F_GETFL);
+
 	if (flags == -1)
 		return false;
 
@@ -240,7 +238,7 @@ static int get_socket(const char *connect_to)
 		goto error;
 
 	addr.sun_family = AF_UNIX;
-	if(strlen(connect_to) >= sizeof(addr.sun_path)) {
+	if (strlen(connect_to) >= sizeof(addr.sun_path)) {
 		errno = EINVAL;
 		goto error;
 	}
@@ -280,9 +278,11 @@ error:
 	return -1;
 }
 
-static int all_restrict_cb(Xentoolcore__Active_Handle *ah, domid_t domid) {
-    struct xs_handle *h = CONTAINER_OF(ah, *h, tc_ah);
-    return xentoolcore__restrict_by_dup2_null(h->fd);
+static int all_restrict_cb(Xentoolcore__Active_Handle *ah, domid_t domid)
+{
+	struct xs_handle *h = CONTAINER_OF(ah, *h, tc_ah);
+
+	return xentoolcore__restrict_by_dup2_null(h->fd);
 }
 
 static struct xs_handle *get_handle(const char *connect_to)
@@ -366,8 +366,10 @@ struct xs_handle *xs_domain_open(void)
 static const char *xs_domain_dev(void)
 {
 	char *s = getenv("XENSTORED_PATH");
+
 	if (s)
 		return s;
+
 #if defined(__RUMPUSER_XEN__) || defined(__RUMPRUN__)
 	return "/dev/xen/xenbus";
 #elif defined(__linux__)
@@ -398,7 +400,8 @@ struct xs_handle *xs_open(unsigned long flags)
 	return xsh;
 }
 
-static void close_free_msgs(struct xs_handle *h) {
+static void close_free_msgs(struct xs_handle *h)
+{
 	struct xs_stored_msg *msg, *tmsg;
 
 	XEN_TAILQ_FOREACH_SAFE(msg, &h->reply_list, list, tmsg) {
@@ -412,7 +415,8 @@ static void close_free_msgs(struct xs_handle *h) {
 	}
 }
 
-static void close_fds_free(struct xs_handle *h) {
+static void close_fds_free(struct xs_handle *h)
+{
 	if (h->watch_pipe[0] != -1) {
 		close(h->watch_pipe[0]);
 		close(h->watch_pipe[1]);
@@ -420,7 +424,7 @@ static void close_fds_free(struct xs_handle *h) {
 
 	xentoolcore__deregister_active_handle(&h->tc_ah);
         close(h->fd);
-        
+
 	free(h);
 }
 
@@ -452,7 +456,7 @@ void xs_daemon_close(struct xs_handle *h)
         close_fds_free(h);
 }
 
-void xs_close(struct xs_handle* xsh)
+void xs_close(struct xs_handle *xsh)
 {
 	if (xsh)
 		xs_daemon_close(xsh);
@@ -500,10 +504,6 @@ out_false:
 	return false;
 }
 
-#ifdef XSTEST
-#define read_all read_all_choice
-#define xs_write_all write_all_choice
-#else
 /* Simple routine for writing to sockets, etc. */
 bool xs_write_all(int fd, const void *data, unsigned int len)
 {
@@ -521,7 +521,6 @@ bool xs_write_all(int fd, const void *data, unsigned int len)
 
 	return true;
 }
-#endif
 
 static int get_error(const char *errorstring)
 {
@@ -1004,7 +1003,7 @@ bool xs_watch(struct xs_handle *h, const char *path, const char *token)
 
 #define READ_THREAD_STACKSIZE 					\
 	((DEFAULT_THREAD_STACKSIZE < PTHREAD_STACK_MIN) ? 	\
-	PTHREAD_STACK_MIN : DEFAULT_THREAD_STACKSIZE)
+	 PTHREAD_STACK_MIN : DEFAULT_THREAD_STACKSIZE)
 
 	/* We dynamically create a reader thread on demand. */
 	mutex_lock(&h->request_mutex);
@@ -1267,7 +1266,7 @@ bool xs_transaction_end(struct xs_handle *h, xs_transaction_t t,
 		strcpy(abortstr, "F");
 	else
 		strcpy(abortstr, "T");
-	
+
 	return xs_bool(xs_single(h, t, XS_TRANSACTION_END, abortstr, NULL));
 }
 
@@ -1302,7 +1301,7 @@ bool xs_introduce_domain(struct xs_handle *h,
 }
 
 bool xs_set_target(struct xs_handle *h,
-			 unsigned int domid, unsigned int target)
+		   unsigned int domid, unsigned int target)
 {
 	struct xsd_sockmsg msg = { .type = XS_SET_TARGET };
 	char domid_str[MAX_STRLEN(domid)];
@@ -1386,30 +1385,30 @@ bool xs_is_domain_introduced(struct xs_handle *h, unsigned int domid)
 
 int xs_suspend_evtchn_port(int domid)
 {
-    char path[128];
-    char *portstr;
-    int port;
-    unsigned int plen;
-    struct xs_handle *xs;
+	char path[128];
+	char *portstr;
+	int port;
+	unsigned int plen;
+	struct xs_handle *xs;
 
-    xs = xs_daemon_open();
-    if (!xs)
-        return -1;
+	xs = xs_daemon_open();
+	if (!xs)
+		return -1;
 
-    sprintf(path, "/local/domain/%d/device/suspend/event-channel", domid);
-    portstr = xs_read(xs, XBT_NULL, path, &plen);
-    xs_daemon_close(xs);
+	sprintf(path, "/local/domain/%d/device/suspend/event-channel", domid);
+	portstr = xs_read(xs, XBT_NULL, path, &plen);
+	xs_daemon_close(xs);
 
-    if (!portstr || !plen) {
-        port = -1;
-        goto out;
-    }
+	if (!portstr || !plen) {
+		port = -1;
+		goto out;
+	}
 
-    port = atoi(portstr);
+	port = atoi(portstr);
 
 out:
-    free(portstr);
-    return port;
+	free(portstr);
+	return port;
 }
 
 char *xs_control_command(struct xs_handle *h, const char *cmd,
@@ -1445,7 +1444,7 @@ static int read_message(struct xs_handle *h, int nonblocking)
 	 * whole amount requested.  Ie as soon as we have the start of
 	 * the message we block until we get all of it.
 	 */
-         
+
 	struct xs_stored_msg *msg = NULL;
 	char *body = NULL;
 	int saved_errno = 0;

@@ -52,11 +52,11 @@ struct microcode_patch {
 };
 
 #define UCODE_MAGIC                0x00414d44
-#define UCODE_EQUIV_CPU_TABLE_TYPE 0x00000000
+#define UCODE_EQUIV_TYPE           0x00000000
 #define UCODE_UCODE_TYPE           0x00000001
 
 struct container_equiv_table {
-    uint32_t type; /* UCODE_EQUIV_CPU_TABLE_TYPE */
+    uint32_t type; /* UCODE_EQUIV_TYPE */
     uint32_t len;
     struct equiv_cpu_entry eq[];
 };
@@ -114,6 +114,7 @@ static bool verify_patch_size(uint32_t patch_size)
 #define F16H_MPB_MAX_SIZE 3458
 #define F17H_MPB_MAX_SIZE 3200
 #define F19H_MPB_MAX_SIZE 5568
+#define F1AH_MPB_MAX_SIZE 15296
 
     switch ( boot_cpu_data.x86 )
     {
@@ -131,6 +132,9 @@ static bool verify_patch_size(uint32_t patch_size)
         break;
     case 0x19:
         max_size = F19H_MPB_MAX_SIZE;
+        break;
+    case 0x1a:
+        max_size = F1AH_MPB_MAX_SIZE;
         break;
     default:
         max_size = F1XH_MPB_MAX_SIZE;
@@ -170,8 +174,7 @@ static bool check_final_patch_levels(const struct cpu_signature *sig)
     return false;
 }
 
-static enum microcode_match_result compare_revisions(
-    uint32_t old_rev, uint32_t new_rev)
+static int compare_revisions(uint32_t old_rev, uint32_t new_rev)
 {
     if ( new_rev > old_rev )
         return NEW_UCODE;
@@ -182,54 +185,52 @@ static enum microcode_match_result compare_revisions(
     return OLD_UCODE;
 }
 
-static enum microcode_match_result microcode_fits(
-    const struct microcode_patch *patch)
+/*
+ * Check whether this microcode patch is applicable for the current CPU.
+ *
+ * AMD microcode blobs only have the "equivalent CPU identifier" which is a 16
+ * bit contraction of the 32 bit Family/Model/Stepping.
+ *
+ * We expect to only be run after scan_equiv_cpu_table() has found a valid
+ * mapping for the current CPU.  If this is violated, the 0 in equiv.id will
+ * cause the patch to be rejected too.
+ */
+static bool microcode_fits_cpu(const struct microcode_patch *patch)
 {
-    unsigned int cpu = smp_processor_id();
-    const struct cpu_signature *sig = &per_cpu(cpu_sig, cpu);
+    ASSERT(equiv.sig);
 
-    if ( equiv.sig != sig->sig ||
-         equiv.id  != patch->processor_rev_id )
-        return MIS_UCODE;
-
-    return compare_revisions(sig->rev, patch->patch_id);
+    return equiv.id == patch->processor_rev_id;
 }
 
-static enum microcode_match_result compare_header(
-    const struct microcode_patch *new, const struct microcode_patch *old)
+static int cf_check amd_compare(
+    const struct microcode_patch *old, const struct microcode_patch *new)
 {
-    if ( new->processor_rev_id != old->processor_rev_id )
-        return MIS_UCODE;
+    /* Both patches to compare are supposed to be applicable to local CPU. */
+    ASSERT(microcode_fits_cpu(new));
+    ASSERT(microcode_fits_cpu(old));
 
     return compare_revisions(old->patch_id, new->patch_id);
 }
 
-static enum microcode_match_result cf_check compare_patch(
-    const struct microcode_patch *new, const struct microcode_patch *old)
+static int cf_check apply_microcode(const struct microcode_patch *patch,
+                                    unsigned int flags)
 {
-    /* Both patches to compare are supposed to be applicable to local CPU. */
-    ASSERT(microcode_fits(new) != MIS_UCODE);
-    ASSERT(microcode_fits(old) != MIS_UCODE);
-
-    return compare_header(new, old);
-}
-
-static int cf_check apply_microcode(const struct microcode_patch *patch)
-{
-    int hw_err;
+    int hw_err, result;
     unsigned int cpu = smp_processor_id();
     struct cpu_signature *sig = &per_cpu(cpu_sig, cpu);
     uint32_t rev, old_rev = sig->rev;
-    enum microcode_match_result result = microcode_fits(patch);
+    bool ucode_force = flags & XENPF_UCODE_FORCE;
 
-    if ( result == MIS_UCODE )
+    if ( !microcode_fits_cpu(patch) )
         return -EINVAL;
+
+    result = compare_revisions(old_rev, patch->patch_id);
 
     /*
      * Allow application of the same revision to pick up SMT-specific changes
      * even if the revision of the other SMT thread is already up-to-date.
      */
-    if ( result == OLD_UCODE )
+    if ( !ucode_force && (result == SAME_UCODE || result == OLD_UCODE) )
         return -EEXIST;
 
     if ( check_final_patch_levels(sig) )
@@ -333,10 +334,10 @@ static struct microcode_patch *cf_check cpu_request_microcode(
         buf  += 4;
         size -= 4;
 
-        if ( size < sizeof(*et) ||
-             (et = buf)->type != UCODE_EQUIV_CPU_TABLE_TYPE ||
-             size - sizeof(*et) < et->len ||
-             et->len % sizeof(et->eq[0]) )
+        if ( size < sizeof(*et) ||                   /* No space for header? */
+             (et = buf)->type != UCODE_EQUIV_TYPE || /* Not an Equivalence Table? */
+             size - sizeof(*et) < et->len ||         /* No space for table? */
+             et->len % sizeof(et->eq[0]) )           /* Not multiple of equiv_cpu_entry? */
         {
             printk(XENLOG_ERR "microcode: Bad equivalent cpu table\n");
             error = -EINVAL;
@@ -349,7 +350,12 @@ static struct microcode_patch *cf_check cpu_request_microcode(
 
         error = scan_equiv_cpu_table(et);
 
-        /* -ESRCH means no applicable microcode in this container. */
+        /*
+         * -ESRCH means no applicable microcode in this container.  But, there
+         * might be subsequent containers in the blob.  Skipping to the end of
+         * this container still requires us to follow the UCODE_UCODE_TYPE/len
+         * metadata because there's no overall container length given.
+         */
         if ( error && error != -ESRCH )
             break;
         skip_ucode = error;
@@ -359,10 +365,10 @@ static struct microcode_patch *cf_check cpu_request_microcode(
         {
             const struct container_microcode *mc;
 
-            if ( size < sizeof(*mc) ||
-                 (mc = buf)->type != UCODE_UCODE_TYPE ||
-                 size - sizeof(*mc) < mc->len ||
-                 mc->len < sizeof(struct microcode_patch) )
+            if ( size < sizeof(*mc) ||                      /* No space for container header? */
+                 (mc = buf)->type != UCODE_UCODE_TYPE ||    /* Not a ucode blob? */
+                 size - sizeof(*mc) < mc->len ||            /* No space for blob? */
+                 mc->len < sizeof(struct microcode_patch) ) /* No space for patch header? */
             {
                 printk(XENLOG_ERR "microcode: Bad microcode data\n");
                 error = -EINVAL;
@@ -389,8 +395,10 @@ static struct microcode_patch *cf_check cpu_request_microcode(
              * If the new ucode covers current CPU, compare ucodes and store the
              * one with higher revision.
              */
-            if ( (microcode_fits(mc->patch) != MIS_UCODE) &&
-                 (!saved || (compare_header(mc->patch, saved) == NEW_UCODE)) )
+            if ( microcode_fits_cpu(mc->patch) &&
+                 (!saved ||
+                  compare_revisions(saved->patch_id,
+                                    mc->patch->patch_id) == NEW_UCODE) )
             {
                 saved = mc->patch;
                 saved_size = mc->len;
@@ -436,11 +444,15 @@ static struct microcode_patch *cf_check cpu_request_microcode(
     return patch;
 }
 
+static const char __initconst amd_cpio_path[] =
+    "kernel/x86/microcode/AuthenticAMD.bin";
+
 static const struct microcode_ops __initconst_cf_clobber amd_ucode_ops = {
     .cpu_request_microcode            = cpu_request_microcode,
     .collect_cpu_info                 = collect_cpu_info,
     .apply_microcode                  = apply_microcode,
-    .compare_patch                    = compare_patch,
+    .compare                          = amd_compare,
+    .cpio_path                        = amd_cpio_path,
 };
 
 void __init ucode_probe_amd(struct microcode_ops *ops)

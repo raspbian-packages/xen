@@ -1,18 +1,30 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
-#ifndef __ASM_RISCV_SMP_H
-#define __ASM_RISCV_SMP_H
+#ifndef ASM__RISCV__SMP_H
+#define ASM__RISCV__SMP_H
 
 #include <xen/cpumask.h>
 #include <xen/percpu.h>
+
+#include <asm/current.h>
 
 DECLARE_PER_CPU(cpumask_var_t, cpu_sibling_mask);
 DECLARE_PER_CPU(cpumask_var_t, cpu_core_mask);
 
 /*
- * Do we, for platform reasons, need to actually keep CPUs online when we
- * would otherwise prefer them to be off?
+ * Mapping between Xen logical cpu index and hartid.
  */
-#define park_offline_cpus false
+static inline unsigned long cpuid_to_hartid(unsigned long cpuid)
+{
+    return pcpu_info[cpuid].hart_id;
+}
+
+static inline void set_cpuid_to_hartid(unsigned long cpuid,
+                                       unsigned long hartid)
+{
+    pcpu_info[cpuid].hart_id = hartid;
+}
+
+void setup_tp(unsigned int cpuid);
 
 #endif
 

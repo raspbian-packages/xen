@@ -5,7 +5,7 @@
  * purpose area (VMAP_DEFAULT) and a livepatch-specific area (VMAP_XEN). The
  * latter is used when loading livepatches and the former for everything else.
  */
-#if !defined(__XEN_VMAP_H__) && defined(VMAP_VIRT_START)
+#ifndef __XEN_VMAP_H__
 #define __XEN_VMAP_H__
 
 #include <xen/mm-frame.h>
@@ -141,7 +141,9 @@ void *arch_vmap_virt_end(void);
 /* Initialises the VMAP_DEFAULT virtual range */
 static inline void vm_init(void)
 {
+#ifdef CONFIG_HAS_VMAP
     vm_init_type(VMAP_DEFAULT, (void *)VMAP_VIRT_START, arch_vmap_virt_end());
+#endif
 }
 
 #endif /* __XEN_VMAP_H__ */

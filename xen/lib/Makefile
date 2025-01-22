@@ -6,6 +6,7 @@ lib-y += ctype.o
 lib-y += find-next-bit.o
 lib-y += generic-ffsl.o
 lib-y += generic-flsl.o
+lib-y += generic-hweightl.o
 lib-y += list-sort.o
 lib-y += memchr.o
 lib-y += memchr_inv.o
@@ -35,6 +36,7 @@ lib-y += strtol.o
 lib-y += strtoll.o
 lib-y += strtoul.o
 lib-y += strtoull.o
+lib-$(CONFIG_X86) += x86-generic-hweightl.o
 lib-$(CONFIG_X86) += xxhash32.o
 lib-$(CONFIG_X86) += xxhash64.o
 

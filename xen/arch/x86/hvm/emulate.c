@@ -339,7 +339,7 @@ static int hvmemul_do_io(
     }
     case X86EMUL_UNIMPLEMENTED:
         ASSERT_UNREACHABLE();
-        /* Fall-through */
+        fallthrough;
     default:
         BUG();
     }
@@ -396,8 +396,7 @@ static int hvmemul_acquire_page(unsigned long gmfn, struct page_info **page)
 
     default:
         ASSERT_UNREACHABLE();
-        /* Fallthrough */
-
+        fallthrough;
     case -EINVAL:
         return X86EMUL_UNHANDLEABLE;
     }
@@ -841,7 +840,7 @@ static int hvmemul_virtual_to_linear(
     int okay;
     unsigned long reps = 1;
 
-    if ( seg == x86_seg_none )
+    if ( seg == x86_seg_none || seg == x86_seg_sys )
     {
         *linear = offset;
         return X86EMUL_OKAY;
@@ -1147,7 +1146,7 @@ static int linear_read(unsigned long addr, unsigned int bytes, void *p_data,
     pagefault_info_t pfinfo;
     struct hvm_vcpu_io *hvio = &current->arch.hvm.hvm_io;
     unsigned int offset = addr & ~PAGE_MASK;
-    int rc = HVMTRANS_bad_gfn_to_mfn;
+    int rc;
 
     if ( offset + bytes > PAGE_SIZE )
     {
@@ -1155,11 +1154,15 @@ static int linear_read(unsigned long addr, unsigned int bytes, void *p_data,
 
         /* Split the access at the page boundary. */
         rc = linear_read(addr, part1, p_data, pfec, hvmemul_ctxt);
-        if ( rc == X86EMUL_OKAY )
-            rc = linear_read(addr + part1, bytes - part1, p_data + part1,
-                             pfec, hvmemul_ctxt);
-        return rc;
+        if ( rc != X86EMUL_OKAY )
+            return rc;
+
+        addr += part1;
+        bytes -= part1;
+        p_data += part1;
     }
+
+    rc = HVMTRANS_bad_gfn_to_mfn;
 
     /*
      * If there is an MMIO cache entry for the access then we must be re-issuing
@@ -1202,7 +1205,7 @@ static int linear_write(unsigned long addr, unsigned int bytes, void *p_data,
     pagefault_info_t pfinfo;
     struct hvm_vcpu_io *hvio = &current->arch.hvm.hvm_io;
     unsigned int offset = addr & ~PAGE_MASK;
-    int rc = HVMTRANS_bad_gfn_to_mfn;
+    int rc;
 
     if ( offset + bytes > PAGE_SIZE )
     {
@@ -1210,11 +1213,15 @@ static int linear_write(unsigned long addr, unsigned int bytes, void *p_data,
 
         /* Split the access at the page boundary. */
         rc = linear_write(addr, part1, p_data, pfec, hvmemul_ctxt);
-        if ( rc == X86EMUL_OKAY )
-            rc = linear_write(addr + part1, bytes - part1, p_data + part1,
-                              pfec, hvmemul_ctxt);
-        return rc;
+        if ( rc != X86EMUL_OKAY )
+            return rc;
+
+        addr += part1;
+        bytes -= part1;
+        p_data += part1;
     }
+
+    rc = HVMTRANS_bad_gfn_to_mfn;
 
     /*
      * If there is an MMIO cache entry for the access then we must be re-issuing
@@ -2364,8 +2371,7 @@ static int cf_check hvmemul_get_fpu(
         alternative_vcall(hvm_funcs.fpu_dirty_intercept);
     else if ( type == X86EMUL_FPU_fpu )
     {
-        const typeof(curr->arch.xsave_area->fpu_sse) *fpu_ctxt =
-            curr->arch.fpu_ctxt;
+        const fpusse_t *fpu_ctxt = &curr->arch.xsave_area->fpu_sse;
 
         /*
          * Latch current register state so that we can back out changes
@@ -2405,7 +2411,7 @@ static void cf_check hvmemul_put_fpu(
 
     if ( aux )
     {
-        typeof(curr->arch.xsave_area->fpu_sse) *fpu_ctxt = curr->arch.fpu_ctxt;
+        fpusse_t *fpu_ctxt = &curr->arch.xsave_area->fpu_sse;
         bool dval = aux->dval;
         int mode = hvm_guest_x86_mode(curr);
 
@@ -2427,14 +2433,15 @@ static void cf_check hvmemul_put_fpu(
 
         switch ( mode )
         {
-        case 8:
+        case X86_MODE_64BIT:
             fpu_ctxt->fip.addr = aux->ip;
             if ( dval )
                 fpu_ctxt->fdp.addr = aux->dp;
             fpu_ctxt->x[FPU_WORD_SIZE_OFFSET] = 8;
             break;
 
-        case 4: case 2:
+        case X86_MODE_32BIT:
+        case X86_MODE_16BIT:
             fpu_ctxt->fip.offs = aux->ip;
             fpu_ctxt->fip.sel  = aux->cs;
             if ( dval )
@@ -2445,7 +2452,8 @@ static void cf_check hvmemul_put_fpu(
             fpu_ctxt->x[FPU_WORD_SIZE_OFFSET] = mode;
             break;
 
-        case 0: case 1:
+        case X86_MODE_REAL:
+        case X86_MODE_VM86:
             fpu_ctxt->fip.addr = aux->ip | (aux->cs << 4);
             if ( dval )
                 fpu_ctxt->fdp.addr = aux->dp | (aux->ds << 4);
@@ -2674,6 +2682,7 @@ static int _hvm_emulate_one(struct hvm_emulate_ctxt *hvmemul_ctxt,
 
     default:
         ASSERT_UNREACHABLE();
+        return X86EMUL_UNHANDLEABLE;
     }
 
     if ( hvmemul_ctxt->ctxt.retire.singlestep )
@@ -2734,7 +2743,7 @@ int hvm_emulate_one_mmio(unsigned long mfn, unsigned long gla)
         .write      = mmio_ro_emulated_write,
         .validate   = hvmemul_validate,
     };
-    struct mmio_ro_emulate_ctxt mmio_ro_ctxt = { .cr2 = gla };
+    struct mmio_ro_emulate_ctxt mmio_ro_ctxt = { .cr2 = gla, .mfn = _mfn(mfn) };
     struct hvm_emulate_ctxt ctxt;
     const struct x86_emulate_ops *ops;
     unsigned int seg, bdf;
@@ -2764,6 +2773,7 @@ int hvm_emulate_one_mmio(unsigned long mfn, unsigned long gla)
         /* fallthrough */
     default:
         hvm_emulate_writeback(&ctxt);
+        break;
     }
 
     return rc;
@@ -2799,10 +2809,11 @@ void hvm_emulate_one_vm_event(enum emul_kind kind, unsigned int trapnr,
         memcpy(hvio->mmio_insn, curr->arch.vm_event->emul.insn.data,
                hvio->mmio_insn_bytes);
     }
-    /* Fall-through */
+        fallthrough;
     default:
         ctx.set_context = (kind == EMUL_KIND_SET_CONTEXT_DATA);
         rc = hvm_emulate_one(&ctx, VIO_no_completion);
+        break;
     }
 
     switch ( rc )
@@ -2818,7 +2829,7 @@ void hvm_emulate_one_vm_event(enum emul_kind kind, unsigned int trapnr,
     case X86EMUL_UNIMPLEMENTED:
         if ( hvm_monitor_emul_unimplemented() )
             return;
-        /* fall-through */
+        fallthrough;
     case X86EMUL_UNHANDLEABLE:
         hvm_dump_emulation_state(XENLOG_G_DEBUG, "Mem event", &ctx, rc);
         hvm_inject_hw_exception(trapnr, errcode);
@@ -2943,11 +2954,11 @@ static const char *guest_x86_mode_to_str(int mode)
 {
     switch ( mode )
     {
-    case 0:  return "Real";
-    case 1:  return "v86";
-    case 2:  return "16bit";
-    case 4:  return "32bit";
-    case 8:  return "64bit";
+    case X86_MODE_REAL:   return "Real";
+    case X86_MODE_VM86:   return "vm86";
+    case X86_MODE_16BIT:  return "16bit";
+    case X86_MODE_32BIT:  return "32bit";
+    case X86_MODE_64BIT:  return "64bit";
     default: return "Unknown";
     }
 }

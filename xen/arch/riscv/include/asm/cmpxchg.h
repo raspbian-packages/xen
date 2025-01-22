@@ -1,8 +1,8 @@
 /* SPDX-License-Identifier: GPL-2.0-only */
 /* Copyright (C) 2014 Regents of the University of California */
 
-#ifndef _ASM_RISCV_CMPXCHG_H
-#define _ASM_RISCV_CMPXCHG_H
+#ifndef ASM__RISCV__CMPXCHG_H
+#define ASM__RISCV__CMPXCHG_H
 
 #include <xen/compiler.h>
 #include <xen/lib.h>
@@ -17,6 +17,19 @@
         : "=r" (ret), "+A" (*(ptr)) \
         : "r" (new) \
         : "memory" );
+
+/*
+ * To not face an issue that gas doesn't understand ANDN instruction
+ * it is encoded using .insn directive.
+ */
+#ifdef __riscv_zbb
+#define ANDN_INSN(rd, rs1, rs2)                 \
+    ".insn r OP, 0x7, 0x20, " rd ", " rs1 ", " rs2 "\n"
+#else
+#define ANDN_INSN(rd, rs1, rs2)                 \
+    "not " rd ", " rs2 "\n"                     \
+    "and " rd ", " rs1 ", " rd "\n"
+#endif
 
 /*
  * For LR and SC, the A extension requires that the address held in rs1 be
@@ -48,7 +61,7 @@
     \
     asm volatile ( \
         "0: lr.w" lr_sfx " %[old], %[ptr_]\n" \
-        "   andn  %[scratch], %[old], %[mask]\n" \
+        ANDN_INSN("%[scratch]", "%[old]", "%[mask]") \
         "   or   %[scratch], %[scratch], %z[new_]\n" \
         "   sc.w" sc_sfx " %[scratch], %[scratch], %[ptr_]\n" \
         "   bnez %[scratch], 0b\n" \
@@ -229,7 +242,7 @@ static always_inline unsigned long __cmpxchg(volatile void *ptr,
               sizeof(*(ptr))); \
 })
 
-#endif /* _ASM_RISCV_CMPXCHG_H */
+#endif /* ASM__RISCV__CMPXCHG_H */
 
 /*
  * Local variables:

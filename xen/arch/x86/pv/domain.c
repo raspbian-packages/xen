@@ -19,6 +19,7 @@
 
 #ifdef CONFIG_PV32
 int8_t __read_mostly opt_pv32 = -1;
+unsigned long __ro_after_init cr4_pv32_mask;
 #endif
 
 static int __init cf_check parse_pv(const char *s)
@@ -375,15 +376,7 @@ int pv_domain_initialise(struct domain *d)
          (d->arch.pv.cpuidmasks = xmemdup(&cpuidmask_defaults)) == NULL )
         goto fail;
 
-    rc = create_perdomain_mapping(d, GDT_LDT_VIRT_START,
-                                  GDT_LDT_MBYTES << (20 - PAGE_SHIFT),
-                                  NULL, NULL);
-    if ( rc )
-        goto fail;
-
     d->arch.ctxt_switch = &pv_csw;
-
-    d->arch.pv.xpti = is_hardware_domain(d) ? opt_xpti_hwdom : opt_xpti_domu;
 
     if ( !is_pv_32bit_domain(d) && use_invpcid && cpu_has_pcid )
         switch ( ACCESS_ONCE(opt_pcid) )

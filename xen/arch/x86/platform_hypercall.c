@@ -32,6 +32,8 @@
 #include <asm/mtrr.h>
 #include <asm/io_apic.h>
 #include <asm/setup.h>
+#include <asm/trampoline.h>
+
 #include "cpu/mcheck/mce.h"
 #include "cpu/mtrr/mtrr.h"
 #include <xsm/xsm.h>
@@ -311,7 +313,18 @@ ret_t do_platform_op(
 
         guest_from_compat_handle(data, op->u.microcode.data);
 
-        ret = microcode_update(data, op->u.microcode.length);
+        ret = microcode_update(data, op->u.microcode.length, 0);
+        break;
+    }
+
+    case XENPF_microcode_update2:
+    {
+        XEN_GUEST_HANDLE(const_void) data;
+
+        guest_from_compat_handle(data, op->u.microcode2.data);
+
+        ret = microcode_update(data, op->u.microcode2.length,
+                               op->u.microcode2.flags);
         break;
     }
 
