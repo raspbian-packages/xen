@@ -1,3 +1,9 @@
+xen (4.20.0~rc2+1-gfcde5e0de8-1~exp1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.20.0~rc2+1-gfcde5e0de8.
+
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Wed, 22 Jan 2025 21:25:51 +0100
+
 xen (4.19.1-1) unstable; urgency=medium
 
   * Upload to unstable (Closes: #1089033)
