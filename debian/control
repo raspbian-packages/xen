@@ -10,7 +10,6 @@ Standards-Version: 4.7.0
 Build-Depends:
    debhelper-compat (= 13),
    dh-exec,
-   dpkg-dev (>= 1.22.5),
    file,
    rdfind,
    lsb-release,
