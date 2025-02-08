@@ -1,8 +1,24 @@
-xen (4.20.0~rc2+1-gfcde5e0de8-1~exp1) UNRELEASED; urgency=medium
+xen (4.20.0~rc2+1-gfcde5e0de8-1~exp1) experimental; urgency=medium
 
+  Significant changes:
   * Update to new upstream version 4.20.0~rc2+1-gfcde5e0de8.
 
- -- Maximilian Engelhardt <maxi@daemonizer.de>  Wed, 22 Jan 2025 21:25:51 +0100
+  Changes related to upgrading to Xen 4.20:
+  * debian/control: adjust to 4.20
+  * Refresh remaining patches if needed
+  * debian: ship the new xsd_glue ocaml plugin in xen-utils-V
+
+  Packaging minor fixes and improvements:
+  * d/copyright: update year to 2025
+  * debian: convert xen-doc to architecture all
+  * d/control: mark libxen-dev as Multi-Arch: same
+  * d/control: remove versioned dpkg-dev from Build-Depends
+  * d/rules: remove environment variables no longer needed for reproducible
+    builds
+  * d/rules: disable debug build for xen tools
+  * update lintian overrides
+
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Sat, 08 Feb 2025 22:55:56 +0100
 
 xen (4.19.1-1) unstable; urgency=medium
 
