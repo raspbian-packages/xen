@@ -1,11 +1,11 @@
-xen (4.17.5+23-ga4e5191dc0-2) bookworm; urgency=medium
+xen (4.17.5+23-ga4e5191dc0-1+deb12u1) bookworm; urgency=medium
 
   * Ignore lintian error not relevant for bookworm in salsa-ci.
   * Cherry-pick e6472d4668 (tools/xg: increase LZMA_BLOCK_SIZE for
     uncompressing the kernel) to allow direct kernel boot with kernels >=
     6.12 (Closes: #1092495).
 
- -- Maximilian Engelhardt <maxi@daemonizer.de>  Sun, 26 Jan 2025 22:42:25 +0100
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Wed, 19 Feb 2025 00:00:27 +0100
 
 xen (4.17.5+23-ga4e5191dc0-1) bookworm-security; urgency=medium
 
