@@ -1,8 +1,13 @@
-xen (4.20.0-1~exp1) UNRELEASED; urgency=medium
+xen (4.20.0-1) unstable; urgency=medium
 
-  * Update to new upstream version 4.20.0.
+  * Update to new upstream version 4.20.0, which also contains
+    security fixes for the following issues:
+    - deadlock potential with VT-d and legacy PCI device pass-through
+      XSA-467 CVE-2025-1713
+  * disable dh_dwz as it's of limited use and breaks our build
+  * Upload to unstable
 
- -- Maximilian Engelhardt <maxi@daemonizer.de>  Tue, 04 Mar 2025 22:35:32 +0100
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Thu, 06 Mar 2025 09:10:56 +0100
 
 xen (4.20.0~rc2+1-gfcde5e0de8-1~exp1) experimental; urgency=medium
 
