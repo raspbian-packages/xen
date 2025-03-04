@@ -68,7 +68,12 @@ bool pcidevs_locked(void)
     return rspin_is_locked(&_pcidevs_lock);
 }
 
-static struct radix_tree_root pci_segments;
+bool pcidevs_trylock_unsafe(void)
+{
+    return _rspin_trylock(&_pcidevs_lock);
+}
+
+static RADIX_TREE(pci_segments);
 
 static inline struct pci_seg *get_pseg(u16 seg)
 {
@@ -124,7 +129,6 @@ static int pci_segments_iterate(
 
 void __init pci_segments_init(void)
 {
-    radix_tree_init(&pci_segments);
     if ( !alloc_pseg(0) )
         panic("Could not initialize PCI segment 0\n");
 }
@@ -350,20 +354,21 @@ static struct pci_dev *alloc_pdev(struct pci_seg *pseg, u8 bus, u8 devfn)
     switch ( pdev->type = pdev_type(pseg->nr, bus, devfn) )
     {
         unsigned int cap, sec_bus, sub_bus;
+        unsigned long flags;
 
         case DEV_TYPE_PCIe2PCI_BRIDGE:
         case DEV_TYPE_LEGACY_PCI_BRIDGE:
             sec_bus = pci_conf_read8(pdev->sbdf, PCI_SECONDARY_BUS);
             sub_bus = pci_conf_read8(pdev->sbdf, PCI_SUBORDINATE_BUS);
 
-            spin_lock(&pseg->bus2bridge_lock);
+            spin_lock_irqsave(&pseg->bus2bridge_lock, flags);
             for ( ; sec_bus <= sub_bus; sec_bus++ )
             {
                 pseg->bus2bridge[sec_bus].map = 1;
                 pseg->bus2bridge[sec_bus].bus = bus;
                 pseg->bus2bridge[sec_bus].devfn = devfn;
             }
-            spin_unlock(&pseg->bus2bridge_lock);
+            spin_unlock_irqrestore(&pseg->bus2bridge_lock, flags);
             break;
 
         case DEV_TYPE_PCIe_ENDPOINT:
@@ -433,16 +438,17 @@ static void free_pdev(struct pci_seg *pseg, struct pci_dev *pdev)
     switch ( pdev->type )
     {
         unsigned int sec_bus, sub_bus;
+        unsigned long flags;
 
         case DEV_TYPE_PCIe2PCI_BRIDGE:
         case DEV_TYPE_LEGACY_PCI_BRIDGE:
             sec_bus = pci_conf_read8(pdev->sbdf, PCI_SECONDARY_BUS);
             sub_bus = pci_conf_read8(pdev->sbdf, PCI_SUBORDINATE_BUS);
 
-            spin_lock(&pseg->bus2bridge_lock);
+            spin_lock_irqsave(&pseg->bus2bridge_lock, flags);
             for ( ; sec_bus <= sub_bus; sec_bus++ )
                 pseg->bus2bridge[sec_bus] = pseg->bus2bridge[pdev->bus];
-            spin_unlock(&pseg->bus2bridge_lock);
+            spin_unlock_irqrestore(&pseg->bus2bridge_lock, flags);
             break;
 
         default:
@@ -1049,8 +1055,9 @@ enum pdev_type pdev_type(u16 seg, u8 bus, u8 devfn)
 int find_upstream_bridge(u16 seg, u8 *bus, u8 *devfn, u8 *secbus)
 {
     struct pci_seg *pseg = get_pseg(seg);
-    int ret = 0;
-    int cnt = 0;
+    int ret = 1;
+    unsigned long flags;
+    unsigned int cnt = 0;
 
     if ( *bus == 0 )
         return 0;
@@ -1061,8 +1068,7 @@ int find_upstream_bridge(u16 seg, u8 *bus, u8 *devfn, u8 *secbus)
     if ( !pseg->bus2bridge[*bus].map )
         return 0;
 
-    ret = 1;
-    spin_lock(&pseg->bus2bridge_lock);
+    spin_lock_irqsave(&pseg->bus2bridge_lock, flags);
     while ( pseg->bus2bridge[*bus].map )
     {
         *secbus = *bus;
@@ -1076,7 +1082,7 @@ int find_upstream_bridge(u16 seg, u8 *bus, u8 *devfn, u8 *secbus)
     }
 
 out:
-    spin_unlock(&pseg->bus2bridge_lock);
+    spin_unlock_irqrestore(&pseg->bus2bridge_lock, flags);
     return ret;
 }
 
@@ -1801,6 +1807,43 @@ int iommu_do_pci_domctl(
     }
 
     return ret;
+}
+
+struct segment_iter {
+    int (*handler)(struct pci_dev *pdev, void *arg);
+    void *arg;
+    int rc;
+};
+
+static int cf_check iterate_all(struct pci_seg *pseg, void *arg)
+{
+    struct segment_iter *iter = arg;
+    struct pci_dev *pdev;
+
+    list_for_each_entry ( pdev, &pseg->alldevs_list, alldevs_list )
+    {
+        int rc = iter->handler(pdev, iter->arg);
+
+        if ( !iter->rc )
+            iter->rc = rc;
+    }
+
+    return 0;
+}
+
+/*
+ * Iterate without locking or preemption over all PCI devices known by Xen.
+ * Can be called with interrupts disabled.
+ */
+int pci_iterate_devices(int (*handler)(struct pci_dev *pdev, void *arg),
+                        void *arg)
+{
+    struct segment_iter iter = {
+        .handler = handler,
+        .arg = arg,
+    };
+
+    return pci_segments_iterate(iterate_all, &iter) ?: iter.rc;
 }
 
 /*
