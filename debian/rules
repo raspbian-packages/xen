@@ -347,3 +347,8 @@ override_dh_compress:
 		debian/xenstore-utils/usr/bin
 	:
 	dh_compress -Xusr/share/doc/xen/html
+
+# dh_dwz may fail with the output "dwz: Too few files for multifile
+# optimization" which breaks the build. As the use of dh_dwz is limited anyhow
+# (see #1016563), we disable it here.
+override_dh_dwz:
