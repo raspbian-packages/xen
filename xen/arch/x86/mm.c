@@ -5128,6 +5128,7 @@ static void subpage_mmio_write_emulate(
         return;
     }
 
+    addr += offset;
     switch ( len )
     {
     case 1:
@@ -5191,8 +5192,13 @@ int cf_check mmio_ro_emulated_write(
         return X86EMUL_UNHANDLEABLE;
     }
 
-    subpage_mmio_write_emulate(mmio_ro_ctxt->mfn, PAGE_OFFSET(offset),
-                               p_data, bytes);
+    if ( bytes <= 8 )
+        subpage_mmio_write_emulate(mmio_ro_ctxt->mfn, PAGE_OFFSET(offset),
+                                   p_data, bytes);
+    else if ( subpage_mmio_find_page(mmio_ro_ctxt->mfn) )
+        gprintk(XENLOG_WARNING,
+                "unsupported %u-byte write to R/O MMIO 0x%"PRI_mfn"%03lx\n",
+                bytes, mfn_x(mmio_ro_ctxt->mfn), PAGE_OFFSET(offset));
 
     return X86EMUL_OKAY;
 }
@@ -5502,7 +5508,7 @@ int map_pages_to_xen(
                                                                 \
     ASSERT(!mfn_eq(m_, INVALID_MFN));                           \
     IS_ALIGNED(PFN_DOWN(v) | mfn_x(m_),                         \
-               (1UL << (PAGETABLE_ORDER * ((n) - 1))) - 1);     \
+               1UL << (PAGETABLE_ORDER * ((n) - 1)));           \
 })
 #define IS_L2E_ALIGNED(v, m) IS_LnE_ALIGNED(v, m, 2)
 #define IS_L3E_ALIGNED(v, m) IS_LnE_ALIGNED(v, m, 3)
@@ -6274,7 +6280,9 @@ void __iomem *ioremap(paddr_t pa, size_t len)
         unsigned int offs = pa & (PAGE_SIZE - 1);
         unsigned int nr = PFN_UP(offs + len);
 
-        va = __vmap(&mfn, nr, 1, 1, PAGE_HYPERVISOR_UCMINUS, VMAP_DEFAULT) + offs;
+        va = __vmap(&mfn, nr, 1, 1, PAGE_HYPERVISOR_UCMINUS, VMAP_DEFAULT);
+        if ( va )
+            va += offs;
     }
 
     return (void __force __iomem *)va;
@@ -6291,7 +6299,7 @@ void __iomem *__init ioremap_wc(paddr_t pa, size_t len)
 
     va = __vmap(&mfn, nr, 1, 1, PAGE_HYPERVISOR_WC, VMAP_DEFAULT);
 
-    return (void __force __iomem *)(va + offs);
+    return (void __force __iomem *)(va ? va + offs : NULL);
 }
 
 int create_perdomain_mapping(struct domain *d, unsigned long va,

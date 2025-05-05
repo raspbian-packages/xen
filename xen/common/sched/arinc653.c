@@ -143,6 +143,12 @@ typedef struct a653sched_priv_s
      * pointers to all Xen UNIT structures for iterating through
      */
     struct list_head unit_list;
+
+    /**
+     * scheduling house keeping variables
+     */
+    unsigned int sched_index;
+    s_time_t next_switch_time;
 } a653sched_priv_t;
 
 /**************************************************************************
@@ -457,10 +463,11 @@ a653sched_free_udata(const struct scheduler *ops, void *priv)
     if ( !is_idle_unit(av->unit) )
         list_del(&av->list);
 
-    xfree(av);
     update_schedule_units(ops);
 
     spin_unlock_irqrestore(&sched_priv->lock, flags);
+
+    xfree(av);
 }
 
 /**
@@ -513,8 +520,6 @@ a653sched_do_schedule(
     bool tasklet_work_scheduled)
 {
     struct sched_unit *new_task = NULL;
-    static unsigned int sched_index = 0;
-    static s_time_t next_switch_time;
     a653sched_priv_t *sched_priv = SCHED_PRIV(ops);
     const unsigned int cpu = sched_get_resource_cpu(smp_processor_id());
     unsigned long flags;
@@ -528,18 +533,19 @@ a653sched_do_schedule(
         /* time to enter a new major frame
          * the first time this function is called, this will be true */
         /* start with the first domain in the schedule */
-        sched_index = 0;
+        sched_priv->sched_index = 0;
         sched_priv->next_major_frame = now + sched_priv->major_frame;
-        next_switch_time = now + sched_priv->schedule[0].runtime;
+        sched_priv->next_switch_time = now + sched_priv->schedule[0].runtime;
     }
     else
     {
-        while ( (now >= next_switch_time)
-                && (sched_index < sched_priv->num_schedule_entries) )
+        while ( (now >= sched_priv->next_switch_time) &&
+                (sched_priv->sched_index < sched_priv->num_schedule_entries) )
         {
             /* time to switch to the next domain in this major frame */
-            sched_index++;
-            next_switch_time += sched_priv->schedule[sched_index].runtime;
+            sched_priv->sched_index++;
+            sched_priv->next_switch_time +=
+                sched_priv->schedule[sched_priv->sched_index].runtime;
         }
     }
 
@@ -547,8 +553,8 @@ a653sched_do_schedule(
      * If we exhausted the domains in the schedule and still have time left
      * in the major frame then switch next at the next major frame.
      */
-    if ( sched_index >= sched_priv->num_schedule_entries )
-        next_switch_time = sched_priv->next_major_frame;
+    if ( sched_priv->sched_index >= sched_priv->num_schedule_entries )
+        sched_priv->next_switch_time = sched_priv->next_major_frame;
 
     /*
      * If there are more domains to run in the current major frame, set
@@ -556,8 +562,8 @@ a653sched_do_schedule(
      * Otherwise, set new_task equal to the address of the idle task's
      * sched_unit structure.
      */
-    new_task = (sched_index < sched_priv->num_schedule_entries)
-        ? sched_priv->schedule[sched_index].unit
+    new_task = (sched_priv->sched_index < sched_priv->num_schedule_entries)
+        ? sched_priv->schedule[sched_priv->sched_index].unit
         : IDLETASK(cpu);
 
     /* Check to see if the new task can be run (awake & runnable). */
@@ -589,7 +595,7 @@ a653sched_do_schedule(
      * Return the amount of time the next domain has to run and the address
      * of the selected task's UNIT structure.
      */
-    prev->next_time = next_switch_time - now;
+    prev->next_time = sched_priv->next_switch_time - now;
     prev->next_task = new_task;
     new_task->migrated = false;
 

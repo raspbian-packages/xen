@@ -652,8 +652,10 @@ static int __init pvh_load_kernel(
     unsigned long image_len = image->size;
     unsigned long initrd_len = initrd ? initrd->size : 0;
     const char *cmdline = image->cmdline_pa ? __va(image->cmdline_pa) : NULL;
+    const char *initrd_cmdline = NULL;
     struct elf_binary elf;
     struct elf_dom_parms parms;
+    size_t extra_space;
     paddr_t last_addr;
     struct hvm_start_info start_info = { 0 };
     struct hvm_modlist_entry mod = { 0 };
@@ -711,13 +713,32 @@ static int __init pvh_load_kernel(
      * split into smaller allocations, done as a single region in order to
      * simplify it.
      */
-    last_addr = find_memory(d, &elf, sizeof(start_info) +
-                            (initrd ? ROUNDUP(initrd_len, PAGE_SIZE) +
-                                      sizeof(mod)
-                                    : 0) +
-                            (cmdline ? ROUNDUP(strlen(cmdline) + 1,
-                                               elf_64bit(&elf) ? 8 : 4)
-                                     : 0));
+    extra_space = sizeof(start_info);
+
+    if ( initrd )
+    {
+        size_t initrd_space = elf_round_up(&elf, initrd_len);
+
+        if ( initrd->cmdline_pa )
+        {
+            initrd_cmdline = __va(initrd->cmdline_pa);
+            if ( !*initrd_cmdline )
+                initrd_cmdline = NULL;
+        }
+        if ( initrd_cmdline )
+            initrd_space += strlen(initrd_cmdline) + 1;
+
+        if ( initrd_space )
+            extra_space += ROUNDUP(initrd_space, PAGE_SIZE) + sizeof(mod);
+        else
+            initrd = NULL;
+    }
+
+    if ( cmdline )
+        extra_space += ROUNDUP(strlen(cmdline) + 1,
+                               elf_64bit(&elf) ? 8 : 4);
+
+    last_addr = find_memory(d, &elf, extra_space);
     if ( last_addr == INVALID_PADDR )
     {
         printk("Unable to find a memory region to load initrd and metadata\n");
@@ -736,13 +757,12 @@ static int __init pvh_load_kernel(
 
         mod.paddr = last_addr;
         mod.size = initrd_len;
-        last_addr += ROUNDUP(initrd_len, elf_64bit(&elf) ? 8 : 4);
-        if ( initrd->cmdline_pa )
+        last_addr += elf_round_up(&elf, initrd_len);
+        if ( initrd_cmdline )
         {
-            char *str = __va(initrd->cmdline_pa);
-            size_t len = strlen(str) + 1;
+            size_t len = strlen(initrd_cmdline) + 1;
 
-            rc = hvm_copy_to_guest_phys(last_addr, str, len, v);
+            rc = hvm_copy_to_guest_phys(last_addr, initrd_cmdline, len, v);
             if ( rc )
             {
                 printk("Unable to copy module command line\n");
@@ -1007,10 +1027,18 @@ static bool __init pvh_acpi_table_allowed(const char *sig,
             return true;
         else
         {
+    skip:
             printk("Skipping table %.4s in non-ACPI non-reserved region\n",
                    sig);
             return false;
         }
+    }
+
+    if ( !strncmp(sig, "OEM", 3) )
+    {
+        if ( acpi_memory_banned(address, size) )
+            goto skip;
+        return true;
     }
 
     return false;
@@ -1324,6 +1352,13 @@ int __init dom0_construct_pvh(struct boot_info *bi, struct domain *d)
     if ( is_hardware_domain(d) )
     {
         /*
+         * MMCFG initialization must be performed before setting domain
+         * permissions, as the MCFG areas must not be part of the domain IOMEM
+         * accessible regions.
+         */
+        pvh_setup_mmcfg(d);
+
+        /*
          * Setup permissions early so that calls to add MMIO regions to the
          * p2m as part of vPCI setup don't fail due to permission checks.
          */
@@ -1334,13 +1369,6 @@ int __init dom0_construct_pvh(struct boot_info *bi, struct domain *d)
             return rc;
         }
     }
-
-    /*
-     * NB: MMCFG initialization needs to be performed before iommu
-     * initialization so the iommu code can fetch the MMCFG regions used by the
-     * domain.
-     */
-    pvh_setup_mmcfg(d);
 
     /*
      * Craft dom0 physical memory map and set the paging allocation. This must

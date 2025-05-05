@@ -16,6 +16,7 @@
 #include <asm/dom0_build.h>
 #include <asm/guest.h>
 #include <asm/hpet.h>
+#include <asm/hvm/emulate.h>
 #include <asm/io-ports.h>
 #include <asm/io_apic.h>
 #include <asm/p2m.h>
@@ -286,6 +287,10 @@ int __init parse_arch_dom0_param(const char *s, const char *e)
         opt_dom0_cpuid_faulting = val;
     else if ( (val = parse_boolean("msr-relaxed", s, e)) >= 0 )
         opt_dom0_msr_relaxed = val;
+#ifdef CONFIG_HVM
+    else if ( (val = parse_boolean("pf-fixup", s, e)) >= 0 )
+        opt_dom0_pf_fixup = val;
+#endif
     else
         return -EINVAL;
 
@@ -476,7 +481,8 @@ int __init dom0_setup_permissions(struct domain *d)
 
     /* The hardware domain is initially permitted full I/O capabilities. */
     rc = ioports_permit_access(d, 0, 0xFFFF);
-    rc |= iomem_permit_access(d, 0UL, (1UL << (paddr_bits - PAGE_SHIFT)) - 1);
+    rc |= iomem_permit_access(d, 0UL,
+                              PFN_DOWN(1UL << domain_max_paddr_bits(d)) - 1);
     rc |= irqs_permit_access(d, 1, nr_irqs_gsi - 1);
 
     /* Modify I/O port access permissions. */
@@ -548,17 +554,22 @@ int __init dom0_setup_permissions(struct domain *d)
         mfn = paddr_to_pfn(mp_lapic_addr);
         rc |= iomem_deny_access(d, mfn, mfn);
     }
+    /* If using an emulated local APIC make sure its MMIO is unpopulated. */
+    if ( has_vlapic(d) )
+    {
+        /* Xen doesn't allow changing the local APIC MMIO window position. */
+        mfn = paddr_to_pfn(APIC_DEFAULT_PHYS_BASE);
+        rc |= iomem_deny_access(d, mfn, mfn);
+    }
     /* I/O APICs. */
     for ( i = 0; i < nr_ioapics; i++ )
     {
         mfn = paddr_to_pfn(mp_ioapics[i].mpc_apicaddr);
-        if ( !rangeset_contains_singleton(mmio_ro_ranges, mfn) )
+        /* If emulating IO-APIC(s) make sure the base address is unmapped. */
+        if ( has_vioapic(d) ||
+             !rangeset_contains_singleton(mmio_ro_ranges, mfn) )
             rc |= iomem_deny_access(d, mfn, mfn);
     }
-    /* MSI range. */
-    rc |= iomem_deny_access(d, paddr_to_pfn(MSI_ADDR_BASE_LO),
-                            paddr_to_pfn(MSI_ADDR_BASE_LO +
-                                         MSI_ADDR_DEST_ID_MASK));
     /* HyperTransport range. */
     if ( boot_cpu_data.x86_vendor & (X86_VENDOR_AMD | X86_VENDOR_HYGON) )
     {
@@ -592,6 +603,13 @@ int __init dom0_setup_permissions(struct domain *d)
         else if ( ro_hpet )
             rc |= rangeset_add_singleton(mmio_ro_ranges, mfn);
     }
+
+    if ( has_vpci(d) )
+        /*
+         * TODO: runtime added MMCFG regions are not checked to make sure they
+         * don't overlap with already mapped regions, thus preventing trapping.
+         */
+        rc |= vpci_mmcfg_deny_access(d);
 
     return rc;
 }
