@@ -11,7 +11,7 @@ serial_log="$(pwd)/smoke.serial"
 
 cd binaries
 # Use the kernel from Debian
-curl --fail --silent --show-error --location --output vmlinuz https://deb.debian.org/debian/dists/bullseye/main/installer-armhf/current/images/netboot/vmlinuz
+curl --fail --silent --show-error --location --output vmlinuz https://deb.debian.org/debian/dists/bookworm/main/installer-armhf/current/images/netboot/vmlinuz
 # Use a tiny initrd based on busybox from Alpine Linux
 curl --fail --silent --show-error --location --output initrd.tar.gz https://dl-cdn.alpinelinux.org/alpine/v3.15/releases/armhf/alpine-minirootfs-3.15.1-armhf.tar.gz
 
@@ -75,7 +75,7 @@ mount -t devtmpfs devtmpfs /dev
 ${domU_check}
 /bin/sh" > init
 chmod +x init
-find . | cpio -H newc -o | gzip > ../initrd.gz
+find . | cpio -R 0:0 -H newc -o | gzip > ../initrd.gz
 cd ..
 
 # XXX QEMU looks for "efi-virtio.rom" even if it is unneeded
@@ -144,6 +144,7 @@ export TEST_CMD="./qemu-system-arm \
     -bios /usr/lib/u-boot/qemu_arm/u-boot.bin"
 
 export UBOOT_CMD="virtio scan; dhcp; tftpb 0x40000000 boot.scr; source 0x40000000"
+export BOOT_MSG="Latest ChangeSet: "
 export TEST_LOG="${serial_log}"
 export LOG_MSG="${dom0_prompt}"
 export PASSED="${passed}"

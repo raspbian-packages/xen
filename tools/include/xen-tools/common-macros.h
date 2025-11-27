@@ -83,10 +83,18 @@
 #define __packed __attribute__((__packed__))
 #endif
 
+#define sizeof_field(type, member) sizeof(((type *)NULL)->member)
+
+#define endof_field(type, member) \
+    (offsetof(type, member) + sizeof_field(type, member))
+
 #define container_of(ptr, type, member) ({              \
     typeof(((type *)0)->member) *mptr__ = (ptr);        \
     (type *)((char *)mptr__ - offsetof(type, member));  \
 })
+
+#define __STR(...) #__VA_ARGS__
+#define STR(...) __STR(__VA_ARGS__)
 
 #define __AC(X, Y)   (X ## Y)
 #define _AC(X, Y)    __AC(X, Y)

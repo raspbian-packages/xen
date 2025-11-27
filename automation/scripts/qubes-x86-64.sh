@@ -1,6 +1,6 @@
 #!/bin/sh
 
-set -ex
+set -ex -o pipefail
 
 # One of:
 #  - ""             PV dom0,  PVH domU
@@ -10,6 +10,8 @@ set -ex
 #  - pci-pv         PV dom0,  PV domU + PCI Passthrough
 #  - pvshim         PV dom0,  PVSHIM domU
 #  - s3             PV dom0,  S3 suspend/resume
+#  - tools-tests-pv PV dom0, run tests from tools/tests/*
+#  - tools-tests-pvh PVH dom0, run tests from tools/tests/*
 test_variant=$1
 
 ### defaults
@@ -19,6 +21,7 @@ timeout=120
 domU_type="pvh"
 domU_vif="'bridge=xenbr0',"
 domU_extra_config=
+retrieve_xml=
 
 case "${test_variant}" in
     ### test: smoke test & smoke test PVH & smoke test HVM & smoke test PVSHIM
@@ -101,12 +104,14 @@ on_reboot = "destroy"
         domU_check="
 set -x -e
 interface=eth0
+while ! [ -e \"/sys/class/net/\$interface\" ]; do sleep 1; done
 ip link set \"\$interface\" up
 timeout 30s udhcpc -i \"\$interface\"
 pingip=\$(ip -o -4 r show default|cut -f 3 -d ' ')
 ping -c 10 \"\$pingip\"
 echo domU started
-pcidevice=\$(basename \$(readlink /sys/class/net/\$interface/device))
+pcidevice=\$(realpath /sys/class/net/\$interface/device |
+             sed 's#.*pci0000:00/\\([^/]*\\).*#\\1#')
 lspci -vs \$pcidevice
 "
         if [ -n "$PCIDEV_INTR" ]; then
@@ -119,11 +124,25 @@ echo \"${passed}\"
 "
 
         dom0_check="
-tail -F /var/log/xen/qemu-dm-domU.log &
 until grep -q \"^domU Welcome to Alpine Linux\" /var/log/xen/console/guest-domU.log; do
     sleep 1
 done
 "
+        ;;
+
+    ### tests: tools-tests-pv, tools-tests-pvh
+    "tools-tests-pv"|"tools-tests-pvh")
+        retrieve_xml=1
+        passed="test passed"
+        domU_check=""
+        dom0_check="
+/tests/run-tools-tests /tests /tmp/tests-junit.xml && echo \"${passed}\"
+nc -l -p 8080 < /tmp/tests-junit.xml >/dev/null &
+"
+        if [ "${test_variant}" = "tools-tests-pvh" ]; then
+            extra_xen_opts="dom0=pvh"
+        fi
+
         ;;
 
     *)
@@ -144,42 +163,44 @@ disk = [ ]
 ${domU_extra_config}
 "
 
-# DomU
-mkdir -p rootfs
-cd rootfs
-# fakeroot is needed to preserve device nodes in rootless podman container
-fakeroot -s ../fakeroot-save tar xzf ../binaries/initrd.tar.gz
-mkdir proc
-mkdir run
-mkdir srv
-mkdir sys
-rm var/run
-echo "#!/bin/sh
+if [ -n "$domU_check" ]; then
+    # DomU rootfs
+    cp binaries/rootfs.cpio.gz binaries/domU-rootfs.cpio.gz
+
+    # test-local configuration
+    mkdir -p rootfs
+    cd rootfs
+    mkdir -p etc/local.d
+    echo "#!/bin/sh
+
+echo 8 > /proc/sys/kernel/printk
 
 ${domU_check}
 " > etc/local.d/xen.start
-chmod +x etc/local.d/xen.start
-echo "rc_verbose=yes" >> etc/rc.conf
-sed -i -e 's/^Welcome/domU \0/' etc/issue
-find . | fakeroot -i ../fakeroot-save cpio -H newc -o | gzip > ../binaries/domU-rootfs.cpio.gz
-cd ..
-rm -rf rootfs
+    chmod +x etc/local.d/xen.start
+    echo "domU Welcome to Alpine Linux
+Kernel \r on an \m (\l)
 
-# DOM0 rootfs
+" > etc/issue
+    find . | cpio -R 0:0 -H newc -o | gzip >> ../binaries/domU-rootfs.cpio.gz
+    cd ..
+    rm -rf rootfs
+fi
+
+# Dom0 rootfs
+cp binaries/ucode.cpio binaries/dom0-rootfs.cpio.gz
+cat binaries/rootfs.cpio.gz >> binaries/dom0-rootfs.cpio.gz
+cat binaries/xen-tools.cpio.gz >> binaries/dom0-rootfs.cpio.gz
+
+# test-local configuration
 mkdir -p rootfs
 cd rootfs
-fakeroot -s ../fakeroot-save tar xzf ../binaries/initrd.tar.gz
-mkdir boot
-mkdir proc
-mkdir run
-mkdir srv
-mkdir sys
-rm var/run
-cp -ar ../binaries/dist/install/* .
+mkdir -p boot etc/local.d
+cp -ar ../binaries/tests .
+cp -a ../automation/scripts/run-tools-tests tests/
 
 echo "#!/bin/bash
 
-export LD_LIBRARY_PATH=/usr/local/lib
 bash /etc/init.d/xencommons start
 
 brctl addbr xenbr0
@@ -188,21 +209,37 @@ ifconfig eth0 up
 ifconfig xenbr0 up
 ifconfig xenbr0 192.168.0.1
 
+" > etc/local.d/xen.start
+
+if [ -n "$retrieve_xml" ]; then
+    echo "timeout 30s udhcpc -i xenbr0" >> etc/local.d/xen.start
+fi
+
+if [ -n "$domU_check" ]; then
+    echo "
 # get domU console content into test log
 tail -F /var/log/xen/console/guest-domU.log 2>/dev/null | sed -e \"s/^/(domU) /\" &
-xl create /etc/xen/domU.cfg
+tail -F /var/log/xen/qemu-dm-domU.log 2>/dev/null | sed -e \"s/^/(qemu-dm) /\" &
+xl -vvv create /etc/xen/domU.cfg
 ${dom0_check}
-" > etc/local.d/xen.start
+" >> etc/local.d/xen.start
+else
+    echo "${dom0_check}" >> etc/local.d/xen.start
+fi
+
 chmod +x etc/local.d/xen.start
+mkdir -p etc/xen
 echo "$domU_config" > etc/xen/domU.cfg
 
-echo "rc_verbose=yes" >> etc/rc.conf
+mkdir -p etc/default
 echo "XENCONSOLED_TRACE=all" >> etc/default/xencommons
 echo "QEMU_XEN=/bin/false" >> etc/default/xencommons
 mkdir -p var/log/xen/console
 cp ../binaries/bzImage boot/vmlinuz
-cp ../binaries/domU-rootfs.cpio.gz boot/initrd-domU
-find . | fakeroot -i ../fakeroot-save cpio -H newc -o | gzip > ../binaries/dom0-rootfs.cpio.gz
+if [ -n "$domU_check" ]; then
+    cp ../binaries/domU-rootfs.cpio.gz boot/initrd-domU
+fi
+find . | cpio -R 0:0 -H newc -o | gzip >> ../binaries/dom0-rootfs.cpio.gz
 cd ..
 
 
@@ -210,57 +247,43 @@ TFTP=/scratch/gitlab-runner/tftp
 CONTROLLER=control@thor.testnet
 
 echo "
-multiboot2 (http)/gitlab-ci/xen $CONSOLE_OPTS loglvl=all guest_loglvl=all dom0_mem=4G console_timestamps=boot $extra_xen_opts
+multiboot2 (http)/gitlab-ci/xen $CONSOLE_OPTS loglvl=all guest_loglvl=all dom0_mem=4G console_timestamps=boot ucode=scan $extra_xen_opts
 module2 (http)/gitlab-ci/vmlinuz console=hvc0 root=/dev/ram0 earlyprintk=xen
-module2 (http)/gitlab-ci/initrd-dom0
+module2 --nounzip (http)/gitlab-ci/initrd-dom0
 " > $TFTP/grub.cfg
+
+echo "#!ipxe
+
+kernel /gitlab-ci/xen $CONSOLE_OPTS loglvl=all guest_loglvl=all dom0_mem=4G console_timestamps=boot ucode=scan $extra_xen_opts || reboot
+module /gitlab-ci/vmlinuz console=hvc0 root=/dev/ram0 earlyprintk=xen || reboot
+module /gitlab-ci/initrd-dom0 || reboot
+boot
+" > $TFTP/boot.ipxe
 
 cp -f binaries/xen $TFTP/xen
 cp -f binaries/bzImage $TFTP/vmlinuz
 cp -f binaries/dom0-rootfs.cpio.gz $TFTP/initrd-dom0
 
-# start logging the serial; this gives interactive console, don't close its
-# stdin to not close it; the 'cat' is important, plain redirection would hang
-# until somebody opens the pipe; opening and closing the pipe is used to close
-# the console
-mkfifo /tmp/console-stdin
-cat /tmp/console-stdin |\
-ssh $CONTROLLER console | tee smoke.serial | sed 's/\r//' &
-
 # start the system pointing at gitlab-ci predefined config
 ssh $CONTROLLER gitlabci poweron
-trap "ssh $CONTROLLER poweroff; : > /tmp/console-stdin" EXIT
+trap "ssh $CONTROLLER poweroff" EXIT
 
 if [ -n "$wait_and_wakeup" ]; then
-    # wait for suspend or a timeout
-    until grep "$wait_and_wakeup" smoke.serial || [ $timeout -le 0 ]; do
-        sleep 1;
-        : $((--timeout))
-    done
-    if [ $timeout -le 0 ]; then
-        echo "ERROR: suspend timeout, aborting"
-        exit 1
-    fi
-    # keep it suspended a bit, then wakeup
-    sleep 30
-    ssh $CONTROLLER wake
+    export SUSPEND_MSG="$wait_and_wakeup"
+    export WAKEUP_CMD="ssh $CONTROLLER wake"
 fi
 
-set +x
-until grep "^Welcome to Alpine Linux" smoke.serial || [ $timeout -le 0 ]; do
-    sleep 1;
-    : $((--timeout))
-done
-set -x
+export PASSED="${passed}"
+export BOOT_MSG="Latest ChangeSet: "
+export LOG_MSG="\nWelcome to Alpine Linux"
+export TEST_CMD="ssh $CONTROLLER console"
+export TEST_LOG="smoke.serial"
+export TEST_TIMEOUT="$timeout"
+./automation/scripts/console.exp | sed 's/\r\+$//'
+TEST_RESULT=$?
 
-tail -n 100 smoke.serial
-
-if [ $timeout -le 0 ]; then
-    echo "ERROR: test timeout, aborting"
-    exit 1
+if [ -n "$retrieve_xml" ]; then
+    nc -w 10 "$SUT_ADDR" 8080 > tests-junit.xml </dev/null
 fi
 
-sleep 1
-
-(grep -q "^Welcome to Alpine Linux" smoke.serial && grep -q "${passed}" smoke.serial) || exit 1
-exit 0
+exit "$TEST_RESULT"

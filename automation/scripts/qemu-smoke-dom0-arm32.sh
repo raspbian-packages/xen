@@ -21,7 +21,7 @@ echo "#!/bin/bash
 
 xl list
 
-xl create -c /root/test.cfg
+xl -vvv create -c /root/test.cfg
 
 " > ./root/xen.start
 echo "bash /root/xen.start" >> ./etc/init.d/xen-watchdog
@@ -30,13 +30,13 @@ curl --fail --silent --show-error --location --output initrd.tar.gz https://dl-c
 mkdir rootfs
 cd rootfs
 tar xvzf ../initrd.tar.gz
-find . | cpio -H newc -o | gzip > ../root/initrd.cpio.gz
+find . | cpio -R 0:0 -H newc -o | gzip > ../root/initrd.cpio.gz
 cd ..
 rm -rf rootfs
 rm initrd.tar.gz
 
 cp ../zImage ./root
-find . | cpio -H newc -o | gzip > ../initrd.gz
+find . | cpio -R 0:0 -H newc -o | gzip > ../initrd.gz
 cd ..
 
 # XXX QEMU looks for "efi-virtio.rom" even if it is unneeded
@@ -92,6 +92,7 @@ export TEST_CMD="./qemu-system-arm \
 
 export UBOOT_CMD="virtio scan; dhcp; tftpb 0x40000000 boot.scr; source 0x40000000"
 export TEST_LOG="${serial_log}"
+export BOOT_MSG="Latest ChangeSet: "
 export LOG_MSG="Domain-0"
 export PASSED="/ #"
 

@@ -329,6 +329,8 @@ static void recalculate_misc(struct cpu_policy *p)
         p->extd.raw[0x1e] = EMPTY_LEAF; /* TopoExt APIC ID/Core/Node */
         p->extd.raw[0x1f] = EMPTY_LEAF; /* SEV */
         p->extd.raw[0x20] = EMPTY_LEAF; /* Platform QoS */
+        p->extd.raw[0x21].b = 0;
+        p->extd.raw[0x21].d = 0;
         break;
     }
 }
@@ -415,8 +417,9 @@ static void __init guest_common_default_leaves(struct cpu_policy *p)
 
 static void __init guest_common_max_feature_adjustments(uint32_t *fs)
 {
-    if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
+    switch ( boot_cpu_data.x86_vendor )
     {
+    case X86_VENDOR_INTEL:
         /*
          * MSR_ARCH_CAPS is just feature data, and we can offer it to guests
          * unconditionally, although limit it to Intel systems as it is highly
@@ -461,6 +464,33 @@ static void __init guest_common_max_feature_adjustments(uint32_t *fs)
              boot_cpu_data.x86_model == INTEL_FAM6_SKYLAKE_X &&
              raw_cpu_policy.feat.clwb )
             __set_bit(X86_FEATURE_CLWB, fs);
+
+        /*
+         * To mitigate Native-BHI, one option is to use a TSX Abort on capable
+         * systems.  This is safe even if RTM has been disabled for other
+         * reasons via MSR_TSX_{CTRL,FORCE_ABORT}.  However, a guest kernel
+         * doesn't get to know this type of information.
+         *
+         * Therefore the meaning of RTM_ALWAYS_ABORT has been adjusted, to
+         * instead mean "XBEGIN won't fault".  This is enough for a guest
+         * kernel to make an informed choice WRT mitigating Native-BHI.
+         *
+         * If RTM-capable, we can run a VM which has seen RTM_ALWAYS_ABORT.
+         */
+        if ( test_bit(X86_FEATURE_RTM, fs) )
+            __set_bit(X86_FEATURE_RTM_ALWAYS_ABORT, fs);
+        break;
+
+    case X86_VENDOR_AMD:
+        /*
+         * This bit indicates that the VERW instruction may have gained
+         * scrubbing side effects.  With pooling, it means "you might migrate
+         * somewhere where scrubbing is necessary", and may need exposing on
+         * unaffected hardware.  This is fine, because the VERW instruction
+         * has been around since the 286.
+         */
+        __set_bit(X86_FEATURE_VERW_CLEAR, fs);
+        break;
     }
 
     /*
@@ -472,27 +502,13 @@ static void __init guest_common_max_feature_adjustments(uint32_t *fs)
      */
     __set_bit(X86_FEATURE_HTT, fs);
     __set_bit(X86_FEATURE_CMP_LEGACY, fs);
-
-    /*
-     * To mitigate Native-BHI, one option is to use a TSX Abort on capable
-     * systems.  This is safe even if RTM has been disabled for other reasons
-     * via MSR_TSX_{CTRL,FORCE_ABORT}.  However, a guest kernel doesn't get to
-     * know this type of information.
-     *
-     * Therefore the meaning of RTM_ALWAYS_ABORT has been adjusted, to instead
-     * mean "XBEGIN won't fault".  This is enough for a guest kernel to make
-     * an informed choice WRT mitigating Native-BHI.
-     *
-     * If RTM-capable, we can run a VM which has seen RTM_ALWAYS_ABORT.
-     */
-    if ( test_bit(X86_FEATURE_RTM, fs) )
-        __set_bit(X86_FEATURE_RTM_ALWAYS_ABORT, fs);
 }
 
 static void __init guest_common_default_feature_adjustments(uint32_t *fs)
 {
-    if ( boot_cpu_data.x86_vendor == X86_VENDOR_INTEL )
+    switch ( boot_cpu_data.x86_vendor )
     {
+    case X86_VENDOR_INTEL:
         /*
          * IvyBridge client parts suffer from leakage of RDRAND data due to SRBDS
          * (XSA-320 / CVE-2020-0543), and won't be receiving microcode to
@@ -515,17 +531,14 @@ static void __init guest_common_default_feature_adjustments(uint32_t *fs)
          * reasons, so reset the default policy back to the host values in
          * case we're unaffected.
          */
-        __clear_bit(X86_FEATURE_MD_CLEAR, fs);
-        if ( cpu_has_md_clear )
-            __set_bit(X86_FEATURE_MD_CLEAR, fs);
+        if ( !cpu_has_md_clear )
+            __clear_bit(X86_FEATURE_MD_CLEAR, fs);
 
-        __clear_bit(X86_FEATURE_FB_CLEAR, fs);
-        if ( cpu_has_fb_clear )
-            __set_bit(X86_FEATURE_FB_CLEAR, fs);
+        if ( !cpu_has_fb_clear )
+            __clear_bit(X86_FEATURE_FB_CLEAR, fs);
 
-        __clear_bit(X86_FEATURE_RFDS_CLEAR, fs);
-        if ( cpu_has_rfds_clear )
-            __set_bit(X86_FEATURE_RFDS_CLEAR, fs);
+        if ( !cpu_has_rfds_clear )
+            __clear_bit(X86_FEATURE_RFDS_CLEAR, fs);
 
         /*
          * The Gather Data Sampling microcode mitigation (August 2023) has an
@@ -539,34 +552,45 @@ static void __init guest_common_default_feature_adjustments(uint32_t *fs)
              boot_cpu_data.x86_model == INTEL_FAM6_SKYLAKE_X &&
              raw_cpu_policy.feat.clwb )
             __clear_bit(X86_FEATURE_CLWB, fs);
+
+        /*
+         * On certain hardware, speculative or errata workarounds can result
+         * in TSX being placed in "force-abort" mode, where it doesn't
+         * actually function as expected, but is technically compatible with
+         * the ISA.
+         *
+         * Do not advertise RTM to guests by default if it won't actually
+         * work.  Instead, advertise RTM_ALWAYS_ABORT indicating that TSX
+         * Aborts are safe to use, e.g. for mitigating Native-BHI.
+         */
+        if ( rtm_disabled )
+        {
+            __clear_bit(X86_FEATURE_RTM, fs);
+            __set_bit(X86_FEATURE_RTM_ALWAYS_ABORT, fs);
+        }
+        break;
+
+    case X86_VENDOR_AMD:
+        /*
+         * This bit indicate that the VERW instruction may have gained
+         * scrubbing side effects.  The max policy has it set for migration
+         * reasons, so reset the default policy back to the host value in case
+         * we're unaffected.
+         */
+        if ( !cpu_has_verw_clear )
+            __clear_bit(X86_FEATURE_VERW_CLEAR, fs);
+        break;
     }
 
     /*
      * Topology information is at the toolstack's discretion so these are
      * unconditionally set in max, but pick a default which matches the host.
      */
-    __clear_bit(X86_FEATURE_HTT, fs);
-    if ( cpu_has_htt )
-        __set_bit(X86_FEATURE_HTT, fs);
+    if ( !cpu_has_htt )
+        __clear_bit(X86_FEATURE_HTT, fs);
 
-    __clear_bit(X86_FEATURE_CMP_LEGACY, fs);
-    if ( cpu_has_cmp_legacy )
-        __set_bit(X86_FEATURE_CMP_LEGACY, fs);
-
-    /*
-     * On certain hardware, speculative or errata workarounds can result in
-     * TSX being placed in "force-abort" mode, where it doesn't actually
-     * function as expected, but is technically compatible with the ISA.
-     *
-     * Do not advertise RTM to guests by default if it won't actually work.
-     * Instead, advertise RTM_ALWAYS_ABORT indicating that TSX Aborts are safe
-     * to use, e.g. for mitigating Native-BHI.
-     */
-    if ( rtm_disabled )
-    {
-        __clear_bit(X86_FEATURE_RTM, fs);
-        __set_bit(X86_FEATURE_RTM_ALWAYS_ABORT, fs);
-    }
+    if ( !cpu_has_cmp_legacy )
+        __clear_bit(X86_FEATURE_CMP_LEGACY, fs);
 }
 
 static void __init guest_common_feature_adjustments(uint32_t *fs)

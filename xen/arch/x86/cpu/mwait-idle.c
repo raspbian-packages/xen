@@ -678,6 +678,62 @@ static struct cpuidle_state __read_mostly adl_l_cstates[] = {
 	{}
 };
 
+static const struct cpuidle_state mtl_l_cstates[] = {
+	{
+		.name = "C1E",
+		.flags = MWAIT2flg(0x01),
+		.exit_latency = 1,
+		.target_residency = 1,
+	},
+	{
+		.name = "C6",
+		.flags = MWAIT2flg(0x20) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 140,
+		.target_residency = 420,
+	},
+	{
+		.name = "C10",
+		.flags = MWAIT2flg(0x60) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 310,
+		.target_residency = 930,
+	},
+	{}
+};
+
+static const struct cpuidle_state gmt_cstates[] = {
+	{
+		.name = "C1",
+		.flags = MWAIT2flg(0x00) | CPUIDLE_FLAG_DISABLED,
+		.exit_latency = 1,
+		.target_residency = 1,
+	},
+	{
+		.name = "C1E",
+		.flags = MWAIT2flg(0x01),
+		.exit_latency = 2,
+		.target_residency = 4,
+	},
+	{
+		.name = "C6",
+		.flags = MWAIT2flg(0x20) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 195,
+		.target_residency = 585,
+	},
+	{
+		.name = "C8",
+		.flags = MWAIT2flg(0x40) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 260,
+		.target_residency = 1040,
+	},
+	{
+		.name = "C10",
+		.flags = MWAIT2flg(0x60) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 660,
+		.target_residency = 1980,
+	},
+	{}
+};
+
 static struct cpuidle_state __read_mostly spr_cstates[] = {
 	{
 		.name = "C1",
@@ -696,6 +752,62 @@ static struct cpuidle_state __read_mostly spr_cstates[] = {
 		.flags = MWAIT2flg(0x20) | CPUIDLE_FLAG_TLB_FLUSHED,
 		.exit_latency = 290,
 		.target_residency = 800,
+	},
+	{}
+};
+
+static const struct cpuidle_state gnr_cstates[] = {
+	{
+		.name = "C1",
+		.flags = MWAIT2flg(0x00),
+		.exit_latency = 1,
+		.target_residency = 1,
+	},
+	{
+		.name = "C1E",
+		.flags = MWAIT2flg(0x01),
+		.exit_latency = 4,
+		.target_residency = 4,
+	},
+	{
+		.name = "C6",
+		.flags = MWAIT2flg(0x20) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 170,
+		.target_residency = 650,
+	},
+	{
+		.name = "C6P",
+		.flags = MWAIT2flg(0x21) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 210,
+		.target_residency = 1000,
+	},
+	{}
+};
+
+static const struct cpuidle_state gnrd_cstates[] = {
+	{
+		.name = "C1",
+		.flags = MWAIT2flg(0x00),
+		.exit_latency = 1,
+		.target_residency = 1,
+	},
+	{
+		.name = "C1E",
+		.flags = MWAIT2flg(0x01),
+		.exit_latency = 4,
+		.target_residency = 4,
+	},
+	{
+		.name = "C6",
+		.flags = MWAIT2flg(0x20) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 220,
+		.target_residency = 650,
+	},
+	{
+		.name = "C6P",
+		.flags = MWAIT2flg(0x21) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 240,
+		.target_residency = 750,
 	},
 	{}
 };
@@ -872,10 +984,59 @@ static const struct cpuidle_state snr_cstates[] = {
 	{}
 };
 
+static const struct cpuidle_state grr_cstates[] = {
+	{
+		.name = "C1",
+		.flags = MWAIT2flg(0x00),
+		.exit_latency = 1,
+		.target_residency = 1,
+	},
+	{
+		.name = "C1E",
+		.flags = MWAIT2flg(0x01),
+		.exit_latency = 2,
+		.target_residency = 10,
+	},
+	{
+		.name = "C6S",
+		.flags = MWAIT2flg(0x22) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 140,
+		.target_residency = 500,
+	},
+	{}
+};
+
+static const struct cpuidle_state srf_cstates[] = {
+	{
+		.name = "C1",
+		.flags = MWAIT2flg(0x00),
+		.exit_latency = 1,
+		.target_residency = 1,
+	},
+	{
+		.name = "C1E",
+		.flags = MWAIT2flg(0x01),
+		.exit_latency = 2,
+		.target_residency = 10,
+	},
+	{
+		.name = "C6S",
+		.flags = MWAIT2flg(0x22) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 270,
+		.target_residency = 700,
+	},
+	{
+		.name = "C6SP",
+		.flags = MWAIT2flg(0x23) | CPUIDLE_FLAG_TLB_FLUSHED,
+		.exit_latency = 310,
+		.target_residency = 900,
+	},
+	{}
+};
+
 static void cf_check mwait_idle(void)
 {
 	unsigned int cpu = smp_processor_id();
-	struct cpu_info *info = get_cpu_info();
 	struct acpi_processor_power *power = processor_powers[cpu];
 	struct acpi_processor_cx *cx = NULL;
 	unsigned int next_state;
@@ -902,6 +1063,8 @@ static void cf_check mwait_idle(void)
 			pm_idle_save();
 		else
 		{
+			struct cpu_info *info = get_cpu_info();
+
 			spec_ctrl_enter_idle(info);
 			safe_halt();
 			spec_ctrl_exit_idle(info);
@@ -928,11 +1091,6 @@ static void cf_check mwait_idle(void)
 	if ((cx->type >= 3) && errata_c6_workaround())
 		cx = power->safe_state;
 
-	if (cx->ibrs_disable) {
-		ASSERT(!cx->irq_enable_early);
-		spec_ctrl_enter_idle(info);
-	}
-
 #if 0 /* XXX Can we/do we need to do something similar on Xen? */
 	/*
 	 * leave_mm() to avoid costly and often unnecessary wakeups
@@ -950,12 +1108,8 @@ static void cf_check mwait_idle(void)
 
 	update_last_cx_stat(power, cx, before);
 
-	if (cx->irq_enable_early)
-		local_irq_enable();
-
-	mwait_idle_with_hints(cx->address, MWAIT_ECX_INTERRUPT_BREAK);
-
-	local_irq_disable();
+	mwait_idle_with_hints(cx->address,
+			      cx->irq_enable_early ? 0 : MWAIT_ECX_INTERRUPT_BREAK);
 
 	after = alternative_call(cpuidle_get_tick);
 
@@ -964,10 +1118,6 @@ static void cf_check mwait_idle(void)
 
 	/* Now back in C0. */
 	update_idle_stats(power, cx, before, after);
-
-	if (cx->ibrs_disable)
-		spec_ctrl_exit_idle(info);
-
 	local_irq_enable();
 
 	TRACE_TIME(TRC_PM_IDLE_EXIT, cx->type, after,
@@ -1095,8 +1245,26 @@ static struct idle_cpu __read_mostly idle_cpu_adl_l = {
 	.state_table = adl_l_cstates,
 };
 
+static const struct idle_cpu idle_cpu_mtl_l = {
+	.state_table = mtl_l_cstates,
+};
+
+static const struct idle_cpu idle_cpu_gmt = {
+	.state_table = gmt_cstates,
+};
+
 static struct idle_cpu __read_mostly idle_cpu_spr = {
 	.state_table = spr_cstates,
+	.c1e_promotion = C1E_PROMOTION_DISABLE,
+};
+
+static const struct idle_cpu idle_cpu_gnr = {
+	.state_table = gnr_cstates,
+	.c1e_promotion = C1E_PROMOTION_DISABLE,
+};
+
+static const struct idle_cpu idle_cpu_gnrd = {
+	.state_table = gnrd_cstates,
 	.c1e_promotion = C1E_PROMOTION_DISABLE,
 };
 
@@ -1117,6 +1285,16 @@ static const struct idle_cpu idle_cpu_dnv = {
 
 static const struct idle_cpu idle_cpu_snr = {
 	.state_table = snr_cstates,
+	.c1e_promotion = C1E_PROMOTION_DISABLE,
+};
+
+static const struct idle_cpu idle_cpu_grr = {
+	.state_table = grr_cstates,
+	.c1e_promotion = C1E_PROMOTION_DISABLE,
+};
+
+static const struct idle_cpu idle_cpu_srf = {
+	.state_table = srf_cstates,
 	.c1e_promotion = C1E_PROMOTION_DISABLE,
 };
 
@@ -1160,11 +1338,19 @@ static const struct x86_cpu_id intel_idle_ids[] __initconstrel = {
 	ICPU(ICELAKE_D,			icx),
 	ICPU(ALDERLAKE,			adl),
 	ICPU(ALDERLAKE_L,		adl_l),
+	ICPU(METEORLAKE_L,		mtl_l),
+	ICPU(ATOM_GRACEMONT,		gmt),
 	ICPU(SAPPHIRERAPIDS_X,		spr),
+	ICPU(EMERALDRAPIDS_X,		spr),
+	ICPU(GRANITERAPIDS_X,		gnr),
+	ICPU(GRANITERAPIDS_D,		gnrd),
 	ICPU(ATOM_GOLDMONT,		bxt),
 	ICPU(ATOM_GOLDMONT_PLUS,	bxt),
 	ICPU(ATOM_GOLDMONT_D,		dnv),
 	ICPU(ATOM_TREMONT_D,		snr),
+	ICPU(ATOM_CRESTMONT,		grr),
+	ICPU(ATOM_CRESTMONT_X,		srf),
+	ICPU(ATOM_DARKMONT_X,		srf),
 	{}
 };
 
@@ -1394,10 +1580,12 @@ static void __init mwait_idle_state_table_update(void)
 		skx_idle_state_table_update();
 		break;
 	case INTEL_FAM6_SAPPHIRERAPIDS_X:
+	case INTEL_FAM6_EMERALDRAPIDS_X:
 		spr_idle_state_table_update();
 		break;
 	case INTEL_FAM6_ALDERLAKE:
 	case INTEL_FAM6_ALDERLAKE_L:
+	case INTEL_FAM6_ATOM_GRACEMONT:
 		adl_idle_state_table_update();
 		break;
 	}

@@ -289,9 +289,9 @@ int create_irq(nodeid_t node, bool grant_access)
                 mask = NULL;
         }
         ret = assign_irq_vector(irq, mask);
-    }
 
-    ASSERT(desc->arch.creator_domid == DOMID_INVALID);
+        ASSERT(desc->arch.creator_domid == DOMID_INVALID);
+    }
 
     if (ret < 0)
     {
@@ -467,6 +467,12 @@ int __init init_irq_data(void)
           vector <= IRQ_MOVE_CLEANUP_VECTOR;
           vector++ )
         __set_bit(vector, used_vectors);
+
+    /*
+     * Prevent the HPET broadcast vector from being used, until it is known
+     * whether it's actually needed.
+     */
+    __set_bit(HPET_BROADCAST_VECTOR, used_vectors);
 
     return 0;
 }
@@ -989,6 +995,13 @@ void alloc_direct_apic_vector(uint8_t *vector, void (*handler)(void))
         set_direct_apic_vector(*vector, handler);
     }
     spin_unlock(&lock);
+}
+
+/* This could free any vectors, but is needed only for low-prio ones. */
+void __init free_lopriority_vector(uint8_t vector)
+{
+    ASSERT(vector < FIRST_HIPRIORITY_VECTOR);
+    clear_bit(vector, used_vectors);
 }
 
 static void cf_check irq_ratelimit_timer_fn(void *data)

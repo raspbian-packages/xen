@@ -24,40 +24,37 @@ mount -t devtmpfs devtmpfs /dev
 /bin/sh" > initrd/init
 chmod +x initrd/init
 cd initrd
-find . | cpio --create --format='newc' | gzip > ../initrd.cpio.gz
+find . | cpio -R 0:0 -H newc -o | gzip > ../domU-rootfs.cpio.gz
 cd ..
 
+# Dom0 rootfs
+cp rootfs.cpio.gz dom0-rootfs.cpio.gz
+cat xen-tools.cpio.gz >> dom0-rootfs.cpio.gz
+
+# test-local configuration
 mkdir -p rootfs
 cd rootfs
-tar xvzf ../initrd.tar.gz
-mkdir proc
-mkdir run
-mkdir srv
-mkdir sys
-rm var/run
-cp -ar ../dist/install/* .
-mv ../initrd.cpio.gz ./root
+mkdir -p etc/local.d root
+mv ../domU-rootfs.cpio.gz ./root
 cp ../Image ./root
-echo "name=\"test\"
+echo "name=\"domU\"
 memory=512
 vcpus=1
 kernel=\"/root/Image\"
-ramdisk=\"/root/initrd.cpio.gz\"
+ramdisk=\"/root/domU-rootfs.cpio.gz\"
 extra=\"console=hvc0 root=/dev/ram0 rdinit=/bin/sh\"
-" > root/test.cfg
+" > root/domU.cfg
 echo "#!/bin/bash
 
-export LD_LIBRARY_PATH=/usr/local/lib
 bash /etc/init.d/xencommons start
 
 xl list
 
-xl create -c /root/test.cfg
+xl -vvv create -c /root/domU.cfg
 
 " > etc/local.d/xen.start
 chmod +x etc/local.d/xen.start
-echo "rc_verbose=yes" >> etc/rc.conf
-find . |cpio -H newc -o|gzip > ../xen-rootfs.cpio.gz
+find . | cpio -R 0:0 -H newc -o | gzip >> ../dom0-rootfs.cpio.gz
 cd ../..
 
 # XXX QEMU looks for "efi-virtio.rom" even if it is unneeded
@@ -78,7 +75,7 @@ MEMORY_END="0xC0000000"
 DEVICE_TREE="virt-gicv2.dtb"
 XEN="xen"
 DOM0_KERNEL="Image"
-DOM0_RAMDISK="xen-rootfs.cpio.gz"
+DOM0_RAMDISK="dom0-rootfs.cpio.gz"
 XEN_CMD="console=dtuart dom0_mem=1024M console_timestamps=boot"
 
 NUM_DOMUS=0
@@ -104,6 +101,7 @@ export TEST_CMD="./binaries/qemu-system-aarch64 \
     -bios /usr/lib/u-boot/qemu_arm64/u-boot.bin"
 
 export UBOOT_CMD="virtio scan; dhcp; tftpb 0x40000000 boot.scr; source 0x40000000"
+export BOOT_MSG="Latest ChangeSet: "
 export TEST_LOG="smoke.serial"
 export LOG_MSG="Domain-0"
 export PASSED="BusyBox"

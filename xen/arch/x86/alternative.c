@@ -137,6 +137,49 @@ void init_or_livepatch add_nops(void *insns, unsigned int len)
     }
 }
 
+void nocall __x86_return_thunk(void);
+
+/*
+ * Place a return at @ptr.  @ptr must be in the writable alias of a stub.
+ *
+ * When CONFIG_RETURN_THUNK is active, this may be a JMP __x86_return_thunk
+ * instead, depending on the safety of @ptr with respect to Indirect Target
+ * Selection.
+ *
+ * Returns the next position to write into the stub.
+ */
+void *place_ret(void *ptr)
+{
+    unsigned long addr = (unsigned long)ptr;
+    uint8_t *p = ptr;
+
+    /*
+     * When Return Thunks are used, if a RET would be unsafe at this location
+     * with respect to Indirect Target Selection (i.e. if addr is in the first
+     * half of a cacheline), insert a JMP __x86_return_thunk instead.
+     *
+     * The displacement needs to be relative to the executable alias of the
+     * stub, not to @ptr which is the writeable alias.
+     */
+    if ( IS_ENABLED(CONFIG_RETURN_THUNK) && !(addr & 0x20) )
+    {
+        long stub_va = (this_cpu(stubs.addr) & PAGE_MASK) + (addr & ~PAGE_MASK);
+        long disp = (long)__x86_return_thunk - (stub_va + 5);
+
+        BUG_ON((int32_t)disp != disp);
+
+        *p++ = 0xe9;
+        *(int32_t *)p = disp;
+        p += 4;
+    }
+    else
+    {
+        *p++ = 0xc3;
+    }
+
+    return p;
+}
+
 /*
  * text_poke - Update instructions on a live kernel or non-executed code.
  * @addr: address to modify
@@ -152,13 +195,18 @@ void init_or_livepatch add_nops(void *insns, unsigned int len)
  * You should run this with interrupts disabled or on code that is not
  * executing.
  *
- * "noinline" to cause control flow change and thus invalidate I$ and
- * cause refetch after modification.
+ * While the SDM continues to suggest using "noinline" would be sufficient, it
+ * may not be, e.g. due to errata.  Issue a serializing insn afterwards, unless
+ * this is for live-patching, where we modify code before it goes live.  Issue
+ * a serializing insn which is unlikely to be intercepted by a hypervisor, in
+ * case we run virtualized ourselves.
  */
-static void init_or_livepatch noinline
+static void init_or_livepatch
 text_poke(void *addr, const void *opcode, size_t len)
 {
     memcpy(addr, opcode, len);
+    if ( system_state < SYS_STATE_active )
+        asm volatile ( "mov %0, %%cr2" :: "r" (0L) : "memory" );
 }
 
 extern void *const __initdata_cf_clobber_start[];
@@ -197,6 +245,8 @@ static int init_or_livepatch _apply_alternatives(struct alt_instr *start,
         uint8_t *repl = ALT_REPL_PTR(a);
         uint8_t buf[MAX_PATCH_LEN];
         unsigned int total_len = a->orig_len + a->pad_len;
+        unsigned int feat = a->cpuid & ~ALT_FLAG_NOT;
+        bool inv = a->cpuid & ALT_FLAG_NOT, replace;
 
         if ( a->repl_len > total_len )
         {
@@ -214,11 +264,11 @@ static int init_or_livepatch _apply_alternatives(struct alt_instr *start,
             return -ENOSPC;
         }
 
-        if ( a->cpuid >= NCAPINTS * 32 )
+        if ( feat >= NCAPINTS * 32 )
         {
              printk(XENLOG_ERR
                    "Alt for %ps, feature %#x outside of featureset range %#x\n",
-                   ALT_ORIG_PTR(a), a->cpuid, NCAPINTS * 32);
+                   ALT_ORIG_PTR(a), feat, NCAPINTS * 32);
             return -ERANGE;
         }
 
@@ -243,8 +293,14 @@ static int init_or_livepatch _apply_alternatives(struct alt_instr *start,
             continue;
         }
 
+        /*
+         * Should a replacement be performed?  Most replacements have positive
+         * polarity, but we support negative polarity too.
+         */
+        replace = boot_cpu_has(feat) ^ inv;
+
         /* If there is no replacement to make, see about optimising the nops. */
-        if ( !boot_cpu_has(a->cpuid) )
+        if ( !replace )
         {
             /* Origin site site already touched?  Don't nop anything. */
             if ( base->priv )

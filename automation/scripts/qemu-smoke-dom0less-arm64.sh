@@ -108,26 +108,23 @@ ${domU_check}
 /bin/sh" > initrd/init
 chmod +x initrd/init
 cd initrd
-find . | cpio --create --format='newc' | gzip > ../binaries/initrd
+find . | cpio -R 0:0 -o -H newc | gzip > ../binaries/initrd
 cd ..
 
-# DOM0 rootfs
+# Dom0 rootfs
+cp binaries/rootfs.cpio.gz binaries/dom0-rootfs.cpio.gz
+cat binaries/xen-tools.cpio.gz >> binaries/dom0-rootfs.cpio.gz
+
+# test-local configuration
 mkdir -p rootfs
 cd rootfs
-tar xzf ../binaries/initrd.tar.gz
-mkdir proc
-mkdir run
-mkdir srv
-mkdir sys
-rm var/run
-cp -ar ../binaries/dist/install/* .
+mkdir -p etc/local.d
 
 echo "#!/bin/bash
 
-export LD_LIBRARY_PATH=/usr/local/lib
 bash /etc/init.d/xencommons start
 
-/usr/local/lib/xen/bin/init-dom0less
+/usr/lib/xen/bin/init-dom0less
 
 brctl addbr xenbr0
 brctl addif xenbr0 eth0
@@ -139,8 +136,7 @@ xl network-attach 1 type=vif
 ${dom0_check}
 " > etc/local.d/xen.start
 chmod +x etc/local.d/xen.start
-echo "rc_verbose=yes" >> etc/rc.conf
-find . | cpio -H newc -o | gzip > ../binaries/dom0-rootfs.cpio.gz
+find . | cpio -R 0:0 -H newc -o | gzip >> ../binaries/dom0-rootfs.cpio.gz
 cd ..
 
 # ImageBuilder

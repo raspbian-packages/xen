@@ -38,48 +38,40 @@ echo \"${passed}\"
 "
 fi
 
-# DomU
+# DomU rootfs
+cp binaries/rootfs.cpio.gz binaries/domU-rootfs.cpio.gz
+
+# test-local configuration
 mkdir -p rootfs
 cd rootfs
-tar xzf ../binaries/initrd.tar.gz
-mkdir proc
-mkdir run
-mkdir srv
-mkdir sys
-rm var/run
+mkdir -p etc/local.d
 echo "#!/bin/sh
 
 ${domU_check}
 /bin/sh" > etc/local.d/xen.start
 chmod +x etc/local.d/xen.start
-echo "rc_verbose=yes" >> etc/rc.conf
-find . | cpio -H newc -o | gzip > ../binaries/domU-rootfs.cpio.gz
+find . | cpio -R 0:0 -H newc -o | gzip >> ../binaries/domU-rootfs.cpio.gz
 cd ..
 rm -rf rootfs
 
-# DOM0 rootfs
+# Dom0 rootfs
+cp binaries/rootfs.cpio.gz binaries/dom0-rootfs.cpio.gz
+cat binaries/xen-tools.cpio.gz >> binaries/dom0-rootfs.cpio.gz
+
+# test-local configuration
 mkdir -p rootfs
 cd rootfs
-tar xzf ../binaries/initrd.tar.gz
-mkdir proc
-mkdir run
-mkdir srv
-mkdir sys
-rm var/run
-cp -ar ../binaries/dist/install/* .
-
+mkdir -p etc/local.d
 echo "#!/bin/bash
 
-export LD_LIBRARY_PATH=/usr/local/lib
 bash /etc/init.d/xencommons start
 
-/usr/local/lib/xen/bin/init-dom0less
+/usr/lib/xen/bin/init-dom0less
 
 ${dom0_check}
 " > etc/local.d/xen.start
 chmod +x etc/local.d/xen.start
-echo "rc_verbose=yes" >> etc/rc.conf
-find . | cpio -H newc -o | gzip > ../binaries/dom0-rootfs.cpio.gz
+find . | cpio -R 0:0 -H newc -o | gzip >> ../binaries/dom0-rootfs.cpio.gz
 cd ..
 
 
@@ -136,10 +128,11 @@ cd $START
 # connect to serial
 SERIAL_DEV="/dev/serial/zynq"
 set +e
-stty -F ${SERIAL_DEV} 115200
+stty -F ${SERIAL_DEV} 115200 -echo
 
 # Capture test result and power off board before exiting.
 export PASSED="${passed}"
+export BOOT_MSG="Latest ChangeSet: "
 export LOG_MSG="Welcome to Alpine Linux"
 export TEST_CMD="cat ${SERIAL_DEV}"
 export TEST_LOG="smoke.serial"

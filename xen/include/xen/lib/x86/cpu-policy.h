@@ -22,6 +22,7 @@
 #define FEATURESET_7d1       15 /* 0x00000007:1.edx    */
 #define FEATURESET_m10Al     16 /* 0x0000010a.eax      */
 #define FEATURESET_m10Ah     17 /* 0x0000010a.edx      */
+#define FEATURESET_e21c      18 /* 0x80000021.ecx      */
 
 struct cpuid_leaf
 {
@@ -325,7 +326,14 @@ struct cpu_policy
                 uint32_t e21a;
                 struct { DECL_BITFIELD(e21a); };
             };
-            uint32_t /* b */:32, /* c */:32, /* d */:32;
+            uint16_t ucode_size; /* Units of 16 bytes */
+            uint8_t  rap_size;   /* Units of 8 entries */
+            uint8_t  :8;
+            union {
+                uint32_t e21c;
+                struct { DECL_BITFIELD(e21c); };
+            };
+            uint32_t /* d */:32;
         };
     } extd;
 
