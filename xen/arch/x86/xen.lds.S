@@ -83,6 +83,7 @@ SECTIONS
        . = ALIGN(PAGE_SIZE);
        _stextentry = .;
        *(.text.entry)
+       *(.text.entry.*)
        . = ALIGN(PAGE_SIZE);
        _etextentry = .;
 
@@ -172,6 +173,8 @@ SECTIONS
        __note_gnu_build_id_end = .;
   } PHDR(note) PHDR(text)
 #elif defined(BUILD_ID_EFI)
+  /* Workaround bug in binutils < 2.36 */
+  . = ALIGN(32);
   DECL_SECTION(.buildid) {
        __note_gnu_build_id_start = .;
        *(.buildid)

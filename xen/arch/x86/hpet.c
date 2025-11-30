@@ -9,17 +9,19 @@
 #include <xen/timer.h>
 #include <xen/smp.h>
 #include <xen/softirq.h>
+#include <xen/cpuidle.h>
 #include <xen/irq.h>
 #include <xen/numa.h>
 #include <xen/param.h>
 #include <xen/sched.h>
 
 #include <asm/apic.h>
-#include <asm/fixmap.h>
 #include <asm/div64.h>
+#include <asm/fixmap.h>
+#include <asm/genapic.h>
 #include <asm/hpet.h>
+#include <asm/irq-vectors.h>
 #include <asm/msi.h>
-#include <xen/cpuidle.h>
 
 #define MAX_DELTA_NS MILLISECS(10*1000)
 #define MIN_DELTA_NS MICROSECS(20)
@@ -188,15 +190,13 @@ static void evt_do_broadcast(cpumask_t *mask)
     if ( __cpumask_test_and_clear_cpu(cpu, mask) )
         raise_softirq(TIMER_SOFTIRQ);
 
-    cpuidle_wakeup_mwait(mask);
-
     if ( !cpumask_empty(mask) )
        cpumask_raise_softirq(mask, TIMER_SOFTIRQ);
 }
 
 static void cf_check handle_hpet_broadcast(struct hpet_event_channel *ch)
 {
-    cpumask_t mask;
+    cpumask_t *scratch = this_cpu(hpet_scratch_cpumask);
     s_time_t now, next_event;
     unsigned int cpu;
     unsigned long flags;
@@ -209,7 +209,7 @@ again:
     spin_unlock_irqrestore(&ch->lock, flags);
 
     next_event = STIME_MAX;
-    cpumask_clear(&mask);
+    cpumask_clear(scratch);
     now = NOW();
 
     /* find all expired events */
@@ -218,13 +218,13 @@ again:
         s_time_t deadline = ACCESS_ONCE(per_cpu(timer_deadline, cpu));
 
         if ( deadline <= now )
-            __cpumask_set_cpu(cpu, &mask);
+            __cpumask_set_cpu(cpu, scratch);
         else if ( deadline < next_event )
             next_event = deadline;
     }
 
     /* wakeup the cpus which have an expired event. */
-    evt_do_broadcast(&mask);
+    evt_do_broadcast(scratch);
 
     if ( next_event != STIME_MAX )
     {
@@ -253,15 +253,19 @@ static void cf_check hpet_interrupt_handler(int irq, void *data)
     ch->event_handler(ch);
 }
 
-static void cf_check hpet_msi_unmask(struct irq_desc *desc)
+static void hpet_enable_channel(struct hpet_event_channel *ch)
 {
     u32 cfg;
-    struct hpet_event_channel *ch = desc->action->dev_id;
 
     cfg = hpet_read32(HPET_Tn_CFG(ch->idx));
     cfg |= HPET_TN_ENABLE;
     hpet_write32(cfg, HPET_Tn_CFG(ch->idx));
     ch->msi.msi_attrib.host_masked = 0;
+}
+
+static void cf_check hpet_msi_unmask(struct irq_desc *desc)
+{
+    hpet_enable_channel(desc->action->dev_id);
 }
 
 static void cf_check hpet_msi_mask(struct irq_desc *desc)
@@ -293,20 +297,7 @@ static int hpet_msi_write(struct hpet_event_channel *ch, struct msi_msg *msg)
     return 0;
 }
 
-static unsigned int cf_check hpet_msi_startup(struct irq_desc *desc)
-{
-    hpet_msi_unmask(desc);
-    return 0;
-}
-
 #define hpet_msi_shutdown hpet_msi_mask
-
-static void cf_check hpet_msi_ack(struct irq_desc *desc)
-{
-    irq_complete_move(desc);
-    move_native_irq(desc);
-    ack_APIC_irq();
-}
 
 static void cf_check hpet_msi_set_affinity(
     struct irq_desc *desc, const cpumask_t *mask)
@@ -314,15 +305,13 @@ static void cf_check hpet_msi_set_affinity(
     struct hpet_event_channel *ch = desc->action->dev_id;
     struct msi_msg msg = ch->msi.msg;
 
-    msg.dest32 = set_desc_affinity(desc, mask);
-    if ( msg.dest32 == BAD_APICID )
-        return;
+    /* This really is only for dump_irqs(). */
+    cpumask_copy(desc->arch.cpu_mask, mask);
 
-    msg.data &= ~MSI_DATA_VECTOR_MASK;
-    msg.data |= MSI_DATA_VECTOR(desc->arch.vector);
+    msg.dest32 = cpu_mask_to_apicid(mask);
     msg.address_lo &= ~MSI_ADDR_DEST_ID_MASK;
     msg.address_lo |= MSI_ADDR_DEST_ID(msg.dest32);
-    if ( msg.data != ch->msi.msg.data || msg.dest32 != ch->msi.msg.dest32 )
+    if ( msg.dest32 != ch->msi.msg.dest32 )
         hpet_msi_write(ch, &msg);
 }
 
@@ -331,11 +320,12 @@ static void cf_check hpet_msi_set_affinity(
  */
 static hw_irq_controller hpet_msi_type = {
     .typename   = "HPET-MSI",
-    .startup    = hpet_msi_startup,
+    .startup    = irq_startup_none,
     .shutdown   = hpet_msi_shutdown,
     .enable	    = hpet_msi_unmask,
     .disable    = hpet_msi_mask,
-    .ack        = hpet_msi_ack,
+    .ack        = irq_actor_none,
+    .end        = end_nonmaskable_irq,
     .set_affinity   = hpet_msi_set_affinity,
 };
 
@@ -352,6 +342,16 @@ static int __init hpet_setup_msi_irq(struct hpet_event_channel *ch)
     int ret;
     u32 cfg = hpet_read32(HPET_Tn_CFG(ch->idx));
     irq_desc_t *desc = irq_to_desc(ch->msi.irq);
+
+    clear_irq_vector(ch->msi.irq);
+    /*
+     * Technically we don't want to bind the IRQ to any CPU yet, but we need to
+     * specify at least one online one here.  Use the BSP.
+     */
+    ret = bind_irq_vector(ch->msi.irq, HPET_BROADCAST_VECTOR, cpumask_of(0));
+    if ( ret )
+        return ret;
+    cpumask_setall(desc->affinity);
 
     if ( iommu_intremap != iommu_intremap_off )
     {
@@ -482,19 +482,50 @@ static struct hpet_event_channel *hpet_get_channel(unsigned int cpu)
 static void set_channel_irq_affinity(struct hpet_event_channel *ch)
 {
     struct irq_desc *desc = irq_to_desc(ch->msi.irq);
+    struct msi_msg msg = ch->msi.msg;
 
     ASSERT(!local_irq_is_enabled());
     spin_lock(&desc->lock);
-    hpet_msi_mask(desc);
-    hpet_msi_set_affinity(desc, cpumask_of(ch->cpu));
-    hpet_msi_unmask(desc);
+
+    per_cpu(vector_irq, ch->cpu)[HPET_BROADCAST_VECTOR] = ch->msi.irq;
+
+    /*
+     * Open-coding a reduced form of hpet_msi_set_affinity() here.  With the
+     * actual update below (either of the IRTE or of [just] message address;
+     * with interrupt remapping message address/data don't change) now being
+     * atomic, we can avoid masking the IRQ around the update.  As a result
+     * we're no longer at risk of missing IRQs (provided hpet_broadcast_enter()
+     * keeps setting the new deadline only afterwards).
+     */
+    cpumask_copy(desc->arch.cpu_mask, cpumask_of(ch->cpu));
+
     spin_unlock(&desc->lock);
 
-    spin_unlock(&ch->lock);
+    msg.dest32 = cpu_physical_id(ch->cpu);
+    msg.address_lo &= ~MSI_ADDR_DEST_ID_MASK;
+    msg.address_lo |= MSI_ADDR_DEST_ID(msg.dest32);
+    if ( msg.dest32 != ch->msi.msg.dest32 )
+    {
+        ch->msi.msg = msg;
 
-    /* We may have missed an interrupt due to the temporary masking. */
-    if ( ch->event_handler && ch->next_event < NOW() )
-        ch->event_handler(ch);
+        if ( iommu_intremap != iommu_intremap_off )
+        {
+            int rc = iommu_update_ire_from_msi(&ch->msi, &msg);
+
+            ASSERT(rc <= 0);
+            if ( rc >= 0 )
+            {
+                ASSERT(msg.data == hpet_read32(HPET_Tn_ROUTE(ch->idx)));
+                ASSERT(msg.address_lo ==
+                       hpet_read32(HPET_Tn_ROUTE(ch->idx) + 4));
+            }
+        }
+        else
+            hpet_write32(msg.address_lo, HPET_Tn_ROUTE(ch->idx) + 4);
+    }
+
+    hpet_enable_channel(ch);
+    spin_unlock(&ch->lock);
 }
 
 static void hpet_attach_channel(unsigned int cpu,
@@ -530,6 +561,8 @@ static void hpet_detach_channel(unsigned int cpu,
         spin_unlock_irq(&ch->lock);
     else if ( (next = cpumask_first(ch->cpumask)) >= nr_cpu_ids )
     {
+        hpet_write32(hpet_read32(HPET_COUNTER), HPET_Tn_CMP(ch->idx));
+        ch->next_event = STIME_MAX;
         ch->cpu = -1;
         clear_bit(HPET_EVT_USED_BIT, &ch->flags);
         spin_unlock_irq(&ch->lock);
@@ -628,6 +661,12 @@ void __init hpet_broadcast_init(void)
 
     if ( !num_hpets_used )
         hpet_events->flags = HPET_EVT_LEGACY;
+}
+
+void __init hpet_broadcast_late_init(void)
+{
+    if ( !num_hpets_used )
+        free_lopriority_vector(HPET_BROADCAST_VECTOR);
 }
 
 void hpet_broadcast_resume(void)

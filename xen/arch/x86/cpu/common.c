@@ -438,6 +438,13 @@ static void generic_identify(struct cpuinfo_x86 *c)
 	c->apicid = phys_pkg_id((ebx >> 24) & 0xFF, 0);
 	c->phys_proc_id = c->apicid;
 
+	/*
+	 * Early init of Self Snoop support requires 0x1.edx, while there also
+	 * set 0x1.ecx as the value is in context.
+	 */
+	c->x86_capability[FEATURESET_1c] = ecx;
+	c->x86_capability[FEATURESET_1d] = edx;
+
 	eax = cpuid_eax(0x80000000);
 	if ((eax >> 16) == 0x8000)
 		c->extended_cpuid_level = eax;
@@ -478,7 +485,9 @@ static void generic_identify(struct cpuinfo_x86 *c)
 	if (c->extended_cpuid_level >= 0x80000008)
 		c->x86_capability[FEATURESET_e8b] = cpuid_ebx(0x80000008);
 	if (c->extended_cpuid_level >= 0x80000021)
-		c->x86_capability[FEATURESET_e21a] = cpuid_eax(0x80000021);
+		cpuid(0x80000021,
+		      &c->x86_capability[FEATURESET_e21a], &tmp,
+		      &c->x86_capability[FEATURESET_e21c], &tmp);
 
 	/* Intel-defined flags: level 0x00000007 */
 	if (c->cpuid_level >= 7) {

@@ -1,19 +1,33 @@
 .test-jobs-common:
   stage: test
   image: ${XEN_REGISTRY}/${CONTAINER}
+  rules:
+  - if: $SELECTED_JOBS_ONLY && $CI_JOB_NAME =~ $SELECTED_JOBS_ONLY
+  - if: $SELECTED_JOBS_ONLY
+    when: never
+  - when: on_success
 
 .arm64-test-needs: &arm64-test-needs
-  - alpine-3.18-arm64-rootfs-export
-  - kernel-5.19-arm64-export
+  - project: xen-project/hardware/test-artifacts
+    job: linux-6.6.86-arm64
+    ref: master
+  - project: xen-project/hardware/test-artifacts
+    job: alpine-3.18-arm64-rootfs
+    ref: master
   - qemu-system-aarch64-6.0.0-arm64-export
 
 .arm32-test-needs: &arm32-test-needs
   - qemu-system-aarch64-6.0.0-arm32-export
 
 .x86-64-test-needs: &x86-64-test-needs
-  - kernel-6.1.19-export
   - project: xen-project/hardware/test-artifacts
-    job: x86_64-rootfs-alpine-3.18
+    job: linux-6.6.56-x86_64
+    ref: master
+  - project: xen-project/hardware/test-artifacts
+    job: alpine-3.18-x86_64-rootfs
+    ref: master
+  - project: xen-project/hardware/test-artifacts
+    job: microcode-x86
     ref: master
 
 .qemu-arm64:
@@ -99,6 +113,9 @@
       - '*.dtb'
     when: always
   rules:
+    - if: $SELECTED_JOBS_ONLY && $CI_JOB_NAME =~ $SELECTED_JOBS_ONLY
+    - if: $SELECTED_JOBS_ONLY
+      when: never
     - if: $XILINX_JOBS == "true" && $CI_COMMIT_REF_PROTECTED == "true"
   tags:
     - xilinx
@@ -117,6 +134,9 @@
       - '*.log'
     when: always
   rules:
+    - if: $SELECTED_JOBS_ONLY && $CI_JOB_NAME =~ $SELECTED_JOBS_ONLY
+    - if: $SELECTED_JOBS_ONLY
+      when: never
     - if: $XILINX_JOBS == "true" && $CI_COMMIT_REF_PROTECTED == "true"
   tags:
     - xilinx
@@ -130,15 +150,30 @@
     PCIDEV: "03:00.0"
     PCIDEV_INTR: "MSI-X"
     CONSOLE_OPTS: "console=com1 com1=115200,8n1"
+    SUT_ADDR: test-2.testnet
   artifacts:
     paths:
       - smoke.serial
       - '*.log'
     when: always
   rules:
+    - if: $SELECTED_JOBS_ONLY && $CI_JOB_NAME =~ $SELECTED_JOBS_ONLY
+    - if: $SELECTED_JOBS_ONLY
+      when: never
     - if: $QUBES_JOBS == "true" && $CI_COMMIT_REF_PROTECTED == "true"
   tags:
     - qubes-hw2
+
+.kbl-x86-64:
+  # it's really similar to the ADL one
+  extends: .adl-x86-64
+  variables:
+    PCIDEV: "00:1f.6"
+    PCIDEV_INTR: "MSI"
+    CONSOLE_OPTS: "console=com1 com1=115200,8n1,pci,msi"
+    SUT_ADDR: test-3.testnet
+  tags:
+    - qubes-hw3
 
 .zen2-x86-64:
   # it's really similar to the above
@@ -158,6 +193,7 @@
     PCIDEV: "01:00.0"
     PCIDEV_INTR: "MSI-X"
     CONSOLE_OPTS: "console=com1 com1=115200,8n1,pci,msi"
+    SUT_ADDR: test-11.testnet
   tags:
     - qubes-hw11
 
@@ -209,13 +245,13 @@ xilinx-smoke-dom0-x86_64-gcc-debug-argo:
   needs:
     - alpine-3.18-gcc-debug
     - project: xen-project/hardware/test-artifacts
-      job: x86_64-kernel-linux-6.6.56
+      job: linux-6.6.56-x86_64
       ref: master
     - project: xen-project/hardware/test-artifacts
-      job: x86_64-rootfs-alpine-3.18
+      job: alpine-3.18-x86_64-rootfs
       ref: master
     - project: xen-project/hardware/test-artifacts
-      job: x86_64-argo-linux-6.6.56
+      job: microcode-x86
       ref: master
 
 adl-smoke-x86-64-gcc-debug:
@@ -274,6 +310,106 @@ adl-pvshim-x86-64-gcc-debug:
     - *x86-64-test-needs
     - alpine-3.18-gcc-debug
 
+adl-tools-tests-pv-x86-64-gcc-debug:
+  extends: .adl-x86-64
+  script:
+    - ./automation/scripts/qubes-x86-64.sh tools-tests-pv 2>&1 | tee ${LOGFILE}
+  artifacts:
+    reports:
+      junit: tests-junit.xml
+  needs:
+    - *x86-64-test-needs
+    - alpine-3.18-gcc-debug
+
+adl-tools-tests-pvh-x86-64-gcc-debug:
+  extends: .adl-x86-64
+  script:
+    - ./automation/scripts/qubes-x86-64.sh tools-tests-pvh 2>&1 | tee ${LOGFILE}
+  artifacts:
+    reports:
+      junit: tests-junit.xml
+  needs:
+    - *x86-64-test-needs
+    - alpine-3.18-gcc-debug
+
+kbl-smoke-x86-64-gcc-debug:
+  extends: .kbl-x86-64
+  script:
+    - ./automation/scripts/qubes-x86-64.sh 2>&1 | tee ${LOGFILE}
+  needs:
+    - *x86-64-test-needs
+    - alpine-3.18-gcc-debug
+
+kbl-smoke-x86-64-dom0pvh-gcc-debug:
+  extends: .kbl-x86-64
+  script:
+    - ./automation/scripts/qubes-x86-64.sh dom0pvh 2>&1 | tee ${LOGFILE}
+  needs:
+    - *x86-64-test-needs
+    - alpine-3.18-gcc-debug
+
+kbl-smoke-x86-64-dom0pvh-hvm-gcc-debug:
+  extends: .kbl-x86-64
+  script:
+    - ./automation/scripts/qubes-x86-64.sh dom0pvh-hvm 2>&1 | tee ${LOGFILE}
+  needs:
+    - *x86-64-test-needs
+    - alpine-3.18-gcc-debug
+
+kbl-suspend-x86-64-gcc-debug:
+  extends: .kbl-x86-64
+  script:
+    - ./automation/scripts/qubes-x86-64.sh s3 2>&1 | tee ${LOGFILE}
+  needs:
+    - *x86-64-test-needs
+    - alpine-3.18-gcc-debug
+
+kbl-pci-pv-x86-64-gcc-debug:
+  extends: .kbl-x86-64
+  script:
+    - ./automation/scripts/qubes-x86-64.sh pci-pv 2>&1 | tee ${LOGFILE}
+  needs:
+    - *x86-64-test-needs
+    - alpine-3.18-gcc-debug
+
+kbl-pci-hvm-x86-64-gcc-debug:
+  extends: .kbl-x86-64
+  script:
+    - ./automation/scripts/qubes-x86-64.sh pci-hvm 2>&1 | tee ${LOGFILE}
+  needs:
+    - *x86-64-test-needs
+    - alpine-3.18-gcc-debug
+
+kbl-pvshim-x86-64-gcc-debug:
+  extends: .kbl-x86-64
+  script:
+    - ./automation/scripts/qubes-x86-64.sh pvshim 2>&1 | tee ${LOGFILE}
+  needs:
+    - *x86-64-test-needs
+    - alpine-3.18-gcc-debug
+
+kbl-tools-tests-pv-x86-64-gcc-debug:
+  extends: .kbl-x86-64
+  script:
+    - ./automation/scripts/qubes-x86-64.sh tools-tests-pv 2>&1 | tee ${LOGFILE}
+  artifacts:
+    reports:
+      junit: tests-junit.xml
+  needs:
+    - *x86-64-test-needs
+    - alpine-3.18-gcc-debug
+
+kbl-tools-tests-pvh-x86-64-gcc-debug:
+  extends: .kbl-x86-64
+  script:
+    - ./automation/scripts/qubes-x86-64.sh tools-tests-pvh 2>&1 | tee ${LOGFILE}
+  artifacts:
+    reports:
+      junit: tests-junit.xml
+  needs:
+    - *x86-64-test-needs
+    - alpine-3.18-gcc-debug
+
 zen2-smoke-x86-64-gcc-debug:
   extends: .zen2-x86-64
   script:
@@ -326,6 +462,28 @@ zen3p-pvshim-x86-64-gcc-debug:
   extends: .zen3p-x86-64
   script:
     - ./automation/scripts/qubes-x86-64.sh pvshim 2>&1 | tee ${LOGFILE}
+  needs:
+    - *x86-64-test-needs
+    - alpine-3.18-gcc-debug
+
+zen3p-tools-tests-pv-x86-64-gcc-debug:
+  extends: .zen3p-x86-64
+  script:
+    - ./automation/scripts/qubes-x86-64.sh tools-tests-pv 2>&1 | tee ${LOGFILE}
+  artifacts:
+    reports:
+      junit: tests-junit.xml
+  needs:
+    - *x86-64-test-needs
+    - alpine-3.18-gcc-debug
+
+zen3p-tools-tests-pvh-x86-64-gcc-debug:
+  extends: .zen3p-x86-64
+  script:
+    - ./automation/scripts/qubes-x86-64.sh tools-tests-pvh 2>&1 | tee ${LOGFILE}
+  artifacts:
+    reports:
+      junit: tests-junit.xml
   needs:
     - *x86-64-test-needs
     - alpine-3.18-gcc-debug

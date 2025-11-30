@@ -98,7 +98,7 @@ avx512bw-opmask-vecs := 4 8
 # partially even with older compilers.
 TARGET-y := $(TARGET)
 
-ifeq ($(filter run%,$(MAKECMDGOALS)),)
+ifneq ($(filter-out run% clean% distclean,$(MAKECMDGOALS)),)
 
 define isa-check-cc
 TARGET-$(shell echo 'int i;' | $(CC) -x c -c -o /dev/null -m$(1) - || echo y) :=
@@ -261,7 +261,8 @@ $(TARGET): $(OBJS)
 .PHONY: clean
 clean:
 	rm -rf $(TARGET) *.o *~ core *.bin x86_emulate
-	rm -rf $(TARGET) $(addsuffix .h,$(TESTCASES)) $(addsuffix -opmask.h,$(OPMASK))
+	rm -rf $(addsuffix .h,$(TESTCASES)) $(addsuffix -opmask.h,$(OPMASK))
+	rm -rf $(addsuffix .c,$(filter-out blowfish,$(TESTCASES)))
 
 .PHONY: distclean
 distclean: clean

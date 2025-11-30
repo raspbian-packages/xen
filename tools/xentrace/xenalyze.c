@@ -321,11 +321,10 @@ void parse_symbol_file(char *fn) {
             (*p)->next=NULL;
         }
 
-        /* FIXME -- use SYMBOL_NAME_SIZE */
         /* FIXME -- use regexp.  This won't work for symbols with spaces (yes they exist) */
         (*p)->symbols[(*p)->count].addr = 0xDEADBEEF;
-        if ( fscanf(symbol_file, "%llx %128s",
-               &(*p)->symbols[(*p)->count].addr,
+        if ( fscanf(symbol_file, "%llx %" STR(SYMBOL_NAME_SIZE) "s",
+                    &(*p)->symbols[(*p)->count].addr,
                     (*p)->symbols[(*p)->count].name) == 0 )
             break;
 
@@ -6513,7 +6512,8 @@ static const char *vcpu_op_str[] = {
     "register_runstate_memory_area", "set_periodic_timer",
     "stop_periodic_timer", "set_singleshot_timer", "stop_singleshot_timer",
     "register_vcpu_info", "send_nmi", "get_physid",
-    "register_vcpu_time_memory_area",
+    "register_vcpu_time_memory_area", "register_runstate_phys_area",
+    "register_vcpu_time_phys_area",
 };
 
 static const char *sched_op_str[] = {

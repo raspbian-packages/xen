@@ -11,9 +11,7 @@ obj-$(CONFIG_PV) += pv/
 obj-y += x86_64/
 obj-y += x86_emulate/
 
-alternative-y := alternative.init.o
-alternative-$(CONFIG_LIVEPATCH) :=
-obj-bin-y += $(alternative-y)
+obj-y += alternative.o
 obj-y += apic.o
 obj-y += bhb-thunk.o
 obj-y += bitops.o
@@ -41,10 +39,11 @@ obj-y += hypercall.o
 obj-y += i387.o
 obj-y += i8259.o
 obj-y += io_apic.o
-obj-$(CONFIG_LIVEPATCH) += alternative.o livepatch.o
+obj-$(CONFIG_LIVEPATCH) += livepatch.o
 obj-y += msi.o
 obj-y += msr.o
 obj-$(CONFIG_INDIRECT_THUNK) += indirect-thunk.o
+obj-$(CONFIG_RETURN_THUNK) += indirect-thunk.o
 obj-$(CONFIG_PV) += ioport_emulate.o
 obj-y += irq.o
 obj-$(CONFIG_KEXEC) += machine_kexec.o
@@ -127,8 +126,7 @@ orphan-handling-$(call ld-option,--orphan-handling=warn) += --orphan-handling=wa
 
 $(TARGET): TMP = $(dot-target).elf32
 $(TARGET): $(TARGET)-syms $(efi-y) $(obj)/boot/mkelf32
-	$(obj)/boot/mkelf32 $(notes_phdrs) $(TARGET)-syms $(TMP) $(XEN_IMG_OFFSET) \
-	               `$(NM) $(TARGET)-syms | sed -ne 's/^\([^ ]*\) . __2M_rwdata_end$$/0x\1/p'`
+	$(obj)/boot/mkelf32 $(notes_phdrs) $(TARGET)-syms $(TMP) $(XEN_IMG_OFFSET)
 	od -t x4 -N 8192 $(TMP)  | grep 1badb002 > /dev/null || \
 		{ echo "No Multiboot1 header found" >&2; false; }
 	od -t x4 -N 32768 $(TMP) | grep e85250d6 > /dev/null || \

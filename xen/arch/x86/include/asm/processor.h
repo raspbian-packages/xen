@@ -315,23 +315,6 @@ static always_inline void set_in_cr4 (unsigned long mask)
         cr4_pv32_mask |= (mask & XEN_CR4_PV32_BITS);
 }
 
-static always_inline void __monitor(const void *eax, unsigned long ecx,
-                                    unsigned long edx)
-{
-    /* "monitor %eax,%ecx,%edx;" */
-    asm volatile (
-        ".byte 0x0f,0x01,0xc8;"
-        : : "a" (eax), "c" (ecx), "d"(edx) );
-}
-
-static always_inline void __mwait(unsigned long eax, unsigned long ecx)
-{
-    /* "mwait %eax,%ecx;" */
-    asm volatile (
-        ".byte 0x0f,0x01,0xc9;"
-        : : "a" (eax), "c" (ecx) );
-}
-
 #define IOBMP_BYTES             8192
 #define IOBMP_INVALID_OFFSET    0x8000
 
@@ -511,6 +494,9 @@ static inline void tsx_init(void) {}
 
 void update_mcu_opt_ctrl(void);
 void set_in_mcu_opt_ctrl(uint32_t mask, uint32_t val);
+
+void update_pb_opt_ctrl(void);
+void set_in_pb_opt_ctrl(uint32_t mask, uint32_t val);
 
 enum ap_boot_method {
     AP_BOOT_NORMAL,

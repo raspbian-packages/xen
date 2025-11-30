@@ -42,7 +42,10 @@ struct microcode_patch {
     uint8_t  mc_patch_data_id[2];
     uint8_t  mc_patch_data_len;
     uint8_t  init_flag;
-    uint32_t mc_patch_data_checksum;
+    union {
+        uint32_t checksum; /* Fam12h and earlier */
+        uint32_t min_rev;  /* Zen3-5, post Entrysign */
+    };
     uint32_t nb_dev_id;
     uint32_t sb_dev_id;
     uint16_t processor_rev_id;
@@ -99,6 +102,7 @@ static const struct patch_digest {
 } patch_digests[] = {
 #include "amd-patch-digests.c"
 };
+static bool __ro_after_init entrysign_mitigiated_in_firmware;
 
 static int cf_check cmp_patch_id(const void *key, const void *elem)
 {
@@ -120,11 +124,11 @@ static bool check_digest(const struct container_microcode *mc)
 
     /*
      * Zen1 thru Zen5 CPUs are known to use a weak signature algorithm on
-     * microcode updates.  Mitigate by checking the digest of the patch
-     * against a list of known provenance.
+     * microcode updates.  If this has not been mitigated in firmware, check
+     * the digest of the patch against a list of known provenance.
      */
-    if ( boot_cpu_data.x86 < 0x17 ||
-         !opt_digest_check )
+    if ( boot_cpu_data.x86 < 0x17 || boot_cpu_data.x86 > 0x1a ||
+         entrysign_mitigiated_in_firmware || !opt_digest_check )
         return true;
 
     pd = bsearch(&patch->patch_id, patch_digests, ARRAY_SIZE(patch_digests),
@@ -271,6 +275,42 @@ static int cf_check amd_compare(
     return compare_revisions(old->patch_id, new->patch_id);
 }
 
+/*
+ * Check whether this patch has a minimum revision given, and whether the
+ * condition is satisfied.
+ *
+ * In linux-firmware for CPUs suffering from the Entrysign vulnerability,
+ * ucodes signed with the updated signature algorithm have reused the checksum
+ * field as a min-revision field.  From public archives, the checksum field
+ * appears to have been unused since Fam12h.
+ *
+ * Returns false if there is a min revision given, and it suggests that that
+ * the patch cannot be loaded on the current system.  True otherwise.
+ */
+static bool check_min_rev(const struct microcode_patch *patch)
+{
+    ASSERT(microcode_fits_cpu(patch));
+
+    if ( patch->processor_rev_id < 0xa000 || /* pre Zen3? */
+         patch->min_rev == 0 )               /* No min rev specified */
+        return true;
+
+    /*
+     * Sanity check, as this is a reused field.  If this is a true
+     * min_revision field, it will differ only in the bottom byte from the
+     * patch_id.  Otherwise, it's probably a checksum.
+     */
+    if ( (patch->patch_id ^ patch->min_rev) & ~0xff )
+    {
+        printk(XENLOG_WARNING
+               "microcode: patch %#x has unexpected min_rev %#x\n",
+               patch->patch_id, patch->min_rev);
+        return true;
+    }
+
+    return this_cpu(cpu_sig).rev >= patch->min_rev;
+}
+
 static int cf_check apply_microcode(const struct microcode_patch *patch,
                                     unsigned int flags)
 {
@@ -297,6 +337,14 @@ static int cf_check apply_microcode(const struct microcode_patch *patch,
         printk(XENLOG_ERR
                "microcode: CPU%u current rev %#x unsafe to update\n",
                cpu, sig->rev);
+        return -ENXIO;
+    }
+
+    if ( !ucode_force && !check_min_rev(patch) )
+    {
+        printk(XENLOG_ERR
+               "microcode: CPU%u current rev %#x below patch min_rev %#x\n",
+               cpu, sig->rev, patch->min_rev);
         return -ENXIO;
     }
 
@@ -517,10 +565,15 @@ static const struct microcode_ops __initconst_cf_clobber amd_ucode_ops = {
 
 void __init ucode_probe_amd(struct microcode_ops *ops)
 {
-    if ( !opt_digest_check && boot_cpu_data.x86 >= 0x17 )
+    /*
+     * The Entrysign vulnerability (SB-7033, CVE-2024-36347) affects Zen1-5
+     * CPUs.  Taint Xen if digest checking is turned off.
+     */
+    if ( boot_cpu_data.x86 >= 0x17 && boot_cpu_data.x86 <= 0x1a &&
+         !opt_digest_check )
     {
         printk(XENLOG_WARNING
-               "Microcode patch additional digest checks disabled");
+               "Microcode patch additional digest checks disabled\n");
         add_taint(TAINT_CPU_OUT_OF_SPEC);
     }
 
@@ -528,4 +581,101 @@ void __init ucode_probe_amd(struct microcode_ops *ops)
         return;
 
     *ops = amd_ucode_ops;
+}
+
+#if 0 /* Manual CONFIG_SELF_TESTS */
+static void __init __constructor test_digests_sorted(void)
+{
+    for ( unsigned int i = 1; i < ARRAY_SIZE(patch_digests); ++i )
+    {
+        if ( patch_digests[i - 1].patch_id < patch_digests[i].patch_id )
+            continue;
+
+        panic("patch_digests[] not sorted: %08x >= %08x\n",
+              patch_digests[i - 1].patch_id,
+              patch_digests[i].patch_id);
+    }
+}
+#endif /* CONFIG_SELF_TESTS */
+
+/*
+ * The Entrysign vulnerability affects all Zen1 thru Zen5 CPUs.  Firmware
+ * fixes were produced from Nov 2024.  Zen3 thru Zen5 can continue to take
+ * OS-loadable microcode updates using a new signature scheme, as long as
+ * firmware has been updated first.
+ */
+void __init amd_check_entrysign(void)
+{
+    unsigned int curr_rev;
+    uint8_t fixed_rev;
+
+    if ( boot_cpu_data.x86_vendor != X86_VENDOR_AMD ||
+         boot_cpu_data.x86 < 0x17 ||
+         boot_cpu_data.x86 > 0x1a )
+        return;
+
+    /*
+     * Table taken from Linux, which is the only known source of information
+     * about client revisions.  Note, Linux expresses "last-vulnerable-rev"
+     * while Xen wants "first-fixed-rev".
+     */
+    curr_rev = this_cpu(cpu_sig).rev;
+    switch ( curr_rev >> 8 )
+    {
+    case 0x080012: fixed_rev = 0x78; break;
+    case 0x080082: fixed_rev = 0x10; break;
+    case 0x083010: fixed_rev = 0x7d; break;
+    case 0x086001: fixed_rev = 0x0f; break;
+    case 0x086081: fixed_rev = 0x09; break;
+    case 0x087010: fixed_rev = 0x35; break;
+    case 0x08a000: fixed_rev = 0x0b; break;
+    case 0x0a0010: fixed_rev = 0x7b; break;
+    case 0x0a0011: fixed_rev = 0xdb; break;
+    case 0x0a0012: fixed_rev = 0x44; break;
+    case 0x0a0082: fixed_rev = 0x0f; break;
+    case 0x0a1011: fixed_rev = 0x54; break;
+    case 0x0a1012: fixed_rev = 0x4f; break;
+    case 0x0a1081: fixed_rev = 0x0a; break;
+    case 0x0a2010: fixed_rev = 0x30; break;
+    case 0x0a2012: fixed_rev = 0x13; break;
+    case 0x0a4041: fixed_rev = 0x0a; break;
+    case 0x0a5000: fixed_rev = 0x14; break;
+    case 0x0a6012: fixed_rev = 0x0b; break;
+    case 0x0a7041: fixed_rev = 0x0a; break;
+    case 0x0a7052: fixed_rev = 0x09; break;
+    case 0x0a7080: fixed_rev = 0x0a; break;
+    case 0x0a70c0: fixed_rev = 0x0a; break;
+    case 0x0aa001: fixed_rev = 0x17; break;
+    case 0x0aa002: fixed_rev = 0x19; break;
+    case 0x0b0021: fixed_rev = 0x47; break;
+    case 0x0b0081: fixed_rev = 0x12; break;
+    case 0x0b1010: fixed_rev = 0x47; break;
+    case 0x0b2040: fixed_rev = 0x32; break;
+    case 0x0b4040: fixed_rev = 0x32; break;
+    case 0x0b4041: fixed_rev = 0x02; break;
+    case 0x0b6000: fixed_rev = 0x32; break;
+    case 0x0b6080: fixed_rev = 0x32; break;
+    case 0x0b7000: fixed_rev = 0x32; break;
+    default:
+        printk(XENLOG_WARNING
+               "Unrecognised CPU %02x-%02x-%02x ucode 0x%08x, assuming vulnerable to Entrysign\n",
+               boot_cpu_data.x86, boot_cpu_data.x86_model,
+               boot_cpu_data.x86_mask, curr_rev);
+        return;
+    }
+
+    /*
+     * This check is best-effort.  If the platform looks to be out of date, it
+     * probably is.  If the platform looks to be fixed, it either genuinely
+     * is, or malware has gotten in before Xen booted and all bets are off.
+     */
+    if ( (uint8_t)curr_rev >= fixed_rev )
+    {
+        entrysign_mitigiated_in_firmware = true;
+        return;
+    }
+
+    printk(XENLOG_WARNING
+           "WARNING: Platform vulnerable to Entrysign (SB-7033, CVE-2024-36347) - firmware update required\n");
+    add_taint(TAINT_CPU_OUT_OF_SPEC);
 }

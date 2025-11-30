@@ -682,7 +682,7 @@ static void __init noinline move_xen(void)
 #undef BOOTSTRAP_MAP_LIMIT
 
 static uint64_t __init consider_modules(
-    uint64_t s, uint64_t e, uint32_t size, const struct boot_module mods[],
+    uint64_t s, uint64_t e, uint32_t size, const struct boot_module *mods,
     unsigned int nr_mods, unsigned int this_mod)
 {
     unsigned int i;
@@ -1896,6 +1896,12 @@ void asmlinkage __init noreturn __start_xen(void)
      * to be usable, e.g. for pci_hide_device()'s use of dom_xen.
      */
     setup_system_domains();
+
+    /*
+     * Initialize PCI (create segment 0, setup MMCFG access) ahead of IOMMU
+     * setup, as devices in segment > 0 must also be discoverable.
+     */
+    acpi_mmcfg_init();
 
     /*
      * IOMMU-related ACPI table parsing has to happen before APIC probing, for
