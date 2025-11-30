@@ -6,7 +6,7 @@ Uploaders:
  Hans van Kranenburg <hans@knorrie.org>,
  Maximilian Engelhardt <maxi@daemonizer.de>,
 Section: admin
-Standards-Version: 4.7.0
+Standards-Version: 4.7.2
 Build-Depends:
    debhelper-compat (= 13),
    dh-exec,
