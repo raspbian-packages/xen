@@ -18,3 +18,4 @@ misc/tools-pygrub-remove-static-solaris-support
 0019-tools-xl-bash-completion-also-complete-xen.patch
 0020-tools-don-t-build-ship-xenmon.patch
 0022-give-meaningful-error-message-if-qemu-device-model-i.patch
+0021-ARM-Drop-ThumbEE-support.patch
