@@ -1,3 +1,12 @@
+xen (4.20.2+7-g1badcf5035-2) unstable; urgency=medium
+
+  * d/rules: simplify for make 4.4
+  * d/control: Update Standards-Version to 4.7.2
+  * Pick upstream commit 5bbe1fe413 ("ARM: Drop ThumbEE support") to fix a
+    FTBFS on arm64. (Closes: #1122070)
+
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Sun, 07 Dec 2025 13:47:17 +0100
+
 xen (4.20.2+7-g1badcf5035-1) unstable; urgency=medium
 
   Significant changes:
