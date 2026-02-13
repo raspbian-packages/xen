@@ -1,3 +1,9 @@
+xen (4.20.2+37-g61ff35323e-1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.20.2+37-g61ff35323e.
+
+ -- Hans van Kranenburg <hans@knorrie.org>  Fri, 13 Feb 2026 20:42:52 +0100
+
 xen (4.20.2+7-g1badcf5035-2) unstable; urgency=medium
 
   * d/rules: simplify for make 4.4
