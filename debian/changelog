@@ -1,8 +1,18 @@
-xen (4.20.2+37-g61ff35323e-1) UNRELEASED; urgency=medium
+xen (4.20.2+37-g61ff35323e-1) unstable; urgency=medium
 
-  * Update to new upstream version 4.20.2+37-g61ff35323e.
+  * Update to new upstream version 4.20.2+37-g61ff35323e, which also contains
+    security fixes for the following issues:
+    - x86: buffer overrun with shadow paging + tracing
+      XSA-477 CVE-2025-58150
+    - x86: incomplete IBPB for vCPU isolation
+      XSA-479 CVE-2026-23553
+  * Note that the following XSA are not listed, because...
+    - XSA-478 applies to XAPI which is not included in Debian
+  * Pick upstream commit 1ecb5946bd ("xen/arm: Set ThumbEE as not present in
+    PFR0") which is an additional fix for the ThumbEE commit picked in
+    previous upload.
 
- -- Hans van Kranenburg <hans@knorrie.org>  Fri, 13 Feb 2026 20:42:52 +0100
+ -- Hans van Kranenburg <hans@knorrie.org>  Fri, 13 Feb 2026 20:43:00 +0100
 
 xen (4.20.2+7-g1badcf5035-2) unstable; urgency=medium
 
