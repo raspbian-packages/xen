@@ -1,0 +1,34 @@
+From: Bertrand Marquis <bertrand.marquis@arm.com>
+Date: Tue, 9 Dec 2025 10:37:55 +0000
+Subject: xen/arm: Set ThumbEE as not present in PFR0
+
+Force ThumbEE support to not available in the version of the PFR0
+register value we present to guest.
+Xen does not support ThumbEE and will trap all access to ThumbEE
+registers so do not report it being supported if the hardware supports
+it.
+
+Fixes: 5bbe1fe413f9 ("ARM: Drop ThumbEE support")
+Signed-off-by: Bertrand Marquis <bertrand.marquis@arm.com>
+Reviewed-by: Michal Orzel <michal.orzel@amd.com>
+Reviewed-by: Luca Fancellu <luca.fancellu@arm.com>
+Tested-by: Luca Fancellu <luca.fancellu@arm.com>
+(cherry picked from commit 1ecb5946bdf8797d43ac6730c708bd105fdb0be4)
+---
+ xen/arch/arm/cpufeature.c | 3 +++
+ 1 file changed, 3 insertions(+)
+
+diff --git a/xen/arch/arm/cpufeature.c b/xen/arch/arm/cpufeature.c
+index 1a80738..94d14fb 100644
+--- a/xen/arch/arm/cpufeature.c
++++ b/xen/arch/arm/cpufeature.c
+@@ -227,6 +227,9 @@ static int __init create_domain_cpuinfo(void)
+ #endif
+     domain_cpuinfo.pfr32.amu = 0;
+ 
++    /* Hide ThumbEE support */
++    domain_cpuinfo.pfr32.thumbee = 0;
++
+     /* Hide RAS support as Xen does not support it */
+ #ifdef CONFIG_ARM_64
+     domain_cpuinfo.pfr64.ras = 0;
