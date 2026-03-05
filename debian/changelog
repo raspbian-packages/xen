@@ -1,8 +1,15 @@
-xen (4.20.2+37-g61ff35323e-0+deb13u1) UNRELEASED; urgency=medium
+xen (4.20.2+37-g61ff35323e-0+deb13u1) trixie; urgency=medium
 
-  * Update to new upstream version 4.20.2+37-g61ff35323e.
+  * Update to new upstream version 4.20.2+37-g61ff35323e, which also contains
+    security fixes for the following issues:
+    - x86: buffer overrun with shadow paging + tracing
+      XSA-477 CVE-2025-58150
+    - x86: incomplete IBPB for vCPU isolation
+      XSA-479 CVE-2026-23553
+  * Note that the following XSA are not listed, because...
+    - XSA-478 applies to XAPI which is not included in Debian
 
- -- Maximilian Engelhardt <maxi@daemonizer.de>  Thu, 05 Mar 2026 21:04:54 +0100
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Thu, 05 Mar 2026 21:05:14 +0100
 
 xen (4.20.2+7-g1badcf5035-0+deb13u1) trixie-security; urgency=medium
 
