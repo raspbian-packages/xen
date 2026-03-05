@@ -1,3 +1,9 @@
+xen (4.20.2+37-g61ff35323e-0+deb13u1) UNRELEASED; urgency=medium
+
+  * Update to new upstream version 4.20.2+37-g61ff35323e.
+
+ -- Maximilian Engelhardt <maxi@daemonizer.de>  Thu, 05 Mar 2026 21:04:54 +0100
+
 xen (4.20.2+7-g1badcf5035-0+deb13u1) trixie-security; urgency=medium
 
   Significant changes:
