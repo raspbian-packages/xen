@@ -1014,7 +1014,7 @@ static bool __init pvh_acpi_table_allowed(const char *sig,
         ACPI_SIG_DSDT, ACPI_SIG_FADT, ACPI_SIG_FACS, ACPI_SIG_PSDT,
         ACPI_SIG_SSDT, ACPI_SIG_SBST, ACPI_SIG_MCFG, ACPI_SIG_SLIC,
         ACPI_SIG_MSDM, ACPI_SIG_WDAT, ACPI_SIG_FPDT, ACPI_SIG_S3PT,
-        ACPI_SIG_VFCT,
+        ACPI_SIG_TCPA, ACPI_SIG_TPM2, ACPI_SIG_VFCT,
     };
     unsigned int i;
 
@@ -1311,7 +1311,7 @@ static int __init pvh_setup_acpi(struct domain *d, paddr_t start_info)
     return 0;
 }
 
-static void __hwdom_init pvh_setup_mmcfg(struct domain *d)
+static void __init pvh_setup_mmcfg(struct domain *d)
 {
     unsigned int i;
     int rc;

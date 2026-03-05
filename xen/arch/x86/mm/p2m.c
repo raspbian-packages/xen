@@ -738,8 +738,11 @@ p2m_add_page(struct domain *d, gfn_t gfn, mfn_t mfn,
         if ( !p2m_is_grant(t) )
         {
             for ( i = 0; i < (1UL << page_order); i++ )
+            {
                 set_gpfn_from_mfn(mfn_x(mfn_add(mfn, i)),
                                   gfn_x(gfn_add(gfn, i)));
+                paging_mark_pfn_dirty(d, _pfn(gfn_x(gfn) + i));
+            }
         }
     }
     else
@@ -1987,11 +1990,17 @@ int xenmem_add_to_physmap_one(
     {
         gmfn = idx;
         mfn = get_gfn_unshare(d, gmfn, &p2mt);
-        /* If the page is still shared, exit early */
-        if ( p2m_is_shared(p2mt) )
+        /*
+         * The entry at the destination gfn will be created as type p2m_ram_rw.
+         * Only allow moving source gfns with read/write or logdirty RAM types
+         * to avoid unexpected p2m type changes as a result of the operation.
+         * Note that for logdirty source type we rely on p2m_add_page() marking
+         * the destination gfn as dirty.
+         */
+        if ( p2mt != p2m_ram_rw && p2mt != p2m_ram_logdirty )
         {
             put_gfn(d, gmfn);
-            return -ENOMEM;
+            return p2m_is_shared(p2mt) ? -ENOMEM : -EACCES;
         }
         page = get_page_from_mfn(mfn, d);
         if ( unlikely(!page) )
