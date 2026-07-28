@@ -1,8 +1,66 @@
-xen (4.20.3+127-gc42374a105-1) UNRELEASED; urgency=medium
+xen (4.20.3+127-gc42374a105-1) unstable; urgency=medium
 
-  * Update to new upstream version 4.20.3+127-gc42374a105.
+  * Update to new upstream version 4.20.3+127-gc42374a105, which also contains
+    security fixes for the following issues:
+    (Closes: #1129037)
+    - Use after free of paging structures in EPT
+      XSA-480 CVE-2026-23554
+    - Xenstored DoS by unprivileged domain
+      XSA-481 CVE-2026-23555
+    - oxenstored keeps quota related use counts across domain destruction
+      XSA-483 CVE-2026-23556
+    - Xenstored DoS via XS_RESET_WATCHES command
+      XSA-484 CVE-2026-23557
+    - grant table v2 race in status page mapping
+      XSA-486 CVE-2026-23558
+    - x86: Floating Point Divider State Sampling
+      XSA-488 CVE-2025-54505
+    - x86: CPU Opcode Cache corruption
+      XSA-490 CVE-2025-54518
+    - x86 HVM I/O port list traversal
+      XSA-491 CVE-2026-42487
+    - domctl lock open to abuse
+      XSA-492 CVE-2026-42489 CVE-2026-42490
+    - Arm: Completion of memory accesses not guaranteed by completion of a TLBI
+      XSA-493 CVE-2025-10263
+    - x86: mismatched mapcache metadata
+      XSA-494 CVE-2026-42488
+    - x86 shadow paging is deprecated
+      XSA-495 CVE-2026-42493
+    - buffer overruns in libfsimage iso9660 handling
+      XSA-497 CVE-2026-42494 CVE-2026-42495 CVE-2026-62423 CVE-2026-62424 CVE-2026-62425
+    - sysctl and platform-op locks open to abuse
+      XSA-499 CVE-2026-62426 CVE-2026-62427
+    - grant-table: type confusion in grant-copy
+      XSA-500 CVE-2026-62428
+    - grant-table: version change racing with other operations
+      XSA-501 CVE-2026-62435 CVE-2026-62436
+    - vNUMA domain cleanup may race other operations
+      XSA-502 CVE-2026-62429
+    - x86: Out-of-bounds read in vRTC emulation
+      XSA-503 CVE-2026-62430
+    - Viridian STIMER division by zero
+      XSA-504 CVE-2026-62431
+    - evtchn: Race between FIFO expand and reset
+      XSA-505 CVE-2026-62432
+    - correct buffer checks for DM_OP hypercalls
+      XSA-506 CVE-2026-62433
+    - PoD: Don't try to reclaim special pages
+      XSA-507 CVE-2026-62434
+    - pygrub: security-supported only when run de-privileged
+      XSA-508
+  * Drop the following patches which are now included upstream:
+    - ARM: Drop ThumbEE support
+    - xen/arm: Set ThumbEE as not present in PFR0
+  * Note that the following XSA are not listed, because...
+    - XSA-482 has patches for the Linux kernel
+    - XSA-485 has patches for the Linux kernel
+    - XSA-487 has patches for the Linux kernel
+    - XSA-489 applies to XAPI which is not included in Debian
+    - XSA-496 only applies to Xen 4.21 and later
+    - XSA-498 applies to XAPI which is not included in Debian
 
- -- Hans van Kranenburg <hans@knorrie.org>  Tue, 28 Jul 2026 20:42:17 +0200
+ -- Hans van Kranenburg <hans@knorrie.org>  Tue, 28 Jul 2026 20:42:50 +0200
 
 xen (4.20.2+37-g61ff35323e-1) unstable; urgency=medium
 
