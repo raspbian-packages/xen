@@ -60,6 +60,7 @@ static struct ns16550 {
     struct timer resume_timer;
     unsigned int timeout_ms;
     bool intr_works;
+    bool force_polling;
     bool dw_usr_bsy;
 #ifdef NS16550_PCI
     /* PCI card parameters. */
@@ -180,12 +181,38 @@ static void cf_check ns16550_interrupt(int irq, void *dev_id)
 {
     struct serial_port *port = dev_id;
     struct ns16550 *uart = port->uart;
+    /*
+     * Set quite arbitrarily as 4x the time to drain the TX or fill RX FIFOs,
+     * set the upper bound as 5ms or the timeout_ms value, whatever is higher.
+     */
+    const unsigned int delta = min(uart->timeout_ms * 4,
+                                   max(5u, uart->timeout_ms));
+    const s_time_t timeout = NOW() + MILLISECS(delta);
 
+    ASSERT(!uart->force_polling);
     uart->intr_works = 1;
 
     while ( !(ns_read_reg(uart, UART_IIR) & UART_IIR_NOINT) )
     {
         u8 lsr = ns_read_reg(uart, UART_LSR);
+        s_time_t now = NOW();
+
+        /* Break out of the loop if spending too much time. */
+        if ( now > timeout )
+        {
+            /* Disable the interrupt source - it's never shared. */
+            disable_irq(irq);
+
+            /* Disable interrupt generation on the device and arm the timer. */
+            uart->force_polling = true;
+            ns_write_reg(uart, UART_IER, 0);
+            set_timer(&uart->timer, now + MILLISECS(uart->timeout_ms));
+            printk(XENLOG_WARNING
+                   "uart interrupt taking more than %ums, switched to polling\n",
+                   delta);
+
+            return;
+        }
 
         if ( (lsr & uart->lsr_mask) == uart->lsr_mask )
             serial_tx_interrupt(port);
@@ -213,7 +240,7 @@ static void cf_check __ns16550_poll(const struct cpu_user_regs *regs)
     struct ns16550 *uart = port->uart;
     const struct cpu_user_regs *old_regs;
 
-    if ( uart->intr_works )
+    if ( uart->intr_works && !uart->force_polling )
         return; /* Interrupts work - no more polling */
 
     /* Mimic interrupt context. */
@@ -273,16 +300,21 @@ static int cf_check ns16550_getc(struct serial_port *port, char *pc)
 static void pci_serial_early_init(struct ns16550 *uart)
 {
 #ifdef NS16550_PCI
-    if ( uart->bar && uart->io_base >= 0x10000 )
+    uint16_t cmd;
+
+    if ( !uart->ps_bdf_enable )
+        return;
+
+    cmd = pci_conf_read16(PCI_SBDF(0, uart->ps_bdf[0], uart->ps_bdf[1],
+                                  uart->ps_bdf[2]), PCI_COMMAND);
+
+    if ( uart->io_base >= 0x10000 )
     {
         pci_conf_write16(PCI_SBDF(0, uart->ps_bdf[0], uart->ps_bdf[1],
                                   uart->ps_bdf[2]),
-                         PCI_COMMAND, PCI_COMMAND_MEMORY);
+                         PCI_COMMAND, cmd | PCI_COMMAND_MEMORY);
         return;
     }
-
-    if ( !uart->ps_bdf_enable || uart->io_base >= 0x10000 )
-        return;
 
     if ( uart->pb_bdf_enable )
         pci_conf_write16(PCI_SBDF(0, uart->pb_bdf[0], uart->pb_bdf[1],
@@ -297,7 +329,7 @@ static void pci_serial_early_init(struct ns16550 *uart)
                      uart->io_base | PCI_BASE_ADDRESS_SPACE_IO);
     pci_conf_write16(PCI_SBDF(0, uart->ps_bdf[0], uart->ps_bdf[1],
                               uart->ps_bdf[2]),
-                     PCI_COMMAND, PCI_COMMAND_IO);
+                     PCI_COMMAND, cmd | PCI_COMMAND_IO);
 #endif
 }
 
@@ -307,6 +339,7 @@ static void ns16550_setup_preirq(struct ns16550 *uart)
     unsigned int  divisor;
 
     uart->intr_works = 0;
+    uart->force_polling = false;
 
     pci_serial_early_init(uart);
 
@@ -340,9 +373,16 @@ static void ns16550_setup_preirq(struct ns16550 *uart)
         if ( divisor )
             uart->baud = uart->clock_hz / (divisor << 4);
         else
+        {
+            uart->baud = 115200;
             printk(XENLOG_ERR
                    "Automatic baud rate determination was requested,"
-                   " but a baud rate was not set up\n");
+                   " but a baud rate was not set up\n"
+                   "Setting baudrate to %u\n", uart->baud);
+            divisor = uart->clock_hz / (uart->baud << 4);
+            ns_write_reg(uart, UART_DLL, (uint8_t)divisor);
+            ns_write_reg(uart, UART_DLM, (uint8_t)(divisor >> 8));
+        }
     }
     ns_write_reg(uart, UART_LCR, lcr);
 
@@ -428,7 +468,7 @@ static void __init cf_check ns16550_init_postirq(struct serial_port *port)
         unsigned int, 1, (bits * uart->fifo_size * 1000) / uart->baud);
 
 #ifdef NS16550_PCI
-    if ( uart->bar || uart->ps_bdf_enable )
+    if ( uart->ps_bdf_enable )
     {
         if ( uart->param && uart->param->mmio &&
              rangeset_add_range(mmio_ro_ranges, PFN_DOWN(uart->io_base),
@@ -1320,6 +1360,7 @@ pci_uart_config(struct ns16550 *uart, bool skip_amt, unsigned int idx)
                 uart->ps_bdf[0] = b;
                 uart->ps_bdf[1] = d;
                 uart->ps_bdf[2] = f;
+                uart->ps_bdf_enable = true;
                 uart->bar_idx = bar_idx;
                 uart->bar = bar;
                 uart->bar64 = bar_64;
@@ -1448,7 +1489,7 @@ static enum __init serial_param_type get_token(char *token, char **value)
     unsigned int i;
 
     param_name = strsep(&token, "=");
-    if ( param_name == NULL )
+    if ( !param_name || !token )
         return num_serial_params;
 
     /* Linear search for the parameter. */
@@ -1522,6 +1563,9 @@ static bool __init parse_positional(struct ns16550 *uart, char **str)
     if ( *conf == ',' && *++conf != ',' )
     {
         uart->data_bits = simple_strtoul(conf, &conf, 10);
+
+        if ( !*conf )
+            PARSE_ERR_RET("bad DPS setting");
 
         uart->parity = parse_parity_char(*conf);
 
@@ -1656,6 +1700,8 @@ static bool __init parse_namevalue_pairs(char *str, struct ns16550 *uart)
                 pci_uart_config(uart, 0, uart - ns16550_com);
                 dev_set = true;
             }
+            else
+                PARSE_ERR_RET("Unknown device type %s\n", param_value);
             break;
 
         case port_bdf:

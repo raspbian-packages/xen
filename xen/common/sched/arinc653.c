@@ -418,12 +418,15 @@ a653sched_alloc_udata(const struct scheduler *ops, struct sched_unit *unit,
 
         if ( entry < ARINC653_MAX_DOMAINS_PER_SCHEDULE )
         {
-            sched_priv->schedule[entry].dom_handle[0] = '\0';
+            memcpy(sched_priv->schedule[entry].dom_handle,
+                   unit->domain->handle,
+                   sizeof(sched_priv->schedule->dom_handle));
             sched_priv->schedule[entry].unit_id = unit->unit_id;
             sched_priv->schedule[entry].runtime = DEFAULT_TIMESLICE;
             sched_priv->schedule[entry].unit = unit;
 
-            sched_priv->major_frame += DEFAULT_TIMESLICE;
+            if ( entry )
+                sched_priv->major_frame += DEFAULT_TIMESLICE;
             ++sched_priv->num_schedule_entries;
         }
     }
@@ -548,12 +551,9 @@ a653sched_do_schedule(
 
     /* Switch minor frame or find correct minor frame after a miss */
     while ( (now >= sched_priv->next_switch_time) &&
-        (sched_priv->sched_index < sched_priv->num_schedule_entries) )
-    {
-        sched_priv->sched_index++;
+            (++sched_priv->sched_index < sched_priv->num_schedule_entries) )
         sched_priv->next_switch_time +=
             sched_priv->schedule[sched_priv->sched_index].runtime;
-    }
 
     /*
      * If we exhausted the domains in the schedule and still have time left

@@ -464,6 +464,11 @@ void p2m_free_ptp(struct p2m_domain *p2m, struct page_info *pg)
     ASSERT(p2m->domain);
     ASSERT(p2m->domain->arch.paging.free_page);
 
+    /*
+     * Issue any pending flush here, in case it was deferred before.  The page
+     * will be returned to the paging pool now.
+     */
+    p2m_tlb_flush_sync(p2m);
     page_list_del(pg, &p2m->pages);
     p2m->domain->arch.paging.free_page(p2m->domain, pg);
 
@@ -1979,11 +1984,9 @@ int xenmem_add_to_physmap_one(
         break;
 
     case XENMAPSPACE_grant_table:
-        rc = gnttab_map_frame(d, idx, gfn, &mfn);
+        rc = gnttab_map_frame_begin(d, idx, gfn, &mfn);
         if ( rc )
             return rc;
-        /* Need to take care of the reference obtained in gnttab_map_frame(). */
-        page = mfn_to_page(mfn);
         break;
 
     case XENMAPSPACE_gmfn:
@@ -2065,19 +2068,28 @@ int xenmem_add_to_physmap_one(
     put_gfn(d, gfn_x(gfn));
 
  put_both:
-    /*
-     * In the XENMAPSPACE_gmfn case, we took a ref of the gfn at the top.
-     * We also may need to transfer ownership of the page reference to our
-     * caller.
-     */
-    if ( space == XENMAPSPACE_gmfn )
+    switch ( space )
     {
+    case XENMAPSPACE_gmfn:
+        /*
+         * We took a ref of the gfn at the top.  We also may need to transfer
+         * ownership of the page reference to our caller.
+         */
         put_gfn(d, gmfn);
         if ( !rc && extra.ppage )
         {
             *extra.ppage = page;
             page = NULL;
         }
+        break;
+
+    case XENMAPSPACE_grant_table:
+        /*
+         * We (gnttab_map_frame_begin()) acquired a lock and took a ref of the
+         * page underlying the MFN at the top.
+         */
+        gnttab_map_frame_end(d, mfn);
+        break;
     }
 
     if ( page )

@@ -502,14 +502,8 @@ static int __init dom0_construct(struct boot_info *bi, struct domain *d)
         return -EINVAL;
     }
 
-    if ( parms.elf_notes[XEN_ELFNOTE_SUPPORTED_FEATURES].type != XEN_ENT_NONE )
-    {
-        if ( !pv_shim && !test_bit(XENFEAT_dom0, parms.f_supported) )
-        {
-            printk("Kernel does not support Dom0 operation\n");
-            return -EINVAL;
-        }
-    }
+    if ( (rc = initdom_check_parms(d, &parms)) != 0 )
+        return rc;
 
     nr_pages = dom0_compute_nr_pages(d, &parms, initrd_len);
 
@@ -842,8 +836,7 @@ static int __init dom0_construct(struct boot_info *bi, struct domain *d)
     update_cr3(v);
 
     /* We run on dom0's page tables for the final part of the build process. */
-    switch_cr3_cr4(cr3_pa(v->arch.cr3), read_cr4());
-    mapcache_override_current(v);
+    switch_cr3_cr4(v, cr3_pa(v->arch.cr3), read_cr4());
 
     /* Copy the OS image and free temporary buffer. */
     elf.dest_base = (void*)vkern_start;
@@ -852,8 +845,7 @@ static int __init dom0_construct(struct boot_info *bi, struct domain *d)
     rc = elf_load_binary(&elf);
     if ( rc < 0 )
     {
-        mapcache_override_current(NULL);
-        switch_cr3_cr4(current->arch.cr3, read_cr4());
+        switch_cr3_cr4(current, current->arch.cr3, read_cr4());
         printk("Failed to load the kernel binary\n");
         goto out;
     }
@@ -864,8 +856,7 @@ static int __init dom0_construct(struct boot_info *bi, struct domain *d)
         if ( (parms.virt_hypercall < v_start) ||
              (parms.virt_hypercall >= v_end) )
         {
-            mapcache_override_current(NULL);
-            switch_cr3_cr4(current->arch.cr3, read_cr4());
+            switch_cr3_cr4(current, current->arch.cr3, read_cr4());
             printk("Invalid HYPERCALL_PAGE field in ELF notes.\n");
             return -EINVAL;
         }
@@ -1006,8 +997,7 @@ static int __init dom0_construct(struct boot_info *bi, struct domain *d)
 #endif
 
     /* Return to idle domain's page tables. */
-    mapcache_override_current(NULL);
-    switch_cr3_cr4(current->arch.cr3, read_cr4());
+    switch_cr3_cr4(current, current->arch.cr3, read_cr4());
 
     update_domain_wallclock_time(d);
 

@@ -226,15 +226,24 @@ long arch_do_domctl(
         unsigned int np = domctl->u.ioport_permission.nr_ports;
         int allow = domctl->u.ioport_permission.allow_access;
 
+        ret = -EINVAL;
         if ( (fp + np) <= fp || (fp + np) > MAX_IOPORTS )
-            ret = -EINVAL;
-        else if ( !ioports_access_permitted(currd, fp, fp + np - 1) ||
-                  xsm_ioport_permission(XSM_HOOK, d, fp, fp + np - 1, allow) )
+            break;
+
+        ret = xsm_ioport_permission(XSM_PRIV, d, fp, fp + np - 1, allow);
+        if ( ret )
+            break;
+
+        iocaps_double_lock(d, true);
+
+        if ( !ioports_access_permitted(currd, fp, fp + np - 1) )
             ret = -EPERM;
         else if ( allow )
             ret = ioports_permit_access(d, fp, fp + np - 1);
         else
             ret = ioports_deny_access(d, fp, fp + np - 1);
+
+        iocaps_double_unlock(d, true);
         break;
     }
 
@@ -256,16 +265,20 @@ long arch_do_domctl(
             break;
         }
 
-        ret = -EPERM;
-        if ( !irq_access_permitted(currd, irq) ||
-             xsm_irq_permission(XSM_HOOK, d, irq, flags) )
+        ret = xsm_irq_permission(XSM_PRIV, d, irq, flags);
+        if ( ret )
             break;
 
-        if ( flags )
+        iocaps_double_lock(d, true);
+
+        if ( !irq_access_permitted(currd, irq) )
+            ret = -EPERM;
+        else if ( flags )
             ret = irq_permit_access(d, irq);
         else
             ret = irq_deny_access(d, irq);
 
+        iocaps_double_unlock(d, true);
         break;
     }
 
@@ -563,25 +576,32 @@ long arch_do_domctl(
         if ( !is_hvm_domain(d) )
             break;
 
-        ret = xsm_bind_pt_irq(XSM_HOOK, d, bind);
+        ret = xsm_bind_pt_irq(XSM_DM_PRIV, d, bind);
         if ( ret )
             break;
 
         irq = domain_pirq_to_irq(d, bind->machine_irq);
-        ret = -EPERM;
-        if ( irq <= 0 || !irq_access_permitted(currd, irq) )
-            break;
+        if ( irq <= 0 )
+            ret = -EPERM;
 
-        ret = -ESRCH;
-        if ( is_iommu_enabled(d) )
+        read_lock(&currd->caps_lock);
+
+        if ( !irq_access_permitted(currd, irq) )
+            ret = -EPERM;
+        else if ( is_iommu_enabled(d) )
         {
             pcidevs_lock();
             ret = pt_irq_create_bind(d, bind);
             pcidevs_unlock();
+
+            if ( ret < 0 )
+                printk(XENLOG_G_ERR "pt_irq_create_bind failed (%ld) for %pd\n",
+                       ret, d);
         }
-        if ( ret < 0 )
-            printk(XENLOG_G_ERR "pt_irq_create_bind failed (%ld) for dom%d\n",
-                   ret, d->domain_id);
+        else
+            ret = -ESRCH;
+
+        read_unlock(&currd->caps_lock);
         break;
     }
 
@@ -594,23 +614,26 @@ long arch_do_domctl(
         if ( !is_hvm_domain(d) )
             break;
 
-        ret = -EPERM;
-        if ( irq <= 0 || !irq_access_permitted(currd, irq) )
-            break;
-
-        ret = xsm_unbind_pt_irq(XSM_HOOK, d, bind);
+        ret = xsm_unbind_pt_irq(XSM_DM_PRIV, d, bind);
         if ( ret )
             break;
 
-        if ( is_iommu_enabled(d) )
+        read_lock(&currd->caps_lock);
+
+        if ( !irq_access_permitted(currd, irq) )
+            ret = -EPERM;
+        else if ( is_iommu_enabled(d) )
         {
             pcidevs_lock();
             ret = pt_irq_destroy_bind(d, bind);
             pcidevs_unlock();
+
+            if ( ret < 0 )
+                printk(XENLOG_G_ERR "pt_irq_destroy_bind failed (%ld) for %pd\n",
+                       ret, d);
         }
-        if ( ret < 0 )
-            printk(XENLOG_G_ERR "pt_irq_destroy_bind failed (%ld) for dom%d\n",
-                   ret, d->domain_id);
+
+        read_unlock(&currd->caps_lock);
         break;
     }
 
@@ -641,21 +664,22 @@ long arch_do_domctl(
             break;
         }
 
-        ret = -EPERM;
-        if ( !ioports_access_permitted(currd, fmp, fmp + np - 1) )
-            break;
-
-        ret = xsm_ioport_mapping(XSM_HOOK, d, fmp, fmp + np - 1, add);
+        ret = xsm_ioport_mapping(XSM_DM_PRIV, d, fmp, fmp + np - 1, add);
         if ( ret )
             break;
 
         hvm = &d->arch.hvm;
-        if ( add )
+        iocaps_double_lock(d, true);
+
+        if ( !ioports_access_permitted(currd, fmp, fmp + np - 1) )
+            ret = -EPERM;
+        else if ( add )
         {
             printk(XENLOG_G_INFO
                    "ioport_map:add: dom%d gport=%x mport=%x nr=%x\n",
                    d->domain_id, fgp, fmp, np);
 
+            write_lock(&hvm->g2m_ioport_lock);
             list_for_each_entry(g2m_ioport, &hvm->g2m_ioport_list, list)
                 if (g2m_ioport->mport == fmp )
                 {
@@ -677,11 +701,14 @@ long arch_do_domctl(
                 g2m_ioport->np = np;
                 list_add_tail(&g2m_ioport->list, &hvm->g2m_ioport_list);
             }
+            write_unlock(&hvm->g2m_ioport_lock);
             if ( !ret )
                 ret = ioports_permit_access(d, fmp, fmp + np - 1);
             if ( ret && !found && g2m_ioport )
             {
+                write_lock(&hvm->g2m_ioport_lock);
                 list_del(&g2m_ioport->list);
+                write_unlock(&hvm->g2m_ioport_lock);
                 xfree(g2m_ioport);
             }
         }
@@ -690,6 +717,8 @@ long arch_do_domctl(
             printk(XENLOG_G_INFO
                    "ioport_map:remove: dom%d gport=%x mport=%x nr=%x\n",
                    d->domain_id, fgp, fmp, np);
+
+            write_lock(&hvm->g2m_ioport_lock);
             list_for_each_entry(g2m_ioport, &hvm->g2m_ioport_list, list)
                 if ( g2m_ioport->mport == fmp )
                 {
@@ -697,12 +726,16 @@ long arch_do_domctl(
                     xfree(g2m_ioport);
                     break;
                 }
+            write_unlock(&hvm->g2m_ioport_lock);
+
             ret = ioports_deny_access(d, fmp, fmp + np - 1);
             if ( ret && is_hardware_domain(currd) )
                 printk(XENLOG_ERR
                        "ioport_map: error %ld denying dom%d access to [%x,%x]\n",
                        ret, d->domain_id, fmp, fmp + np - 1);
         }
+
+        iocaps_double_unlock(d, true);
         break;
     }
 

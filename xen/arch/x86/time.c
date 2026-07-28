@@ -515,7 +515,7 @@ static int64_t __init cf_check init_hpet(struct platform_timesource *pts)
     bool disable_hpet = false;
 
     if ( hpet_address && strcmp(opt_clocksource, pts->id) &&
-         cpuidle_using_deep_cstate() )
+         cpuidle_usable_deep_cstate() )
     {
         if ( pci_conf_read16(PCI_SBDF(0, 0, 0x1f, 0),
                              PCI_VENDOR_ID) == PCI_VENDOR_ID_INTEL )
@@ -1702,16 +1702,24 @@ static void collect_time_info(const struct vcpu *v,
     else
     {
         if ( is_hvm_domain(d) && hvm_tsc_scaling_supported )
-        {
             tsc_stamp            = hvm_scale_tsc(d, t->stamp.local_tsc);
-            u->tsc_to_system_mul = d->arch.vtsc_to_ns.mul_frac;
-            u->tsc_shift         = d->arch.vtsc_to_ns.shift;
+        else
+            tsc_stamp            = t->stamp.local_tsc;
+
+        /*
+         * HVM guests using the native TSC ratio should use the same per-CPU
+         * scaling factors as Xen.  This ensures time keeping is always in sync
+         * between Xen and the guest.
+         */
+        if ( tsc_stamp == t->stamp.local_tsc )
+        {
+            u->tsc_to_system_mul = t->tsc_scale.mul_frac;
+            u->tsc_shift         = t->tsc_scale.shift;
         }
         else
         {
-            tsc_stamp            = t->stamp.local_tsc;
-            u->tsc_to_system_mul = t->tsc_scale.mul_frac;
-            u->tsc_shift         = t->tsc_scale.shift;
+            u->tsc_to_system_mul = d->arch.vtsc_to_ns.mul_frac;
+            u->tsc_shift         = d->arch.vtsc_to_ns.shift;
         }
     }
 
@@ -2559,6 +2567,8 @@ __initcall(verify_tsc_reliability);
 /* Late init function (after interrupts are enabled). */
 int __init init_xen_time(void)
 {
+    unsigned long wc;
+
     tsc_check_writability();
 
     open_softirq(TIME_CALIBRATE_SOFTIRQ, local_time_calibration);
@@ -2576,7 +2586,8 @@ int __init init_xen_time(void)
     printk(XENLOG_INFO "Wallclock source: %s\n", wallclock_type_to_string());
 
     /* NB. get_wallclock_time() can take over one second to execute. */
-    do_settime(get_wallclock_time(), 0, NOW());
+    wc = get_wallclock_time();
+    do_settime(wc, 0,  NOW());
 
     /* Finish platform timer initialization. */
     try_platform_timer_tail();
@@ -2626,7 +2637,7 @@ void __init early_time_init(void)
     set_time_scale(&t->tsc_scale, tmp);
     t->stamp.local_tsc = boot_tsc_stamp;
 
-    cpu_khz = tmp / 1000;
+    cpu_khz = DIV_ROUND(tmp, 1000);
     printk("Detected %lu.%03lu MHz processor.\n", 
            cpu_khz / 1000, cpu_khz % 1000);
 
@@ -2647,7 +2658,7 @@ static int _disable_pit_irq(bool init)
      * XXX dom0 may rely on RTC interrupt delivery, so only enable
      * hpet_broadcast if FSB mode available or if force_hpet_broadcast.
      */
-    if ( cpuidle_using_deep_cstate() && !boot_cpu_has(X86_FEATURE_ARAT) )
+    if ( cpuidle_usable_deep_cstate() && !boot_cpu_has(X86_FEATURE_ARAT) )
     {
         init ? hpet_broadcast_init() : hpet_broadcast_resume();
         if ( !hpet_broadcast_is_available() )
@@ -2699,11 +2710,6 @@ void cf_check pit_broadcast_exit(void)
         reprogram_timer(this_cpu(timer_deadline));
 }
 
-int pit_broadcast_is_available(void)
-{
-    return cpuidle_using_deep_cstate();
-}
-
 void send_timer_event(struct vcpu *v)
 {
     send_guest_vcpu_virq(v, VIRQ_TIMER);
@@ -2720,7 +2726,7 @@ int time_suspend(void)
     {
         cmos_utc_offset = -get_wallclock_time();
         cmos_utc_offset += get_sec();
-        kill_timer(&calibration_timer);
+        stop_timer(&calibration_timer);
 
         /* Sync platform timer stamps. */
         platform_time_calibration();
@@ -2734,6 +2740,8 @@ int time_suspend(void)
 
 int time_resume(void)
 {
+    unsigned long wc;
+
     preinit_pit();
 
     resume_platform_timer();
@@ -2745,7 +2753,8 @@ int time_resume(void)
 
     set_timer(&calibration_timer, NOW() + EPOCH);
 
-    do_settime(get_wallclock_time() + cmos_utc_offset, 0, NOW());
+    wc = get_wallclock_time();
+    do_settime(wc + cmos_utc_offset, 0, NOW());
 
     update_vcpu_system_time(current);
 
@@ -3006,7 +3015,7 @@ static void cf_check dump_softtsc(unsigned char key)
     else if ( boot_cpu_has(X86_FEATURE_CONSTANT_TSC ) )
     {
         printk("TSC has constant rate, ");
-        if ( max_cstate <= ACPI_STATE_C2 && tsc_max_warp == 0 )
+        if ( max_usable_cstate <= ACPI_STATE_C2 && tsc_max_warp == 0 )
             printk("no deep Cstates, passed warp test, deemed reliable, ");
         else
             printk("deep Cstates possible, so not reliable, ");

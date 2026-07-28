@@ -18,12 +18,9 @@ static const struct xsm_ops __initconst_cf_clobber dummy_ops = {
     .security_domaininfo           = xsm_security_domaininfo,
     .domain_create                 = xsm_domain_create,
     .getdomaininfo                 = xsm_getdomaininfo,
-    .domctl_scheduler_op           = xsm_domctl_scheduler_op,
-    .sysctl_scheduler_op           = xsm_sysctl_scheduler_op,
     .set_target                    = xsm_set_target,
     .domctl                        = xsm_domctl,
     .sysctl                        = xsm_sysctl,
-    .readconsole                   = xsm_readconsole,
 
     .evtchn_unbound                = xsm_evtchn_unbound,
     .evtchn_interdomain            = xsm_evtchn_interdomain,
@@ -72,29 +69,20 @@ static const struct xsm_ops __initconst_cf_clobber dummy_ops = {
     .irq_permission                = xsm_irq_permission,
     .iomem_permission              = xsm_iomem_permission,
     .iomem_mapping                 = xsm_iomem_mapping,
+    .iomem_mapping_vpci            = xsm_iomem_mapping_vpci,
     .pci_config_permission         = xsm_pci_config_permission,
     .get_vnumainfo                 = xsm_get_vnumainfo,
 
 #if defined(CONFIG_HAS_PASSTHROUGH) && defined(CONFIG_HAS_PCI)
     .get_device_group              = xsm_get_device_group,
-    .assign_device                 = xsm_assign_device,
-    .deassign_device               = xsm_deassign_device,
 #endif
 
-#if defined(CONFIG_HAS_PASSTHROUGH) && defined(CONFIG_HAS_DEVICE_TREE)
-    .assign_dtdevice               = xsm_assign_dtdevice,
-    .deassign_dtdevice             = xsm_deassign_dtdevice,
-#endif
-
-    .resource_plug_core            = xsm_resource_plug_core,
-    .resource_unplug_core          = xsm_resource_unplug_core,
     .resource_plug_pci             = xsm_resource_plug_pci,
     .resource_unplug_pci           = xsm_resource_unplug_pci,
     .resource_setup_pci            = xsm_resource_setup_pci,
     .resource_setup_gsi            = xsm_resource_setup_gsi,
     .resource_setup_misc           = xsm_resource_setup_misc,
 
-    .page_offline                  = xsm_page_offline,
     .hypfs_op                      = xsm_hypfs_op,
     .hvm_param                     = xsm_hvm_param,
     .hvm_param_altp2mhvm           = xsm_hvm_param_altp2mhvm,
@@ -108,8 +96,6 @@ static const struct xsm_ops __initconst_cf_clobber dummy_ops = {
     .add_to_physmap                = xsm_add_to_physmap,
     .remove_from_physmap           = xsm_remove_from_physmap,
     .map_gmfn_foreign              = xsm_map_gmfn_foreign,
-
-    .vm_event_control              = xsm_vm_event_control,
 
 #ifdef CONFIG_MEM_ACCESS
     .mem_access                    = xsm_mem_access,
@@ -126,7 +112,6 @@ static const struct xsm_ops __initconst_cf_clobber dummy_ops = {
     .platform_op                   = xsm_platform_op,
 #ifdef CONFIG_X86
     .do_mca                        = xsm_do_mca,
-    .shadow_control                = xsm_shadow_control,
     .mem_sharing_op                = xsm_mem_sharing_op,
     .apic                          = xsm_apic,
     .machine_memory_map            = xsm_machine_memory_map,

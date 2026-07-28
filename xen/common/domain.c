@@ -316,12 +316,12 @@ struct vcpu *vcpu_create(struct domain *d, unsigned int vcpu_id)
         set_bit(_VPF_down, &v->pause_flags);
         vcpu_info_reset(v);
         init_waitqueue_vcpu(v);
+
+        if ( vmtrace_alloc_buffer(v) != 0 )
+            goto fail_wq;
     }
 
     if ( sched_init_vcpu(v) != 0 )
-        goto fail_wq;
-
-    if ( vmtrace_alloc_buffer(v) != 0 )
         goto fail_wq;
 
     if ( arch_vcpu_create(v) != 0 )
@@ -386,10 +386,15 @@ static int late_hwdom_init(struct domain *d)
      * may be modified after this hypercall returns if a more complex
      * device model is desired.
      */
+    write_lock(&dom0->caps_lock);
     rangeset_swap(d->irq_caps, dom0->irq_caps);
     rangeset_swap(d->iomem_caps, dom0->iomem_caps);
 #ifdef CONFIG_X86
     rangeset_swap(d->arch.ioport_caps, dom0->arch.ioport_caps);
+#endif
+    write_unlock(&dom0->caps_lock);
+
+#ifdef CONFIG_X86
     setup_io_bitmap(d);
     setup_io_bitmap(dom0);
 #endif
@@ -445,18 +450,6 @@ static int __init cf_check parse_dom0_param(const char *s)
     return rc;
 }
 custom_param("dom0", parse_dom0_param);
-
-static void domain_pending_scrub_free(struct domain *d)
-{
-    rspin_lock(&d->page_alloc_lock);
-    if ( d->pending_scrub )
-    {
-        FREE_DOMHEAP_PAGES(d->pending_scrub, d->pending_scrub_order);
-        d->pending_scrub_order = 0;
-        d->pending_scrub_index = 0;
-    }
-    rspin_unlock(&d->page_alloc_lock);
-}
 
 /*
  * Release resources held by a domain.  There may or may not be live
@@ -517,9 +510,6 @@ static int domain_teardown(struct domain *d)
     case PROG_none:
         BUILD_BUG_ON(PROG_none != 0);
 
-        /* Trivial teardown, not long-running enough to need a preemption check. */
-        domain_pending_scrub_free(d);
-
     PROGRESS(gnttab_mappings):
         rc = gnttab_release_mappings(d);
         if ( rc )
@@ -562,7 +552,6 @@ static void _domain_destroy(struct domain *d)
 {
     BUG_ON(!d->is_dying);
     BUG_ON(atomic_read(&d->refcnt) != DOMAIN_DESTROYED);
-    ASSERT(!d->pending_scrub);
 
     xfree(d->pbuf);
 
@@ -733,6 +722,7 @@ struct domain *domain_create(domid_t domid,
     rspin_lock_init_prof(d, domain_lock);
     rspin_lock_init_prof(d, page_alloc_lock);
     spin_lock_init(&d->hypercall_deadlock_mutex);
+    rwlock_init(&d->caps_lock);
     INIT_PAGE_LIST_HEAD(&d->page_list);
     INIT_PAGE_LIST_HEAD(&d->extra_page_list);
     INIT_PAGE_LIST_HEAD(&d->xenpage_list);
@@ -1097,7 +1087,7 @@ int domain_kill(struct domain *d)
         d->is_dying = DOMDYING_dying;
         rspin_barrier(&d->domain_lock);
         argo_destroy(d);
-        vnuma_destroy(d->vnuma);
+        vnuma_replace(d, NULL);
         domain_set_outstanding_pages(d, 0);
         /* fallthrough */
     case DOMDYING_dying:
@@ -1494,15 +1484,6 @@ int domain_unpause_by_systemcontroller(struct domain *d)
      */
     if ( new == 0 && !d->creation_finished )
     {
-        if ( d->pending_scrub )
-        {
-            printk(XENLOG_ERR
-                   "%pd: cannot be started with pending unscrubbed pages, destroying\n",
-                   d);
-            domain_crash(d);
-            domain_pending_scrub_free(d);
-            return -EBUSY;
-        }
         d->creation_finished = true;
         arch_domain_creation_finished(d);
     }

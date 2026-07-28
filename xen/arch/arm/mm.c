@@ -114,12 +114,10 @@ int xenmem_add_to_physmap_one(
     switch ( space )
     {
     case XENMAPSPACE_grant_table:
-        rc = gnttab_map_frame(d, idx, gfn, &mfn);
+        rc = gnttab_map_frame_begin(d, idx, gfn, &mfn);
         if ( rc )
             return rc;
 
-        /* Need to take care of the reference obtained in gnttab_map_frame(). */
-        page = mfn_to_page(mfn);
         t = p2m_ram_rw;
 
         break;
@@ -136,20 +134,25 @@ int xenmem_add_to_physmap_one(
         struct domain *od;
         p2m_type_t p2mt;
 
-        od = get_pg_owner(extra.foreign_domid);
-        if ( od == NULL )
-            return -ESRCH;
-
-        if ( od == d )
+        if ( extra.foreign_domid == DOMID_XEN )
+            od = rcu_lock_domain(dom_xen);
+        else
         {
-            put_pg_owner(od);
-            return -EINVAL;
+            rc = rcu_lock_remote_domain_by_id(extra.foreign_domid, &od);
+            if ( rc )
+                return rc;
+
+            if ( od == d )
+            {
+                rcu_unlock_domain(od);
+                return -EINVAL;
+            }
         }
 
         rc = xsm_map_gmfn_foreign(XSM_TARGET, d, od);
         if ( rc )
         {
-            put_pg_owner(od);
+            rcu_unlock_domain(od);
             return rc;
         }
 
@@ -158,7 +161,7 @@ int xenmem_add_to_physmap_one(
         page = get_page_from_gfn(od, idx, &p2mt, P2M_ALLOC);
         if ( !page )
         {
-            put_pg_owner(od);
+            rcu_unlock_domain(od);
             return -EINVAL;
         }
 
@@ -167,13 +170,13 @@ int xenmem_add_to_physmap_one(
         else
         {
             put_page(page);
-            put_pg_owner(od);
+            rcu_unlock_domain(od);
             return -EINVAL;
         }
 
         mfn = page_to_mfn(page);
 
-        put_pg_owner(od);
+        rcu_unlock_domain(od);
         break;
     }
     case XENMAPSPACE_dev_mmio:
@@ -221,10 +224,23 @@ int xenmem_add_to_physmap_one(
      * to drop the reference we took earlier. In all other cases we need to
      * drop any reference we took earlier (perhaps indirectly).
      */
-    if ( space == XENMAPSPACE_gmfn_foreign ? rc : page != NULL )
+    switch ( space )
     {
+    default:
+        if ( page )
+            put_page(page);
+        break;
+
+    case XENMAPSPACE_grant_table:
+        gnttab_map_frame_end(d, mfn);
+        break;
+
+    case XENMAPSPACE_gmfn_foreign:
+        if ( !rc )
+            break;
         ASSERT(page != NULL);
         put_page(page);
+        break;
     }
 
     return rc;

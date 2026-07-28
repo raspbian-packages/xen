@@ -56,12 +56,9 @@ struct xsm_ops {
                                 struct xen_domctl_getdomaininfo *info);
     int (*domain_create)(struct domain *d, uint32_t ssidref);
     int (*getdomaininfo)(struct domain *d);
-    int (*domctl_scheduler_op)(struct domain *d, int op);
-    int (*sysctl_scheduler_op)(int op);
     int (*set_target)(struct domain *d, struct domain *e);
-    int (*domctl)(struct domain *d, unsigned int cmd, uint32_t ssidref);
-    int (*sysctl)(int cmd);
-    int (*readconsole)(uint32_t clear);
+    int (*domctl)(struct domain *d, struct xen_domctl *op);
+    int (*sysctl)(const struct xen_sysctl *op);
 
     int (*evtchn_unbound)(struct domain *d, struct evtchn *chn, domid_t id2);
     int (*evtchn_interdomain)(struct domain *d1, struct evtchn *chn1,
@@ -116,29 +113,21 @@ struct xsm_ops {
                             uint8_t allow);
     int (*iomem_mapping)(struct domain *d, uint64_t s, uint64_t e,
                          uint8_t allow);
+    int (*iomem_mapping_vpci)(struct domain *d, uint64_t s, uint64_t e,
+                              uint8_t allow);
     int (*pci_config_permission)(struct domain *d, uint32_t machine_bdf,
                                  uint16_t start, uint16_t end, uint8_t access);
 
 #if defined(CONFIG_HAS_PASSTHROUGH) && defined(CONFIG_HAS_PCI)
     int (*get_device_group)(uint32_t machine_bdf);
-    int (*assign_device)(struct domain *d, uint32_t machine_bdf);
-    int (*deassign_device)(struct domain *d, uint32_t machine_bdf);
 #endif
 
-#if defined(CONFIG_HAS_PASSTHROUGH) && defined(CONFIG_HAS_DEVICE_TREE)
-    int (*assign_dtdevice)(struct domain *d, const char *dtpath);
-    int (*deassign_dtdevice)(struct domain *d, const char *dtpath);
-#endif
-
-    int (*resource_plug_core)(void);
-    int (*resource_unplug_core)(void);
     int (*resource_plug_pci)(uint32_t machine_bdf);
     int (*resource_unplug_pci)(uint32_t machine_bdf);
     int (*resource_setup_pci)(uint32_t machine_bdf);
     int (*resource_setup_gsi)(int gsi);
     int (*resource_setup_misc)(void);
 
-    int (*page_offline)(uint32_t cmd);
     int (*hypfs_op)(void);
 
     long (*do_xsm_op)(XEN_GUEST_HANDLE_PARAM(void) op);
@@ -150,8 +139,6 @@ struct xsm_ops {
     int (*hvm_param_altp2mhvm)(struct domain *d);
     int (*hvm_altp2mhvm_op)(struct domain *d, uint64_t mode, uint32_t op);
     int (*get_vnumainfo)(struct domain *d);
-
-    int (*vm_event_control)(struct domain *d, int mode, int op);
 
 #ifdef CONFIG_MEM_ACCESS
     int (*mem_access)(struct domain *d);
@@ -169,7 +156,6 @@ struct xsm_ops {
 
 #ifdef CONFIG_X86
     int (*do_mca)(void);
-    int (*shadow_control)(struct domain *d, uint32_t op);
     int (*mem_sharing_op)(struct domain *d, struct domain *cd, int op);
     int (*apic)(struct domain *d, int cmd);
     int (*machine_memory_map)(void);
@@ -230,17 +216,6 @@ static inline int xsm_getdomaininfo(xsm_default_t def, struct domain *d)
     return alternative_call(xsm_ops.getdomaininfo, d);
 }
 
-static inline int xsm_domctl_scheduler_op(
-    xsm_default_t def, struct domain *d, int cmd)
-{
-    return alternative_call(xsm_ops.domctl_scheduler_op, d, cmd);
-}
-
-static inline int xsm_sysctl_scheduler_op(xsm_default_t def, int cmd)
-{
-    return alternative_call(xsm_ops.sysctl_scheduler_op, cmd);
-}
-
 static inline int xsm_set_target(
     xsm_default_t def, struct domain *d, struct domain *e)
 {
@@ -248,19 +223,14 @@ static inline int xsm_set_target(
 }
 
 static inline int xsm_domctl(xsm_default_t def, struct domain *d,
-                             unsigned int cmd, uint32_t ssidref)
+                             struct xen_domctl *op)
 {
-    return alternative_call(xsm_ops.domctl, d, cmd, ssidref);
+    return alternative_call(xsm_ops.domctl, d, op);
 }
 
-static inline int xsm_sysctl(xsm_default_t def, int cmd)
+static inline int xsm_sysctl(xsm_default_t def, const struct xen_sysctl *op)
 {
-    return alternative_call(xsm_ops.sysctl, cmd);
-}
-
-static inline int xsm_readconsole(xsm_default_t def, uint32_t clear)
-{
-    return alternative_call(xsm_ops.readconsole, clear);
+    return alternative_call(xsm_ops.sysctl, op);
 }
 
 static inline int xsm_evtchn_unbound(
@@ -503,6 +473,12 @@ static inline int xsm_iomem_mapping(
     return alternative_call(xsm_ops.iomem_mapping, d, s, e, allow);
 }
 
+static inline int xsm_iomem_mapping_vpci(
+    xsm_default_t def, struct domain *d, uint64_t s, uint64_t e, uint8_t allow)
+{
+    return alternative_call(xsm_ops.iomem_mapping_vpci, d, s, e, allow);
+}
+
 static inline int xsm_pci_config_permission(
     xsm_default_t def, struct domain *d, uint32_t machine_bdf, uint16_t start,
     uint16_t end, uint8_t access)
@@ -515,34 +491,7 @@ static inline int xsm_get_device_group(xsm_default_t def, uint32_t machine_bdf)
 {
     return alternative_call(xsm_ops.get_device_group, machine_bdf);
 }
-
-static inline int xsm_assign_device(
-    xsm_default_t def, struct domain *d, uint32_t machine_bdf)
-{
-    return alternative_call(xsm_ops.assign_device, d, machine_bdf);
-}
-
-static inline int xsm_deassign_device(
-    xsm_default_t def, struct domain *d, uint32_t machine_bdf)
-{
-    return alternative_call(xsm_ops.deassign_device, d, machine_bdf);
-}
 #endif /* HAS_PASSTHROUGH && HAS_PCI) */
-
-#if defined(CONFIG_HAS_PASSTHROUGH) && defined(CONFIG_HAS_DEVICE_TREE)
-static inline int xsm_assign_dtdevice(
-    xsm_default_t def, struct domain *d, const char *dtpath)
-{
-    return alternative_call(xsm_ops.assign_dtdevice, d, dtpath);
-}
-
-static inline int xsm_deassign_dtdevice(
-    xsm_default_t def, struct domain *d, const char *dtpath)
-{
-    return alternative_call(xsm_ops.deassign_dtdevice, d, dtpath);
-}
-
-#endif /* HAS_PASSTHROUGH && HAS_DEVICE_TREE */
 
 static inline int xsm_resource_plug_pci(xsm_default_t def, uint32_t machine_bdf)
 {
@@ -553,16 +502,6 @@ static inline int xsm_resource_unplug_pci(
     xsm_default_t def, uint32_t machine_bdf)
 {
     return alternative_call(xsm_ops.resource_unplug_pci, machine_bdf);
-}
-
-static inline int xsm_resource_plug_core(xsm_default_t def)
-{
-    return alternative_call(xsm_ops.resource_plug_core);
-}
-
-static inline int xsm_resource_unplug_core(xsm_default_t def)
-{
-    return alternative_call(xsm_ops.resource_unplug_core);
 }
 
 static inline int xsm_resource_setup_pci(
@@ -579,11 +518,6 @@ static inline int xsm_resource_setup_gsi(xsm_default_t def, int gsi)
 static inline int xsm_resource_setup_misc(xsm_default_t def)
 {
     return alternative_call(xsm_ops.resource_setup_misc);
-}
-
-static inline int xsm_page_offline(xsm_default_t def, uint32_t cmd)
-{
-    return alternative_call(xsm_ops.page_offline, cmd);
 }
 
 static inline int xsm_hypfs_op(xsm_default_t def)
@@ -625,12 +559,6 @@ static inline int xsm_get_vnumainfo(xsm_default_t def, struct domain *d)
     return alternative_call(xsm_ops.get_vnumainfo, d);
 }
 
-static inline int xsm_vm_event_control(
-    xsm_default_t def, struct domain *d, int mode, int op)
-{
-    return alternative_call(xsm_ops.vm_event_control, d, mode, op);
-}
-
 #ifdef CONFIG_MEM_ACCESS
 static inline int xsm_mem_access(xsm_default_t def, struct domain *d)
 {
@@ -661,12 +589,6 @@ static inline int xsm_platform_op(xsm_default_t def, uint32_t op)
 static inline int xsm_do_mca(xsm_default_t def)
 {
     return alternative_call(xsm_ops.do_mca);
-}
-
-static inline int xsm_shadow_control(
-    xsm_default_t def, struct domain *d, uint32_t op)
-{
-    return alternative_call(xsm_ops.shadow_control, d, op);
 }
 
 static inline int xsm_mem_sharing_op(

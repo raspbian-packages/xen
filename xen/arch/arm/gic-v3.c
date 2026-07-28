@@ -274,16 +274,20 @@ static void gicv3_enable_sre(void)
     isb();
 }
 
-/* Wait for completion of a distributor change */
-static void gicv3_do_wait_for_rwp(void __iomem *base)
+/* Wait for completion of a distributor/redistributor change */
+static void gicv3_do_wait_for_rwp(void __iomem *base, uint32_t rwp_bit)
 {
     uint32_t val;
     bool timeout = false;
     s_time_t deadline = NOW() + MILLISECS(1000);
 
     do {
+        /*
+         * GICD_CTLR and GICR_CTLR are both at offset 0, so this is
+         * valid for either a distributor or redistributor base.
+         */
         val = readl_relaxed(base + GICD_CTLR);
-        if ( !(val & GICD_CTLR_RWP) )
+        if ( !(val & rwp_bit) )
             break;
         if ( NOW() > deadline )
         {
@@ -300,12 +304,12 @@ static void gicv3_do_wait_for_rwp(void __iomem *base)
 
 static void gicv3_dist_wait_for_rwp(void)
 {
-    gicv3_do_wait_for_rwp(GICD);
+    gicv3_do_wait_for_rwp(GICD, GICD_CTLR_RWP);
 }
 
 static void gicv3_redist_wait_for_rwp(void)
 {
-    gicv3_do_wait_for_rwp(GICD_RDIST_BASE);
+    gicv3_do_wait_for_rwp(GICD_RDIST_BASE, GICR_CTLR_RWP);
 }
 
 static void gicv3_wait_for_rwp(int irq)
@@ -616,12 +620,17 @@ static void gicv3_set_irq_priority(struct irq_desc *desc,
 static void __init gicv3_dist_init(void)
 {
     uint32_t type;
+    uint32_t ctlr;
     uint64_t affinity;
     unsigned int nr_lines;
     int i;
 
-    /* Disable the distributor */
-    writel_relaxed(0, GICD + GICD_CTLR);
+    /*
+     * Disable the distributor without clearing ARE_NS. The GIC architecture
+     * makes changing ARE_NS from 1 to 0 UNPREDICTABLE.
+     */
+    ctlr = readl_relaxed(GICD + GICD_CTLR);
+    writel_relaxed(ctlr & GICD_CTLR_ARE_NS, GICD + GICD_CTLR);
 
     type = readl_relaxed(GICD + GICD_TYPER);
     nr_lines = 32 * ((type & GICD_TYPE_LINES) + 1);
@@ -695,11 +704,11 @@ static int gicv3_enable_redist(void)
         }
         cpu_relax();
         udelay(1);
-    } while ( timeout );
+    } while ( 1 );
 
     if ( timeout )
     {
-        dprintk(XENLOG_ERR, "GICv3: Redist enable RWP timeout\n");
+        dprintk(XENLOG_ERR, "GICv3: Redist wakeup timeout\n");
         return 1;
     }
 
@@ -895,7 +904,7 @@ static int gicv3_cpu_init(void)
 
 static void gicv3_cpu_disable(void)
 {
-    WRITE_SYSREG(0, ICC_CTLR_EL1);
+    WRITE_SYSREG(0, ICC_IGRPEN1_EL1);
     isb();
 }
 
@@ -1463,7 +1472,7 @@ static int gicv3_iomem_deny_access(struct domain *d)
 
     mfn = dbase >> PAGE_SHIFT;
     nr = PFN_UP(SZ_64K);
-    rc = iomem_deny_access(d, mfn, mfn + nr);
+    rc = iomem_deny_access(d, mfn, mfn + nr - 1);
     if ( rc )
         return rc;
 
@@ -1475,7 +1484,7 @@ static int gicv3_iomem_deny_access(struct domain *d)
     {
         mfn = gicv3.rdist_regions[i].base >> PAGE_SHIFT;
         nr = PFN_UP(gicv3.rdist_regions[i].size);
-        rc = iomem_deny_access(d, mfn, mfn + nr);
+        rc = iomem_deny_access(d, mfn, mfn + nr - 1);
         if ( rc )
             return rc;
     }
@@ -1484,7 +1493,7 @@ static int gicv3_iomem_deny_access(struct domain *d)
     {
         mfn = cbase >> PAGE_SHIFT;
         nr = PFN_UP(csize);
-        rc = iomem_deny_access(d, mfn, mfn + nr);
+        rc = iomem_deny_access(d, mfn, mfn + nr - 1);
         if ( rc )
             return rc;
     }
@@ -1492,8 +1501,8 @@ static int gicv3_iomem_deny_access(struct domain *d)
     if ( vbase != INVALID_PADDR )
     {
         mfn = vbase >> PAGE_SHIFT;
-        nr = PFN_UP(csize);
-        return iomem_deny_access(d, mfn, mfn + nr);
+        nr = PFN_UP(vsize);
+        return iomem_deny_access(d, mfn, mfn + nr - 1);
     }
 
     return 0;

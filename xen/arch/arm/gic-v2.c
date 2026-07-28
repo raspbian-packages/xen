@@ -408,7 +408,17 @@ static void gicv2_cpu_init(void)
 
 static void gicv2_cpu_disable(void)
 {
-    writel_gicc(0x0, GICC_CTLR);
+    uint32_t ctlr = readl_gicc(GICC_CTLR);
+
+    if ( readl_gicd(GICD_TYPER) & GICD_TYPE_SEC )
+        ctlr |= GICC_NS_CTLR_BYPASS_DISABLE_GRP1_MASK;
+    else
+        ctlr |= GICC_CTLR_BYPASS_DISABLE_GRP0_MASK |
+                GICC_CTLR_BYPASS_DISABLE_GRP1_MASK;
+
+    ctlr &= ~GICC_CTL_ENABLE;
+
+    writel_gicc(ctlr, GICC_CTLR);
 }
 
 static void gicv2_hyp_init(void)
@@ -1079,23 +1089,23 @@ static int gicv2_iomem_deny_access(struct domain *d)
     unsigned long mfn, nr;
 
     mfn = dbase >> PAGE_SHIFT;
-    rc = iomem_deny_access(d, mfn, mfn + 1);
+    rc = iomem_deny_access(d, mfn, mfn);
     if ( rc )
         return rc;
 
     mfn = hbase >> PAGE_SHIFT;
-    rc = iomem_deny_access(d, mfn, mfn + 1);
+    rc = iomem_deny_access(d, mfn, mfn);
     if ( rc )
         return rc;
 
     mfn = cbase >> PAGE_SHIFT;
     nr = DIV_ROUND_UP(csize, PAGE_SIZE);
-    rc = iomem_deny_access(d, mfn, mfn + nr);
+    rc = iomem_deny_access(d, mfn, mfn + nr - 1);
     if ( rc )
         return rc;
 
     mfn = vbase >> PAGE_SHIFT;
-    return iomem_deny_access(d, mfn, mfn + nr);
+    return iomem_deny_access(d, mfn, mfn + nr - 1);
 }
 
 #ifdef CONFIG_ACPI

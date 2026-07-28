@@ -16,6 +16,7 @@
 #include <xen/radix-tree.h>
 #include <xen/multicall.h>
 #include <xen/nospec.h>
+#include <xen/seqcount.h>
 #include <xen/tasklet.h>
 #include <xen/mm.h>
 #include <xen/smp.h>
@@ -192,7 +193,6 @@ struct vcpu
 
     struct sched_unit *sched_unit;
 
-    struct vcpu_runstate_info runstate;
 #ifndef CONFIG_COMPAT
 # define runstate_guest(v) ((v)->runstate_guest)
     XEN_GUEST_HANDLE(vcpu_runstate_info_t) runstate_guest; /* guest address */
@@ -204,6 +204,8 @@ struct vcpu
     } runstate_guest; /* guest address */
 #endif
     struct guest_area runstate_guest_area;
+    struct vcpu_runstate_info runstate;
+    struct seqcount  runstate_seq;
     unsigned int     new_state;
 
     /* Has the FPU been initialised? */
@@ -528,6 +530,7 @@ struct domain
 #endif
 
     /* I/O capabilities (access to IRQs and memory-mapped I/O). */
+    rwlock_t         caps_lock;
     struct rangeset *iomem_caps;
     struct rangeset *irq_caps;
 
@@ -646,11 +649,6 @@ struct domain
     unsigned int num_llc_colors;
     const unsigned int *llc_colors;
 #endif
-
-    /* Pointer to allocated domheap page that possibly needs scrubbing. */
-    struct page_info *pending_scrub;
-    unsigned int pending_scrub_order;
-    unsigned int pending_scrub_index;
 };
 
 static inline struct page_list_head *page_to_list(

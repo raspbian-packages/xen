@@ -115,10 +115,11 @@ static void dbs_check_cpu(struct cpu_dbs_info_s *this_dbs_info)
 
     cur_ns = NOW();
     total_ns = cur_ns - this_dbs_info->prev_cpu_wall;
-    this_dbs_info->prev_cpu_wall = NOW();
 
     if (total_ns < MIN_DBS_INTERVAL)
         return;
+
+    this_dbs_info->prev_cpu_wall = cur_ns;
 
     /* Get Idle Time */
     for_each_cpu(j, policy->cpus) {
@@ -182,7 +183,8 @@ static void cf_check do_dbs_timer(void *dbs)
     dbs_check_cpu(dbs_info);
 
     set_timer(&per_cpu(dbs_timer, dbs_info->cpu),
-            align_timer(NOW() , dbs_tuners_ins.sampling_rate));
+              align_timer(NOW() + dbs_tuners_ins.sampling_rate,
+                          dbs_tuners_ins.sampling_rate));
 }
 
 static void dbs_timer_init(struct cpu_dbs_info_s *dbs_info)
@@ -397,6 +399,6 @@ void cpufreq_dbs_timer_resume(void)
             (void)cmpxchg(stoppable, -1, 1);
         }
         else
-            set_timer(t, align_timer(now, dbs_tuners_ins.sampling_rate));
+            set_timer(t, align_timer(t->expires, dbs_tuners_ins.sampling_rate));
     }
 }

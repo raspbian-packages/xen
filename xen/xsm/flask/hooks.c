@@ -40,9 +40,25 @@
 
 #ifdef CONFIG_X86
 #include <asm/pv/shim.h>
+static int flask_shadow_control(struct domain *d, unsigned int op);
 #else
 #define pv_shim false
 #endif
+
+#ifdef CONFIG_HAS_PASSTHROUGH
+#ifdef CONFIG_HAS_PCI
+static int flask_assign_device(struct domain *d, unsigned int machine_bdf);
+static int flask_deassign_device(struct domain *d, unsigned int machine_bdf);
+#endif
+#ifdef CONFIG_HAS_DEVICE_TREE
+static int flask_assign_dtdevice(struct domain *d, const char *dtpath);
+static int flask_deassign_dtdevice(struct domain *d, const char *dtpath);
+#endif
+#endif /* CONFIG_HAS_PASSTHROUGH */
+
+static int flask_resource_plug_core(void);
+static int flask_resource_unplug_core(void);
+static int flask_resource_use_core(void);
 
 static uint32_t domain_sid(const struct domain *dom)
 {
@@ -609,7 +625,7 @@ static int cf_check flask_getdomaininfo(struct domain *d)
     return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__GETDOMAININFO);
 }
 
-static int cf_check flask_domctl_scheduler_op(struct domain *d, int op)
+static int flask_domctl_scheduler_op(struct domain *d, int op)
 {
     switch ( op )
     {
@@ -626,7 +642,7 @@ static int cf_check flask_domctl_scheduler_op(struct domain *d, int op)
     }
 }
 
-static int cf_check flask_sysctl_scheduler_op(int op)
+static int flask_sysctl_scheduler_op(unsigned int op)
 {
     switch ( op )
     {
@@ -665,10 +681,9 @@ static int cf_check flask_set_target(struct domain *d, struct domain *t)
     return rc;
 }
 
-static int cf_check flask_domctl(struct domain *d, unsigned int cmd,
-                                 uint32_t ssidref)
+static int cf_check flask_domctl(struct domain *d, struct xen_domctl *op)
 {
-    switch ( cmd )
+    switch ( op->cmd )
     {
     case XEN_DOMCTL_createdomain:
         /*
@@ -678,38 +693,23 @@ static int cf_check flask_domctl(struct domain *d, unsigned int cmd,
          * Note that d is NULL because we haven't even allocated memory for it
          * this early in XEN_DOMCTL_createdomain.
          */
-        return avc_current_has_perm(ssidref, SECCLASS_DOMAIN, DOMAIN__CREATE, NULL);
+        return avc_current_has_perm(op->u.createdomain.ssidref, SECCLASS_DOMAIN,
+                                    DOMAIN__CREATE, NULL);
 
-    /* These have individual XSM hooks (common/domctl.c) */
+    /* These have individual XSM hooks and don't make it here. */
+    case XEN_DOMCTL_bind_pt_irq:
     case XEN_DOMCTL_getdomaininfo:
-    case XEN_DOMCTL_scheduler_op:
-    case XEN_DOMCTL_irq_permission:
+    case XEN_DOMCTL_get_device_group:
+    case XEN_DOMCTL_gsi_permission:
     case XEN_DOMCTL_iomem_permission:
+    case XEN_DOMCTL_ioport_mapping:
+    case XEN_DOMCTL_ioport_permission:
+    case XEN_DOMCTL_irq_permission:
     case XEN_DOMCTL_memory_mapping:
     case XEN_DOMCTL_set_target:
-    case XEN_DOMCTL_vm_event_op:
-
-    /* These have individual XSM hooks (arch/../domctl.c) */
-    case XEN_DOMCTL_bind_pt_irq:
     case XEN_DOMCTL_unbind_pt_irq:
-#ifdef CONFIG_X86
-    /* These have individual XSM hooks (arch/x86/domctl.c) */
-    case XEN_DOMCTL_shadow_op:
-    case XEN_DOMCTL_ioport_permission:
-    case XEN_DOMCTL_ioport_mapping:
-    case XEN_DOMCTL_gsi_permission:
-#endif
-#ifdef CONFIG_HAS_PASSTHROUGH
-    /*
-     * These have individual XSM hooks
-     * (drivers/passthrough/{pci,device_tree.c)
-     */
-    case XEN_DOMCTL_get_device_group:
-    case XEN_DOMCTL_test_assign_device:
-    case XEN_DOMCTL_assign_device:
-    case XEN_DOMCTL_deassign_device:
-#endif
-        return 0;
+        ASSERT_UNREACHABLE();
+        return -EILSEQ;
 
     case XEN_DOMCTL_destroydomain:
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__DESTROY);
@@ -739,6 +739,9 @@ static int cf_check flask_domctl(struct domain *d, unsigned int cmd,
 
     case XEN_DOMCTL_setdomainhandle:
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__SETDOMAINHANDLE);
+
+    case XEN_DOMCTL_scheduler_op:
+        return flask_domctl_scheduler_op(d, op->u.scheduler_op.cmd);
 
     case XEN_DOMCTL_set_ext_vcpucontext:
     case XEN_DOMCTL_set_vcpu_msrs:
@@ -780,6 +783,54 @@ static int cf_check flask_domctl(struct domain *d, unsigned int cmd,
     case XEN_DOMCTL_get_address_size:
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__GETADDRSIZE);
 
+#ifdef CONFIG_X86
+    case XEN_DOMCTL_shadow_op:
+        return flask_shadow_control(d, op->u.shadow_op.op);
+#endif
+
+#ifdef CONFIG_HAS_PASSTHROUGH
+
+    case XEN_DOMCTL_test_assign_device:
+    case XEN_DOMCTL_assign_device:
+    case XEN_DOMCTL_deassign_device:
+        switch ( op->u.assign_device.dev )
+        {
+#ifdef CONFIG_HAS_PCI
+        case XEN_DOMCTL_DEV_PCI:
+            return op->cmd != XEN_DOMCTL_deassign_device
+                   ? flask_assign_device(
+                         d, op->u.assign_device.u.pci.machine_sbdf)
+                   : flask_deassign_device(
+                         d, op->u.assign_device.u.pci.machine_sbdf);
+#endif
+
+#ifdef CONFIG_HAS_DEVICE_TREE
+        case XEN_DOMCTL_DEV_DT:
+        {
+            struct dt_device_node *dev;
+            int ret = dt_find_node_by_gpath(op->u.assign_device.u.dt.path,
+                                            op->u.assign_device.u.dt.size,
+                                            &dev);
+
+            if ( ret )
+                return ret;
+
+            op->u.assign_device.u.dt.dev = dev;
+
+            return op->cmd != XEN_DOMCTL_deassign_device
+                   ? flask_assign_dtdevice(d, dt_node_full_name(dev))
+                   : flask_deassign_dtdevice(d, dt_node_full_name(dev));
+        }
+#endif
+
+        default:
+            /* Unknown type. */
+            break;
+        }
+        return avc_unknown_permission("assign_device", op->cmd);
+
+#endif /* CONFIG_HAS_PASSTHROUGH */
+
     case XEN_DOMCTL_mem_sharing_op:
         return current_has_perm(d, SECCLASS_HVM, HVM__MEM_SHARING);
 
@@ -787,9 +838,8 @@ static int cf_check flask_domctl(struct domain *d, unsigned int cmd,
         return current_has_perm(d, SECCLASS_DOMAIN, DOMAIN__TRIGGER);
 
     case XEN_DOMCTL_set_access_required:
-        return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__VM_EVENT);
-
     case XEN_DOMCTL_monitor_op:
+    case XEN_DOMCTL_vm_event_op:
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__VM_EVENT);
 
     case XEN_DOMCTL_debug_op:
@@ -851,23 +901,19 @@ static int cf_check flask_domctl(struct domain *d, unsigned int cmd,
         return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__SET_LLC_COLORS);
 
     default:
-        return avc_unknown_permission("domctl", cmd);
+        return avc_unknown_permission("domctl", op->cmd);
     }
 }
 
-static int cf_check flask_sysctl(int cmd)
+static int cf_check flask_sysctl(const struct xen_sysctl *op)
 {
-    switch ( cmd )
+    switch ( op->cmd )
     {
-    /* These have individual XSM hooks */
     case XEN_SYSCTL_readconsole:
-    case XEN_SYSCTL_getdomaininfolist:
-    case XEN_SYSCTL_page_offline_op:
-    case XEN_SYSCTL_scheduler_op:
-#ifdef CONFIG_X86
-    case XEN_SYSCTL_cpu_hotplug:
-#endif
-        return 0;
+        return domain_has_xen(current->domain,
+                              XEN__READCONSOLE |
+                              (op->u.readconsole.clear ? XEN__CLEARCONSOLE
+                                                       : 0));
 
     case XEN_SYSCTL_tbuf_op:
         return domain_has_xen(current->domain, XEN__TBUFCONTROL);
@@ -893,11 +939,31 @@ static int cf_check flask_sysctl(int cmd)
     case XEN_SYSCTL_pm_op:
         return domain_has_xen(current->domain, XEN__PM_OP);
 
+    case XEN_SYSCTL_page_offline_op:
+        switch ( op->u.page_offline.cmd )
+        {
+        case sysctl_page_offline:
+            return flask_resource_unplug_core();
+
+        case sysctl_page_online:
+            return flask_resource_plug_core();
+
+        case sysctl_query_page_offline:
+            return flask_resource_use_core();
+
+        default:
+            return avc_unknown_permission("page_offline",
+                                          op->u.page_offline.cmd);
+        }
+
     case XEN_SYSCTL_lockprof_op:
         return domain_has_xen(current->domain, XEN__LOCKPROF);
 
     case XEN_SYSCTL_cpupool_op:
         return domain_has_xen(current->domain, XEN__CPUPOOL_OP);
+
+    case XEN_SYSCTL_scheduler_op:
+        return flask_sysctl_scheduler_op(op->u.scheduler_op.cmd);
 
     case XEN_SYSCTL_physinfo:
     case XEN_SYSCTL_cputopoinfo:
@@ -905,6 +971,26 @@ static int cf_check flask_sysctl(int cmd)
     case XEN_SYSCTL_pcitopoinfo:
     case XEN_SYSCTL_get_cpu_policy:
         return domain_has_xen(current->domain, XEN__PHYSINFO);
+
+    case XEN_SYSCTL_getdomaininfolist:
+        return flask_getdomaininfo(dom_xen);
+
+#ifdef CONFIG_X86
+    case XEN_SYSCTL_cpu_hotplug:
+        switch ( op->u.cpu_hotplug.op )
+        {
+        case XEN_SYSCTL_CPU_HOTPLUG_ONLINE:
+        case XEN_SYSCTL_CPU_HOTPLUG_SMT_ENABLE:
+            return flask_resource_plug_core();
+
+        case XEN_SYSCTL_CPU_HOTPLUG_OFFLINE:
+        case XEN_SYSCTL_CPU_HOTPLUG_SMT_DISABLE:
+            return flask_resource_unplug_core();
+
+        default:
+            return avc_unknown_permission("cpu_hotplug", op->u.cpu_hotplug.op);
+        }
+#endif
 
     case XEN_SYSCTL_psr_cmt_op:
         return avc_current_has_perm(SECINITSID_XEN, SECCLASS_XEN2,
@@ -929,18 +1015,8 @@ static int cf_check flask_sysctl(int cmd)
                                     XEN2__COVERAGE_OP, NULL);
 
     default:
-        return avc_unknown_permission("sysctl", cmd);
+        return avc_unknown_permission("sysctl", op->cmd);
     }
-}
-
-static int cf_check flask_readconsole(uint32_t clear)
-{
-    uint32_t perms = XEN__READCONSOLE;
-
-    if ( clear )
-        perms |= XEN__CLEARCONSOLE;
-
-    return domain_has_xen(current->domain, perms);
 }
 
 static inline uint32_t resource_to_perm(uint8_t access)
@@ -1193,12 +1269,12 @@ static int cf_check flask_pci_config_permission(
 
 }
 
-static int cf_check flask_resource_plug_core(void)
+static int flask_resource_plug_core(void)
 {
     return avc_current_has_perm(SECINITSID_DOMXEN, SECCLASS_RESOURCE, RESOURCE__PLUG, NULL);
 }
 
-static int cf_check flask_resource_unplug_core(void)
+static int flask_resource_unplug_core(void)
 {
     return avc_current_has_perm(SECINITSID_DOMXEN, SECCLASS_RESOURCE, RESOURCE__UNPLUG, NULL);
 }
@@ -1271,21 +1347,6 @@ static int cf_check flask_resource_setup_misc(void)
     return avc_current_has_perm(SECINITSID_XEN, SECCLASS_RESOURCE, RESOURCE__SETUP, NULL);
 }
 
-static inline int cf_check flask_page_offline(uint32_t cmd)
-{
-    switch ( cmd )
-    {
-    case sysctl_page_offline:
-        return flask_resource_unplug_core();
-    case sysctl_page_online:
-        return flask_resource_plug_core();
-    case sysctl_query_page_offline:
-        return flask_resource_use_core();
-    default:
-        return avc_unknown_permission("page_offline", cmd);
-    }
-}
-
 static inline int cf_check flask_hypfs_op(void)
 {
     return domain_has_xen(current->domain, XEN__HYPFS_OP);
@@ -1356,11 +1417,6 @@ static int cf_check flask_hvm_altp2mhvm_op(struct domain *d, uint64_t mode, uint
     return current_has_perm(d, SECCLASS_HVM, HVM__ALTP2MHVM_OP);
 }
 
-static int cf_check flask_vm_event_control(struct domain *d, int mode, int op)
-{
-    return current_has_perm(d, SECCLASS_DOMAIN2, DOMAIN2__VM_EVENT);
-}
-
 #ifdef CONFIG_MEM_ACCESS
 static int cf_check flask_mem_access(struct domain *d)
 {
@@ -1407,7 +1463,7 @@ static int flask_test_assign_device(uint32_t machine_bdf)
     return avc_current_has_perm(rsid, SECCLASS_RESOURCE, RESOURCE__STAT_DEVICE, NULL);
 }
 
-static int cf_check flask_assign_device(struct domain *d, uint32_t machine_bdf)
+static int flask_assign_device(struct domain *d, uint32_t machine_bdf)
 {
     uint32_t dsid, rsid;
     int rc = -EPERM;
@@ -1437,7 +1493,7 @@ static int cf_check flask_assign_device(struct domain *d, uint32_t machine_bdf)
     return avc_has_perm(dsid, rsid, SECCLASS_RESOURCE, dperm, &ad);
 }
 
-static int cf_check flask_deassign_device(
+static int flask_deassign_device(
     struct domain *d, uint32_t machine_bdf)
 {
     uint32_t rsid;
@@ -1469,7 +1525,7 @@ static int flask_test_assign_dtdevice(const char *dtpath)
                                 NULL);
 }
 
-static int cf_check flask_assign_dtdevice(struct domain *d, const char *dtpath)
+static int flask_assign_dtdevice(struct domain *d, const char *dtpath)
 {
     uint32_t dsid, rsid;
     int rc = -EPERM;
@@ -1499,7 +1555,7 @@ static int cf_check flask_assign_dtdevice(struct domain *d, const char *dtpath)
     return avc_has_perm(dsid, rsid, SECCLASS_RESOURCE, dperm, &ad);
 }
 
-static int cf_check flask_deassign_dtdevice(
+static int flask_deassign_dtdevice(
     struct domain *d, const char *dtpath)
 {
     uint32_t rsid;
@@ -1523,12 +1579,13 @@ static int cf_check flask_platform_op(uint32_t op)
     switch ( op )
     {
 #ifdef CONFIG_X86
-    /* These operations have their own XSM hooks */
     case XENPF_cpu_online:
-    case XENPF_cpu_offline:
     case XENPF_cpu_hotadd:
     case XENPF_mem_hotadd:
-        return 0;
+        return flask_resource_plug_core();
+
+    case XENPF_cpu_offline:
+        return flask_resource_unplug_core();
 #endif
 
     case XENPF_settime32:
@@ -1596,7 +1653,7 @@ static int cf_check flask_do_mca(void)
     return domain_has_xen(current->domain, XEN__MCA_OP);
 }
 
-static int cf_check flask_shadow_control(struct domain *d, uint32_t op)
+static int flask_shadow_control(struct domain *d, unsigned int op)
 {
     uint32_t perm;
 
@@ -1874,12 +1931,9 @@ static const struct xsm_ops __initconst_cf_clobber flask_ops = {
     .security_domaininfo = flask_security_domaininfo,
     .domain_create = flask_domain_create,
     .getdomaininfo = flask_getdomaininfo,
-    .domctl_scheduler_op = flask_domctl_scheduler_op,
-    .sysctl_scheduler_op = flask_sysctl_scheduler_op,
     .set_target = flask_set_target,
     .domctl = flask_domctl,
     .sysctl = flask_sysctl,
-    .readconsole = flask_readconsole,
 
     .evtchn_unbound = flask_evtchn_unbound,
     .evtchn_interdomain = flask_evtchn_interdomain,
@@ -1928,17 +1982,15 @@ static const struct xsm_ops __initconst_cf_clobber flask_ops = {
     .irq_permission = flask_irq_permission,
     .iomem_permission = flask_iomem_permission,
     .iomem_mapping = flask_iomem_mapping,
+    .iomem_mapping_vpci = flask_iomem_mapping,
     .pci_config_permission = flask_pci_config_permission,
 
-    .resource_plug_core = flask_resource_plug_core,
-    .resource_unplug_core = flask_resource_unplug_core,
     .resource_plug_pci = flask_resource_plug_pci,
     .resource_unplug_pci = flask_resource_unplug_pci,
     .resource_setup_pci = flask_resource_setup_pci,
     .resource_setup_gsi = flask_resource_setup_gsi,
     .resource_setup_misc = flask_resource_setup_misc,
 
-    .page_offline = flask_page_offline,
     .hypfs_op = flask_hypfs_op,
     .hvm_param = flask_hvm_param,
     .hvm_param_altp2mhvm = flask_hvm_param_altp2mhvm,
@@ -1946,8 +1998,6 @@ static const struct xsm_ops __initconst_cf_clobber flask_ops = {
 
     .do_xsm_op = do_flask_op,
     .get_vnumainfo = flask_get_vnumainfo,
-
-    .vm_event_control = flask_vm_event_control,
 
 #ifdef CONFIG_MEM_ACCESS
     .mem_access = flask_mem_access,
@@ -1971,19 +2021,11 @@ static const struct xsm_ops __initconst_cf_clobber flask_ops = {
 
 #if defined(CONFIG_HAS_PASSTHROUGH) && defined(CONFIG_HAS_PCI)
     .get_device_group = flask_get_device_group,
-    .assign_device = flask_assign_device,
-    .deassign_device = flask_deassign_device,
-#endif
-
-#if defined(CONFIG_HAS_PASSTHROUGH) && defined(CONFIG_HAS_DEVICE_TREE)
-    .assign_dtdevice = flask_assign_dtdevice,
-    .deassign_dtdevice = flask_deassign_dtdevice,
 #endif
 
     .platform_op = flask_platform_op,
 #ifdef CONFIG_X86
     .do_mca = flask_do_mca,
-    .shadow_control = flask_shadow_control,
     .mem_sharing_op = flask_mem_sharing_op,
     .apic = flask_apic,
     .machine_memory_map = flask_machine_memory_map,

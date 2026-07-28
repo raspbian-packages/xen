@@ -169,7 +169,7 @@
 /*
  * Flags that are preserved in assign_pages() (and only there)
  */
-#define PGC_preserved (PGC_extra | PGC_static | PGC_colored | PGC_need_scrub)
+#define PGC_preserved (PGC_extra | PGC_static | PGC_colored)
 
 #ifndef PGT_TYPE_INFO_INITIALIZER
 #define PGT_TYPE_INFO_INITIALIZER 0
@@ -764,7 +764,7 @@ static void page_list_add_scrub(struct page_info *pg, unsigned int node,
 #endif
 #define SCRUB_BYTE_PATTERN   (SCRUB_PATTERN & 0xff)
 
-void scrub_one_page(const struct page_info *pg)
+static void scrub_one_page(const struct page_info *pg)
 {
     if ( unlikely(pg->count_info & PGC_broken) )
         return;
@@ -1153,13 +1153,20 @@ static int reserve_offlined_page(struct page_info *head)
 
         next_order = cur_order = 0;
 
+        /* Attempt to grow the order (size) of the buddy as much as possible. */
         while ( cur_order < head_order )
         {
             next_order = cur_order + 1;
 
-            if ( (cur_head + (1 << next_order)) >= (head + ( 1 << head_order)) )
+            /* Do not grow to next_order if it would go beyond the buddy. */
+            if ( (cur_head + (1 << next_order)) > (head + (1 << head_order)) )
                 goto merge;
 
+            /* Do not grow to next_order if cur_head is not aligned to it. */
+            if ( mfn_x(page_to_mfn(cur_head)) & (1UL << cur_order) )
+                goto merge;
+
+            /* Check for offlined pages in upper half of next_order range. */
             for ( i = (1 << cur_order), pg = cur_head + (1 << cur_order );
                   i < (1 << next_order);
                   i++, pg++ )

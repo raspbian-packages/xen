@@ -281,13 +281,18 @@ static inline void vcpu_runstate_change(
     }
 
     delta = new_entry_time - v->runstate.state_entry_time;
-    if ( delta > 0 )
-    {
-        v->runstate.time[v->runstate.state] += delta;
-        v->runstate.state_entry_time = new_entry_time;
-    }
 
-    v->runstate.state = new_state;
+    /* Serialization: ->schedule_lock (see ASSERT() above). */
+    with_seq_write(&v->runstate_seq)
+    {
+        if ( delta > 0 )
+        {
+            v->runstate.time[v->runstate.state] += delta;
+            v->runstate.state_entry_time = new_entry_time;
+        }
+
+        v->runstate.state = new_state;
+    }
 }
 
 void sched_guest_idle(void (*idle) (void), unsigned int cpu)
@@ -307,30 +312,18 @@ void sched_guest_idle(void (*idle) (void), unsigned int cpu)
 void vcpu_runstate_get(const struct vcpu *v,
                        struct vcpu_runstate_info *runstate)
 {
-    spinlock_t *lock;
-    s_time_t delta;
-    struct sched_unit *unit;
+    struct seqcount seq = SEQCNT_ZERO();
+    const struct seqcount *s = likely(v == current) ? &seq : &v->runstate_seq;
 
-    rcu_read_lock(&sched_res_rculock);
+    until_seq_read(s)
+    {
+        s_time_t delta;
 
-    /*
-     * Be careful in case of an idle vcpu: the assignment to a unit might
-     * change even with the scheduling lock held, so be sure to use the
-     * correct unit for locking in order to avoid triggering an ASSERT() in
-     * the unlock function.
-     */
-    unit = is_idle_vcpu(v) ? get_sched_res(v->processor)->sched_unit_idle
-                           : v->sched_unit;
-    lock = likely(v == current) ? NULL : unit_schedule_lock_irq(unit);
-    memcpy(runstate, &v->runstate, sizeof(*runstate));
-    delta = NOW() - runstate->state_entry_time;
-    if ( delta > 0 )
-        runstate->time[runstate->state] += delta;
-
-    if ( unlikely(lock != NULL) )
-        unit_schedule_unlock_irq(lock, unit);
-
-    rcu_read_unlock(&sched_res_rculock);
+        *runstate = v->runstate;
+        delta = NOW() - runstate->state_entry_time;
+        if ( delta > 0 )
+            runstate->time[runstate->state] += delta;
+    }
 }
 
 uint64_t get_cpu_idle_time(unsigned int cpu)
@@ -1682,7 +1675,7 @@ int vcpu_affinity_domctl(struct domain *d, uint32_t cmd,
 {
     struct vcpu *v;
     const struct sched_unit *unit;
-    int ret = 0;
+    int ret = 0, hret = 0;
 
     if ( vcpuaff->vcpu >= d->max_vcpus )
         return -EINVAL;
@@ -1720,19 +1713,17 @@ int vcpu_affinity_domctl(struct domain *d, uint32_t cmd,
         if ( vcpuaff->flags & XEN_VCPUAFFINITY_FORCE )
             vcpu_temporary_affinity(v, NR_CPUS, VCPU_AFFINITY_OVERRIDE);
 
-        ret = 0;
-
         /*
          * We both set a new affinity and report back to the caller what
          * the scheduler will be effectively using.
          */
         if ( vcpuaff->flags & XEN_VCPUAFFINITY_HARD )
         {
-            ret = xenctl_bitmap_to_bitmap(cpumask_bits(new_affinity),
-                                          &vcpuaff->cpumap_hard, nr_cpu_ids);
-            if ( !ret )
-                ret = vcpu_set_hard_affinity(v, new_affinity);
-            if ( ret )
+            hret = xenctl_bitmap_to_bitmap(cpumask_bits(new_affinity),
+                                           &vcpuaff->cpumap_hard, nr_cpu_ids);
+            if ( !hret )
+                hret = vcpu_set_hard_affinity(v, new_affinity);
+            if ( hret )
                 goto setvcpuaffinity_out;
 
             /*
@@ -1740,7 +1731,7 @@ int vcpu_affinity_domctl(struct domain *d, uint32_t cmd,
              * cpupool's online mask and the new hard affinity.
              */
             cpumask_and(new_affinity, online, unit->cpu_hard_affinity);
-            ret = cpumask_to_xenctl_bitmap(&vcpuaff->cpumap_hard, new_affinity);
+            hret = cpumask_to_xenctl_bitmap(&vcpuaff->cpumap_hard, new_affinity);
         }
         if ( vcpuaff->flags & XEN_VCPUAFFINITY_SOFT )
         {
@@ -1777,14 +1768,14 @@ int vcpu_affinity_domctl(struct domain *d, uint32_t cmd,
     else
     {
         if ( vcpuaff->flags & XEN_VCPUAFFINITY_HARD )
-            ret = cpumask_to_xenctl_bitmap(&vcpuaff->cpumap_hard,
-                                           unit->cpu_hard_affinity);
+            hret = cpumask_to_xenctl_bitmap(&vcpuaff->cpumap_hard,
+                                            unit->cpu_hard_affinity);
         if ( vcpuaff->flags & XEN_VCPUAFFINITY_SOFT )
             ret = cpumask_to_xenctl_bitmap(&vcpuaff->cpumap_soft,
                                            unit->cpu_soft_affinity);
     }
 
-    return ret;
+    return hret ?: ret;
 }
 
 bool alloc_affinity_masks(struct affinity_masks *affinity)
@@ -2063,10 +2054,6 @@ long sched_adjust(struct domain *d, struct xen_domctl_scheduler_op *op)
 {
     long ret;
 
-    ret = xsm_domctl_scheduler_op(XSM_HOOK, d, op->cmd);
-    if ( ret )
-        return ret;
-
     if ( op->sched_id != dom_scheduler(d)->sched_id )
         return -EINVAL;
 
@@ -2097,10 +2084,6 @@ long sched_adjust_global(struct xen_sysctl_scheduler_op *op)
 {
     struct cpupool *pool;
     int rc;
-
-    rc = xsm_sysctl_scheduler_op(XSM_HOOK, op->cmd);
-    if ( rc )
-        return rc;
 
     if ( (op->cmd != XEN_SYSCTL_SCHEDOP_putinfo) &&
          (op->cmd != XEN_SYSCTL_SCHEDOP_getinfo) )

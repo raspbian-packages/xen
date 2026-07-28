@@ -154,7 +154,7 @@ void domctl_lock_release(void)
     spin_unlock(&current->domain->hypercall_deadlock_mutex);
 }
 
-void vnuma_destroy(struct vnuma_info *vnuma)
+static void vnuma_destroy(struct vnuma_info *vnuma)
 {
     if ( vnuma )
     {
@@ -164,6 +164,19 @@ void vnuma_destroy(struct vnuma_info *vnuma)
         xfree(vnuma->vnode_to_pnode);
         xfree(vnuma);
     }
+}
+
+/* Overwrite (replace) vnuma topology for a domain. */
+void vnuma_replace(struct domain *d, struct vnuma_info *vnuma)
+{
+    struct vnuma_info *old;
+
+    write_lock(&d->vnuma_rwlock);
+    old = d->vnuma;
+    d->vnuma = vnuma;
+    write_unlock(&d->vnuma_rwlock);
+
+    vnuma_destroy(old);
 }
 
 /*
@@ -279,6 +292,35 @@ static struct vnuma_info *vnuma_init(const struct xen_domctl_vnuma *uinfo,
     return ERR_PTR(ret);
 }
 
+void iocaps_double_lock(struct domain *d, bool write)
+{
+    struct domain *currd = current->domain;
+
+    if ( d->domain_id > currd->domain_id )
+        read_lock(&currd->caps_lock);
+
+    if ( write )
+        write_lock(&d->caps_lock);
+    else
+        read_lock(&d->caps_lock);
+
+    if ( d->domain_id < currd->domain_id )
+        read_lock(&currd->caps_lock);
+}
+
+void iocaps_double_unlock(struct domain *d, bool write)
+{
+    struct domain *currd = current->domain;
+
+    if ( d != currd )
+        read_unlock(&currd->caps_lock);
+
+    if ( write )
+        write_unlock(&d->caps_lock);
+    else
+        read_unlock(&d->caps_lock);
+}
+
 long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
 {
     long ret = 0;
@@ -302,6 +344,10 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
     case XEN_DOMCTL_deassign_device:
         if ( op->domain == DOMID_IO )
         {
+#ifdef CONFIG_HAS_DEVICE_TREE
+            if ( op->u.assign_device.dev == XEN_DOMCTL_DEV_DT )
+                op->u.assign_device.u.dt.dev = NULL;
+#endif
             d = dom_io;
             break;
         }
@@ -309,6 +355,11 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
             return -ESRCH;
         fallthrough;
     case XEN_DOMCTL_test_assign_device:
+#ifdef CONFIG_HAS_DEVICE_TREE
+        if ( op->u.assign_device.dev == XEN_DOMCTL_DEV_DT )
+            op->u.assign_device.u.dt.dev = NULL;
+        fallthrough;
+#endif
     case XEN_DOMCTL_vm_event_op:
         if ( op->domain == DOMID_INVALID )
         {
@@ -323,9 +374,200 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         break;
     }
 
-    ret = xsm_domctl(XSM_OTHER, d, op->cmd,
-                     /* SSIDRef only applicable for cmd == createdomain */
-                     op->u.createdomain.ssidref);
+    /* Handle sub-ops not requiring the domctl lock. */
+    switch ( op->cmd )
+    {
+    case XEN_DOMCTL_getdomaininfo:
+        ret = xsm_getdomaininfo(XSM_XS_PRIV, d);
+        if ( !ret )
+        {
+            getdomaininfo(d, &op->u.getdomaininfo);
+
+            ASSERT(op->domain == op->u.getdomaininfo.domain);
+            copyback = true;
+        }
+
+        goto domctl_out_unlock_domonly;
+
+    case XEN_DOMCTL_iomem_permission:
+    {
+        unsigned long mfn = op->u.iomem_permission.first_mfn;
+        unsigned long nr_mfns = op->u.iomem_permission.nr_mfns;
+        bool allow = op->u.iomem_permission.allow_access;
+
+        ret = -EINVAL;
+        if ( (mfn + nr_mfns - 1) < mfn ) /* Wrap? */
+            goto domctl_out_unlock_domonly;
+
+        ret = xsm_iomem_permission(XSM_PRIV, d, mfn, mfn + nr_mfns - 1, allow);
+        if ( ret )
+            goto domctl_out_unlock_domonly;
+
+        iocaps_double_lock(d, true);
+
+        if ( !iomem_access_permitted(current->domain,
+                                     mfn, mfn + nr_mfns - 1) )
+            ret = -EPERM;
+        else if ( allow )
+            ret = iomem_permit_access(d, mfn, mfn + nr_mfns - 1);
+        else
+            ret = iomem_deny_access(d, mfn, mfn + nr_mfns - 1);
+
+        iocaps_double_unlock(d, true);
+        goto domctl_out_unlock_domonly;
+    }
+
+    case XEN_DOMCTL_memory_mapping:
+    {
+        unsigned long gfn = op->u.memory_mapping.first_gfn;
+        unsigned long mfn = op->u.memory_mapping.first_mfn;
+        unsigned long nr_mfns = op->u.memory_mapping.nr_mfns;
+        unsigned long mfn_end = mfn + nr_mfns - 1;
+        bool add = op->u.memory_mapping.add_mapping;
+
+        ret = -EINVAL;
+        if ( mfn_end < mfn || /* Wrap? */
+             ((mfn | mfn_end) >> (paddr_bits - PAGE_SHIFT)) ||
+             (gfn + nr_mfns - 1) < gfn ) /* Wrap? */
+            goto domctl_out_unlock_domonly;
+
+        ret = xsm_iomem_mapping(XSM_DM_PRIV, d, mfn, mfn_end, add);
+        if ( ret || !paging_mode_translate(d) )
+            goto domctl_out_unlock_domonly;
+
+#ifndef CONFIG_X86 /* XXX ARM!? */
+        ret = -E2BIG;
+        /* Must break hypercall up as this could take a while. */
+        if ( nr_mfns > 64 )
+            goto domctl_out_unlock_domonly;
+#endif
+
+        iocaps_double_lock(d, false);
+
+        ret = -EPERM;
+        if ( !iomem_access_permitted(current->domain, mfn, mfn_end) ||
+             !iomem_access_permitted(d, mfn, mfn_end) )
+            /* Nothing. */;
+        else if ( add )
+        {
+            printk(XENLOG_G_DEBUG
+                   "memory_map:add: %pd gfn=%lx mfn=%lx nr=%lx\n",
+                   d, gfn, mfn, nr_mfns);
+
+            ret = map_mmio_regions(d, _gfn(gfn), nr_mfns, _mfn(mfn));
+            if ( ret < 0 )
+                printk(XENLOG_G_WARNING
+                       "memory_map:fail: %pd gfn=%lx mfn=%lx nr=%lx ret:%ld\n",
+                       d, gfn, mfn, nr_mfns, ret);
+        }
+        else
+        {
+            printk(XENLOG_G_DEBUG
+                   "memory_map:remove: %pd gfn=%lx mfn=%lx nr=%lx\n",
+                   d, gfn, mfn, nr_mfns);
+
+            ret = unmap_mmio_regions(d, _gfn(gfn), nr_mfns, _mfn(mfn));
+            if ( ret < 0 && is_hardware_domain(current->domain) )
+                printk(XENLOG_ERR
+                       "memory_map: error %ld removing %pd access to [%lx,%lx]\n",
+                       ret, d, mfn, mfn_end);
+        }
+
+        iocaps_double_unlock(d, false);
+        goto domctl_out_unlock_domonly;
+    }
+
+#ifdef CONFIG_HAS_PIRQ
+    case XEN_DOMCTL_irq_permission:
+    {
+        unsigned int pirq = op->u.irq_permission.pirq, irq;
+        bool allow = op->u.irq_permission.allow_access;
+
+        ret = -EINVAL;
+        if ( pirq >= current->domain->nr_pirqs )
+            goto domctl_out_unlock_domonly;
+
+        irq = domain_pirq_to_irq(current->domain, pirq);
+
+        ret = -EPERM;
+        if ( irq )
+            ret = xsm_irq_permission(XSM_PRIV, d, irq, allow);
+        if ( ret )
+            goto domctl_out_unlock_domonly;
+
+        iocaps_double_lock(d, true);
+
+        if ( !irq_access_permitted(current->domain, irq) )
+            ret = -EPERM;
+        else if ( allow )
+            ret = irq_permit_access(d, irq);
+        else
+            ret = irq_deny_access(d, irq);
+
+        iocaps_double_unlock(d, true);
+        goto domctl_out_unlock_domonly;
+    }
+#endif
+
+    case XEN_DOMCTL_set_target:
+    {
+        struct domain *e = get_domain_by_id(op->u.set_target.target);
+
+        ret = -ESRCH;
+        if ( !e )
+            goto domctl_out_unlock_domonly;
+
+        if ( d == e )
+            ret = -EINVAL;
+        else if ( !is_hvm_domain(e) )
+            ret = -EOPNOTSUPP;
+        else
+            ret = xsm_set_target(XSM_PRIV, d, e);
+
+        /* Hold reference on @e until we destroy @d. */
+        if ( !ret && cmpxchgptr(&d->target, NULL, e) )
+            ret = -EINVAL;
+
+        if ( ret )
+            put_domain(e);
+        goto domctl_out_unlock_domonly;
+    }
+
+    case XEN_DOMCTL_vm_event_op:
+        if ( op->u.vm_event_op.op == XEN_VM_EVENT_GET_VERSION )
+        {
+            /* No XSM check (and potentially d == NULL) here. */
+            ret = vm_event_domctl(d, &op->u.vm_event_op);
+            if ( !ret )
+                copyback = true;
+            goto domctl_out_unlock_domonly;
+        }
+        if ( !d )
+        {
+            ret = -ESRCH;
+            goto domctl_out_unlock_domonly;
+        }
+        /* Other sub-ops handled further down. */
+        break;
+
+    case XEN_DOMCTL_get_device_group:
+        ret = iommu_do_domctl(op, d, u_domctl);
+        goto domctl_out_unlock_domonly;
+
+    case XEN_DOMCTL_ioport_permission:
+    case XEN_DOMCTL_ioport_mapping:
+    case XEN_DOMCTL_gsi_permission:
+    case XEN_DOMCTL_bind_pt_irq:
+    case XEN_DOMCTL_unbind_pt_irq:
+        ret = arch_do_domctl(op, d, u_domctl);
+        goto domctl_out_unlock_domonly;
+
+    default:
+        /* Everything else handled further down. */
+        break;
+    }
+
+    ret = xsm_domctl(XSM_OTHER, d, op);
     if ( ret )
         goto domctl_out_unlock_domonly;
 
@@ -539,17 +781,6 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         copyback = 1;
         break;
 
-    case XEN_DOMCTL_getdomaininfo:
-        ret = xsm_getdomaininfo(XSM_XS_PRIV, d);
-        if ( ret )
-            break;
-
-        getdomaininfo(d, &op->u.getdomaininfo);
-
-        op->domain = op->u.getdomaininfo.domain;
-        copyback = 1;
-        break;
-
     case XEN_DOMCTL_getvcpucontext:
     {
         vcpu_guest_context_u c = { .nat = NULL };
@@ -655,142 +886,9 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
         }
         break;
 
-#ifdef CONFIG_HAS_PIRQ
-    case XEN_DOMCTL_irq_permission:
-    {
-        unsigned int pirq = op->u.irq_permission.pirq, irq;
-        int allow = op->u.irq_permission.allow_access;
-
-        if ( pirq >= current->domain->nr_pirqs )
-        {
-            ret = -EINVAL;
-            break;
-        }
-        irq = pirq_access_permitted(current->domain, pirq);
-        if ( !irq || xsm_irq_permission(XSM_HOOK, d, irq, allow) )
-            ret = -EPERM;
-        else if ( allow )
-            ret = irq_permit_access(d, irq);
-        else
-            ret = irq_deny_access(d, irq);
-        break;
-    }
-#endif
-
-    case XEN_DOMCTL_iomem_permission:
-    {
-        unsigned long mfn = op->u.iomem_permission.first_mfn;
-        unsigned long nr_mfns = op->u.iomem_permission.nr_mfns;
-        int allow = op->u.iomem_permission.allow_access;
-
-        ret = -EINVAL;
-        if ( (mfn + nr_mfns - 1) < mfn ) /* wrap? */
-            break;
-
-        if ( !iomem_access_permitted(current->domain,
-                                     mfn, mfn + nr_mfns - 1) ||
-             xsm_iomem_permission(XSM_HOOK, d, mfn, mfn + nr_mfns - 1, allow) )
-            ret = -EPERM;
-        else if ( allow )
-            ret = iomem_permit_access(d, mfn, mfn + nr_mfns - 1);
-        else
-            ret = iomem_deny_access(d, mfn, mfn + nr_mfns - 1);
-        break;
-    }
-
-    case XEN_DOMCTL_memory_mapping:
-    {
-        unsigned long gfn = op->u.memory_mapping.first_gfn;
-        unsigned long mfn = op->u.memory_mapping.first_mfn;
-        unsigned long nr_mfns = op->u.memory_mapping.nr_mfns;
-        unsigned long mfn_end = mfn + nr_mfns - 1;
-        int add = op->u.memory_mapping.add_mapping;
-
-        ret = -EINVAL;
-        if ( mfn_end < mfn || /* wrap? */
-             ((mfn | mfn_end) >> (paddr_bits - PAGE_SHIFT)) ||
-             (gfn + nr_mfns - 1) < gfn ) /* wrap? */
-            break;
-
-#ifndef CONFIG_X86 /* XXX ARM!? */
-        ret = -E2BIG;
-        /* Must break hypercall up as this could take a while. */
-        if ( nr_mfns > 64 )
-            break;
-#endif
-
-        ret = -EPERM;
-        if ( !iomem_access_permitted(current->domain, mfn, mfn_end) ||
-             !iomem_access_permitted(d, mfn, mfn_end) )
-            break;
-
-        ret = xsm_iomem_mapping(XSM_HOOK, d, mfn, mfn_end, add);
-        if ( ret )
-            break;
-
-        if ( !paging_mode_translate(d) )
-            break;
-
-        if ( add )
-        {
-            printk(XENLOG_G_DEBUG
-                   "memory_map:add: dom%d gfn=%lx mfn=%lx nr=%lx\n",
-                   d->domain_id, gfn, mfn, nr_mfns);
-
-            ret = map_mmio_regions(d, _gfn(gfn), nr_mfns, _mfn(mfn));
-            if ( ret < 0 )
-                printk(XENLOG_G_WARNING
-                       "memory_map:fail: dom%d gfn=%lx mfn=%lx nr=%lx ret:%ld\n",
-                       d->domain_id, gfn, mfn, nr_mfns, ret);
-        }
-        else
-        {
-            printk(XENLOG_G_DEBUG
-                   "memory_map:remove: dom%d gfn=%lx mfn=%lx nr=%lx\n",
-                   d->domain_id, gfn, mfn, nr_mfns);
-
-            ret = unmap_mmio_regions(d, _gfn(gfn), nr_mfns, _mfn(mfn));
-            if ( ret < 0 && is_hardware_domain(current->domain) )
-                printk(XENLOG_ERR
-                       "memory_map: error %ld removing dom%d access to [%lx,%lx]\n",
-                       ret, d->domain_id, mfn, mfn_end);
-        }
-        break;
-    }
-
     case XEN_DOMCTL_settimeoffset:
         domain_set_time_offset(d, op->u.settimeoffset.time_offset_seconds);
         break;
-
-    case XEN_DOMCTL_set_target:
-    {
-        struct domain *e;
-
-        ret = -ESRCH;
-        e = get_domain_by_id(op->u.set_target.target);
-        if ( e == NULL )
-            break;
-
-        ret = -EINVAL;
-        if ( (d == e) || (d->target != NULL) )
-        {
-            put_domain(e);
-            break;
-        }
-
-        ret = -EOPNOTSUPP;
-        if ( is_hvm_domain(e) )
-            ret = xsm_set_target(XSM_HOOK, d, e);
-        if ( ret )
-        {
-            put_domain(e);
-            break;
-        }
-
-        /* Hold reference on @e until we destroy @d. */
-        d->target = e;
-        break;
-    }
 
     case XEN_DOMCTL_subscribe:
         d->suspend_evtchn = op->u.subscribe.port;
@@ -831,12 +929,7 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
             break;
         }
 
-        /* overwrite vnuma topology for domain. */
-        write_lock(&d->vnuma_rwlock);
-        vnuma_destroy(d->vnuma);
-        d->vnuma = vnuma;
-        write_unlock(&d->vnuma_rwlock);
-
+        vnuma_replace(d, vnuma);
         break;
     }
 
@@ -849,7 +942,6 @@ long do_domctl(XEN_GUEST_HANDLE_PARAM(xen_domctl_t) u_domctl)
     case XEN_DOMCTL_assign_device:
     case XEN_DOMCTL_test_assign_device:
     case XEN_DOMCTL_deassign_device:
-    case XEN_DOMCTL_get_device_group:
         ret = iommu_do_domctl(op, d, u_domctl);
         break;
 

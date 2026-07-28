@@ -42,7 +42,7 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
     if ( op->interface_version != XEN_SYSCTL_INTERFACE_VERSION )
         return -EACCES;
 
-    ret = xsm_sysctl(XSM_PRIV, op->cmd);
+    ret = xsm_sysctl(XSM_PRIV, op);
     if ( ret )
         return ret;
 
@@ -59,10 +59,6 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
     switch ( op->cmd )
     {
     case XEN_SYSCTL_readconsole:
-        ret = xsm_readconsole(XSM_HOOK, op->u.readconsole.clear);
-        if ( ret )
-            break;
-
         ret = read_console_ring(&op->u.readconsole);
         break;
 
@@ -189,10 +185,6 @@ long do_sysctl(XEN_GUEST_HANDLE_PARAM(xen_sysctl_t) u_sysctl)
 
         ret = -EINVAL;
         if ( op->u.page_offline.end < op->u.page_offline.start )
-            break;
-
-        ret = xsm_page_offline(XSM_HOOK, op->u.page_offline.cmd);
-        if ( ret )
             break;
 
         ptr = status = xmalloc_array(uint32_t,

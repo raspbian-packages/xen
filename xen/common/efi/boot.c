@@ -624,7 +624,8 @@ static size_t __init get_esrt_size(const EFI_MEMORY_DESCRIPTOR *desc)
     if ( esrt_ptr->FwResourceCount > available_len / sizeof(esrt_ptr->Entries[0]) )
         return 0;
 
-    return esrt_ptr->FwResourceCount * sizeof(esrt_ptr->Entries[0]);
+    return offsetof(EFI_SYSTEM_RESOURCE_TABLE,
+                    Entries[esrt_ptr->FwResourceCount]);
 }
 
 static EFI_GUID __initdata esrt_guid = EFI_SYSTEM_RESOURCE_TABLE_GUID;
@@ -701,6 +702,16 @@ static void __init efi_relocate_esrt(EFI_SYSTEM_TABLE *SystemTable)
  */
 #include "efi-boot.h"
 
+static void __init free_cfg(void)
+{
+    if ( !cfg.need_to_free )
+        return;
+
+    /* One extra byte was allocated to put a nul character there. */
+    efi_bs->FreePages(cfg.addr, PFN_UP(cfg.size + 1));
+    cfg.need_to_free = false;
+}
+
 void __init noreturn blexit(const CHAR16 *str)
 {
     if ( str )
@@ -710,8 +721,7 @@ void __init noreturn blexit(const CHAR16 *str)
     if ( !efi_bs )
         efi_arch_halt();
 
-    if ( cfg.need_to_free )
-        efi_bs->FreePages(cfg.addr, PFN_UP(cfg.size));
+    free_cfg();
     if ( kernel.need_to_free )
         efi_bs->FreePages(kernel.addr, PFN_UP(kernel.size));
     if ( ramdisk.need_to_free )
@@ -773,8 +783,9 @@ static bool __init read_file(EFI_FILE_HANDLE dir_handle, CHAR16 *name,
     {
         file->addr = min(1UL << (32 + PAGE_SHIFT),
                          HYPERVISOR_VIRT_END - DIRECTMAP_VIRT_START);
+        /* For config files allocate an extra byte to put a NUL there. */
         ret = efi_bs->AllocatePages(AllocateMaxAddress, EfiLoaderData,
-                                    PFN_UP(size), &file->addr);
+                                    PFN_UP(size + (file == &cfg)), &file->addr);
     }
     if ( EFI_ERROR(ret) )
         what = what ?: L"Allocation";
@@ -803,6 +814,9 @@ static bool __init read_file(EFI_FILE_HANDLE dir_handle, CHAR16 *name,
 
     efi_arch_flush_dcache_area(file->ptr, file->size);
 
+    if ( file == &cfg )
+        file->str[file->size] = 0;
+
     return true;
 }
 
@@ -817,6 +831,23 @@ static bool __init read_section(const EFI_LOADED_IMAGE *image,
         return false;
 
     file->ptr = ptr;
+
+    /* For cfg file, if necessary allocate space to put an extra NUL there. */
+    if ( file == &cfg && file->size && !iscntrl(file->str[file->size - 1]) )
+    {
+        EFI_PHYSICAL_ADDRESS addr;
+        EFI_STATUS ret = efi_bs->AllocatePages(AllocateMaxAddress,
+                                               EfiLoaderData,
+                                               PFN_UP(file->size + 1), &addr);
+
+        if ( EFI_ERROR(ret) )
+            return false;
+
+        memcpy((void *)addr, ptr, file->size);
+        file->addr = addr;
+        file->need_to_free = true;
+        file->str[file->size] = 0;
+    }
 
     handle_file_info(name, file, options);
 
@@ -846,9 +877,6 @@ static void __init pre_parse(const struct file *file)
         else
             start = 0;
     }
-    if ( file->size && end[-1] )
-         PrintStr(L"No newline at end of config file,"
-                   " last line will be ignored.\r\n");
 }
 
 static void __init efi_init(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
@@ -1416,11 +1444,7 @@ void EFIAPI __init noreturn efi_start(EFI_HANDLE ImageHandle,
             name.s = get_value(&cfg, "global", "chain");
             if ( !name.s )
                 break;
-            if ( cfg.need_to_free )
-            {
-                efi_bs->FreePages(cfg.addr, PFN_UP(cfg.size));
-                cfg.need_to_free = false;
-            }
+            free_cfg();
             if ( !read_file(dir_handle, s2w(&name), &cfg, NULL) )
             {
                 PrintStr(L"Chained configuration file '");
@@ -1485,11 +1509,7 @@ void EFIAPI __init noreturn efi_start(EFI_HANDLE ImageHandle,
 
         efi_arch_cfg_file_late(loaded_image, dir_handle, section.s);
 
-        if ( cfg.need_to_free )
-        {
-            efi_bs->FreePages(cfg.addr, PFN_UP(cfg.size));
-            cfg.need_to_free = false;
-        }
+        free_cfg();
 
         dir_handle->Close(dir_handle);
 

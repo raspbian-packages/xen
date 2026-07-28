@@ -157,73 +157,6 @@ static void increase_reservation(struct memop_args *a)
     a->nr_done = i;
 }
 
-/*
- * Temporary storage for a domain assigned page that's not been fully scrubbed.
- * Stored pages must be domheap ones.
- *
- * The stashed page can be freed at any time by Xen, the caller must pass the
- * order and NUMA node requirement to the fetch function to ensure the
- * currently stashed page matches it's requirements.
- */
-static void stash_allocation(struct domain *d, struct page_info *page,
-                             unsigned int order, unsigned int scrub_index)
-{
-    rspin_lock(&d->page_alloc_lock);
-
-    /*
-     * Drop the passed page in preference for the already stashed one.  This
-     * interface is designed to be used for single-threaded domain creation.
-     */
-    if ( d->pending_scrub || d->is_dying )
-        free_domheap_pages(page, order);
-    else
-    {
-        d->pending_scrub_index = scrub_index;
-        d->pending_scrub_order = order;
-        d->pending_scrub = page;
-    }
-
-    rspin_unlock(&d->page_alloc_lock);
-}
-
-static struct page_info *get_stashed_allocation(struct domain *d,
-                                                unsigned int order,
-                                                nodeid_t node,
-                                                unsigned int *scrub_index)
-{
-    struct page_info *page = NULL;
-
-    rspin_lock(&d->page_alloc_lock);
-
-    /*
-     * If there's a pending page to scrub check if it satisfies the current
-     * request.  If it doesn't free it and return NULL.
-     */
-    if ( d->pending_scrub )
-    {
-        if ( d->pending_scrub_order == order &&
-             (node == NUMA_NO_NODE || node == page_to_nid(d->pending_scrub)) )
-        {
-            page = d->pending_scrub;
-            *scrub_index = d->pending_scrub_index;
-        }
-        else
-            free_domheap_pages(d->pending_scrub, d->pending_scrub_order);
-
-        /*
-         * The caller now owns the page or it has been freed, clear stashed
-         * information.  Prevent concurrent usages of get_stashed_allocation()
-         * from returning the same page to different contexts.
-         */
-        d->pending_scrub_index = 0;
-        d->pending_scrub_order = 0;
-        d->pending_scrub = NULL;
-    }
-
-    rspin_unlock(&d->page_alloc_lock);
-    return page;
-}
-
 static void populate_physmap(struct memop_args *a)
 {
     struct page_info *page;
@@ -340,19 +273,7 @@ static void populate_physmap(struct memop_args *a)
             }
             else
             {
-                unsigned int scrub_start = 0;
-                unsigned int memflags =
-                    a->memflags | (d->creation_finished ? 0
-                                                        : MEMF_no_scrub);
-                nodeid_t node =
-                    (a->memflags & MEMF_exact_node) ? MEMF_get_node(a->memflags)
-                                                    : NUMA_NO_NODE;
-
-                page = get_stashed_allocation(d, a->extent_order, node,
-                                              &scrub_start);
-
-                if ( !page )
-                    page = alloc_domheap_pages(d, a->extent_order, memflags);
+                page = alloc_domheap_pages(d, a->extent_order, a->memflags);
 
                 if ( unlikely(!page) )
                 {
@@ -361,30 +282,6 @@ static void populate_physmap(struct memop_args *a)
                              a->extent_order, d->domain_id, a->memflags,
                              i, a->nr_extents);
                     goto out;
-                }
-
-                if ( memflags & MEMF_no_scrub )
-                {
-                    unsigned int dirty_cnt = 0;
-
-                    /* Check if there's anything to scrub. */
-                    for ( j = scrub_start; j < (1U << a->extent_order); j++ )
-                    {
-                        if ( !test_and_clear_bit(_PGC_need_scrub,
-                                                 &page[j].count_info) )
-                            continue;
-
-                        scrub_one_page(&page[j]);
-
-                        if ( (j + 1) != (1U << a->extent_order) &&
-                             !(++dirty_cnt & 0xff) &&
-                             hypercall_preempt_check() )
-                        {
-                            a->preempted = 1;
-                            stash_allocation(d, page, a->extent_order, j + 1);
-                            goto out;
-                        }
-                    }
                 }
 
                 if ( unlikely(a->memflags & MEMF_no_tlbflush) )
@@ -951,7 +848,7 @@ int xenmem_add_to_physmap(struct domain *d, struct xen_add_to_physmap *xatp,
                           unsigned int start)
 {
     unsigned int done = 0;
-    long rc = 0;
+    long rc = 0, adjust = 1;
     union add_to_physmap_extra extra = {};
     struct page_info *pages[16];
 
@@ -986,8 +883,25 @@ int xenmem_add_to_physmap(struct domain *d, struct xen_add_to_physmap *xatp,
         return -EOVERFLOW;
     }
 
-    xatp->idx += start;
-    xatp->gpfn += start;
+    /*
+     * Overlapping ranges need processing backwards when destination is above
+     * source.
+     */
+    if ( xatp->gpfn > xatp->idx &&
+         unlikely(xatp->gpfn < xatp->idx + xatp->size) )
+    {
+        adjust = -1;
+
+        /* Both fields store "next item to process". */
+        xatp->idx += xatp->size - start - 1;
+        xatp->gpfn += xatp->size - start - 1;
+    }
+    else
+    {
+        xatp->idx += start;
+        xatp->gpfn += start;
+    }
+
     xatp->size -= start;
 
 #ifdef CONFIG_HAS_PASSTHROUGH
@@ -1005,8 +919,8 @@ int xenmem_add_to_physmap(struct domain *d, struct xen_add_to_physmap *xatp,
         if ( rc < 0 )
             break;
 
-        xatp->idx++;
-        xatp->gpfn++;
+        xatp->idx += adjust;
+        xatp->gpfn += adjust;
 
         if ( extra.ppage )
             ++extra.ppage;
@@ -1029,7 +943,10 @@ int xenmem_add_to_physmap(struct domain *d, struct xen_add_to_physmap *xatp,
 
         this_cpu(iommu_dont_flush_iotlb) = 0;
 
-        ret = iommu_iotlb_flush(d, _dfn(xatp->idx - done), done,
+        if ( likely(adjust > 0) )
+            adjust = done;
+
+        ret = iommu_iotlb_flush(d, _dfn(xatp->idx - adjust), done,
                                 IOMMU_FLUSHF_modified);
         if ( unlikely(ret) && rc >= 0 )
             rc = ret;
@@ -1043,12 +960,25 @@ int xenmem_add_to_physmap(struct domain *d, struct xen_add_to_physmap *xatp,
         for ( i = 0; i < done; ++i )
             put_page(pages[i]);
 
-        ret = iommu_iotlb_flush(d, _dfn(xatp->gpfn - done), done,
+        ret = iommu_iotlb_flush(d, _dfn(xatp->gpfn - adjust), done,
                                 IOMMU_FLUSHF_added | IOMMU_FLUSHF_modified);
         if ( unlikely(ret) && rc >= 0 )
             rc = ret;
     }
 #endif
+
+    /*
+     * For internal callers (e.g. XEN_DMOP_relocate_memory handling) leave
+     * the GFNs from where to resume in *xatp (they're correct already when
+     * we worked forwards). These are the values not biased for a possible
+     * non-zero "start" that a subsequent invocation might use, so also do
+     * this updating only when incoming "start" was 0.
+     */
+    if ( rc > 0 && !start && unlikely(adjust < 0) )
+    {
+        xatp->idx -= xatp->size - rc - 1;
+        xatp->gpfn -= xatp->size - rc - 1;
+    }
 
     return rc;
 }
@@ -1872,12 +1802,24 @@ long do_memory_op(unsigned long cmd, XEN_GUEST_HANDLE_PARAM(void) arg)
             goto vnumainfo_out;
         }
 
+        read_lock(&d->vnuma_rwlock);
+
+        /*
+         * Check d->vnuma again after re-acquiring the lock as we can race
+         * with domain destruction.
+         */
+        if ( !d->vnuma )
+        {
+            ASSERT(d->is_dying);
+            read_unlock(&d->vnuma_rwlock);
+            rc = -ESRCH;
+            goto vnumainfo_out;
+        }
+
         /*
          * Check if vnuma info has changed and if the allocated arrays
          * are not big enough.
          */
-        read_lock(&d->vnuma_rwlock);
-
         if ( dom_vnodes < d->vnuma->nr_vnodes ||
              dom_vranges < d->vnuma->nr_vmemranges ||
              dom_vcpus < d->max_vcpus )

@@ -375,6 +375,9 @@ extern idt_entry_t *idt_tables[];
 
 DECLARE_PER_CPU(root_pgentry_t *, root_pgt);
 
+/* vCPU of the currently loaded page-tables. */
+DECLARE_PER_CPU(struct vcpu *, pgtable_vcpu);
+
 extern void write_ptbase(struct vcpu *v);
 
 /* REP NOP (PAUSE) is a good thing to insert into busy-wait loops. */
@@ -453,7 +456,7 @@ struct stubs {
 };
 
 DECLARE_PER_CPU(struct stubs, stubs);
-unsigned long alloc_stub_page(unsigned int cpu, unsigned long *mfn);
+void init_stubs(void);
 
 void cpuid_hypervisor_leaves(const struct vcpu *v, uint32_t leaf,
                              uint32_t subleaf, struct cpuid_leaf *res);

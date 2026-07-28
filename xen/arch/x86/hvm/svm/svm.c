@@ -545,7 +545,9 @@ static unsigned cf_check int svm_get_interrupt_shadow(struct vcpu *v)
     if ( vmcb->int_stat.intr_shadow )
         intr_shadow |= HVM_INTR_SHADOW_MOV_SS | HVM_INTR_SHADOW_STI;
 
-    if ( vmcb_get_general1_intercepts(vmcb) & GENERAL1_INTERCEPT_IRET )
+    if ( vmcb->_vintr.fields.vnmi_enable
+         ? vmcb->_vintr.fields.vnmi_blocking
+         : (vmcb_get_general1_intercepts(vmcb) & GENERAL1_INTERCEPT_IRET) )
         intr_shadow |= HVM_INTR_SHADOW_NMI;
 
     return intr_shadow;
@@ -555,15 +557,23 @@ static void cf_check svm_set_interrupt_shadow(
     struct vcpu *v, unsigned int intr_shadow)
 {
     struct vmcb_struct *vmcb = v->arch.hvm.svm.vmcb;
-    u32 general1_intercepts = vmcb_get_general1_intercepts(vmcb);
+    bool block_nmi = intr_shadow & HVM_INTR_SHADOW_NMI;
 
     vmcb->int_stat.intr_shadow =
         !!(intr_shadow & (HVM_INTR_SHADOW_MOV_SS|HVM_INTR_SHADOW_STI));
 
-    general1_intercepts &= ~GENERAL1_INTERCEPT_IRET;
-    if ( intr_shadow & HVM_INTR_SHADOW_NMI )
-        general1_intercepts |= GENERAL1_INTERCEPT_IRET;
-    vmcb_set_general1_intercepts(vmcb, general1_intercepts);
+    if ( vmcb->_vintr.fields.vnmi_enable )
+        vmcb->_vintr.fields.vnmi_blocking = block_nmi;
+    else
+    {
+        uint32_t gen1 = vmcb_get_general1_intercepts(vmcb);
+
+        gen1 &= ~GENERAL1_INTERCEPT_IRET;
+        if ( block_nmi )
+            gen1 |= GENERAL1_INTERCEPT_IRET;
+
+        vmcb_set_general1_intercepts(vmcb, gen1);
+    }
 }
 
 static int cf_check svm_guest_x86_mode(struct vcpu *v)
@@ -2468,6 +2478,7 @@ static struct hvm_function_table __initdata_cf_clobber svm_function_table = {
     .nhvm_vmcx_hap_enabled = nsvm_vmcb_hap_enabled,
     .nhvm_intr_blocked = nsvm_intr_blocked,
     .nhvm_hap_walk_L1_p2m = nsvm_hap_walk_L1_p2m,
+    .nhvm_domain_relinquish_resources = nsvm_domain_relinquish_resources,
 
     .get_reg = svm_get_reg,
     .set_reg = svm_set_reg,
@@ -2518,6 +2529,7 @@ const struct hvm_function_table * __init start_svm(void)
     P(cpu_has_tsc_ratio, "TSC Rate MSR");
     P(cpu_has_svm_sss, "NPT Supervisor Shadow Stack");
     P(cpu_has_svm_spec_ctrl, "MSR_SPEC_CTRL virtualisation");
+    P(cpu_has_svm_vnmi, "Virtual NMI");
 #undef P
 
     if ( !printed )
@@ -2549,6 +2561,7 @@ void asmlinkage svm_vmexit_handler(void)
     hvm_sanitize_regs_fields(
         regs, !(vmcb_get_efer(vmcb) & EFER_LMA) || !(vmcb->cs.l));
 
+    v->arch.hvm.guest_cr[2] = vmcb_get_cr2(vmcb);
     if ( paging_mode_hap(v->domain) )
         v->arch.hvm.guest_cr[3] = v->arch.hvm.hw_cr[3] = vmcb_get_cr3(vmcb);
 
