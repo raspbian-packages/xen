@@ -401,7 +401,8 @@ CAMLprim value stub_xc_domain_shutdown(value xch_val, value domid, value reason)
 static value alloc_domaininfo(xc_domaininfo_t * info)
 {
 	CAMLparam0();
-	CAMLlocal5(result, tmp, arch_config, x86_arch_config, emul_list);
+	CAMLlocal4(result, tmp, arch_config, emul_list);
+	int tag = -1;
 	int i;
 
 	result = caml_alloc_tuple(17);
@@ -430,7 +431,22 @@ static value alloc_domaininfo(xc_domaininfo_t * info)
 
 	Store_field(result, 15, tmp);
 
-#if defined(__i386__) || defined(__x86_64__)
+#if defined(__arm__) || defined(__aarch64__)
+
+	tag = 0; /* tag ARM */
+
+	/* xen_arm_arch_domainconfig */
+	arch_config = caml_alloc_tuple(3);
+	Field(arch_config, 0) = Val_int(info->arch_config.gic_version);
+	Field(arch_config, 1) = Val_int(info->arch_config.nr_spis);
+
+	tmp = caml_copy_int32(info->arch_config.clock_frequency);
+	Field(arch_config, 2) = tmp;
+
+#elif defined(__i386__) || defined(__x86_64__)
+
+	tag = 1; /* tag x86 */
+
 	/*
 	 * emulation_flags: x86_arch_emulation_flags list;
 	 */
@@ -439,16 +455,17 @@ static value alloc_domaininfo(xc_domaininfo_t * info)
 		(info->arch_config.emulation_flags);
 
 	/* xen_x86_arch_domainconfig */
-	x86_arch_config = caml_alloc_tuple(1);
-	Store_field(x86_arch_config, 0, emul_list);
+	arch_config = caml_alloc_tuple(1);
+	Field(arch_config, 0) = emul_list;
+
+#endif
+	if (tag < 0)
+		caml_failwith("Unimplemented architecture in alloc_domaininfo()");
 
 	/* arch_config: arch_domainconfig */
-	arch_config = caml_alloc_small(1, 1);
-
-	Store_field(arch_config, 0, x86_arch_config);
-
-	Store_field(result, 16, arch_config);
-#endif
+	tmp = caml_alloc_small(1, tag);
+	Field(tmp, 0) = arch_config;
+	Field(result, 16) = tmp;
 
 	CAMLreturn(result);
 }

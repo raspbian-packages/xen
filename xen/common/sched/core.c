@@ -565,7 +565,7 @@ int sched_init_vcpu(struct vcpu *v)
     unit->priv = sched_alloc_udata(dom_scheduler(d), unit, d->sched_priv);
     if ( unit->priv == NULL )
     {
-        sched_free_unit(unit, v);
+        sched_destroy_vcpu(v);
         rcu_read_unlock(&sched_res_rculock);
         return 1;
     }
@@ -722,6 +722,38 @@ int sched_move_domain(struct domain *d, struct cpupool *c)
 
     for ( unit_idx = 0; unit_idx < n_units; unit_idx++ )
     {
+        /*
+         * A vcpu slot can be missing if creation failed partway
+         * through. A dying domain is being torn down regardless, so
+         * skip the unit -- but a domain that isn't dying still needs
+         * every vcpu it has schedulable, so fail instead of silently
+         * dropping some of them.
+         */
+        bool vcpu_failed = false;
+
+        for ( unsigned int i = 0;
+              i < gran && unit_idx * gran + i < d->max_vcpus; i++ )
+        {
+            if ( !d->vcpu[unit_idx * gran + i] )
+            {
+                vcpu_failed = true;
+                break;
+            }
+        }
+
+        if ( vcpu_failed )
+        {
+            if ( !d->is_dying )
+            {
+                sched_move_domain_cleanup(c->sched, new_units, domdata);
+                rcu_read_unlock(&sched_res_rculock);
+
+                return -EINVAL;
+            }
+
+            continue;
+        }
+
         unit = sched_alloc_unit_mem();
         if ( unit )
         {
@@ -846,8 +878,11 @@ void sched_destroy_vcpu(struct vcpu *v)
     {
         rcu_read_lock(&sched_res_rculock);
 
-        sched_remove_unit(vcpu_scheduler(v), unit);
-        sched_free_udata(vcpu_scheduler(v), unit->priv);
+        if ( unit->priv )
+        {
+            sched_remove_unit(vcpu_scheduler(v), unit);
+            sched_free_udata(vcpu_scheduler(v), unit->priv);
+        }
         sched_free_unit(unit, v);
 
         rcu_read_unlock(&sched_res_rculock);
@@ -3412,7 +3447,7 @@ void schedule_dump(struct cpupool *c)
     }
     else
     {
-        sched = &operations;
+        sched = &sched_idle_ops;
         cpus = &cpupool_free_cpus;
     }
 

@@ -983,6 +983,13 @@ static struct active_grant_entry *grant_map_exists(const struct domain *ld,
     return ERR_PTR(-EINVAL);
 }
 
+static bool grant_map_is_ro(struct active_grant_entry *act)
+{
+    ASSERT(spin_is_locked(&act->lock));
+
+    return (act->pin & (GNTPIN_hstw_mask | GNTPIN_devw_mask)) == 0;
+}
+
 union maptrack_node {
     struct {
         /* Radix tree slot pointers use two of the bits. */
@@ -1348,13 +1355,19 @@ map_grant_ref(
 
     grant_read_lock(rgt);
 
-    if ( unlikely(evaluate_nospec((rgt->gt_version == 1) !=
-                                  (status == &shah->flags))) )
+    /*
+     * After a v1 -> v2 change behind our backs "ref" may now be out of
+     * bounds.  While after a v2 -> v1 -> v2 change "ref" would still be
+     * suitably bounded, the underlying status page may have moved.
+     */
+    if ( evaluate_nospec(rgt->gt_version == 1
+                         ? status != &shah->flags
+                         : (ref >= nr_grant_entries(rgt) ||
+                            status != &status_entry(rgt, ref))) )
     {
         /*
-         * After a v1 -> v2 change behind our backs "ref" may now be out of
-         * bounds.  Recalculate it, but only for reserved entries.  Others
-         * will have been cleared anyway by the version change.
+         * Recalculate status, but only for reserved entries.  Others will
+         * have been cleared anyway by the version change(s).
          */
         if ( ref < GNTTAB_NR_RESERVED_ENTRIES )
             status = evaluate_nospec(rgt->gt_version == 1)
@@ -3589,7 +3602,7 @@ gnttab_swap_grant_ref(XEN_GUEST_HANDLE_PARAM(gnttab_swap_grant_ref_t) uop,
     return 0;
 }
 
-static int _cache_flush(const gnttab_cache_flush_t *cflush, grant_ref_t *cur_ref)
+static int _cache_flush(gnttab_cache_flush_t *cflush, grant_ref_t *cur_ref)
 {
     struct domain *d, *owner;
     struct page_info *page;
@@ -3624,6 +3637,8 @@ static int _cache_flush(const gnttab_cache_flush_t *cflush, grant_ref_t *cur_ref
     owner = page_get_owner_and_reference(page);
     if ( !owner || !owner->grant_table )
     {
+        if ( owner )
+            put_page(page);
         rcu_unlock_domain(d);
         return -EPERM;
     }
@@ -3640,6 +3655,24 @@ static int _cache_flush(const gnttab_cache_flush_t *cflush, grant_ref_t *cur_ref
             put_page(page);
             return act ? PTR_ERR(act) : 1;
         }
+
+        /*
+         * If the grant mapping is read-only, it must be cleaned as well as
+         * invalidated.  Invalidation without cleaning may modify memory the
+         * granter is expecting not to change.
+         *
+         * It is highly unlikely but legal to have multiple grant mappings of
+         * differing read-only-ness.  If a read-write grant mapping is found
+         * first, then it's fine to invalidate without clean.
+         *
+         * If a read-only grant mapping is found first, a later read-write
+         * mapping could be missed.  Assume that the read-only mapping is the
+         * only mapping.  The cost is a clean of up to 4k, while the saving is
+         * not requiring the search of grant maps to be exhaustive in order to
+         * spot a corner-case expected not to exist in practice.
+         */
+        if ( grant_map_is_ro(act) )
+            cflush->op |= GNTTAB_CACHE_CLEAN;
     }
 
     v = map_domain_page(mfn);
