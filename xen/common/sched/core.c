@@ -459,18 +459,17 @@ static struct sched_unit *sched_alloc_unit_mem(void)
 
 static void sched_domain_insert_unit(struct sched_unit *unit, struct domain *d)
 {
-    struct sched_unit **prev_unit;
+    struct sched_unit **next_unit;
 
     unit->domain = d;
 
-    for ( prev_unit = &d->sched_unit_list; *prev_unit;
-          prev_unit = &(*prev_unit)->next_in_list )
-        if ( (*prev_unit)->next_in_list &&
-             (*prev_unit)->next_in_list->unit_id > unit->unit_id )
+    for ( next_unit = &d->sched_unit_list; *next_unit;
+          next_unit = &(*next_unit)->next_in_list )
+        if ( (*next_unit)->unit_id > unit->unit_id )
             break;
 
-    unit->next_in_list = *prev_unit;
-    *prev_unit = unit;
+    unit->next_in_list = *next_unit;
+    *next_unit = unit;
 }
 
 static struct sched_unit *sched_alloc_unit(struct vcpu *v)
@@ -3019,6 +3018,7 @@ void __init scheduler_init(void)
             printk("scheduler %s misses .%s, dropped\n", \
                    schedulers[i]->opt_name, #f);         \
             schedulers[i] = NULL;                        \
+            continue;                                    \
         }
 
         sched_test_func(init);

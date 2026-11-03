@@ -2935,13 +2935,8 @@ struct gnttab_copy_buf {
     bool have_type;
 };
 
-static int gnttab_copy_lock_domain(domid_t domid, bool is_gref,
-                                   struct gnttab_copy_buf *buf)
+static int gnttab_copy_lock_domain(domid_t domid, struct gnttab_copy_buf *buf)
 {
-    /* Only DOMID_SELF may reference via frame. */
-    if ( domid != DOMID_SELF && !is_gref )
-        return GNTST_permission_denied;
-
     buf->domain = rcu_lock_domain_by_any_id(domid);
 
     if ( !buf->domain )
@@ -2973,12 +2968,10 @@ static int gnttab_copy_lock_domains(const struct gnttab_copy *op,
 {
     int rc;
 
-    rc = gnttab_copy_lock_domain(op->source.domid,
-                                 op->flags & GNTCOPY_source_gref, src);
+    rc = gnttab_copy_lock_domain(op->source.domid, src);
     if ( rc < 0 )
         goto error;
-    rc = gnttab_copy_lock_domain(op->dest.domid,
-                                 op->flags & GNTCOPY_dest_gref, dest);
+    rc = gnttab_copy_lock_domain(op->dest.domid, dest);
     if ( rc < 0 )
         goto error;
 
@@ -3041,6 +3034,9 @@ static int gnttab_copy_claim_buf(const struct gnttab_copy *op,
         buf->ptr.u.ref = ptr->u.ref;
         buf->have_grant = 1;
     }
+    /* Only DOMID_SELF may reference via frame. */
+    else if ( ptr->domid != DOMID_SELF )
+        return GNTST_permission_denied;
     else
     {
         rc = get_paged_frame(ptr->u.gmfn, &buf->mfn, &buf->page,
@@ -3082,10 +3078,10 @@ static bool gnttab_copy_buf_valid(
     const struct gnttab_copy_ptr *p, const struct gnttab_copy_buf *b,
     bool has_gref)
 {
-    if ( !b->virt )
+    if ( !b->virt || b->have_grant != has_gref )
         return 0;
     if ( has_gref )
-        return b->have_grant && p->u.ref == b->ptr.u.ref;
+        return p->u.ref == b->ptr.u.ref;
     return p->u.gmfn == b->ptr.u.gmfn;
 }
 
